@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+venv/
+
+# Environment
+.env
+
+# Pytest
+.pytest_cache/
+
+# Ruff
+.ruff_cache/
+
+# Coverage
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime logs
+*.log
+
+# Runtime raw data
+data/raw/
+
+# VMware
+*.vmdk
+*.vmem
+*.vmsn
+*.vmss
+*.nvram
+
+# Secrets
+*.pem
+*.key
