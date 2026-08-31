@@ -36,6 +36,11 @@ def replay_fusion(
     if step_size <= timedelta(0):
         raise ValueError("step_size must be greater than zero")
 
+    run_duration = run_end - run_start
+
+    if run_duration % step_size != timedelta(0):
+        raise ValueError("run interval must align with step_size")
+
     previous_timestamp: datetime | None = None
 
     for item in evidence:

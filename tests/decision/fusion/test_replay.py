@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from incident_awareness.common.models.evidence import Evidence
 from incident_awareness.decision.fusion.replay import replay_fusion
 from incident_awareness.decision.fusion.simple_score import SimpleScorer
@@ -189,3 +191,88 @@ def test_returns_miss_for_insufficient_evidence() -> None:
     assert result.stopping_result.fusion_status == "miss"
     assert result.stopping_result.fusion_time is None
     assert result.stopping_result.score_at_decision is None
+
+
+def test_rejects_run_interval_not_aligned_to_step_size() -> None:
+    run_start = datetime(
+        2026,
+        8,
+        31,
+        1,
+        0,
+        tzinfo=UTC,
+    )
+
+    scorer = SimpleScorer(
+        [
+            "type_a",
+        ]
+    )
+
+    stopping_policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        persistence_k=1,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="run interval must align with step_size",
+    ):
+        replay_fusion(
+            evidence=[],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_start + timedelta(seconds=25),
+            window_size=timedelta(minutes=5),
+            step_size=timedelta(seconds=10),
+            scorer=scorer,
+            stopping_policy=stopping_policy,
+        )
+
+
+def test_includes_evidence_at_aligned_run_end() -> None:
+    run_start = datetime(
+        2026,
+        8,
+        31,
+        1,
+        0,
+        tzinfo=UTC,
+    )
+
+    run_end = run_start + timedelta(seconds=20)
+
+    evidence = [
+        make_evidence(
+            "E-END",
+            run_end,
+            "type_a",
+        )
+    ]
+
+    scorer = SimpleScorer(
+        [
+            "type_a",
+        ]
+    )
+
+    result = replay_fusion(
+        evidence=evidence,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+        window_size=timedelta(minutes=5),
+        step_size=timedelta(seconds=10),
+        scorer=scorer,
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=1.0,
+            persistence_k=1,
+        ),
+    )
+
+    assert result.trajectory[-1].timestamp == run_end
+    assert result.trajectory[-1].score == 1.0
+    assert result.stopping_result.fusion_status == "detected"
+    assert result.stopping_result.fusion_time == run_end
