@@ -169,6 +169,36 @@ def test_rejects_out_of_order_evidence() -> None:
         engine.ingest(make_evidence("002", earlier))
 
 
+def test_rejects_future_evidence_when_advancing_to_past_time() -> None:
+    base_time = datetime(
+        2026,
+        8,
+        31,
+        1,
+        0,
+        tzinfo=UTC,
+    )
+
+    engine = WindowEngine(window_size=timedelta(minutes=5))
+
+    future_evidence = make_evidence(
+        evidence_id="E-FUTURE",
+        timestamp=base_time + timedelta(minutes=1),
+    )
+
+    engine.ingest(future_evidence)
+
+    with pytest.raises(
+        ValueError,
+        match="cannot advance window before latest ingested evidence timestamp",
+    ):
+        engine.advance_to(
+            run_id=future_evidence.run_id,
+            entity_id=future_evidence.entity_id,
+            timestamp=base_time,
+        )
+
+
 def test_reset_does_not_clear_other_state() -> None:
     engine = WindowEngine(window_size=timedelta(minutes=5))
 
@@ -217,3 +247,36 @@ def test_reset_does_not_clear_other_state() -> None:
         run_id="RUN-01",
         entity_id="HOST-02",
     ) == [other_entity]
+
+
+def test_allows_evidence_at_exact_advance_timestamp() -> None:
+    base_time = datetime(
+        2026,
+        8,
+        31,
+        1,
+        0,
+        tzinfo=UTC,
+    )
+
+    engine = WindowEngine(window_size=timedelta(minutes=5))
+
+    evidence = make_evidence(
+        evidence_id="E-NOW",
+        timestamp=base_time,
+    )
+
+    engine.ingest(evidence)
+
+    engine.advance_to(
+        run_id=evidence.run_id,
+        entity_id=evidence.entity_id,
+        timestamp=base_time,
+    )
+
+    active = engine.get_active_evidence(
+        run_id=evidence.run_id,
+        entity_id=evidence.entity_id,
+    )
+
+    assert active == [evidence]
