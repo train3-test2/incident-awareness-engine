@@ -33,6 +33,13 @@ class ThresholdStoppingPolicy:
         self.persistence_k = persistence_k
 
     def evaluate(self, trajectory: list[ScorePoint]) -> StoppingResult:
+        """완료된 Score trajectory를 대상으로 최종 Stopping 결과를 계산한다.
+
+        이 함수의 ``miss``는 Run이 끝날 때까지 정지조건이 성립하지 않았다는
+        최종 결과를 의미한다. 진행 중인 trajectory의 중간 상태를 ``miss``로
+        해석해서는 안 된다.
+        """
+
         consecutive = 0
         previous_timestamp: datetime | None = None
 
