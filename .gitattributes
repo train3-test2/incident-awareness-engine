@@ -1,0 +1,2 @@
+samples/fusion/*.json text eol=lf
+schemas/*.json text eol=lf

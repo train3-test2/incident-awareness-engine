@@ -1,0 +1,1 @@
+{"artifacts":[{"path":"fusion_output_detected.json","sha256":"0aebe6d109614ebf92b634f3d672bc9d48216edb20a2f879551e9cd5c4122fc0"},{"path":"fusion_output_miss.json","sha256":"1216b4d46f0a55eefe2d6fbba5f005c3c507a3917b939655b3fab8030e2425c5"}],"git_commit":"5b3403a","manifest_version":"synthetic-fusion-v0.1"}
