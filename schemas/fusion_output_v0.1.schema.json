@@ -1,0 +1,157 @@
+{
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "fusion_status": {
+            "const": "detected"
+          }
+        },
+        "required": [
+          "fusion_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "fusion_time": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "score_at_decision": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "type": "number"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "fusion_status": {
+            "enum": [
+              "miss",
+              "not_evaluated"
+            ]
+          }
+        },
+        "required": [
+          "fusion_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "fusion_time": {
+            "type": "null"
+          },
+          "score_at_decision": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "fusion_output_v0.1",
+      "default": "fusion_output_v0.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "entity_id": {
+      "title": "Entity Id",
+      "type": "string"
+    },
+    "fusion_status": {
+      "enum": [
+        "detected",
+        "miss",
+        "not_evaluated"
+      ],
+      "title": "Fusion Status",
+      "type": "string"
+    },
+    "fusion_time": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Fusion Time"
+    },
+    "score_at_decision": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Score At Decision"
+    },
+    "contributing_evidence_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Contributing Evidence Ids",
+      "type": "array"
+    },
+    "decision_reason": {
+      "title": "Decision Reason",
+      "type": "string"
+    },
+    "scoring_method": {
+      "title": "Scoring Method",
+      "type": "string"
+    },
+    "scorer_version": {
+      "title": "Scorer Version",
+      "type": "string"
+    },
+    "evidence_schema_version": {
+      "title": "Evidence Schema Version",
+      "type": "string"
+    },
+    "scoring_config_version": {
+      "title": "Scoring Config Version",
+      "type": "string"
+    },
+    "scoring_profile_id": {
+      "title": "Scoring Profile Id",
+      "type": "string"
+    },
+    "git_commit": {
+      "title": "Git Commit",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "entity_id",
+    "fusion_status",
+    "fusion_time",
+    "score_at_decision",
+    "contributing_evidence_ids",
+    "decision_reason",
+    "scoring_method",
+    "scorer_version",
+    "evidence_schema_version",
+    "scoring_config_version",
+    "scoring_profile_id",
+    "git_commit"
+  ],
+  "title": "FusionOutput",
+  "type": "object"
+}
