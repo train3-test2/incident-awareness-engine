@@ -16,6 +16,7 @@
         "properties": {
           "fusion_time": {
             "format": "date-time",
+            "pattern": "Z$",
             "type": "string"
           },
           "score_at_decision": {

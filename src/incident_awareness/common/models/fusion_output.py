@@ -1,7 +1,13 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class FusionOutput(BaseModel):
@@ -23,6 +29,7 @@ class FusionOutput(BaseModel):
                             "fusion_time": {
                                 "type": "string",
                                 "format": "date-time",
+                                "pattern": "Z$",
                             },
                             "score_at_decision": {
                                 "type": "number",
@@ -87,6 +94,23 @@ class FusionOutput(BaseModel):
     scoring_config_version: str
     scoring_profile_id: str
     git_commit: str
+
+    @field_validator("fusion_time")
+    @classmethod
+    def validate_fusion_time_utc(
+        cls,
+        value: datetime | None,
+    ) -> datetime | None:
+        if value is None:
+            return None
+
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("fusion_time must be timezone-aware")
+
+        if value.utcoffset() != timedelta(0):
+            raise ValueError("fusion_time must be UTC")
+
+        return value
 
     @model_validator(mode="after")
     def validate_status_fields(self) -> "FusionOutput":
