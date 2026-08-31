@@ -15,16 +15,24 @@ class SimpleScorer:
 
         self._profile_types = frozenset(profile_types)
 
+    def select_scoring_evidence(
+        self,
+        active_evidence: Iterable[Evidence],
+    ) -> tuple[Evidence, ...]:
+        return tuple(
+            evidence
+            for evidence in active_evidence
+            if evidence.feature_channel_group == "fusion_feature"
+            and evidence.evidence_type in self._profile_types
+        )
+
     @property
     def denominator(self) -> int:
         return len(self._profile_types)
 
     def score(self, active_evidence: Iterable[Evidence]) -> float:
         active_types = {
-            evidence.evidence_type
-            for evidence in active_evidence
-            if evidence.feature_channel_group == "fusion_feature"
-            and evidence.evidence_type in self._profile_types
+            evidence.evidence_type for evidence in self.select_scoring_evidence(active_evidence)
         }
 
         return len(active_types) / self.denominator
