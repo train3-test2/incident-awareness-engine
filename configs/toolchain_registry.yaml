@@ -1,0 +1,19 @@
+# Update concrete versions when an experiment is executed.
+python:
+  implementation: CPython
+  version: "3.13.15"
+
+postgresql:
+  version: "18.6"
+
+sysmon:
+  version: TBD
+
+hayabusa:
+  version: TBD
+
+sigma:
+  ruleset_version: TBD
+
+atomic_red_team:
+  version: TBD

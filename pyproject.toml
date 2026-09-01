@@ -2,13 +2,17 @@
 name = "incident-awareness-engine"
 version = "0.1.0"
 description = "Incident awareness and evidence automation system"
-requires-python = ">=3.12,<3.13"
-dependencies = []
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "pydantic>=2.11,<3",
+    "jsonschema>=4.25,<5",
+    "PyYAML>=6.0,<7",
+]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
-    "pytest>=9.1.1",
-    "ruff>=0.16.4"
+    "pytest>=9.1.1,<10",
+    "ruff>=0.16.4,<1",
 ]
 
 [tool.pytest.ini_options]
@@ -17,7 +21,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py313"
 
 [tool.ruff.format]
 indent-style = "space"

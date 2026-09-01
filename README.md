@@ -4,21 +4,39 @@
 
 ## Development Environment
 
-- Python 3.12
-- pytest
-- Ruff
+- CPython 3.13.x
+- uv + `pyproject.toml` + `uv.lock`
+- Pydantic v2 contracts and generated JSON Schema
+- pytest and Ruff
+- PostgreSQL 18.x for local/integration storage
+
+Install the [uv](https://docs.astral.sh/uv/) package manager, then run:
+
+```bash
+uv sync --all-groups
+uv run pytest
+uv run ruff check .
+uv run ruff format --check .
+```
 
 ## Project Structure
 
 ```text
-src/app/
+src/incident_awareness/
+├── common/
+│   ├── models/
+│   └── interfaces/
 ├── collection/
 │   ├── adapters/
 │   └── collector/
 ├── normalization/
-├── evidence/
-├── fusion/
-├── detection/
+├── integration/
 ├── decision/
-└── common/
+├── storage/
+│   └── repositories/
+├── pipeline/
+└── mocks/
 ```
+
+The `mocks/` package is reserved for E2E connection testing. Evidence, fusion,
+and detection production algorithms remain owned by their respective roles.
