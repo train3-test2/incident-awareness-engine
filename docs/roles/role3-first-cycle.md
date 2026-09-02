@@ -283,7 +283,10 @@ docs/schema/run-id.md
 docs/schema/event-v0.md
 → event_v0 필드 / 타입 / 시간 / source / raw_ref 세부 규칙
 
-docs/technical-baseline.md
+docs/schema/result-contracts.md
+→ Evidence / Fusion / Detection / Decision 결과 규격
+
+docs/project-guidelines.md
 → Python / uv / Pydantic / pytest / Ruff / PostgreSQL 등 공통 기술 기준
 ```
 
@@ -460,6 +463,7 @@ fusion_time 판정
   "run_id": "RUN-20260829-001",
   "entity_id": "WIN-01",
   "detector_time": "2026-08-29T01:08:00.000Z",
+  "detector_status": "detected",
   "detector_id": "sigma",
   "rule_id": "RULE-001",
   "rule_version": "v0.1",

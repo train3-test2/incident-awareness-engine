@@ -34,6 +34,8 @@
 RUN-YYYYMMDD-NNN
 ```
 
+`YYYYMMDD`는 `run_id`가 생성되는 시점의 UTC 날짜를 사용한다.
+
 예시:
 
 ```text
