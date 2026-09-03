@@ -1,7 +1,10 @@
-from datetime import datetime
+import re
+from datetime import date, datetime
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+_RUN_ID_PATTERN = re.compile(r"^RUN-(?P<date>\d{8})-(?P<sequence>\d{3})$")
 
 
 class RunType(str, Enum):
@@ -18,3 +21,18 @@ class RunMetadata(BaseModel):
     target_host: str = Field(min_length=1)
     start_time: datetime
     end_time: datetime | None = None
+
+    @field_validator("run_id")
+    @classmethod
+    def validate_run_id(cls, value: str) -> str:
+        match = _RUN_ID_PATTERN.fullmatch(value)
+
+        if match is None:
+            raise ValueError("run_id는 RUN-YYYYMMDD-NNN의 형태를 가져야합니다.")
+
+        try:
+            date.fromisoformat(match.group("date"))
+        except ValueError as error:
+            raise ValueError("run_id는 유효한 날짜이어야 합니다.") from error
+
+        return value
