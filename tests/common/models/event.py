@@ -1,6 +1,6 @@
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class EventSource(str, Enum):
@@ -37,3 +37,11 @@ class NetworkInfo(BaseModel):
     src_port: int | None = None
     dst_ip: str | None = None
     dst_port: int | None = None
+
+
+class RawLogReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    raw_log_id: str = Field(min_length=1)
+    segment_no: int = Field(ge=1)
+    record_no: int = Field(ge=1)
