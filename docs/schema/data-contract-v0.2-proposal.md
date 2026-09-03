@@ -146,16 +146,18 @@ Event에는 Evidence·Fusion·Detection·Ground Truth 결과를 넣지 않는다
 | `config_version` | String | X | O | 실행 Config 버전 |
 | `detector_set_version` | String | X | O | 동결된 Detector Set 버전 |
 
-v0.2에서는 현행 `decision_source` 필드를 제거하고 `earliest_path`로 대체한다. `decision_source`의 값은 다음과 같이 이전한다.
+v0.2에서는 현행 `decision_source` 필드를 제거한다. `earliest_path`와 `decision_path`는 기존 `decision_source` 값을 직접 복사하지 않고, `detector_time`과 `fusion_time`의 존재 여부 및 비교 결과로 각각 계산한다.
 
-| 현행 `decision_source` | v0.2 `earliest_path` |
-| --- | --- |
-| `detector` | `fast` |
-| `fusion` | `fusion` |
-| `both` | `both` |
-| `none` | `none` |
+| `detector_time` | `fusion_time` | `earliest_path` | `decision_path` |
+| --- | --- | --- | --- |
+| 존재, 더 이른 시각 | 존재, 더 늦은 시각 | `fast` | `fast_and_fusion` |
+| 존재, 더 늦은 시각 | 존재, 더 이른 시각 | `fusion` | `fast_and_fusion` |
+| 존재, 같은 시각 | 존재, 같은 시각 | `both` | `fast_and_fusion` |
+| 존재 | `null` | `fast` | `fast` |
+| `null` | 존재 | `fusion` | `fusion` |
+| `null` | `null` | `none` | `none` |
 
-`decision_path`는 가장 이른 경로가 아니라, 두 경로 중 판단에 성공한 전체 경로를 기록하는 추가 필드다.
+두 판단 시각이 모두 보존되지 않은 기존 DecisionResult는 자동 이관하지 않는다. 이 경우 별도 보정 규칙을 팀이 합의하기 전까지 v0.2 변환 대상에서 제외한다.
 
 이 필드 변경은 현행 `result-contracts.md`의 `decision_source`를 즉시 바꾸지 않는다. 본 제안이 승인되면 `result-contracts.md`의 DecisionResult 표와 JSON 예시, Pydantic 모델, JSON Schema, 소비자 모듈 및 테스트를 같은 변경 단위로 갱신하여 `decision_source`를 제거하고 `earliest_path`와 `decision_path`를 적용한다. 승인 전에는 현행 `decision_source` Contract를 유지한다.
 
@@ -179,7 +181,7 @@ v0.2에서는 현행 `decision_source` 필드를 제거하고 `earliest_path`로
 | 평면 Process/Network 필드 | `process`, `network` 객체 | 구조 변경 |
 | 문자열 `raw_ref` | 구조화된 `raw_ref` 객체 | 구조 변경 |
 | `t_e` | `decision_time` | 이름 변경 |
-| `decision_source` | `earliest_path` | 이름 및 값 변경; v0.2 승인 시 `result-contracts.md`와 소비자 계약을 함께 갱신 |
+| `decision_source` | `earliest_path` + `decision_path` | 두 판단 시각으로 재계산; v0.2 승인 시 `result-contracts.md`와 소비자 계약을 함께 갱신 |
 | `decision_path` 단일 값 | `earliest_path` + `decision_path` | 가장 이른 경로와 성공 경로 전체를 분리 |
 
 ## 10. 승인 전 확인 항목
