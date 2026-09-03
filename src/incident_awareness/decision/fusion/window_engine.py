@@ -14,9 +14,14 @@ class WindowEngine:
         self.window_size = window_size
         self._states: dict[StateKey, deque[Evidence]] = {}
         self._last_timestamp: dict[StateKey, datetime] = {}
+        self._last_advance_timestamp: dict[StateKey, datetime] = {}
 
     def ingest(self, evidence: Evidence) -> None:
         key = (evidence.run_id, evidence.entity_id)
+
+        last_advance_timestamp = self._last_advance_timestamp.get(key)
+        if last_advance_timestamp is not None and evidence.timestamp < last_advance_timestamp:
+            raise ValueError("cannot ingest evidence before latest window advance timestamp")
 
         last_timestamp = self._last_timestamp.get(key)
 
@@ -44,10 +49,15 @@ class WindowEngine:
 
         key = (run_id, entity_id)
 
-        last_timestamp = self._last_timestamp.get(key)
+        last_advance_timestamp = self._last_advance_timestamp.get(key)
+        if last_advance_timestamp is not None and timestamp < last_advance_timestamp:
+            raise ValueError("advance timestamp must be non-decreasing")
 
+        last_timestamp = self._last_timestamp.get(key)
         if last_timestamp is not None and last_timestamp > timestamp:
             raise ValueError("cannot advance window before latest ingested evidence timestamp")
+
+        self._last_advance_timestamp[key] = timestamp
 
         state = self._states.get(key)
         if state is None:
@@ -83,3 +93,4 @@ class WindowEngine:
 
         self._states.pop(key, None)
         self._last_timestamp.pop(key, None)
+        self._last_advance_timestamp.pop(key, None)

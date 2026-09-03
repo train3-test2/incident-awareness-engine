@@ -317,3 +317,94 @@ def test_advance_to_rejects_non_utc_timestamp() -> None:
             entity_id="HOST-01",
             timestamp=non_utc_timestamp,
         )
+
+
+def test_rejects_backward_advance_after_evidence_expires() -> None:
+    engine = WindowEngine(window_size=timedelta(minutes=5))
+    base_time = datetime(2026, 8, 30, 1, 0, tzinfo=UTC)
+
+    evidence = make_evidence("001", base_time)
+    engine.ingest(evidence)
+
+    engine.advance_to(
+        run_id=evidence.run_id,
+        entity_id=evidence.entity_id,
+        timestamp=base_time + timedelta(minutes=6),
+    )
+
+    assert (
+        engine.get_active_evidence(
+            run_id=evidence.run_id,
+            entity_id=evidence.entity_id,
+        )
+        == []
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="advance timestamp must be non-decreasing",
+    ):
+        engine.advance_to(
+            run_id=evidence.run_id,
+            entity_id=evidence.entity_id,
+            timestamp=base_time + timedelta(minutes=4),
+        )
+
+
+def test_rejects_backward_advance_without_evidence_state() -> None:
+    engine = WindowEngine(window_size=timedelta(minutes=5))
+    base_time = datetime(2026, 8, 30, 1, 0, tzinfo=UTC)
+
+    engine.advance_to(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        timestamp=base_time + timedelta(minutes=6),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="advance timestamp must be non-decreasing",
+    ):
+        engine.advance_to(
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            timestamp=base_time + timedelta(minutes=4),
+        )
+
+
+def test_allows_repeated_advance_at_same_timestamp() -> None:
+    engine = WindowEngine(window_size=timedelta(minutes=5))
+    timestamp = datetime(2026, 8, 30, 1, 0, tzinfo=UTC)
+
+    engine.advance_to(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        timestamp=timestamp,
+    )
+    engine.advance_to(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        timestamp=timestamp,
+    )
+
+
+def test_rejects_evidence_before_latest_advance_timestamp() -> None:
+    engine = WindowEngine(window_size=timedelta(minutes=5))
+    base_time = datetime(2026, 8, 30, 1, 0, tzinfo=UTC)
+
+    engine.advance_to(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        timestamp=base_time + timedelta(minutes=6),
+    )
+
+    evidence = make_evidence(
+        "001",
+        base_time + timedelta(minutes=4),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="cannot ingest evidence before latest window advance timestamp",
+    ):
+        engine.ingest(evidence)
