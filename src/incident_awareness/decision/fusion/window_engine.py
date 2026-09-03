@@ -39,6 +39,11 @@ class WindowEngine:
     ) -> None:
         key = (run_id, entity_id)
 
+        last_timestamp = self._last_timestamp.get(key)
+
+        if last_timestamp is not None and last_timestamp > timestamp:
+            raise ValueError("cannot advance window before latest ingested evidence timestamp")
+
         state = self._states.get(key)
 
         if state is None:
