@@ -85,9 +85,9 @@
 | `user` | String | X | O | 행위 사용자 |
 | `process` | Object | X | O | `pid`, `name`, `path`, `command_line`, `parent_pid`, `parent_name` |
 | `network` | Object | X | O | `protocol`, `src_ip`, `src_port`, `dst_ip`, `dst_port` |
-| `raw_ref` | Object | O | O | 원본 추적 정보 |
+| `raw_ref` | Object | O | X | 원본 추적 정보 |
 
-`raw_ref`는 Raw Log에서 정규화한 Event이면 반드시 채운다. First Cycle에는 Synthetic Event를 생성하지 않으며, 이후 Synthetic Event를 도입하는 경우에만 `raw_ref = null`을 허용하고 생성 유형을 명시한다.
+v0.2 First Cycle은 Raw Log에서 정규화한 Event만 다루므로 `raw_ref`는 반드시 채운다. Synthetic Event는 현재 범위에 포함하지 않는다. 이후 Synthetic Event를 도입하는 경우에는 `event_origin`과 `raw_ref` 예외 조건을 새 Schema 버전에서 명시한다.
 
 `raw_ref` 구조는 다음과 같다.
 
@@ -133,6 +133,7 @@ Event에는 Evidence·Fusion·Detection·Ground Truth 결과를 넣지 않는다
 
 | 필드 | 타입 | 필수 | null | 설명 |
 | --- | --- | ---: | ---: | --- |
+| `decision_id` | String | O | X | 불변 Decision 결과 식별자; `D-...` |
 | `run_id` | String | O | X | 소속 실행 |
 | `entity_id` | String | O | X | 분석 대상 Entity |
 | `detector_time` | DateTime | O | O | Fast Path 판단 시각 |
@@ -145,6 +146,14 @@ Event에는 Evidence·Fusion·Detection·Ground Truth 결과를 넣지 않는다
 | `rule_version` | String | X | O | Detector Rule 버전 |
 | `config_version` | String | X | O | 실행 Config 버전 |
 | `detector_set_version` | String | X | O | 동결된 Detector Set 버전 |
+| `supersedes_decision_id` | String | X | O | 재계산으로 대체한 이전 Decision 식별자 |
+
+저장 및 재계산 규칙:
+
+- `decision_id`는 저장된 Decision 결과를 안정적으로 참조하는 고유·불변 식별자다.
+- 동일 입력의 저장 재시도는 기존 `decision_id`를 재사용하며, 중복 Decision을 만들지 않는다.
+- 재계산으로 결과를 새로 만들면 새 `decision_id`를 발급하고, `supersedes_decision_id`에 이전 결과를 기록한다.
+- 기존 Decision 결과는 덮어쓰지 않는다. 이력 조회 시 `supersedes_decision_id` 연결을 따라 결과 변경을 추적한다.
 
 v0.2에서는 현행 `decision_source` 필드를 제거한다. `earliest_path`와 `decision_path`는 기존 `decision_source` 값을 직접 복사하지 않고, `detector_time`과 `fusion_time`의 존재 여부 및 비교 결과로 각각 계산한다.
 
@@ -183,6 +192,7 @@ v0.2에서는 현행 `decision_source` 필드를 제거한다. `earliest_path`�
 | `t_e` | `decision_time` | 이름 변경 |
 | `decision_source` | `earliest_path` + `decision_path` | 두 판단 시각으로 재계산; v0.2 승인 시 `result-contracts.md`와 소비자 계약을 함께 갱신 |
 | `decision_path` 단일 값 | `earliest_path` + `decision_path` | 가장 이른 경로와 성공 경로 전체를 분리 |
+| Decision 식별자 미정의 | `decision_id`, `supersedes_decision_id` | 불변 참조와 재계산 이력 지원 |
 
 ## 10. 승인 전 확인 항목
 
