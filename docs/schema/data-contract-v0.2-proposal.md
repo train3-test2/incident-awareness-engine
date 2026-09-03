@@ -71,6 +71,8 @@
 
 `timestamp_source`가 가리키는 시간 필드는 반드시 존재하고 `timestamp`와 동일해야 한다. 모든 시간은 UTC ISO 8601 밀리초 표기를 사용한다.
 
+이 시간 축은 현행 `event-v0.md`의 단일 `timestamp` 의미를 의도적으로 확장하는 v0.2 변경이다. 본 제안이 승인되면 `event-v0.md`, Pydantic 모델, JSON Schema, 소비자 모듈과 테스트를 같은 변경 단위로 갱신한다. 승인 전에는 현행 Event Contract를 유지한다.
+
 ### 5-2. Source와 관측 정보
 
 | 필드 | 타입 | 필수 | null | 설명 |
@@ -144,9 +146,25 @@ Event에는 Evidence·Fusion·Detection·Ground Truth 결과를 넣지 않는다
 | `config_version` | String | X | O | 실행 Config 버전 |
 | `detector_set_version` | String | X | O | 동결된 Detector Set 버전 |
 
+v0.2에서는 현행 `decision_source` 필드를 제거하고 `earliest_path`로 대체한다. `decision_source`의 값은 다음과 같이 이전한다.
+
+| 현행 `decision_source` | v0.2 `earliest_path` |
+| --- | --- |
+| `detector` | `fast` |
+| `fusion` | `fusion` |
+| `both` | `both` |
+| `none` | `none` |
+
+`decision_path`는 가장 이른 경로가 아니라, 두 경로 중 판단에 성공한 전체 경로를 기록하는 추가 필드다.
+
+이 필드 변경은 현행 `result-contracts.md`의 `decision_source`를 즉시 바꾸지 않는다. 본 제안이 승인되면 `result-contracts.md`의 DecisionResult 표와 JSON 예시, Pydantic 모델, JSON Schema, 소비자 모듈 및 테스트를 같은 변경 단위로 갱신하여 `decision_source`를 제거하고 `earliest_path`와 `decision_path`를 적용한다. 승인 전에는 현행 `decision_source` Contract를 유지한다.
+
 규칙:
 
-- `decision_time = min(detector_time, fusion_time)`이며, 둘 다 `null`이면 `decision_time`도 `null`이다.
+- `detector_time`과 `fusion_time`이 모두 존재하면 `decision_time`은 둘 중 더 이른 시각이다.
+- `detector_time`만 존재하면 `decision_time`은 `detector_time`이다.
+- `fusion_time`만 존재하면 `decision_time`은 `fusion_time`이다.
+- 두 시각이 모두 `null`이면 `decision_time`도 `null`이다.
 - `earliest_path`는 가장 이른 시각의 경로를 기록한다. 동시 시각이면 `both`, 두 시각이 모두 없으면 `none`이다.
 - `decision_path`는 판단에 성공한 경로 전체를 기록한다. 두 경로 모두 성공했으면 시각이 달라도 `fast_and_fusion`이다.
 
@@ -161,6 +179,7 @@ Event에는 Evidence·Fusion·Detection·Ground Truth 결과를 넣지 않는다
 | 평면 Process/Network 필드 | `process`, `network` 객체 | 구조 변경 |
 | 문자열 `raw_ref` | 구조화된 `raw_ref` 객체 | 구조 변경 |
 | `t_e` | `decision_time` | 이름 변경 |
+| `decision_source` | `earliest_path` | 이름 및 값 변경; v0.2 승인 시 `result-contracts.md`와 소비자 계약을 함께 갱신 |
 | `decision_path` 단일 값 | `earliest_path` + `decision_path` | 가장 이른 경로와 성공 경로 전체를 분리 |
 
 ## 10. 승인 전 확인 항목
@@ -170,4 +189,5 @@ Event에는 Evidence·Fusion·Detection·Ground Truth 결과를 넣지 않는다
 - [ ] Event 시간 축 및 `source_layer` 필드 채택 합의
 - [ ] Evidence Provenance 확장 필드 채택 합의
 - [ ] Decision의 `earliest_path`와 `decision_path` 분리 채택 합의
-- [ ] 기존 문서, Pydantic 모델, JSON Schema, 테스트의 동시 변경 계획 합의
+- [ ] `result-contracts.md`의 `decision_source` 제거 및 대체 필드 전환 계획 합의
+- [ ] 기존 문서, Pydantic 모델, JSON Schema, 소비자 모듈, 테스트의 동시 변경 계획 합의
