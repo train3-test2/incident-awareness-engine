@@ -27,3 +27,13 @@ class ProcessInfo(BaseModel):
     command_line: str | None = None
     parent_pid: int | None = None
     parent_name: str | None = None
+
+
+class NetworkInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    protocol: str | None = None
+    src_ip: str | None = None
+    src_port: int | None = None
+    dst_ip: str | None = None
+    dst_port: int | None = None
