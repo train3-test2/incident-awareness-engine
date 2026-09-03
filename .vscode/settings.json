@@ -13,5 +13,5 @@
   "python.testing.pytestEnabled": true,
   "python.testing.unittestEnabled": false,
   "python.testing.pytestArgs": ["tests"],
-  "conventionalCommits.scopes": ["공통", "CI"]
+  "conventionalCommits.scopes": ["공통", "CI", "데이터 파이프라인"]
 }
