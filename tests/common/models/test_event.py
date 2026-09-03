@@ -54,6 +54,8 @@ def test_raw_log_reference_accepts_valid_values() -> None:
         (-1, 1),
         (1, 0),
         (1, -1),
+        (True, 1),
+        (1, True),
     ],
 )
 def test_raw_log_reference_rejects_invalid_position(

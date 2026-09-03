@@ -43,5 +43,5 @@ class RawLogReference(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     raw_log_id: str = Field(min_length=1)
-    segment_no: int = Field(ge=1)
-    record_no: int = Field(ge=1)
+    segment_no: int = Field(strict=True, ge=1)
+    record_no: int = Field(strict=True, ge=1)
