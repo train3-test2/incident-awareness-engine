@@ -1,5 +1,5 @@
 import re
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -36,3 +36,17 @@ class RunMetadata(BaseModel):
             raise ValueError("run_id는 유효한 날짜이어야 합니다.") from error
 
         return value
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_utc_datetime(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("datetime에는 시간대 정보가 포함되어야 합니다.")
+
+        if value.utcoffset() != timedelta(0):
+            raise ValueError("datetime은 UTC 시간대여야 합니다.")
+
+        return value.astimezone(UTC)
