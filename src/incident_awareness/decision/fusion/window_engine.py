@@ -37,6 +37,11 @@ class WindowEngine:
         entity_id: str,
         timestamp: datetime,
     ) -> None:
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            raise ValueError("timestamp must include timezone information")
+        if timestamp.utcoffset() != timedelta(0):
+            raise ValueError("timestamp must be UTC")
+
         key = (run_id, entity_id)
 
         last_timestamp = self._last_timestamp.get(key)
@@ -45,7 +50,6 @@ class WindowEngine:
             raise ValueError("cannot advance window before latest ingested evidence timestamp")
 
         state = self._states.get(key)
-
         if state is None:
             return
 

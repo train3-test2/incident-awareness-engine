@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -280,3 +280,40 @@ def test_allows_evidence_at_exact_advance_timestamp() -> None:
     )
 
     assert active == [evidence]
+
+
+def test_advance_to_rejects_naive_timestamp() -> None:
+    engine = WindowEngine(window_size=timedelta(minutes=5))
+    naive_timestamp = datetime(2026, 8, 30, 1, 0)  # noqa: DTZ001
+
+    with pytest.raises(
+        ValueError,
+        match="timestamp must include timezone information",
+    ):
+        engine.advance_to(
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            timestamp=naive_timestamp,
+        )
+
+
+def test_advance_to_rejects_non_utc_timestamp() -> None:
+    engine = WindowEngine(window_size=timedelta(minutes=5))
+    non_utc_timestamp = datetime(
+        2026,
+        8,
+        30,
+        10,
+        0,
+        tzinfo=timezone(timedelta(hours=9)),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="timestamp must be UTC",
+    ):
+        engine.advance_to(
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            timestamp=non_utc_timestamp,
+        )
