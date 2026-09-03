@@ -199,6 +199,42 @@ def test_rejects_future_evidence_when_advancing_to_past_time() -> None:
         )
 
 
+def test_future_evidence_is_hidden_until_window_advances_to_it() -> None:
+    base_time = datetime(2026, 8, 31, 1, 0, tzinfo=UTC)
+    engine = WindowEngine(window_size=timedelta(minutes=5))
+
+    engine.advance_to(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        timestamp=base_time,
+    )
+
+    future_evidence = make_evidence(
+        evidence_id="E-FUTURE",
+        timestamp=base_time + timedelta(minutes=1),
+    )
+    engine.ingest(future_evidence)
+
+    assert (
+        engine.get_active_evidence(
+            run_id=future_evidence.run_id,
+            entity_id=future_evidence.entity_id,
+        )
+        == []
+    )
+
+    engine.advance_to(
+        run_id=future_evidence.run_id,
+        entity_id=future_evidence.entity_id,
+        timestamp=future_evidence.timestamp,
+    )
+
+    assert engine.get_active_evidence(
+        run_id=future_evidence.run_id,
+        entity_id=future_evidence.entity_id,
+    ) == [future_evidence]
+
+
 def test_reset_does_not_clear_other_state() -> None:
     engine = WindowEngine(window_size=timedelta(minutes=5))
 

@@ -81,7 +81,11 @@ class WindowEngine:
         if state is None:
             return []
 
-        return list(state)
+        last_advance_timestamp = self._last_advance_timestamp.get(key)
+        if last_advance_timestamp is None:
+            return list(state)
+
+        return [evidence for evidence in state if evidence.timestamp <= last_advance_timestamp]
 
     def reset(
         self,
