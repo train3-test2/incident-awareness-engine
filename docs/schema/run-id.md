@@ -1,10 +1,12 @@
 # run_id 및 실험 식별 규칙
 
+> 상위 정본은 `docs/data-contract-v0.2.md`다. 이 문서는 RunMetadata와 `run_id`의 상세 규칙을 정의한다.
+
 ## 1. 목적
 
 `run_id`는 정상 또는 공격 시나리오를 **한 번 실행한 실험 단위**를 식별하기 위한 값이다.
 
-하나의 실험 실행 중 생성되는 Sysmon, PowerShell, Windows Security, Velociraptor 등의 로그는 모두 동일한 `run_id`를 공유한다.
+하나의 실험 실행 중 생성되는 Sysmon, PowerShell, Windows Security 등의 로그는 모두 동일한 `run_id`를 공유한다.
 
 `run_id`는 개별 Event를 식별하기 위한 값이 아니며, 실험 전체를 묶기 위한 상위 식별자이다.
 

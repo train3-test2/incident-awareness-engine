@@ -2,7 +2,7 @@
 
 ## 1. 목적
 
-이 문서는 First Cycle에서 역할 간 전달되는 분석 결과 Contract를 정의한다.
+이 문서는 First Cycle에서 역할 간 전달되는 분석 결과 Contract를 정의한다. 공통 상위 규칙은 `docs/data-contract-v0.2.md`를 따른다.
 
 대상 모델:
 
@@ -19,7 +19,7 @@
 | ----------------- | --------- |
 | `EvidenceResult`  | 역할 2    |
 | `FusionResult`    | 역할 1    |
-| `DetectionResult` | 역할 5    |
+| `DetectionResult` | 역할 3 Fast Adapter |
 | `DecisionResult`  | 역할 3    |
 
 ---
@@ -62,15 +62,7 @@ docs/schema/run-id.md
 
 ## 2-3. entity_id
 
-`entity_id`는 해당 결과가 어느 분석 대상 Entity에 대한 것인지 나타낸다.
-
-First Cycle에서는 기본적으로 Endpoint Host를 사용한다.
-
-예:
-
-```text
-WIN-01
-```
+`entity_id`는 해당 결과가 어느 분석 대상 Entity에 대한 것인지 나타낸다. canonical 범위와 R1 귀속 규칙이 확정되기 전까지는 nullable이며, 구현에서 Endpoint Host로 임의 고정하지 않는다.
 
 ---
 
@@ -90,11 +82,16 @@ WIN-01
 | ----------------------- | ------------ | ---: | ---: | ---------------------- |
 | `evidence_id`           | String       |    O |    X | Evidence 고유 식별자   |
 | `run_id`                | String       |    O |    X | 실험 실행 식별자       |
-| `timestamp`             | DateTime     |    O |    X | Evidence가 성립한 시각 |
-| `entity_id`             | String       |    O |    X | 분석 대상 Entity       |
+| `timestamp`             | DateTime     |    O |    X | 연결된 `NormalizedEvent.timestamp` 중 가장 늦은 시각 |
+| `first_source_event_time` | DateTime   |    X |    O | 연결된 Event 중 가장 이른 시각; 채점·Decision 시간 계산에 사용하지 않음 |
+| `entity_id`             | String       |    X |    O | 분석 대상 Entity       |
 | `evidence_type`         | String       |    O |    X | Evidence 유형          |
-| `source_event_ids`      | List[String] |    O |    X | Evidence 근거 Event ID |
+| `event_ids`             | List[String] |    O |    X | 최소 1개 정규화 Event ID(`NormalizedEvent.event_id`) |
 | `feature_channel_group` | Enum         |    O |    X | Fusion 입력 여부 구분  |
+| `derived_from_source_layer` | Enum      |    O |    X | `raw_telemetry`, `detector_output`, `mixed` |
+| `extractor_version`     | String       |    O |    X | Evidence 추출기 버전 |
+| `attack_technique_ids`  | List[String] |    X |    O | ATT&CK 맥락 참조값 |
+| `features`              | Object       |    X |    O | 추출 Feature |
 
 ---
 
@@ -116,9 +113,9 @@ diagnostic_only
 
 ---
 
-## 3-4. source_event_ids
+## 3-4. event_ids
 
-최소 1개의 Event ID를 가져야 한다.
+최소 1개의 `NormalizedEvent.event_id`를 가져야 한다.
 
 빈 목록:
 
@@ -139,8 +136,10 @@ diagnostic_only
   "timestamp": "2026-09-01T01:03:20.284Z",
   "entity_id": "WIN-01",
   "evidence_type": "suspicious_script_execution",
-  "source_event_ids": ["evt-001"],
-  "feature_channel_group": "fusion_feature"
+  "event_ids": ["evt-001"],
+  "feature_channel_group": "fusion_feature",
+  "derived_from_source_layer": "raw_telemetry",
+  "extractor_version": "v0.2"
 }
 ```
 
@@ -171,6 +170,9 @@ Fusion 내부 score/window/stopping 알고리즘은 역할 1이 담당한다.
 | `scoring_config_version`    | String       |    O |    X | Scoring Config 버전    |
 | `scoring_profile_id`        | String       |    O |    X | Scoring Profile        |
 | `model_version`             | String       |    X |    O | 모델 버전              |
+| `scoring_method`            | String       |    O |    X | 점수 산출 방식         |
+| `scorer_version`            | String       |    O |    X | 점수 산출 구현 버전    |
+| `fusion_episodes`           | List[Object] |    O |    X | Run 전체 Fusion Episode 이력 |
 
 ---
 
@@ -241,9 +243,30 @@ score_at_decision = null
   "contributing_evidence_ids": ["E-001", "E-002"],
   "scoring_config_version": "v0.1",
   "scoring_profile_id": "S0",
-  "model_version": null
+  "model_version": null,
+  "scoring_method": "temporal_fusion",
+  "scorer_version": "v0.2",
+  "fusion_episodes": []
 }
 ```
+
+## 4-6. fusion_episodes
+
+`fusion_episodes`는 `run_end`까지의 전체 상태기계 이력이다. `fusion_time`은 최초 ACTIVE 진입 시각으로 latch하며 이후 release·re-entry가 발생해도 변경하지 않는다.
+
+| 필드 | 타입 | 필수 | null | 설명 |
+| --- | --- | ---: | ---: | --- |
+| `episode_id` | String | O | X | Run 안에서 불변인 Episode 식별자 |
+| `run_id` | String | O | X | 소속 실행 |
+| `entity_id` | String | X | O | 분석 대상 Entity |
+| `start_time` | DateTime | O | X | ACTIVE 진입 시각 |
+| `end_time` | DateTime | X | O | 종료 시각 |
+| `end_reason` | Enum | X | O | `released`, `run_end`; 종료 전에는 `null` |
+| `score_at_start` | Float | O | X | ACTIVE 진입 시점 점수 |
+| `peak_score` | Float | O | X | Episode 최고 점수 |
+| `contributing_evidence_ids` | List[String] | X | O | 기여 Evidence ID |
+
+Run 종료 시 ACTIVE인 Episode는 `end_time=run_end`, `end_reason=run_end`로 기록한다.
 
 ---
 
@@ -251,7 +274,7 @@ score_at_decision = null
 
 ## 5-1. 목적
 
-`DetectionResult`는 역할 5의 Fast Detection 결과를 표현한다.
+`DetectionResult`는 역할 5 Fast runner의 출력을 역할 3 Fast Adapter가 공통 Contract로 정규화한 결과다.
 
 어떤 Detector/Rule을 qualifying Fast Detection으로 인정할지는 역할 5가 결정한다.
 
@@ -349,6 +372,26 @@ unknown
 }
 ```
 
+## 5-6. FastHitRecord
+
+Fast runner가 생산한 개별 qualifying hit는 `DetectionResult`와 별도인 `FastHitRecord`로 보존한다.
+
+| 필드 | 타입 | 필수 | null | 설명 |
+| --- | --- | ---: | ---: | --- |
+| `hit_id` | String | O | X | runner trace 안에서 고유한 Hit 식별자 |
+| `run_id` | String | O | X | 소속 실행 |
+| `timestamp` | DateTime | O | X | Hit 발생 시각 |
+| `detector_engine` | String | O | X | Comparator 엔진 |
+| `detector_engine_version` | String | O | X | 엔진 버전 |
+| `rule_id` | String | O | X | Rule 식별자 |
+| `rule_version` | String | O | X | Rule 버전 |
+| `alert_key` | String | O | X | Episode 구성 키 |
+| `native_host_id` | String | X | O | Source-native Host 식별자 |
+| `native_record_ref` | String | X | O | Source-native Record 참조 |
+| `detector_config_version` | String | O | X | Detector 실행 Config 버전 |
+
+`FastHitRecord`에는 Comparator 관측 사실과 실행 context만 기록한다. Ground Truth, eligible 여부, episode credit, TTSD, Recall 등 평가 파생값은 포함하지 않는다. 모든 유효한 `hit_id`는 Fast Adapter 이후에도 Provenance 보존 표현으로 추적 가능해야 한다.
+
 ---
 
 # 6. DecisionResult
@@ -367,90 +410,51 @@ Fusion Path와 Fast Detection Path의 결과를 결합하여 기술적 후보 �
 | ----------------- | -------- | ---: | ---: | --------------------------- |
 | `run_id`          | String   |    O |    X | 실험 실행 식별자            |
 | `entity_id`       | String   |    O |    X | 분석 대상 Entity            |
+| `fast_status`     | Enum     |    O |    X | `detected`, `miss`, `not_evaluated` |
+| `fusion_status`   | Enum     |    O |    X | `detected`, `miss`, `not_evaluated` |
 | `fusion_time`     | DateTime |    O |    O | Fusion 판단 시각            |
 | `detector_time`   | DateTime |    O |    O | Fast Detection 판단 시각    |
-| `decision_time`   | DateTime |    O |    O | Hybrid 후보 판단 시각 `t_e` |
-| `decision_source` | Enum     |    O |    X | Hybrid 결과에 기여한 경로   |
+| `t_e`             | DateTime |    O |    O | 유효한 Decision의 런타임 후보 판단 시점 |
+| `decision_path`   | Enum     |    O |    O | `fast`, `fusion`, `fast_and_fusion`, `none` |
+| `winning_path`    | Enum     |    O |    O | `fast`, `fusion`, `tie`, `none` |
+| `decision_reason` | String   |    O |    X | 최종 판단 사유 또는 근거 요약 |
+| `config_version`  | String   |    O |    X | 실행 Config 버전 |
 
 ---
 
-# 6-3. decision_source
+# 6-3. Hybrid 상태 및 시간 규칙
 
-허용 값:
+`fast_status`는 `DetectionResult.detector_status`를 복사한 값이며, `fusion_status`는 FusionResult 상태를 보존한다. 상태를 먼저 판정하고, 유효한 경우에만 시각을 사용한다.
 
-```text
-fusion
-detector
-both
-none
-```
+`parallel_required=true`인 Run에서 한 경로라도 `not_evaluated`이면 `t_e`, `decision_path`, `winning_path`는 모두 `null`이며 병렬 검증 실패로 처리한다.
 
-### fusion
+| `fast_status` | `fusion_status` | `t_e` | `winning_path` | `decision_path` |
+| --- | --- | --- | --- | --- |
+| `detected` | `detected` | 두 시각 중 이른 값 | `fast`, `fusion`, `tie` | `fast_and_fusion` |
+| `detected` | `miss` | `detector_time` | `fast` | `fast` |
+| `miss` | `detected` | `fusion_time` | `fusion` | `fusion` |
+| `miss` | `miss` | `null` | `none` | `none` |
+| 한 경로 이상 `not_evaluated` | 모든 값 | `null` | `null` | `null` |
 
-Fusion만 판단에 성공했거나 Fusion이 더 먼저 성립한 경우.
-
-### detector
-
-Detection만 판단에 성공했거나 Detection이 더 먼저 성립한 경우.
-
-### both
-
-Fusion과 Detection이 동일 시각에 판단을 성립시킨 경우.
-
-### none
-
-두 경로 모두 판단을 성립시키지 못한 경우.
-
-```text
-decision_time = null
-```
+`parallel_required`는 Run 실행 Config가 소유하며 `config_version`으로 재현한다. S0의 Fast 선택 실행은 `false`, R1 정식 병렬 실행은 `true`를 사용한다. 평가용 eligible time은 별도 평가 설계가 소유하며 `t_e`를 성능 지표에 직접 사용하지 않는다.
 
 ---
 
-# 6-4. Hybrid 시간 규칙
-
-둘 다 존재하는 경우:
-
-```text
-decision_time
-= min(fusion_time, detector_time)
-```
-
-Fusion만 존재:
-
-```text
-decision_time
-= fusion_time
-```
-
-Detection만 존재:
-
-```text
-decision_time
-= detector_time
-```
-
-둘 다 존재하지 않음:
-
-```text
-decision_time
-= null
-decision_source
-= none
-```
-
----
-
-# 6-5. 예시
+# 6-4. 예시
 
 ```json
 {
   "run_id": "RUN-20260901-001",
   "entity_id": "WIN-01",
+  "fast_status": "detected",
+  "fusion_status": "detected",
   "fusion_time": "2026-09-01T01:05:00.000Z",
   "detector_time": "2026-09-01T01:08:00.000Z",
-  "decision_time": "2026-09-01T01:05:00.000Z",
-  "decision_source": "fusion"
+  "t_e": "2026-09-01T01:05:00.000Z",
+  "decision_path": "fast_and_fusion",
+  "winning_path": "fusion",
+  "decision_reason": "두 경로가 모두 탐지했으며 Fusion 시각이 더 이르다.",
+  "config_version": "v0.2"
 }
 ```
 
@@ -554,8 +558,8 @@ detector_time = null
 ```
 
 ```text
-decision_source = none
-decision_time != null
+decision_path = none
+t_e != null
 
 → Validation Error
 ```

@@ -1,4 +1,6 @@
-# event_v0 초안 정의
+# event_v0 정의
+
+> 상위 정본은 `docs/data-contract-v0.2.md`다. 이 문서는 v0.2 Event Contract의 상세 명세다.
 
 ## 1. 목적
 
@@ -6,7 +8,7 @@
 
 초기 목적은 완성형 Schema를 만드는 것이 아니라, 역할 1·2·5가 공통 입력 형식을 기준으로 병렬 개발을 시작할 수 있도록 최소한의 Data Contract를 제공하는 것이다.
 
-> `event_v0`는 초기 개발용 초안이며, 실제 로그와 분석 모듈 요구사항을 검증한 뒤 정규화 단계에서 수정·확정한다.
+> `event_v0`는 실제 로그를 정규화해 역할 간 교환하는 공통 Event Contract다.
 
 ---
 
@@ -48,6 +50,10 @@
 | `event_id`        | String   | O    | 정규화된 Event의 고유 식별자            | `evt-001`                  |
 | `run_id`          | String   | O    | Event가 발생한 실험 실행 식별자         | `RUN-20260827-001`         |
 | `timestamp`       | DateTime | O    | 원본 Event가 실제 발생한 시각           | `2026-08-27T13:20:31.123Z` |
+| `timestamp_source` | Enum | O | `event_time`, `record_time`, `ingest_time` 중 `timestamp`의 출처 | `event_time` |
+| `event_time` | DateTime | X | 실제 행위 발생 시각 | 아래 규칙 참고 |
+| `record_time` | DateTime | X | Source 기록 시각 | 아래 규칙 참고 |
+| `ingest_time` | DateTime | X | 파이프라인 수집 시각 | 아래 규칙 참고 |
 | `host_id`         | String   | O    | Event가 발생한 Endpoint 식별자          | `WIN-01`                   |
 | `source`          | String   | O    | 원본 로그 Source                        | `sysmon`                   |
 | `source_event_id` | String   | O    | 원본 시스템에서 사용하는 Event ID       | `1`                        |
@@ -55,13 +61,14 @@
 | `user`            | String   | X    | 행위를 수행한 사용자                    | `labuser`                  |
 | `process`         | Object   | X    | 프로세스 관련 정보                      | 아래 정의 참고             |
 | `network`         | Object   | X    | 네트워크 관련 정보                      | 아래 정의 참고             |
-| `raw_ref`         | Object   | X    | 원본 Raw Log 위치 추적 정보             | 아래 정의 참고             |
+| `source_layer` | Enum | O | `raw_telemetry`, `detector_output` | `raw_telemetry` |
+| `raw_ref`         | Object   | O    | 원본 Raw Log 위치 추적 정보             | 아래 정의 참고             |
 
 ---
 
 ## 4. 시간 규칙
 
-`timestamp`는 반드시 **원본 Event 자체가 발생한 시각**을 의미한다.
+`timestamp`는 `timestamp_source`가 가리키는 UTC 시각이다. 해당 시간 필드는 반드시 존재하고 `timestamp`와 동일해야 한다.
 
 수집 시각이나 DB 저장 시각과 혼용하지 않는다.
 
@@ -98,7 +105,6 @@
 | `sysmon`       | Sysmon 로그                     |
 | `powershell`   | PowerShell 로그                 |
 | `security`     | Windows Security Event          |
-| `velociraptor` | Velociraptor 조회/Artifact 결과 |
 
 ### source_event_id
 
@@ -233,9 +239,12 @@ network_connection
 
 | 필드         | 타입    | 설명                                |
 | ------------ | ------- | ----------------------------------- |
-| `raw_log_id` | String  | 원본 Raw Log 식별자                 |
+| `raw_log_id` | String  | Run Manifest 항목으로 해석되는 Raw artifact 식별자 |
+| `source_record_id` | String | Source-native Record 식별자; 존재 시 기록 |
 | `segment_no` | Integer | 동일한 run/source 내 파일 분할 번호 |
 | `record_no`  | Integer | 해당 Segment 내부 Event Record 위치 |
+| `parser_id` | String | 정규화에 사용한 Parser 식별자 |
+| `parser_version` | String | 정규화에 사용한 Parser 버전 |
 
 최종적으로 다음 역추적이 가능해야 한다.
 

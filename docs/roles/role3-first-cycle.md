@@ -277,14 +277,17 @@ src/incident_awareness/scenario/
 docs/roles/role3-first-cycle.md
 → 3번 역할 범위와 구현 순서
 
+docs/data-contract-v0.2.md
+→ Run / Event / Evidence / Fusion / Detection / Decision 공통 상위 규칙
+
 docs/schema/run-id.md
-→ run_id / run metadata 세부 규칙
+→ RunMetadata 상세 규칙
 
 docs/schema/event-v0.md
-→ event_v0 필드 / 타입 / 시간 / source / raw_ref 세부 규칙
+→ NormalizedEvent 상세 규칙
 
 docs/schema/result-contracts.md
-→ Evidence / Fusion / Detection / Decision 결과 규격
+→ Evidence / Fusion / Detection / Decision 상세 규격
 
 docs/project-guidelines.md
 → Python / uv / Pydantic / pytest / Ruff / PostgreSQL 등 공통 기술 기준
@@ -412,7 +415,7 @@ Sysmon Event ID 3
   "timestamp": "2026-08-29T01:03:20.284Z",
   "entity_id": "WIN-01",
   "evidence_type": "suspicious_script_execution",
-  "source_event_ids": ["EVT-000001"],
+  "event_ids": ["EVT-000001"],
   "feature_channel_group": "fusion_feature"
 }
 ```
@@ -495,7 +498,7 @@ detector_time 존재
         ↓
 둘 중 빠른 시각
         ↓
-decision_time = t_e
+t_e = min(fusion_time, detector_time)
 ```
 
 예:
@@ -524,12 +527,13 @@ t_e = 14:05
   "entity_id": "WIN-01",
   "fusion_time": "2026-08-29T01:05:00.000Z",
   "detector_time": "2026-08-29T01:08:00.000Z",
-  "decision_time": "2026-08-29T01:05:00.000Z",
-  "decision_source": "fusion"
+  "t_e": "2026-08-29T01:05:00.000Z",
+  "decision_path": "fast_and_fusion",
+  "winning_path": "fusion"
 }
 ```
 
-`decision_time`은 시스템이 계산한 기술적 후보 판단 시점이며, 사람이 결정·기록하는 최종 조직 내부 인지시각과는 구분한다.
+`t_e`는 시스템이 계산한 기술적 후보 판단 시점이며, 사람이 결정·기록하는 최종 조직 내부 인지시각과는 구분한다.
 
 ---
 
@@ -713,7 +717,7 @@ def combine_times(
     return min(times)
 ```
 
-추가로 `decision_source`를 기록한다.
+추가로 `decision_path`, `winning_path`, `decision_reason`을 기록한다.
 
 가능한 값:
 

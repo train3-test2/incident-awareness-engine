@@ -1,14 +1,14 @@
-# 데이터 규격 v0.2 통합 제안
+# 데이터 규격 v0.2
 
 ## 1. 상태와 목적
 
-> **상태: 제안(Proposal).** 이 문서는 팀 합의 전까지 기존 Notion 용어·데이터 계약서 v0.1을 대체하지 않는다.
+> **상태: 정본(Canonical).** 이 문서는 Repo에서 사용하는 공통 Data Contract의 상위 기준이다.
 
 기존 v0.1의 평가·재현성·Provenance 정보를 보존하면서, 파이프라인 First Cycle 문서의 구조화된 Event 및 Result Contract를 통합한다.
 
 프로젝트의 상위 정본은 `통합 표준안 3.0`이다. 본 문서는 그 범위·역할 경계·평가 의미를 변경하지 않고, Repo에서 사용하는 Data Contract의 상위 기준을 정의한다.
 
-승인 시 이 문서는 다음 문서의 공통 상위 기준으로 승격한다.
+이 문서는 다음 문서의 공통 상위 기준이다.
 
 - `docs/schema/run-id.md`
 - `docs/schema/event-v0.md`
@@ -33,9 +33,9 @@
 | ExecutionRecord | `v0.1`              | `v0.1`         | 변경 없음                                          |
 | EvaluationInput | `v0.1`              | `v0.1`         | 변경 없음                                          |
 
-## 3. 통합 결정 제안
+## 3. 통합 결정
 
-| 영역               | v0.2 제안                                                                                                     |
+| 영역               | v0.2 규칙                                                                                                     |
 | ------------------ | ------------------------------------------------------------------------------------------------------------- |
 | Run 식별자         | `RUN-YYYYMMDD-NNN`을 사용하고, 시나리오·반복·환경 정보는 별도 메타데이터 필드로 분리한다.                     |
 | Event 식별자       | `event_id`는 정규화 Event의 식별자, `source_event_id`는 원본 Source의 Event/Record 식별자로 분리한다.         |
@@ -86,7 +86,7 @@
 
 `timestamp_source`가 가리키는 시간 필드는 반드시 존재하고 `timestamp`와 동일해야 한다. 모든 시간은 UTC ISO 8601 밀리초 표기를 사용한다.
 
-이 시간 축과 `source_layer`는 v0.2의 신규 확장이 아니라 기존 정본과 Repo의 `event-v0.md` 사이에 발생한 schema drift를 복구하는 항목이다. 본 제안이 승인되면 `event-v0.md`, Pydantic 모델, JSON Schema, 소비자 모듈과 테스트를 같은 변경 단위로 갱신한다. 승인 전에는 현행 Event Contract를 유지한다.
+이 시간 축과 `source_layer`는 v0.2의 신규 확장이 아니라 기존 정본과 Repo의 `event-v0.md` 사이에 발생한 schema drift를 복구한 항목이다. `event-v0.md`, Pydantic 모델, JSON Schema, 소비자 모듈과 테스트는 이 규칙을 같은 변경 단위로 따른다.
 
 ### 5-2. Source와 관측 정보
 
@@ -125,7 +125,7 @@ Event에는 Evidence·Fusion·Detection·Ground Truth 결과를 넣지 않는다
 
 `event_id`는 정규화 Event의 식별자이고, `source_event_id`는 source-native Event 또는 Record 식별자다. v0.2의 artifact까지 이어지는 기계적 Provenance 체인은 `Evidence.event_ids → NormalizedEvent.event_id → NormalizedEvent.raw_ref → Run Manifest`다. `source_event_id`는 source-native Event 또는 Record identity를 보존하는 cross-reference이며, Manifest를 직접 resolve하는 필드는 아니다. 이 전환 이후 `source_event_ids`는 v0.2 Evidence에 함께 보존하지 않는다.
 
-따라서 기존 `source_event_ids`는 v0.1 필드로 유지하고, v0.1→v0.2 이관 시 각 값이 참조하는 Raw source record에서 대응되는 `NormalizedEvent.event_id`를 확인할 수 있을 때만 `event_ids`로 변환한다. 대응 관계가 없거나 다대다 관계가 불명확한 Evidence는 자동 이관하지 않는다. 이 전환은 역할 2·3의 승인 대상이며, 상위 Provenance 계약·`result-contracts.md`·Pydantic 모델·JSON Schema·소비자·테스트를 같은 변경 단위로 갱신한다.
+따라서 기존 `source_event_ids`는 v0.1 필드로 유지하고, v0.1→v0.2 이관 시 각 값이 참조하는 Raw source record에서 대응되는 `NormalizedEvent.event_id`를 확인할 수 있을 때만 `event_ids`로 변환한다. 대응 관계가 없거나 다대다 관계가 불명확한 Evidence는 자동 이관하지 않는다. 이 전환은 역할 2·3이 검토하며, 상위 Provenance 계약·`result-contracts.md`·Pydantic 모델·JSON Schema·소비자·테스트를 같은 변경 단위로 갱신한다.
 
 ### 5-3. Ground Truth 입력 경계
 
@@ -240,7 +240,7 @@ v0.2에서는 현행 `decision_source` 필드를 제거한다. `fast_status`와 
 
 두 판단 시각이 모두 보존되지 않은 기존 DecisionResult는 자동 이관하지 않는다. 이 경우 별도 보정 규칙을 팀이 합의하기 전까지 v0.2 변환 대상에서 제외한다.
 
-이 필드 변경은 현행 `result-contracts.md`의 `decision_source`를 즉시 바꾸지 않는다. 본 제안이 승인되면 `result-contracts.md`의 DecisionResult 표와 JSON 예시, Pydantic 모델, JSON Schema, 소비자 모듈 및 테스트를 같은 변경 단위로 갱신하여 `decision_source`를 제거하고 `decision_path`와 `winning_path`를 적용한다. 승인 전에는 현행 `decision_source` Contract를 유지한다.
+`result-contracts.md`의 DecisionResult 표와 JSON 예시, Pydantic 모델, JSON Schema, 소비자 모듈 및 테스트는 같은 변경 단위로 `decision_source`를 제거하고 `decision_path`와 `winning_path`를 적용한다.
 
 규칙:
 
@@ -274,7 +274,7 @@ S0처럼 Fast Path가 선택적인 실행은 `parallel_required=false`를 명시
 | 문자열 `raw_ref`            | 구조화된 `raw_ref` 객체                 | 구조 변경                                                                             |
 | Evidence.`source_event_ids` | Evidence.`event_ids`                    | NormalizedEvent FK로 공식 전환; 대응 관계가 확인되는 경우에만 이관                    |
 | `t_e`                       | `t_e`                                   | 런타임 판단 시각 용어 유지                                                            |
-| `decision_source`           | `decision_path` + `winning_path`        | 두 판단 시각으로 재계산; v0.2 승인 시 `result-contracts.md`와 소비자 계약을 함께 갱신 |
+| `decision_source`           | `decision_path` + `winning_path`        | 두 판단 시각으로 재계산; `result-contracts.md`와 소비자 계약을 함께 갱신 |
 | `decision_path` 단일 값     | `decision_path` + `winning_path`        | 성공 경로 전체와 가장 이른 성공 경로를 분리                                           |
 | Decision 식별자 미정의      | `decision_id`, `supersedes_decision_id` | 불변 참조와 재계산 이력 지원                                                          |
 
@@ -282,20 +282,14 @@ S0처럼 Fast Path가 선택적인 실행은 `parallel_required=false`를 명시
 
 이 문서는 데이터 구조, 타입, null 허용 조건, 식별자와 버전 규칙을 다룬다. 역할별 알고리즘 소유 범위와 게이트 규칙은 통합 표준 문서가, 실행 중단 조건과 평가 지표·eligible decision time 산출 규칙은 Stopping 및 평가 설계 문서가 소유한다. 같은 내용을 여러 문서에서 독립적으로 재정의하지 않는다.
 
-Human Workflow는 DecisionResult와 별도 계약이다. 사람의 확인·승인·에스컬레이션 기록을 DecisionResult에 흡수하지 않으며, v0.2가 기존 Human Workflow 계약을 대체하는지 또는 그대로 참조하는지는 승인 범위에서 명시적으로 결정한다.
+Human Workflow는 DecisionResult와 별도 계약이다. 사람의 확인·승인·에스컬레이션 기록을 DecisionResult에 흡수하지 않으며, 기존 Human Workflow 계약은 별도 문서에서 계속 관리한다.
 
-## 11. 승인 전 확인 항목
+## 11. 후속 결정 및 동기화 항목
 
-- [ ] Notion v0.1과 본 제안의 정본 우선순위 합의
-- [ ] `RUN-YYYYMMDD-NNN` 형식 채택 합의
 - [ ] `entity_id`의 canonical 범위와 R1 귀속 규칙 확정
 - [ ] `source` 구조(공통 producer 필드 또는 소스별 분기 구조) 확정
 - [ ] FastHitRecord의 `hit_id` 생성 방식과 재실행 간 대응 방식 확정
 - [ ] Run Manifest의 `raw_log_id` resolve·SHA-256·`derived_from` 규칙 확인
-- [ ] Evidence Provenance 확장 필드 채택 합의
-- [ ] Evidence.`source_event_ids` → `event_ids` 전환에 따른 상위 Provenance 계약·모델·Schema·소비자·테스트 동시 변경 확인
-- [ ] v0.2 승인 시 Stopping·Episode 계약의 `fusion_episodes[]` 구조표를 본 Data Contract 참조로 전환
-- [ ] Decision의 `decision_path`와 `winning_path` 분리 채택 합의 및 `decision_reason` 복원
-- [ ] `result-contracts.md`의 `decision_source` 제거 및 대체 필드 전환 계획 합의
-- [ ] Human Workflow 계약의 대체 또는 참조 유지 범위 확정
-- [ ] 기존 문서, Pydantic 모델, JSON Schema, 소비자 모듈, 테스트의 동시 변경 계획 합의
+- [ ] Evidence.`source_event_ids` → `event_ids` 전환에 따른 상위 Provenance 계약·모델·Schema·소비자·테스트 동기화
+- [ ] Stopping·Episode 계약의 `fusion_episodes[]` 구조표를 본 Data Contract 참조로 전환
+- [ ] Pydantic 모델, JSON Schema, 소비자 모듈, 테스트 동기화
