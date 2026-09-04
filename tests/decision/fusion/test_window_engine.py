@@ -285,6 +285,42 @@ def test_reset_does_not_clear_other_state() -> None:
     ) == [other_entity]
 
 
+def test_reset_clears_advance_watermark() -> None:
+    engine = WindowEngine(window_size=timedelta(minutes=5))
+    later_time = datetime(2026, 8, 30, 1, 5, tzinfo=UTC)
+    earlier_time = datetime(2026, 8, 30, 1, 0, tzinfo=UTC)
+
+    engine.advance_to(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        timestamp=later_time,
+    )
+
+    engine.reset(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+    )
+
+    evidence = make_evidence(
+        "001",
+        earlier_time,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+    )
+    engine.ingest(evidence)
+
+    engine.advance_to(
+        run_id=evidence.run_id,
+        entity_id=evidence.entity_id,
+        timestamp=earlier_time,
+    )
+
+    assert engine.get_active_evidence(
+        run_id=evidence.run_id,
+        entity_id=evidence.entity_id,
+    ) == [evidence]
+
+
 def test_allows_evidence_at_exact_advance_timestamp() -> None:
     base_time = datetime(
         2026,
