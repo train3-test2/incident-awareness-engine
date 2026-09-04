@@ -495,50 +495,7 @@ detector_time 판정
 
 Hybrid 상태 판정 및 `decision_path`·`winning_path` 규칙은 `docs/schema/result-contracts.md`의 DecisionResult 절을 따른다. 역할 3은 역할 5의 Fast runner 출력(FastHitRecord)을 Fast Adapter로 받아 DetectionResult로 정규화한 뒤 Hybrid Decision을 생성한다.
 
-초기 Hybrid Rule:
-
-```text
-fusion_time 존재
-detector_time 존재
-        ↓
-둘 중 빠른 시각
-        ↓
-t_e = min(fusion_time, detector_time)
-```
-
-예:
-
-```text
-fusion_time   = 14:05
-detector_time = 14:08
-
-t_e = 14:05
-```
-
-### 경우별 동작
-
-| Fusion | Detection | 결과         |
-| ------ | --------- | ------------ |
-| 있음   | 있음      | 더 빠른 시간 |
-| 있음   | 없음      | Fusion       |
-| 없음   | 있음      | Detection    |
-| 없음   | 없음      | null         |
-
-예:
-
-```json
-{
-  "run_id": "RUN-20260829-001",
-  "entity_id": "WIN-01",
-  "fusion_time": "2026-08-29T01:05:00.000Z",
-  "detector_time": "2026-08-29T01:08:00.000Z",
-  "t_e": "2026-08-29T01:05:00.000Z",
-  "decision_path": "fast_and_fusion",
-  "winning_path": "fusion"
-}
-```
-
-`t_e`는 시스템이 계산한 기술적 후보 판단 시점이며, 사람이 결정·기록하는 최종 조직 내부 인지시각과는 구분한다.
+`t_e`는 시스템이 계산한 기술적 후보 판단 시점이며, 상태·`parallel_required`·null 규칙을 포함한 전체 계산은 `result-contracts.md`의 DecisionResult 절을 따른다.
 
 ---
 
@@ -668,7 +625,7 @@ Raw Sysmon Sample을 입력했을 때 `docs/schema/event-v0.md`를 만족하는 
 ```text
 EvidenceProcessor
 FusionProcessor
-DetectionProcessor
+FastHitRecordAdapter
 ```
 
 Mock:
@@ -676,7 +633,7 @@ Mock:
 ```text
 MockEvidenceProcessor
 MockFusionProcessor
-MockDetectionProcessor
+MockFastHitRecordAdapter
 ```
 
 Mock은 반드시:
@@ -751,9 +708,11 @@ MockFusionProcessor
       ↓
 FusionResult
 
-NormalizedEvent
+역할 5 Fast Runner
       ↓
-MockDetectionProcessor
+FastHitRecord
+      ↓
+MockFastHitRecordAdapter
       ↓
 DetectionResult
 
@@ -775,7 +734,7 @@ evidences = evidence_processor.process(event)
 
 fusion_result = fusion_processor.process(evidences)
 
-detection_result = detector.process(event)
+detection_result = fast_adapter.adapt(fast_hit_records)
 
 decision = hybrid_decision.combine(
     detection=detection_result,

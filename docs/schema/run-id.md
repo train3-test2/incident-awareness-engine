@@ -337,38 +337,7 @@ RUN-20260827-002
 ---
 
 ## 11. 실험 메타데이터
-
-각 Run에는 다음과 같은 메타데이터를 기록한다.
-
-```json
-{
-  "run_id": "RUN-20260827-001",
-  "scenario_id": "R1",
-  "run_type": "attack",
-  "target_host": "WIN-01",
-  "start_time": "2026-08-27T13:20:00.000Z",
-  "end_time": "2026-08-27T13:35:00.000Z"
-}
-```
-
-필드 정의:
-
-| 필드          | 타입     | 필수 | 설명                   |
-| ------------- | -------- | ---- | ---------------------- |
-| `run_id`      | String   | O    | 실험 실행 고유 식별자  |
-| `scenario_id` | String   | O    | 실행한 시나리오 식별자 |
-| `run_type`    | String   | O    | `normal` 또는 `attack` |
-| `target_host` | String   | O    | 실험 대상 Host         |
-| `start_time`  | DateTime | O    | 실험 시작 시각         |
-| `end_time`    | DateTime | X    | 실험 종료 시각         |
-
-시간은 Event Schema와 동일하게 UTC ISO 8601 형식을 사용한다.
-
-예:
-
-```text
-2026-08-27T13:20:00.000Z
-```
+RunMetadata의 전체 필드·nullability·Contract별 버전 규칙은 이 문서 상단의 **v0.2 RunMetadata**와 `docs/data-contract-v0.2.md`를 따른다. 이 절에서는 별도 축약 Schema를 정의하지 않는다.
 
 ---
 
