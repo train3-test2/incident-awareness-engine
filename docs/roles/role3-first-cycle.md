@@ -40,7 +40,7 @@ src/incident_awareness/mocks/
 ```text
 MockEvidenceProcessor
 MockFusionProcessor
-MockDetectionProcessor
+MockFastHitRecordAdapter
 ```
 
 Mock은 인터페이스 연결 테스트만을 위한 것이며 실제 Evidence/Fusion/Detection 알고리즘을 포함하면 안 된다.
@@ -460,7 +460,7 @@ fusion_time 판정
 
 # 11. DetectionResult
 
-5번이 제공하는 결과다.
+역할 5 Fast Runner가 제공한 FastHitRecord를 역할 3 Fast Adapter가 정규화하여 생성하는 결과다.
 
 예:
 
@@ -529,10 +529,10 @@ class FusionProcessor(Protocol):
 ```
 
 ```python
-class DetectionProcessor(Protocol):
-    def process(
+class FastHitRecordAdapter(Protocol):
+    def adapt(
         self,
-        event: NormalizedEvent,
+        fast_hit_records: list[FastHitRecord],
     ) -> DetectionResult:
         ...
 ```
@@ -660,36 +660,7 @@ src/incident_awareness/mocks/
 src/incident_awareness/decision/hybrid.py
 ```
 
-핵심 로직:
-
-```python
-def combine_times(
-    detector_time: datetime | None,
-    fusion_time: datetime | None,
-) -> datetime | None:
-    times = [
-        value
-        for value in (detector_time, fusion_time)
-        if value is not None
-    ]
-
-    if not times:
-        return None
-
-    # 이 예시는 폐기한다. Hybrid 상태 판정·경로·null 규칙은
-    # docs/schema/result-contracts.md의 DecisionResult 절을 정본으로 따른다.
-```
-
-추가로 `decision_path`, `winning_path`, `decision_reason`을 기록한다.
-
-가능한 값:
-
-```text
-fusion
-detector
-both
-none
-```
+Hybrid 구현은 `docs/schema/result-contracts.md`의 DecisionResult 상태 판정, `parallel_required`, `t_e`, `decision_path`, `winning_path`, null 규칙을 그대로 따른다. 이 문서에 별도 시간 비교 함수나 경로 Enum을 다시 정의하지 않는다.
 
 ---
 
@@ -854,7 +825,7 @@ MockEvidenceProcessor
 MockFusionProcessor
 → 1번 Fusion
 
-MockDetectionProcessor
+MockFastHitRecordAdapter
 → 5번 Detection
 ```
 
@@ -1256,7 +1227,7 @@ NormalizedEvent
 ```text
 EvidenceProcessor
 FusionProcessor
-DetectionProcessor
+FastHitRecordAdapter
 ```
 
 실제 알고리즘 구현 금지.
@@ -1274,7 +1245,7 @@ DetectionProcessor
 ```text
 MockEvidenceProcessor
 MockFusionProcessor
-MockDetectionProcessor
+MockFastHitRecordAdapter
 ```
 
 실제 알고리즘 구현 금지.
