@@ -133,3 +133,37 @@ def test_excludes_evidence_type_outside_profile() -> None:
 
     # Then
     assert score == 0.0
+
+
+def test_excludes_diagnostic_only_evidence() -> None:
+    # Given
+    scorer = SimpleScorer(["type_a", "type_b"])
+    evidence = [
+        make_evidence(
+            "001",
+            "type_a",
+            feature_channel_group="diagnostic_only",
+        ),
+    ]
+
+    # When
+    score = scorer.score(evidence)
+
+    # Then
+    assert score == 0.0
+
+
+def test_same_input_produces_same_score() -> None:
+    # Given
+    scorer = SimpleScorer(["type_a", "type_b", "type_c"])
+    evidence = [
+        make_evidence("001", "type_a"),
+        make_evidence("002", "type_b"),
+    ]
+
+    # When
+    first_score = scorer.score(evidence)
+    second_score = scorer.score(evidence)
+
+    # Then
+    assert first_score == second_score
