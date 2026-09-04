@@ -103,3 +103,33 @@ def test_returns_one_when_all_profile_types_are_active() -> None:
 
     # Then
     assert score == 1.0
+
+
+def test_counts_duplicate_evidence_type_once() -> None:
+    # Given
+    scorer = SimpleScorer(["type_a", "type_b", "type_c", "type_d"])
+    evidence = [
+        make_evidence("001", "type_a"),
+        make_evidence("002", "type_a"),
+        make_evidence("003", "type_a"),
+    ]
+
+    # When
+    score = scorer.score(evidence)
+
+    # Then
+    assert score == 0.25
+
+
+def test_excludes_evidence_type_outside_profile() -> None:
+    # Given
+    scorer = SimpleScorer(["type_a", "type_b"])
+    evidence = [
+        make_evidence("001", "type_outside_profile"),
+    ]
+
+    # When
+    score = scorer.score(evidence)
+
+    # Then
+    assert score == 0.0
