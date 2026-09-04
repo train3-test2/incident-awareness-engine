@@ -123,7 +123,7 @@ v0.2 First Cycle은 Raw Log에서 정규화한 Event만 다루므로 `raw_ref`�
 
 Event에는 Evidence·Fusion·Detection·Ground Truth 결과를 넣지 않는다.
 
-`event_id`는 정규화 Event의 식별자이고, `source_event_id`는 source-native Event 또는 Record 식별자다. v0.2는 Evidence의 Provenance 체인을 `Evidence.event_ids → NormalizedEvent.event_id → NormalizedEvent.source_event_id/raw_ref → Run Manifest`로 공식 전환한다. 이 전환 이후 `source_event_ids`는 v0.2 Evidence에 함께 보존하지 않는다.
+`event_id`는 정규화 Event의 식별자이고, `source_event_id`는 source-native Event 또는 Record 식별자다. v0.2의 artifact까지 이어지는 기계적 Provenance 체인은 `Evidence.event_ids → NormalizedEvent.event_id → NormalizedEvent.raw_ref → Run Manifest`다. `source_event_id`는 source-native Event 또는 Record identity를 보존하는 cross-reference이며, Manifest를 직접 resolve하는 필드는 아니다. 이 전환 이후 `source_event_ids`는 v0.2 Evidence에 함께 보존하지 않는다.
 
 따라서 기존 `source_event_ids`는 v0.1 필드로 유지하고, v0.1→v0.2 이관 시 각 값이 참조하는 Raw source record에서 대응되는 `NormalizedEvent.event_id`를 확인할 수 있을 때만 `event_ids`로 변환한다. 대응 관계가 없거나 다대다 관계가 불명확한 Evidence는 자동 이관하지 않는다. 이 전환은 역할 2·3의 승인 대상이며, 상위 Provenance 계약·`result-contracts.md`·Pydantic 모델·JSON Schema·소비자·테스트를 같은 변경 단위로 갱신한다.
 
@@ -177,10 +177,12 @@ Normalizer·Evidence·Fusion·Fast runner의 런타임 경로는 `class`, `run_t
 | `entity_id`                 | String       |    X |    O | 분석 대상 Entity; canonical 범위 확정 후 필수 여부 결정 |
 | `start_time`                | DateTime     |    O |    X | ACTIVE 진입 시각                                        |
 | `end_time`                  | DateTime     |    X |    O | Episode 종료 시각; `run_end` 전 미종료 상태면 `null`    |
-| `end_reason`                | Enum         |    X |    O | 종료 사유; 종료 전에는 `null`                           |
+| `end_reason`                | Enum         |    X |    O | `released`, `run_end`; 종료 전에는 `null`               |
 | `score_at_start`            | Number       |    O |    X | ACTIVE 진입 시점 점수                                   |
 | `peak_score`                | Number       |    O |    X | Episode 동안의 최고 점수                                |
 | `contributing_evidence_ids` | List[String] |    X |    O | Episode에 기여한 Evidence 식별자                        |
+
+Run이 종료될 때 ACTIVE 상태인 Episode는 `end_time`을 `run_end`로 기록하고 `end_reason`을 `run_end`로 기록한다.
 
 ### 7-1. FastHitRecord v0.2
 
@@ -192,27 +194,27 @@ Fast runner가 생산한 개별 qualifying hit는 `DetectionResult`와 별도인
 
 ## 8. DecisionResult v0.2
 
-| 필드                        | 타입         | 필수 | null | 설명                                                                   |
-| --------------------------- | ------------ | ---: | ---: | ---------------------------------------------------------------------- |
-| `decision_id`               | String       |    O |    X | 불변 Decision 결과 식별자; `D-...`                                     |
-| `run_id`                    | String       |    O |    X | 소속 실행                                                              |
-| `entity_id`                 | String       |    X |    O | 분석 대상 Entity; D-01 확정 후 필수 여부 결정                          |
-| `fast_status`               | Enum         |    O |    X | `detected`, `miss`, `not_evaluated`                                    |
-| `fusion_status`             | Enum         |    O |    X | `detected`, `miss`, `not_evaluated`                                    |
-| `detector_time`             | DateTime     |    O |    O | Fast Path 판단 시각                                                    |
-| `fusion_time`               | DateTime     |    O |    O | Fusion 판단 시각                                                       |
-| `t_e`                       | DateTime     |    O |    O | 유효한 병렬 판단의 런타임 후보 시점. `min(detector_time, fusion_time)` |
-| `decision_path`             | Enum         |    O |    O | 성공 경로 전체: `fast`, `fusion`, `fast_and_fusion`, `none`            |
-| `winning_path`              | Enum         |    O |    O | 가장 이른 성공 경로: `fast`, `fusion`, `tie`, `none`                   |
-| `decision_reason`           | String       |    O |    X | 최종 판단 사유 또는 근거 요약                                          |
-| `contributing_evidence_ids` | List[String] |    X |    O | 기여 Evidence 식별자                                                   |
-| `model_version`             | String       |    X |    O | Fusion 모델 버전                                                       |
-| `rule_version`              | String       |    X |    O | Detector Rule 버전                                                     |
-| `config_version`            | String       |    X |    O | 실행 Config 버전                                                       |
-| `detector_set_version`      | String       |    X |    O | 동결된 Detector Set 버전                                               |
-| `supersedes_decision_id`    | String       |    X |    O | 재계산으로 대체한 이전 Decision 식별자                                 |
+| 필드                        | 타입         | 필수 | null | 설명                                                                                       |
+| --------------------------- | ------------ | ---: | ---: | ------------------------------------------------------------------------------------------ |
+| `decision_id`               | String       |    O |    X | 불변 Decision 결과 식별자; `D-...`                                                         |
+| `run_id`                    | String       |    O |    X | 소속 실행                                                                                  |
+| `entity_id`                 | String       |    X |    O | 분석 대상 Entity; D-01 확정 후 필수 여부 결정                                              |
+| `fast_status`               | Enum         |    O |    X | `detected`, `miss`, `not_evaluated`                                                        |
+| `fusion_status`             | Enum         |    O |    X | `detected`, `miss`, `not_evaluated`                                                        |
+| `detector_time`             | DateTime     |    O |    O | Fast Path 판단 시각                                                                        |
+| `fusion_time`               | DateTime     |    O |    O | Fusion 판단 시각                                                                           |
+| `t_e`                       | DateTime     |    O |    O | status 판정 후 Decision이 유효한 경우, `detected` 경로의 runtime 판단 시각 중 가장 이른 값 |
+| `decision_path`             | Enum         |    O |    O | 성공 경로 전체: `fast`, `fusion`, `fast_and_fusion`, `none`                                |
+| `winning_path`              | Enum         |    O |    O | 가장 이른 성공 경로: `fast`, `fusion`, `tie`, `none`                                       |
+| `decision_reason`           | String       |    O |    X | 최종 판단 사유 또는 근거 요약                                                              |
+| `contributing_evidence_ids` | List[String] |    X |    O | 기여 Evidence 식별자                                                                       |
+| `model_version`             | String       |    X |    O | Fusion 모델 버전                                                                           |
+| `rule_version`              | String       |    X |    O | Detector Rule 버전                                                                         |
+| `config_version`            | String       |    O |    X | `parallel_required`를 포함한 실행 Config 버전                                              |
+| `detector_set_version`      | String       |    X |    O | 동결된 Detector Set 버전                                                                   |
+| `supersedes_decision_id`    | String       |    X |    O | 재계산으로 대체한 이전 Decision 식별자                                                     |
 
-`fast_status`는 동일 `run_id`·`entity_id`의 DetectionResult 상태를, `fusion_status`는 동일 범위의 FusionResult 상태를 보존한다. 두 상태는 Decision의 유효성 및 null 규칙을 판정하는 입력이며, 시간 값만으로 상태를 추론하지 않는다.
+`DetectionResult`의 정식 상태 필드명은 `detector_status`로 유지한다. `DecisionResult.fast_status`는 Fast Path라는 역할 의미를 드러내기 위해 이를 복사한 필드이며, `DecisionResult.fast_status := DetectionResult.detector_status`로 매핑한다. `fusion_status`는 동일 `run_id`·`entity_id`의 FusionResult 상태를 보존한다. 두 상태는 Decision의 유효성 및 null 규칙을 판정하는 입력이며, 시간 값만으로 상태를 추론하지 않는다.
 
 저장 및 재계산 규칙:
 
@@ -254,6 +256,12 @@ v0.2에서는 현행 `decision_source` 필드를 제거한다. `fast_status`와 
 - `decision_path`는 판단에 성공한 경로 전체를 기록한다. 두 경로 모두 성공했으면 시각이 달라도 `fast_and_fusion`이다.
 - `t_e`는 런타임의 기술적 후보 시점이다. 평가에 사용할 `fast_eligible_time`, `fusion_eligible_time`, `hybrid_eligible_time`과 그 산출 조건은 평가 설계 문서에서 별도로 정의하며, `t_e`를 성능 지표에 직접 사용하지 않는다.
 
+### 8-1. `parallel_required` 설정과 재현
+
+`parallel_required`의 authoritative source는 Run 실행 Config다. 설정은 역할 3이 실행 계획 단계에서 확정하고, Fast Comparator 요구 여부는 역할 5와, 시나리오 적용 범위는 역할 4와 확인한다. Config artifact는 변경 불가능한 `config_version`으로 관리하며, Run Manifest와 해당 Run의 DecisionResult에 같은 버전을 기록해 적용 정책을 재현한다.
+
+S0처럼 Fast Path가 선택적인 실행은 `parallel_required=false`를 명시한 Config를 사용한다. R1 정식 병렬 실행은 `parallel_required=true`를 사용하며, 한 경로의 `not_evaluated`를 정상 `none` 결과로 처리하지 않는다. 정책을 변경하면 새 `config_version`을 발급한다.
+
 ## 9. v0.1에서 v0.2로의 주요 대응
 
 | v0.1                        | v0.2                                    | 처리                                                                                  |
@@ -286,6 +294,7 @@ Human Workflow는 DecisionResult와 별도 계약이다. 사람의 확인·승�
 - [ ] Run Manifest의 `raw_log_id` resolve·SHA-256·`derived_from` 규칙 확인
 - [ ] Evidence Provenance 확장 필드 채택 합의
 - [ ] Evidence.`source_event_ids` → `event_ids` 전환에 따른 상위 Provenance 계약·모델·Schema·소비자·테스트 동시 변경 확인
+- [ ] v0.2 승인 시 Stopping·Episode 계약의 `fusion_episodes[]` 구조표를 본 Data Contract 참조로 전환
 - [ ] Decision의 `decision_path`와 `winning_path` 분리 채택 합의 및 `decision_reason` 복원
 - [ ] `result-contracts.md`의 `decision_source` 제거 및 대체 필드 전환 계획 합의
 - [ ] Human Workflow 계약의 대체 또는 참조 유지 범위 확정
