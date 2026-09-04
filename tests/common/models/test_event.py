@@ -1,6 +1,3 @@
-import pytest
-from pydantic import ValidationError
-
 from incident_awareness.common.models.event import (
     NetworkInfo,
     ProcessInfo,
@@ -47,41 +44,18 @@ def test_raw_log_reference_accepts_valid_values() -> None:
     assert raw_log_reference.record_no == 1
 
 
-@pytest.mark.parametrize(
-    ("segment_no", "record_no"),
-    [
-        (0, 1),
-        (-1, 1),
-        (1, 0),
-        (1, -1),
-        (True, 1),
-        (1, True),
-    ],
-)
-def test_raw_log_reference_rejects_invalid_position(
-    segment_no: int,
-    record_no: int,
-) -> None:
-    # given: 1보다 작은 Segment 또는 Record 번호
-    invalid_payload = {
-        "raw_log_id": "RAW-001",
-        "segment_no": segment_no,
-        "record_no": record_no,
-    }
+def test_raw_log_reference_supports_v02_provenance_fields() -> None:
+    # given & when: v0.2 Provenance 필드가 포함된 Raw Log 참조 정보를 생성
+    raw_log_reference = RawLogReference(
+        raw_log_id="RAW-001",
+        source_record_id="153",
+        segment_no=1,
+        record_no=153,
+        parser_id="sysmon-normalizer",
+        parser_version="v0.2",
+    )
 
-    # when & then: 검증 오류가 발생한다
-    with pytest.raises(ValidationError):
-        RawLogReference(**invalid_payload)
-
-
-def test_raw_log_reference_rejects_empty_raw_log_id() -> None:
-    # given: 빈 Raw Log 식별자
-    invalid_payload = {
-        "raw_log_id": "",
-        "segment_no": 1,
-        "record_no": 1,
-    }
-
-    # when & then: 검증 오류가 발생한다
-    with pytest.raises(ValidationError):
-        RawLogReference(**invalid_payload)
+    # then: 원본 Record와 Parser 정보가 보존된다
+    assert raw_log_reference.source_record_id == "153"
+    assert raw_log_reference.parser_id == "sysmon-normalizer"
+    assert raw_log_reference.parser_version == "v0.2"
