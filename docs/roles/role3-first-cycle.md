@@ -719,7 +719,8 @@ def combine_times(
     if not times:
         return None
 
-    # 상태 판정과 parallel_required 규칙은 result-contracts.md를 따른다.
+    # 이 예시는 폐기한다. Hybrid 상태 판정·경로·null 규칙은
+    # docs/schema/result-contracts.md의 DecisionResult 절을 정본으로 따른다.
 ```
 
 추가로 `decision_path`, `winning_path`, `decision_reason`을 기록한다.

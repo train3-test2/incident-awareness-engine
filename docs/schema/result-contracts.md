@@ -418,6 +418,7 @@ Fusion Path와 Fast Detection Path의 결과를 결합하여 기술적 후보 �
 | 필드              | 타입     | 필수 | null | 설명                        |
 | ----------------- | -------- | ---: | ---: | --------------------------- |
 | `run_id`          | String   |    O |    X | 실험 실행 식별자            |
+| `decision_id`     | String   |    O |    X | 불변 Decision 식별자 |
 | `entity_id`       | String   |    X |    O | 분석 대상 Entity            |
 | `fast_status`     | Enum     |    O |    X | `detected`, `miss`, `not_evaluated` |
 | `fusion_status`   | Enum     |    O |    X | `detected`, `miss`, `not_evaluated` |
@@ -428,6 +429,11 @@ Fusion Path와 Fast Detection Path의 결과를 결합하여 기술적 후보 �
 | `winning_path`    | Enum     |    O |    O | `fast`, `fusion`, `tie`, `none` |
 | `decision_reason` | String   |    O |    X | 최종 판단 사유 또는 근거 요약 |
 | `config_version`  | String   |    O |    X | 실행 Config 버전 |
+| `contributing_evidence_ids` | List[String] | X | O | 기여 Evidence ID |
+| `model_version` | String | X | O | Fusion 모델 버전 |
+| `rule_version` | String | X | O | Fast Rule 버전 |
+| `detector_set_version` | String | X | O | 동결 Detector Set 버전 |
+| `supersedes_decision_id` | String | X | O | 재계산으로 대체한 이전 Decision ID |
 
 ---
 

@@ -64,7 +64,7 @@
 | `ingest_time` | DateTime | X | 파이프라인 수집 시각 | 아래 규칙 참고 |
 | `host_id`         | String   | O    | Event가 발생한 Endpoint 식별자          | `WIN-01`                   |
 | `source`          | String   | O    | 원본 로그 Source                        | `sysmon`                   |
-| `source_event_id` | String   | O    | 원본 시스템에서 사용하는 Event ID       | `1`                        |
+| `source_event_id` | String   | O    | 원본 Source의 Event/Record 고유 identity | `153`                      |
 | `event_type`      | String   | O    | 시스템에서 공통으로 사용하는 Event 유형 | `process_create`           |
 | `user`            | String   | X    | 행위를 수행한 사용자                    | `labuser`                  |
 | `process`         | Object   | X    | 프로세스 관련 정보                      | 아래 정의 참고             |
@@ -317,7 +317,12 @@ Sysmon Event ID 3을 정규화한 예시다.
   "timestamp": "2026-08-27T13:20:35.421Z",
   "host_id": "WIN-01",
   "source": "sysmon",
-  "source_event_id": "3",
+  "timestamp_source": "event_time",
+  "event_time": "2026-08-27T13:20:31.123Z",
+  "record_time": null,
+  "ingest_time": null,
+  "source_layer": "raw_telemetry",
+  "source_event_id": "154",
   "event_type": "network_connection",
   "user": "labuser",
   "process": {
