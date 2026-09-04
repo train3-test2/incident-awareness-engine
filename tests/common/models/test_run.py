@@ -68,6 +68,7 @@ def test_run_metadata_serializes_null_end_time() -> None:
     [
         "ATTACK-20260903-001",
         "RUN-20260903-01",
+        "RUN-20260230-001",
         "RUN-20260903-１２３",
     ],
 )
