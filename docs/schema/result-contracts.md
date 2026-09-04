@@ -162,7 +162,7 @@ Fusion 내부 score/window/stopping 알고리즘은 역할 1이 담당한다.
 | 필드                        | 타입         | 필수 | null | 설명                   |
 | --------------------------- | ------------ | ---: | ---: | ---------------------- |
 | `run_id`                    | String       |    O |    X | 실험 실행 식별자       |
-| `entity_id`                 | String       |    O |    X | 분석 대상 Entity       |
+| `entity_id`                 | String       |    X |    O | 분석 대상 Entity       |
 | `fusion_time`               | DateTime     |    O |    O | Fusion 판단 시각       |
 | `fusion_status`             | Enum         |    O |    X | Fusion 평가 결과       |
 | `score_at_decision`         | Float        |    O |    O | 판단 시점의 Score      |
@@ -246,7 +246,16 @@ score_at_decision = null
   "model_version": null,
   "scoring_method": "temporal_fusion",
   "scorer_version": "v0.2",
-  "fusion_episodes": []
+  "fusion_episodes": [{
+    "episode_id": "FE-001",
+    "run_id": "RUN-20260901-001",
+    "entity_id": "WIN-01",
+    "start_time": "2026-09-01T01:05:00.000Z",
+    "end_time": "2026-09-01T01:10:00.000Z",
+    "end_reason": "released",
+    "score_at_start": 0.8,
+    "peak_score": 0.9
+  }]
 }
 ```
 
@@ -285,7 +294,7 @@ Run 종료 시 ACTIVE인 Episode는 `end_time=run_end`, `end_reason=run_end`로 
 | 필드              | 타입     | 필수 | null | 설명                           |
 | ----------------- | -------- | ---: | ---: | ------------------------------ |
 | `run_id`          | String   |    O |    X | 실험 실행 식별자               |
-| `entity_id`       | String   |    O |    X | 분석 대상 Entity               |
+| `entity_id`       | String   |    X |    O | 분석 대상 Entity               |
 | `detector_time`   | DateTime |    O |    O | qualifying detection 발생 시각 |
 | `detector_status` | Enum     |    O |    X | Detector 평가 결과             |
 | `detector_id`     | String   |    O |    O | Detector 식별자                |
@@ -409,7 +418,7 @@ Fusion Path와 Fast Detection Path의 결과를 결합하여 기술적 후보 �
 | 필드              | 타입     | 필수 | null | 설명                        |
 | ----------------- | -------- | ---: | ---: | --------------------------- |
 | `run_id`          | String   |    O |    X | 실험 실행 식별자            |
-| `entity_id`       | String   |    O |    X | 분석 대상 Entity            |
+| `entity_id`       | String   |    X |    O | 분석 대상 Entity            |
 | `fast_status`     | Enum     |    O |    X | `detected`, `miss`, `not_evaluated` |
 | `fusion_status`   | Enum     |    O |    X | `detected`, `miss`, `not_evaluated` |
 | `fusion_time`     | DateTime |    O |    O | Fusion 판단 시각            |
@@ -501,7 +510,7 @@ FusionResult
 → 역할 1이 생성
 
 DetectionResult
-→ 역할 5가 생성
+→ 역할 3 Fast Adapter가 생성
 
 DecisionResult
 → 역할 3이 생성

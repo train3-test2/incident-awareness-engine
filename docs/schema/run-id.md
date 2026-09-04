@@ -2,13 +2,36 @@
 
 > 상위 정본은 `docs/data-contract-v0.2.md`다. 이 문서는 RunMetadata와 `run_id`의 상세 규칙을 정의한다.
 
+## v0.2 RunMetadata
+
+`scenario_id`는 시나리오 계열(R1 등)을, `run_type`은 동일 시나리오 실행의 `normal` 또는 `attack`을 나타낸다. 따라서 R1은 공격 전용 시나리오가 아니라 paired 비교가 가능한 시나리오다.
+
+| 필드 | 필수 | null | 설명 |
+| --- | ---: | ---: | --- |
+| `run_id`, `scenario_id`, `run_type`, `target_host`, `start_time` | O | X | 실행 식별 및 기본 정보 |
+| `end_time`, `family_id`, `variation_id`, `repetition` | X | O | 실행 종료·group split 정보 |
+| `reference_time`, `reference_action_id`, `reference_source_event_id` | X | O | 평가 기준 정보 |
+| `vm_snapshot`, `sysmon_config_version`, `detector_set_version`, `scenario_version` | X | O | 환경·재현 정보 |
+| `reference_policy_version`, `schema_versions` | O | X | 기준 정책과 Contract별 버전 |
+
 ## 1. 목적
 
-`run_id`는 정상 또는 공격 시나리오를 **한 번 실행한 실험 단위**를 식별하기 위한 값이다.
+`run_id`는 `scenario_id`와 `run_type` 조합을 한 번 실행한 실험 단위를 식별하기 위한 값이다. `scenario_id`와 `run_type`은 독립적이다.
 
 하나의 실험 실행 중 생성되는 Sysmon, PowerShell, Windows Security 등의 로그는 모두 동일한 `run_id`를 공유한다.
 
 `run_id`는 개별 Event를 식별하기 위한 값이 아니며, 실험 전체를 묶기 위한 상위 식별자이다.
+
+Core Contract의 기본 귀속 관계는 다음과 같다. `incident_id`는 이후 Human/Reporting/Correlation 단계에서 별도로 연결한다.
+
+```text
+run_id
+├── event_id
+├── evidence_id
+├── FastHitRecord / DetectionResult
+├── FusionResult
+└── decision_id
+```
 
 ---
 
@@ -203,8 +226,8 @@ NORMAL-20260827-001
 | ------------- | --------------------- |
 | `N1`          | 일반 사용자 정상 행위 |
 | `N2`          | 정상 PowerShell 사용  |
-| `R1`          | 공격 시나리오 1       |
-| `R2`          | 공격 시나리오 2       |
+| `R1`          | normal/attack paired 비교 시나리오 1 |
+| `R2`          | normal/attack paired 비교 시나리오 2 |
 
 시나리오의 실제 정의와 Ground Truth는 별도의 시나리오 문서에서 관리한다.
 

@@ -12,7 +12,7 @@
 
 - Evidence 판정 알고리즘
 - ATT&CK 의미 분석
-- Temporal/Causal Feature 생성 알고리즘
+- Temporal Model Feature 및 Fusion 알고리즘
 - Fusion Score 계산 알고리즘
 - Fusion Stopping Rule
 - `fusion_time` 산출 알고리즘
@@ -162,7 +162,10 @@ FusionResult
 | Event → Evidence        | 2번  |
 | Evidence Type 판단      | 2번  |
 | ATT&CK Mapping          | 2번  |
-| Temporal/Causal Feature | 2번  |
+| Semantic Evidence / Context | 2번 |
+| Temporal Window / Temporal Model Feature / Fusion | 1번 |
+| Fast Comparator Policy / Runner / FastHitRecord | 5번 |
+| Fast Adapter / DetectionResult / Hybrid Decision | 3번 |
 | Evidence → Fusion       | 1번  |
 | Fusion Score            | 1번  |
 | `fusion_time`           | 1번  |
@@ -490,6 +493,8 @@ detector_time 판정
 
 이 부분은 3번이 구현한다.
 
+Hybrid 상태 판정 및 `decision_path`·`winning_path` 규칙은 `docs/schema/result-contracts.md`의 DecisionResult 절을 따른다. 역할 3은 역할 5의 Fast runner 출력(FastHitRecord)을 Fast Adapter로 받아 DetectionResult로 정규화한 뒤 Hybrid Decision을 생성한다.
+
 초기 Hybrid Rule:
 
 ```text
@@ -714,7 +719,7 @@ def combine_times(
     if not times:
         return None
 
-    return min(times)
+    # 상태 판정과 parallel_required 규칙은 result-contracts.md를 따른다.
 ```
 
 추가로 `decision_path`, `winning_path`, `decision_reason`을 기록한다.

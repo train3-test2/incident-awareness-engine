@@ -19,9 +19,14 @@
   "event_id": "evt-001",
   "run_id": "RUN-20260827-001",
   "timestamp": "2026-08-27T13:20:31.123Z",
+  "timestamp_source": "event_time",
+  "event_time": "2026-08-27T13:20:31.123Z",
+  "record_time": null,
+  "ingest_time": null,
   "host_id": "WIN-01",
   "source": "sysmon",
-  "source_event_id": "1",
+  "source_layer": "raw_telemetry",
+  "source_event_id": "{A1B2C3D4-0000-0000-0000-000000000153}",
   "event_type": "process_create",
   "user": "labuser",
   "process": {
@@ -36,7 +41,10 @@
   "raw_ref": {
     "raw_log_id": "RAW-001",
     "segment_no": 1,
-    "record_no": 153
+    "record_no": 153,
+    "source_record_id": "153",
+    "parser_id": "sysmon-normalizer",
+    "parser_version": "v0.2"
   }
 }
 ```
@@ -108,16 +116,16 @@
 
 ### source_event_id
 
-원본 Source가 사용하는 Event ID를 그대로 저장한다.
+원본 Source가 부여한 Event 또는 Record의 고유 identity를 저장한다. Event 종류 번호는 `event_type` 결정에 사용할 수 있지만 `source_event_id` 자체가 아니다.
 
 예:
 
 ```text
-Sysmon Event ID 1
-→ source_event_id = "1"
+Sysmon Event Record ID 153
+→ source_event_id = "153"
 
-PowerShell Event ID 4104
-→ source_event_id = "4104"
+PowerShell Record GUID `{...}`
+→ source_event_id = "{...}"
 ```
 
 `source_event_id`는 Source 종속적인 값이므로 문자열로 관리한다.
@@ -269,9 +277,14 @@ Sysmon Event ID 1을 정규화한 예시다.
   "event_id": "evt-001",
   "run_id": "RUN-20260827-001",
   "timestamp": "2026-08-27T13:20:31.123Z",
+  "timestamp_source": "event_time",
+  "event_time": "2026-08-27T13:20:31.123Z",
+  "record_time": null,
+  "ingest_time": null,
   "host_id": "WIN-01",
   "source": "sysmon",
-  "source_event_id": "1",
+  "source_layer": "raw_telemetry",
+  "source_event_id": "153",
   "event_type": "process_create",
   "user": "labuser",
   "process": {
