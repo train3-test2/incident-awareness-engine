@@ -2,7 +2,7 @@ import re
 from datetime import UTC, date, datetime, timedelta
 from enum import Enum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _RUN_ID_PATTERN = re.compile(r"^RUN-(?P<date>[0-9]{8})-(?P<sequence>[0-9]{3})$")
 
@@ -13,10 +13,18 @@ class RunType(str, Enum):
 
 
 class RunMetadata(BaseModel):
-    run_id: str
-    scenario_id: str
+    model_config = ConfigDict(extra="forbid")
+
+    """실험 실행 메타데이터.
+
+    Normalizer, Evidence, Fusion, Fast runtime은 `run_type` 및
+    `reference_*` 평가 기준 필드를 런타임 판단 입력으로 사용하지 않는다.
+    """
+
+    run_id: str = Field(min_length=1)
+    scenario_id: str = Field(min_length=1)
     run_type: RunType
-    target_host: str
+    target_host: str = Field(min_length=1)
     start_time: datetime
     end_time: datetime | None = None
     family_id: str | None = None
@@ -31,6 +39,14 @@ class RunMetadata(BaseModel):
     scenario_version: str | None = None
     schema_versions: dict[str, str] = Field(min_length=1)
     reference_policy_version: str | None = None
+
+    @field_validator("run_id", "scenario_id", "target_host")
+    @classmethod
+    def validate_required_identifier(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("식별자에는 앞뒤 공백을 포함할 수 없습니다.")
+
+        return value
 
     @field_validator("run_id")
     @classmethod
@@ -60,3 +76,10 @@ class RunMetadata(BaseModel):
             raise ValueError("datetime은 UTC 시간대여야 합니다.")
 
         return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_time_order(self) -> "RunMetadata":
+        if self.end_time is not None and self.end_time < self.start_time:
+            raise ValueError("종료 시각은 시작 시각보다 이를 수 없습니다.")
+
+        return self

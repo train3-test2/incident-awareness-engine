@@ -63,6 +63,74 @@ def test_run_metadata_serializes_null_end_time() -> None:
     assert payload["end_time"] is None
 
 
+def test_run_metadata_rejects_undefined_field() -> None:
+    # given: Contract에 정의되지 않은 필드가 포함된 실행 메타데이터
+    invalid_payload = {
+        "run_id": "RUN-20260903-001",
+        "scenario_id": "R1",
+        "run_type": RunType.ATTACK,
+        "target_host": "WIN-01",
+        "start_time": datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
+        "schema_versions": SCHEMA_VERSIONS,
+        "unexpected": "value",
+    }
+
+    # when & then: 정의되지 않은 입력은 검증 오류로 거부된다
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        RunMetadata(**invalid_payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("run_id", ""),
+        ("run_id", " RUN-20260903-001"),
+        ("run_id", "RUN-20260903-001 "),
+        ("scenario_id", ""),
+        ("scenario_id", " R1"),
+        ("scenario_id", "R1 "),
+        ("target_host", ""),
+        ("target_host", " WIN-01"),
+        ("target_host", "WIN-01 "),
+    ],
+)
+def test_run_metadata_rejects_empty_or_surrounding_whitespace_identifiers(
+    field: str,
+    value: str,
+) -> None:
+    # given: 빈 값 또는 앞뒤 공백을 포함한 필수 식별자
+    invalid_payload = {
+        "run_id": "RUN-20260903-001",
+        "scenario_id": "R1",
+        "run_type": RunType.ATTACK,
+        "target_host": "WIN-01",
+        "start_time": datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
+        "schema_versions": SCHEMA_VERSIONS,
+    }
+    invalid_payload[field] = value
+
+    # when & then: 식별자 입력 규칙 위반으로 검증 오류가 발생한다
+    with pytest.raises(ValidationError):
+        RunMetadata(**invalid_payload)
+
+
+def test_run_metadata_rejects_end_time_before_start_time() -> None:
+    # given: 종료 시각이 시작 시각보다 이른 실행 메타데이터
+    invalid_payload = {
+        "run_id": "RUN-20260903-001",
+        "scenario_id": "R1",
+        "run_type": RunType.ATTACK,
+        "target_host": "WIN-01",
+        "start_time": datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
+        "end_time": datetime(2026, 9, 3, 0, 59, tzinfo=UTC),
+        "schema_versions": SCHEMA_VERSIONS,
+    }
+
+    # when & then: 시간 순서 위반으로 검증 오류가 발생한다
+    with pytest.raises(ValidationError, match="종료 시각은 시작 시각보다 이를 수 없습니다."):
+        RunMetadata(**invalid_payload)
+
+
 @pytest.mark.parametrize(
     "run_id",
     [

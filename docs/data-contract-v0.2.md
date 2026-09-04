@@ -20,6 +20,7 @@
 - 필드 추가, 이름 변경, 의미 변경은 해당 Contract의 버전을 `v0.1 → v0.2`처럼 올린다.
 - 하나의 Run에서 생산한 결과는 각 Contract별로 기록된 버전을 따라 해석한다.
 - v0.1과 v0.2는 필드 의미가 달라, 변환 규칙 없이 혼용하지 않는다.
+- 각 Contract는 정의된 필드만 허용하며, 정의되지 않은 입력 필드는 검증 오류로 처리한다.
 
 | Contract        | 최초 또는 현행 버전 | v0.2 적용 버전 | 비고                                               |
 | --------------- | ------------------- | -------------- | -------------------------------------------------- |
@@ -69,6 +70,8 @@
 | `scenario_version`          | String   |    X |    O | 시나리오 버전                                                                                                                                                             |
 | `schema_versions`           | Object   |    O |    X | Contract별 적용 버전. 예: `run_metadata`, `event`, `evidence`, `fast_hit`, `detection_result`, `fusion_result`, `decision_result`, `execution_record`, `evaluation_input` |
 | `reference_policy_version`  | String   |    X |    O | `reference_time` 산출에 적용한 attribution 정책 버전                                                                                                                      |
+
+`end_time`이 존재하면 `start_time`보다 이를 수 없으며, 두 시각이 같은 값은 허용한다.
 
 ## 5. NormalizedEvent v0.2
 
