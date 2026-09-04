@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 type EventSource = str
 type EventType = str
@@ -22,9 +22,9 @@ class NetworkInfo(BaseModel):
 
 
 class RawLogReference(BaseModel):
-    raw_log_id: str
+    raw_log_id: str = Field(min_length=1)
     source_record_id: str | None = None
-    segment_no: int
-    record_no: int
+    segment_no: int = Field(ge=1)
+    record_no: int = Field(ge=1)
     parser_id: str | None = None
     parser_version: str | None = None

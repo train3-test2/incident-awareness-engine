@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from incident_awareness.common.models.event import (
     NetworkInfo,
     ProcessInfo,
@@ -59,3 +62,30 @@ def test_raw_log_reference_supports_v02_provenance_fields() -> None:
     assert raw_log_reference.source_record_id == "153"
     assert raw_log_reference.parser_id == "sysmon-normalizer"
     assert raw_log_reference.parser_version == "v0.2"
+
+
+@pytest.mark.parametrize(
+    ("raw_log_id", "segment_no", "record_no"),
+    [
+        ("", 1, 1),
+        ("RAW-001", 0, 1),
+        ("RAW-001", 1, 0),
+        ("RAW-001", -1, 1),
+        ("RAW-001", 1, -1),
+    ],
+)
+def test_raw_log_reference_rejects_invalid_identifier_or_position(
+    raw_log_id: str,
+    segment_no: int,
+    record_no: int,
+) -> None:
+    # given: 비어 있는 식별자 또는 1 미만의 위치 번호
+    invalid_payload = {
+        "raw_log_id": raw_log_id,
+        "segment_no": segment_no,
+        "record_no": record_no,
+    }
+
+    # when & then: Raw Log 참조 생성 시 검증 오류가 발생한다
+    with pytest.raises(ValidationError):
+        RawLogReference(**invalid_payload)
