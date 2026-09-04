@@ -12,6 +12,20 @@ class RunType(str, Enum):
     ATTACK = "attack"
 
 
+class SchemaVersions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_metadata: str = Field(min_length=1)
+    event: str = Field(min_length=1)
+    evidence: str = Field(min_length=1)
+    fast_hit: str = Field(min_length=1)
+    detection_result: str = Field(min_length=1)
+    fusion_result: str = Field(min_length=1)
+    decision_result: str = Field(min_length=1)
+    execution_record: str = Field(min_length=1)
+    evaluation_input: str = Field(min_length=1)
+
+
 class RunMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -37,7 +51,7 @@ class RunMetadata(BaseModel):
     sysmon_config_version: str | None = None
     detector_set_version: str | None = None
     scenario_version: str | None = None
-    schema_versions: dict[str, str] = Field(min_length=1)
+    schema_versions: SchemaVersions
     reference_policy_version: str | None = None
 
     @field_validator("run_id", "scenario_id", "target_host")

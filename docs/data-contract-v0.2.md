@@ -73,6 +73,8 @@
 
 `end_time`이 존재하면 `start_time`보다 이를 수 없으며, 두 시각이 같은 값은 허용한다.
 
+`schema_versions`는 `run_metadata`, `event`, `evidence`, `fast_hit`, `detection_result`, `fusion_result`, `decision_result`, `execution_record`, `evaluation_input` 키를 모두 포함해야 하며, 각 값은 비어 있지 않은 버전 문자열이어야 한다.
+
 ## 5. NormalizedEvent v0.2
 
 ### 5-1. 식별자와 시간

@@ -247,3 +247,30 @@ def test_run_metadata_requires_schema_versions() -> None:
     # when & then: v0.2 필수 필드 누락으로 검증 오류가 발생한다
     with pytest.raises(ValidationError, match="schema_versions"):
         RunMetadata(**invalid_payload)
+
+
+@pytest.mark.parametrize(
+    "schema_versions",
+    [
+        {},
+        {key: value for key, value in SCHEMA_VERSIONS.items() if key != "event"},
+        {**SCHEMA_VERSIONS, "evnet": "v0.2"},
+        {**SCHEMA_VERSIONS, "event": ""},
+    ],
+)
+def test_run_metadata_rejects_invalid_schema_versions(
+    schema_versions: dict[str, str],
+) -> None:
+    # given: 필수 Contract key가 누락되었거나 오타·빈 버전 값을 포함한 schema_versions
+    invalid_payload = {
+        "run_id": "RUN-20260903-001",
+        "scenario_id": "R1",
+        "run_type": RunType.ATTACK,
+        "target_host": "WIN-01",
+        "start_time": datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
+        "schema_versions": schema_versions,
+    }
+
+    # when & then: Contract별 버전 정보는 완전하고 유효해야 한다
+    with pytest.raises(ValidationError):
+        RunMetadata(**invalid_payload)
