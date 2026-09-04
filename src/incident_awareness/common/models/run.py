@@ -93,6 +93,9 @@ class RunMetadata(BaseModel):
 
     @model_validator(mode="after")
     def validate_time_order(self) -> "RunMetadata":
+        if self.run_type is RunType.NORMAL and self.reference_time is not None:
+            raise ValueError("normal Run의 reference_time은 null이어야 합니다.")
+
         if self.end_time is not None and self.end_time < self.start_time:
             raise ValueError("종료 시각은 시작 시각보다 이를 수 없습니다.")
 

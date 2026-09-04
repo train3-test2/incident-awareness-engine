@@ -131,6 +131,23 @@ def test_run_metadata_rejects_end_time_before_start_time() -> None:
         RunMetadata(**invalid_payload)
 
 
+def test_run_metadata_rejects_reference_time_for_normal_run() -> None:
+    # given: normal Run에 평가 전용 기준선이 포함된 실행 메타데이터
+    invalid_payload = {
+        "run_id": "RUN-20260903-001",
+        "scenario_id": "R1",
+        "run_type": RunType.NORMAL,
+        "target_host": "WIN-01",
+        "start_time": datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
+        "reference_time": datetime(2026, 9, 3, 1, 5, tzinfo=UTC),
+        "schema_versions": SCHEMA_VERSIONS,
+    }
+
+    # when & then: normal Run의 reference_time은 null이어야 한다
+    with pytest.raises(ValidationError, match="normal Run의 reference_time은 null이어야 합니다."):
+        RunMetadata(**invalid_payload)
+
+
 @pytest.mark.parametrize(
     "run_id",
     [
