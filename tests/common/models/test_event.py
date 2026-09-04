@@ -33,6 +33,32 @@ def test_network_info_allows_omitted_fields() -> None:
     assert network_info.dst_port is None
 
 
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        (ProcessInfo, {"unexpected": "value"}),
+        (NetworkInfo, {"unexpected": "value"}),
+        (
+            RawLogReference,
+            {
+                "raw_log_id": "RAW-001",
+                "segment_no": 1,
+                "record_no": 1,
+                "unexpected": "value",
+            },
+        ),
+    ],
+)
+def test_event_components_reject_undefined_fields(
+    model: type[ProcessInfo] | type[NetworkInfo] | type[RawLogReference],
+    payload: dict[str, str | int],
+) -> None:
+    # given: Contract에 정의되지 않은 필드가 포함된 입력
+    # when & then: 입력 생성 시 검증 오류가 발생한다
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        model(**payload)
+
+
 def test_raw_log_reference_accepts_valid_values() -> None:
     # given & when: 유효한 Raw Log 참조 정보를 생성
     raw_log_reference = RawLogReference(

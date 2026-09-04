@@ -1,10 +1,12 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 type EventSource = str
 type EventType = str
 
 
 class ProcessInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     pid: int | None = None
     name: str | None = None
     path: str | None = None
@@ -14,6 +16,8 @@ class ProcessInfo(BaseModel):
 
 
 class NetworkInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     protocol: str | None = None
     src_ip: str | None = None
     src_port: int | None = None
@@ -22,6 +26,8 @@ class NetworkInfo(BaseModel):
 
 
 class RawLogReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     raw_log_id: str = Field(min_length=1)
     source_record_id: str | None = None
     segment_no: int = Field(ge=1)
