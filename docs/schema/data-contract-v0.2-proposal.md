@@ -150,7 +150,7 @@ Normalizer·Evidence·Fusion·Fast runner의 런타임 경로는 `class`, `run_t
 | `attack_technique_ids`      | List[String] |    X |    O | ATT&CK 맥락 참조값                                                 |
 | `features`                  | Object       |    X |    O | 추출 Feature; Evidence 담당 역할 소유                              |
 
-`timestamp`는 `event_ids`가 가리키는 Source Event 시각 중 가장 늦은 값으로 정한다. 이는 Evidence를 확정할 수 있게 된 최초 시각을 나타낸다. 여러 Event의 시간 범위가 필요할 때만 `first_source_event_time`을 함께 기록하며, 이 값은 탐지 성능 채점이나 Decision 시간 계산에 사용하지 않는다.
+`timestamp`는 `event_ids`가 가리키는 `NormalizedEvent.timestamp` 중 가장 늦은 값으로 정한다. 이는 Evidence를 확정할 수 있게 된 최초 시각을 나타낸다. 여러 Event의 시간 범위가 필요할 때만 `first_source_event_time`을 함께 기록하며, 이 값은 탐지 성능 채점이나 Decision 시간 계산에 사용하지 않는다.
 
 `entity_id`는 필드를 유지하되, v0.2에서 non-null 필수로 확정하려면 먼저 Entity 귀속 범위를 합의해야 한다. 합의 전에는 host·user-host·session·incident 중 어느 단위인지 가정해 구현하거나 기존 결과를 일괄 변환하지 않는다.
 
