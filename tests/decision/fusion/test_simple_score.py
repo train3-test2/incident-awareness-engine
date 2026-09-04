@@ -1,21 +1,23 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from incident_awareness.common.models.evidence import Evidence
 from incident_awareness.decision.fusion.simple_score import SimpleScorer
+from incident_awareness.decision.fusion.window_engine import WindowEngine
 
 
 def make_evidence(
     evidence_id: str,
     evidence_type: str,
     *,
+    timestamp: datetime | None = None,
     feature_channel_group: str = "fusion_feature",
 ) -> Evidence:
     return Evidence(
         evidence_id=evidence_id,
         run_id="RUN-01",
-        timestamp=datetime(2026, 8, 30, 1, 0, tzinfo=UTC),
+        timestamp=timestamp or datetime(2026, 8, 30, 1, 0, tzinfo=UTC),
         entity_id="HOST-01",
         evidence_type=evidence_type,
         source_event_ids=[f"EVT-{evidence_id}"],
@@ -167,3 +169,56 @@ def test_same_input_produces_same_score() -> None:
 
     # Then
     assert first_score == second_score
+
+
+def test_score_decreases_when_evidence_expires_from_window() -> None:
+    # Given
+    engine = WindowEngine(window_size=timedelta(minutes=5))
+    scorer = SimpleScorer(["type_a", "type_b", "type_c", "type_d"])
+
+    t0 = datetime(2026, 8, 30, 1, 0, tzinfo=UTC)
+
+    evidence_a = make_evidence("001", "type_a", timestamp=t0)
+    evidence_b = make_evidence(
+        "002",
+        "type_b",
+        timestamp=t0 + timedelta(minutes=3),
+    )
+    evidence_c = make_evidence(
+        "003",
+        "type_c",
+        timestamp=t0 + timedelta(minutes=5),
+    )
+
+    engine.ingest(evidence_a)
+    engine.ingest(evidence_b)
+    engine.ingest(evidence_c)
+
+    # When
+    engine.advance_to(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        timestamp=t0 + timedelta(minutes=5),
+    )
+    score_at_5m = scorer.score(
+        engine.get_active_evidence(
+            run_id="RUN-01",
+            entity_id="HOST-01",
+        )
+    )
+
+    engine.advance_to(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        timestamp=t0 + timedelta(minutes=7),
+    )
+    score_at_7m = scorer.score(
+        engine.get_active_evidence(
+            run_id="RUN-01",
+            entity_id="HOST-01",
+        )
+    )
+
+    # Then
+    assert score_at_5m == 0.75
+    assert score_at_7m == 0.5
