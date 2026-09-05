@@ -110,6 +110,24 @@ def test_raw_log_reference_supports_v02_provenance_fields() -> None:
     assert raw_log_reference.parser_version == "v0.2"
 
 
+def test_raw_log_reference_json_round_trip_preserves_provenance() -> None:
+    # given: 모든 Provenance 필드가 포함된 Raw Log 참조 정보
+    original = RawLogReference(
+        raw_log_id="RAW-001",
+        source_record_id="153",
+        segment_no=1,
+        record_no=153,
+        parser_id="sysmon-normalizer",
+        parser_version="v0.2",
+    )
+
+    # when: JSON 직렬화 후 역직렬화한다
+    restored = RawLogReference.model_validate_json(original.model_dump_json())
+
+    # then: 모든 Provenance 정보가 동일하게 보존된다
+    assert restored == original
+
+
 @pytest.mark.parametrize(
     ("raw_log_id", "segment_no", "record_no"),
     [
