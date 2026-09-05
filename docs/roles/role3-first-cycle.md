@@ -157,27 +157,27 @@ FusionResult
 
 ## 3-2. 다른 역할 소유 영역
 
-| 영역                    | 담당 |
-| ----------------------- | ---- |
-| Event → Evidence        | 2번  |
-| Evidence Type 판단      | 2번  |
-| ATT&CK Mapping          | 2번  |
-| Semantic Evidence / Context | 2번 |
-| Temporal Window / Temporal Model Feature / Fusion | 1번 |
-| Fast Comparator Policy / Runner / FastHitRecord | 5번 |
-| Fast Adapter / DetectionResult / Hybrid Decision | 3번 |
-| Evidence → Fusion       | 1번  |
-| Fusion Score            | 1번  |
-| `fusion_time`           | 1번  |
-| Fast Detector           | 5번  |
-| Sigma Rule              | 5번  |
-| Fast Detection 기준     | 5번  |
-| `detector_time`         | 5번  |
-| Scenario                | 4번  |
-| Ground Truth            | 4번  |
-| Dataset                 | 4번  |
-| Baseline                | 5번  |
-| Evaluation              | 5번  |
+| 영역                                              | 담당 |
+| ------------------------------------------------- | ---- |
+| Event → Evidence                                  | 2번  |
+| Evidence Type 판단                                | 2번  |
+| ATT&CK Mapping                                    | 2번  |
+| Semantic Evidence / Context                       | 2번  |
+| Temporal Window / Temporal Model Feature / Fusion | 1번  |
+| Fast Comparator Policy / Runner / FastHitRecord   | 5번  |
+| Fast Adapter / DetectionResult / Hybrid Decision  | 3번  |
+| Evidence → Fusion                                 | 1번  |
+| Fusion Score                                      | 1번  |
+| `fusion_time`                                     | 1번  |
+| Fast Detector                                     | 5번  |
+| Sigma Rule                                        | 5번  |
+| Fast Detection 기준                               | 5번  |
+| `detector_time`                                   | 5번  |
+| Scenario                                          | 4번  |
+| Ground Truth                                      | 4번  |
+| Dataset                                           | 4번  |
+| Baseline                                          | 5번  |
+| Evaluation                                        | 5번  |
 
 3번은 위 로직의 내부 구현에 관여하지 않는다.
 
