@@ -52,3 +52,66 @@ class ThresholdStoppingPolicy:
         self.threshold_on = threshold_on
         self.threshold_off = threshold_off
         self.persistence_k = persistence_k
+
+    def evaluate(
+        self,
+        trajectory: list[ScorePoint],
+        *,
+        run_id: str,
+        entity_id: str | None,
+        run_end: datetime,
+    ) -> StoppingResult:
+        consecutive = 0
+        fusion_time: datetime | None = None
+        score_at_decision: float | None = None
+        episode_start_time: datetime | None = None
+        episode_score_at_start: float | None = None
+        peak_score: float | None = None
+
+        for point in trajectory:
+            if fusion_time is not None:
+                if peak_score is None or point.score > peak_score:
+                    peak_score = point.score
+                continue
+
+            if point.score >= self.threshold_on:
+                consecutive += 1
+            else:
+                consecutive = 0
+
+            if consecutive >= self.persistence_k:
+                fusion_time = point.timestamp
+                score_at_decision = point.score
+                episode_start_time = point.timestamp
+                episode_score_at_start = point.score
+                peak_score = point.score
+
+        if fusion_time is None:
+            return StoppingResult(
+                fusion_status="miss",
+                fusion_time=None,
+                score_at_decision=None,
+                fusion_episodes=(),
+            )
+
+        assert episode_start_time is not None
+        assert episode_score_at_start is not None
+        assert peak_score is not None
+
+        episode = FusionEpisode(
+            episode_id="FEP-001",
+            run_id=run_id,
+            entity_id=entity_id,
+            start_time=episode_start_time,
+            end_time=run_end,
+            end_reason="run_end",
+            score_at_start=episode_score_at_start,
+            peak_score=peak_score,
+        )
+
+        return StoppingResult(
+            fusion_status="detected",
+            fusion_time=fusion_time,
+            score_at_decision=score_at_decision,
+            fusion_episodes=(episode,),
+        )
