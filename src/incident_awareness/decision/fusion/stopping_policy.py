@@ -27,3 +27,28 @@ class StoppingResult:
     fusion_time: datetime | None
     score_at_decision: float | None
     fusion_episodes: tuple[FusionEpisode, ...]
+
+
+class ThresholdStoppingPolicy:
+    def __init__(
+        self,
+        *,
+        threshold_on: float,
+        threshold_off: float,
+        persistence_k: int,
+    ) -> None:
+        if not 0.0 <= threshold_on <= 1.0:
+            raise ValueError("threshold_on must be between 0.0 and 1.0")
+
+        if not 0.0 <= threshold_off <= 1.0:
+            raise ValueError("threshold_off must be between 0.0 and 1.0")
+
+        if threshold_off >= threshold_on:
+            raise ValueError("threshold_off must be less than threshold_on")
+
+        if persistence_k < 1:
+            raise ValueError("persistence_k must be at least 1")
+
+        self.threshold_on = threshold_on
+        self.threshold_off = threshold_off
+        self.persistence_k = persistence_k
