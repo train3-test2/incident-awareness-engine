@@ -113,7 +113,7 @@ v0.2 First Cycle은 Raw Log에서 정규화한 Event만 다루므로 `raw_ref`�
 | `raw_log_id`       | String  | 원본 또는 변환 Raw artifact를 식별하는 Manifest 항목 ID |
 | `source_record_id` | String  | Source-native Record 식별자; 존재하는 경우 기록         |
 | `segment_no`       | Integer | 파일 분할 번호                                          |
-| `record_no`        | Integer | Segment 안의 원본 Record 번호                           |
+| `record_no`        | Integer | Segment 안의 원본 Record 1-based 위치                   |
 | `parser_id`        | String  | 정규화에 사용한 Parser 식별자                           |
 | `parser_version`   | String  | 정규화에 사용한 Parser 버전                             |
 

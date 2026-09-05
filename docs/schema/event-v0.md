@@ -250,7 +250,7 @@ network_connection
 | `raw_log_id` | String  | Run Manifest 항목으로 해석되는 Raw artifact 식별자 |
 | `source_record_id` | String | Source-native Record 식별자; 존재 시 기록 |
 | `segment_no` | Integer | 동일한 run/source 내 파일 분할 번호 |
-| `record_no`  | Integer | 해당 Segment 내부 Event Record 위치 |
+| `record_no`  | Integer | 해당 Segment 내부 Event Record의 1-based 위치 |
 | `parser_id` | String | 정규화에 사용한 Parser 식별자 |
 | `parser_version` | String | 정규화에 사용한 Parser 버전 |
 
