@@ -19,7 +19,7 @@ def make_evidence(
         timestamp=timestamp,
         entity_id=entity_id,
         evidence_type="test_evidence",
-        source_event_ids=[f"EVT-{evidence_id}"],
+        event_ids=[f"EVT-{evidence_id}"],
         derived_from_source_layer="raw_telemetry",
         feature_channel_group="fusion_feature",
         extractor_version="fixture-v0.1",
