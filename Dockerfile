@@ -12,3 +12,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 COPY src ./src
 RUN uv sync --frozen --no-dev
+
+RUN groupadd --system app && useradd --system --gid app --create-home app
+
+USER app
