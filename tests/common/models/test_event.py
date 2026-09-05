@@ -33,6 +33,26 @@ def test_network_info_allows_omitted_fields() -> None:
     assert network_info.dst_port is None
 
 
+@pytest.mark.parametrize(("port",), [(0,), (65535,)])
+def test_network_info_accepts_port_boundaries(port: int) -> None:
+    # given & when: Contract에 정의된 포트 범위의 경계값을 입력
+    network_info = NetworkInfo(src_port=port, dst_port=port)
+
+    # then: 경계값이 보존된다
+    assert network_info.src_port == port
+    assert network_info.dst_port == port
+
+
+@pytest.mark.parametrize(("port",), [(-1,), (65536,)])
+def test_network_info_rejects_ports_outside_contract_range(port: int) -> None:
+    # given: Contract 범위를 벗어난 포트 번호
+    invalid_payload = {"src_port": port, "dst_port": port}
+
+    # when & then: NetworkInfo 생성 시 검증 오류가 발생한다
+    with pytest.raises(ValidationError):
+        NetworkInfo(**invalid_payload)
+
+
 @pytest.mark.parametrize(
     ("model", "payload"),
     [

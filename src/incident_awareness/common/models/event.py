@@ -20,9 +20,9 @@ class NetworkInfo(BaseModel):
 
     protocol: str | None = None
     src_ip: str | None = None
-    src_port: int | None = None
+    src_port: int | None = Field(default=None, ge=0, le=65535)
     dst_ip: str | None = None
-    dst_port: int | None = None
+    dst_port: int | None = Field(default=None, ge=0, le=65535)
 
 
 class RawLogReference(BaseModel):
