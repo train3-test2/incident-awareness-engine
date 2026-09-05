@@ -280,3 +280,68 @@ def test_continues_processing_after_first_active_entry() -> None:
     # Then
     assert result.fusion_time == trajectory[1].timestamp
     assert result.fusion_episodes[0].peak_score == 0.90
+
+
+def test_releases_active_episode_when_score_falls_below_threshold_off() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    trajectory = [
+        make_point(0, 0.75),
+        make_point(10, 0.80),
+        make_point(20, 0.90),
+        make_point(30, 0.40),
+    ]
+
+    # When
+    result = policy.evaluate(
+        trajectory,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_end=make_point(60, 0.0).timestamp,
+    )
+
+    # Then
+    assert result.fusion_status == "detected"
+    assert result.fusion_time == trajectory[1].timestamp
+    assert len(result.fusion_episodes) == 1
+
+    episode = result.fusion_episodes[0]
+    assert episode.start_time == trajectory[1].timestamp
+    assert episode.end_time == trajectory[3].timestamp
+    assert episode.end_reason == "released"
+    assert episode.score_at_start == 0.80
+    assert episode.peak_score == 0.90
+
+
+def test_threshold_off_equality_keeps_episode_active() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    trajectory = [
+        make_point(0, 0.75),
+        make_point(10, 0.80),
+        make_point(20, 0.50),
+    ]
+    run_end = make_point(30, 0.0).timestamp
+
+    # When
+    result = policy.evaluate(
+        trajectory,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_end=run_end,
+    )
+
+    # Then
+    assert len(result.fusion_episodes) == 1
+
+    episode = result.fusion_episodes[0]
+    assert episode.end_time == run_end
+    assert episode.end_reason == "run_end"
