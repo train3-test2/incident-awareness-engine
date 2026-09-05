@@ -1,6 +1,14 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
+
+
+def _validate_utc_datetime(value: datetime, *, field_name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must include timezone information")
+
+    if value.utcoffset() != timedelta(0):
+        raise ValueError(f"{field_name} must be UTC")
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,9 +77,17 @@ class ThresholdStoppingPolicy:
         episode_score_at_start: float | None = None
         peak_score: float | None = None
         episodes: list[FusionEpisode] = []
+
+        _validate_utc_datetime(run_end, field_name="run_end")
+
         previous_timestamp: datetime | None = None
 
         for point in trajectory:
+            _validate_utc_datetime(
+                point.timestamp,
+                field_name="ScorePoint timestamp",
+            )
+
             if previous_timestamp is not None and point.timestamp < previous_timestamp:
                 raise ValueError("ScorePoint timestamps must be non-decreasing")
 
