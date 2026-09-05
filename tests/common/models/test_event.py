@@ -98,6 +98,8 @@ def test_raw_log_reference_supports_v02_provenance_fields() -> None:
         ("RAW-001", 1, 0),
         ("RAW-001", -1, 1),
         ("RAW-001", 1, -1),
+        ("RAW-001", True, 1),
+        ("RAW-001", 1, True),
     ],
 )
 def test_raw_log_reference_rejects_invalid_identifier_or_position(

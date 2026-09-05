@@ -30,7 +30,7 @@ class RawLogReference(BaseModel):
 
     raw_log_id: str = Field(min_length=1)
     source_record_id: str | None = None
-    segment_no: int = Field(ge=1)
-    record_no: int = Field(ge=1)
+    segment_no: int = Field(strict=True, ge=1)
+    record_no: int = Field(strict=True, ge=1)
     parser_id: str | None = None
     parser_version: str | None = None

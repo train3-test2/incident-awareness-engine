@@ -1,0 +1,7 @@
+version: v0.2
+event_types:
+  - process_create
+  - network_connection
+  - script_block
+  - file_create
+  - registry_change
