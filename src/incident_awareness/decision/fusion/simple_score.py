@@ -10,8 +10,13 @@ class SimpleScorer:
         if not profile_types:
             raise ValueError("evidence_types must not be empty")
 
+        if any(not evidence_type.strip() for evidence_type in profile_types):
+            raise ValueError("evidence_types must not contain blank values")
+
         if len(set(profile_types)) != len(profile_types):
             raise ValueError("evidence_types must not contain duplicates")
+
+        
 
         self._profile_types = frozenset(profile_types)
 

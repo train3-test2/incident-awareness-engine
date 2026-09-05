@@ -222,3 +222,27 @@ def test_score_decreases_when_evidence_expires_from_window() -> None:
     # Then
     assert score_at_5m == 0.75
     assert score_at_7m == 0.5
+
+
+@pytest.mark.parametrize(
+    "blank_evidence_type",
+    [
+        "",
+        "   ",
+    ],
+)
+def test_rejects_blank_profile_evidence_type(
+    blank_evidence_type: str,
+) -> None:
+    # Given
+    evidence_types = [
+        "encoded_powershell_command",
+        blank_evidence_type,
+    ]
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        SimpleScorer(evidence_types)
+
+    # Then
+    assert str(exc_info.value) == "evidence_types must not contain blank values"
