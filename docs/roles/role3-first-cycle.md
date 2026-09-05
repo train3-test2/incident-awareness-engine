@@ -515,8 +515,7 @@ class EvidenceProcessor(Protocol):
     def process(
         self,
         event: NormalizedEvent,
-    ) -> list[EvidenceResult]:
-        ...
+    ) -> list[EvidenceResult]: ...
 ```
 
 ```python
@@ -524,8 +523,7 @@ class FusionProcessor(Protocol):
     def process(
         self,
         evidences: list[EvidenceResult],
-    ) -> FusionResult:
-        ...
+    ) -> FusionResult: ...
 ```
 
 ```python
@@ -533,8 +531,7 @@ class FastHitRecordAdapter(Protocol):
     def adapt(
         self,
         fast_hit_records: list[FastHitRecord],
-    ) -> DetectionResult:
-        ...
+    ) -> DetectionResult: ...
 ```
 
 ## 중요한 원칙
