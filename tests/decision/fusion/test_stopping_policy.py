@@ -421,3 +421,78 @@ def test_fusion_time_remains_first_entry_after_reentry() -> None:
     assert len(result.fusion_episodes) == 2
     assert result.fusion_time == trajectory[1].timestamp
     assert result.fusion_time != result.fusion_episodes[1].start_time
+
+
+def test_rejects_out_of_order_timestamps() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    trajectory = [
+        make_point(10, 0.75),
+        make_point(0, 0.80),
+    ]
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        policy.evaluate(
+            trajectory,
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_end=make_point(20, 0.0).timestamp,
+        )
+
+    # Then
+    assert str(exc_info.value) == "ScorePoint timestamps must be non-decreasing"
+
+
+def test_allows_equal_timestamps() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    trajectory = [
+        make_point(0, 0.75),
+        make_point(0, 0.80),
+    ]
+
+    # When
+    result = policy.evaluate(
+        trajectory,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_end=make_point(10, 0.0).timestamp,
+    )
+
+    # Then
+    assert result.fusion_status == "detected"
+    assert result.fusion_time == trajectory[1].timestamp
+
+
+def test_rejects_timestamp_after_run_end() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    trajectory = [
+        make_point(0, 0.75),
+        make_point(20, 0.80),
+    ]
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        policy.evaluate(
+            trajectory,
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_end=make_point(10, 0.0).timestamp,
+        )
+
+    # Then
+    assert str(exc_info.value) == "ScorePoint timestamp must not exceed run_end"
