@@ -94,6 +94,7 @@ def test_raw_log_reference_supports_v02_provenance_fields() -> None:
     ("raw_log_id", "segment_no", "record_no"),
     [
         ("", 1, 1),
+        (" ", 1, 1),
         ("RAW-001", 0, 1),
         ("RAW-001", 1, 0),
         ("RAW-001", -1, 1),

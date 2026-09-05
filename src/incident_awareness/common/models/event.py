@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 type EventSource = str
 type EventType = str
@@ -34,3 +34,11 @@ class RawLogReference(BaseModel):
     record_no: int = Field(strict=True, ge=1)
     parser_id: str | None = None
     parser_version: str | None = None
+
+    @field_validator("raw_log_id")
+    @classmethod
+    def validate_raw_log_id(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("raw_log_id는 비어 있거나 공백만으로 구성될 수 없습니다.")
+
+        return value
