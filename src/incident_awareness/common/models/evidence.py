@@ -13,7 +13,7 @@ class Evidence(BaseModel):
     entity_id: str
     evidence_type: str
 
-    source_event_ids: list[str] = Field(min_length=1)
+    event_ids: list[str] = Field(min_length=1)
 
     derived_from_source_layer: Literal[
         "raw_telemetry",
