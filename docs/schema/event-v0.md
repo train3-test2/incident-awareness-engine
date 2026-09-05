@@ -215,9 +215,9 @@ network_connection
 | ---------- | ------- | ---- | ---------------------- |
 | `protocol` | String  | X    | TCP, UDP 등의 Protocol |
 | `src_ip`   | String  | X    | 출발지 IP              |
-| `src_port` | Integer | X    | 출발지 Port            |
+| `src_port` | Integer | X    | 출발지 Port (0~65535)  |
 | `dst_ip`   | String  | X    | 목적지 IP              |
-| `dst_port` | Integer | X    | 목적지 Port            |
+| `dst_port` | Integer | X    | 목적지 Port (0~65535)  |
 
 네트워크 정보가 없는 Event에서는:
 

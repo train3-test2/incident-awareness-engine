@@ -104,6 +104,8 @@
 
 v0.2 First Cycle은 Raw Log에서 정규화한 Event만 다루므로 `raw_ref`는 반드시 채운다. Synthetic Event는 현재 범위에 포함하지 않는다. 이후 Synthetic Event를 도입하는 경우에는 `event_origin`과 `raw_ref` 예외 조건을 새 Schema 버전에서 명시한다.
 
+`network.src_port`, `network.dst_port`는 포트 번호로서 `0` 이상 `65535` 이하의 정수만 허용한다.
+
 `source`는 telemetry origin·record producer·detector 표현 중 무엇을 의미하는지 팀 결정이 필요하다. 결정 전에는 현재 값 목록을 최종 taxonomy로 고정하지 않는다. 선택지는 (A) `source`와 `source_layer`를 유지하고 조합별 Pydantic 검증을 추가하는 방식, (B) `RawTelemetryEvent`와 `DetectorOutput`을 discriminated union으로 분리하는 방식이다. 역할 3이 초안을 제시하고 역할 2·5가 검토한다.
 
 `raw_ref` 구조는 다음과 같다.
