@@ -69,8 +69,17 @@ class ThresholdStoppingPolicy:
         episode_score_at_start: float | None = None
         peak_score: float | None = None
         episodes: list[FusionEpisode] = []
+        previous_timestamp: datetime | None = None
 
         for point in trajectory:
+            if previous_timestamp is not None and point.timestamp < previous_timestamp:
+                raise ValueError("ScorePoint timestamps must be non-decreasing")
+
+            if point.timestamp > run_end:
+                raise ValueError("ScorePoint timestamp must not exceed run_end")
+
+            previous_timestamp = point.timestamp
+
             if active:
                 if point.score < self.threshold_off:
                     assert episode_start_time is not None
