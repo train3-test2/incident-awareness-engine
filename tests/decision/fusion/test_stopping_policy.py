@@ -496,3 +496,38 @@ def test_rejects_timestamp_after_run_end() -> None:
 
     # Then
     assert str(exc_info.value) == "ScorePoint timestamp must not exceed run_end"
+
+
+def test_returns_same_result_for_same_input_and_config() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    trajectory = [
+        make_point(0, 0.75),
+        make_point(10, 0.80),
+        make_point(20, 0.90),
+        make_point(30, 0.40),
+        make_point(40, 0.72),
+        make_point(50, 0.82),
+    ]
+    run_end = make_point(60, 0.0).timestamp
+
+    # When
+    first_result = policy.evaluate(
+        trajectory,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_end=run_end,
+    )
+    second_result = policy.evaluate(
+        trajectory,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_end=run_end,
+    )
+
+    # Then
+    assert first_result == second_result
