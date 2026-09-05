@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -531,3 +531,111 @@ def test_returns_same_result_for_same_input_and_config() -> None:
 
     # Then
     assert first_result == second_result
+
+
+def test_rejects_naive_run_end() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    trajectory = [
+        make_point(0, 0.75),
+        make_point(10, 0.80),
+    ]
+    naive_run_end = datetime(2026, 9, 6, 1, 1, tzinfo=UTC).replace(tzinfo=None)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        policy.evaluate(
+            trajectory,
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_end=naive_run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "run_end must include timezone information"
+
+
+def test_rejects_non_utc_run_end() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    trajectory = [
+        make_point(0, 0.75),
+        make_point(10, 0.80),
+    ]
+    kst = timezone(timedelta(hours=9))
+    non_utc_run_end = datetime(2026, 9, 6, 10, 1, tzinfo=kst)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        policy.evaluate(
+            trajectory,
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_end=non_utc_run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "run_end must be UTC"
+
+
+def test_rejects_naive_score_point_timestamp() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    trajectory = [
+        ScorePoint(
+            timestamp=datetime(2026, 9, 6, 1, 0, tzinfo=UTC).replace(tzinfo=None),
+            score=0.75,
+        ),
+    ]
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        policy.evaluate(
+            trajectory,
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_end=make_point(10, 0.0).timestamp,
+        )
+
+    # Then
+    assert str(exc_info.value) == ("ScorePoint timestamp must include timezone information")
+
+
+def test_rejects_non_utc_score_point_timestamp() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    kst = timezone(timedelta(hours=9))
+    trajectory = [
+        ScorePoint(
+            timestamp=datetime(2026, 9, 6, 10, 0, tzinfo=kst),
+            score=0.75,
+        ),
+    ]
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        policy.evaluate(
+            trajectory,
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_end=make_point(10, 0.0).timestamp,
+        )
+
+    # Then
+    assert str(exc_info.value) == "ScorePoint timestamp must be UTC"
