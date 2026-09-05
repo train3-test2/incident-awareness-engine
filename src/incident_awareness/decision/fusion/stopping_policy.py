@@ -79,7 +79,7 @@ class ThresholdStoppingPolicy:
 
                     episodes.append(
                         FusionEpisode(
-                            episode_id="FEP-001",
+                            episode_id=f"FEP-{len(episodes) + 1:03d}",
                             run_id=run_id,
                             entity_id=entity_id,
                             start_time=episode_start_time,
@@ -89,15 +89,17 @@ class ThresholdStoppingPolicy:
                             peak_score=peak_score,
                         )
                     )
+
                     active = False
+                    consecutive = 0
+                    episode_start_time = None
+                    episode_score_at_start = None
+                    peak_score = None
                     continue
 
                 if peak_score is None or point.score > peak_score:
                     peak_score = point.score
 
-                continue
-
-            if fusion_time is not None:
                 continue
 
             if point.score >= self.threshold_on:
@@ -107,11 +109,14 @@ class ThresholdStoppingPolicy:
 
             if consecutive >= self.persistence_k:
                 active = True
-                fusion_time = point.timestamp
-                score_at_decision = point.score
+                consecutive = 0
                 episode_start_time = point.timestamp
                 episode_score_at_start = point.score
                 peak_score = point.score
+
+                if fusion_time is None:
+                    fusion_time = point.timestamp
+                    score_at_decision = point.score
 
         if fusion_time is None:
             return StoppingResult(
@@ -128,7 +133,7 @@ class ThresholdStoppingPolicy:
 
             episodes.append(
                 FusionEpisode(
-                    episode_id="FEP-001",
+                    episode_id=f"FEP-{len(episodes) + 1:03d}",
                     run_id=run_id,
                     entity_id=entity_id,
                     start_time=episode_start_time,
