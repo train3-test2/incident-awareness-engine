@@ -60,7 +60,7 @@ def test_event_components_reject_undefined_fields(
 
 
 def test_raw_log_reference_accepts_valid_values() -> None:
-    # given & when: 유효한 Raw Log 참조 정보를 생성
+    # given & when: 1-based 위치를 포함한 유효한 Raw Log 참조 정보를 생성
     raw_log_reference = RawLogReference(
         raw_log_id="RAW-001",
         segment_no=1,
