@@ -345,3 +345,79 @@ def test_threshold_off_equality_keeps_episode_active() -> None:
     episode = result.fusion_episodes[0]
     assert episode.end_time == run_end
     assert episode.end_reason == "run_end"
+
+
+def test_reenters_active_and_creates_new_episode_after_release() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    trajectory = [
+        make_point(0, 0.75),
+        make_point(10, 0.80),  # FEP-001 start
+        make_point(20, 0.90),
+        make_point(30, 0.40),  # FEP-001 release
+        make_point(40, 0.72),
+        make_point(50, 0.82),  # FEP-002 start
+        make_point(60, 0.88),
+    ]
+    run_end = make_point(70, 0.0).timestamp
+
+    # When
+    result = policy.evaluate(
+        trajectory,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_end=run_end,
+    )
+
+    # Then
+    assert result.fusion_status == "detected"
+    assert result.fusion_time == trajectory[1].timestamp
+    assert result.score_at_decision == 0.80
+    assert len(result.fusion_episodes) == 2
+
+    first_episode = result.fusion_episodes[0]
+    assert first_episode.episode_id == "FEP-001"
+    assert first_episode.start_time == trajectory[1].timestamp
+    assert first_episode.end_time == trajectory[3].timestamp
+    assert first_episode.end_reason == "released"
+    assert first_episode.peak_score == 0.90
+
+    second_episode = result.fusion_episodes[1]
+    assert second_episode.episode_id == "FEP-002"
+    assert second_episode.start_time == trajectory[5].timestamp
+    assert second_episode.end_time == run_end
+    assert second_episode.end_reason == "run_end"
+    assert second_episode.peak_score == 0.88
+
+
+def test_fusion_time_remains_first_entry_after_reentry() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    trajectory = [
+        make_point(0, 0.75),
+        make_point(10, 0.80),
+        make_point(20, 0.40),
+        make_point(30, 0.75),
+        make_point(40, 0.85),
+    ]
+
+    # When
+    result = policy.evaluate(
+        trajectory,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_end=make_point(50, 0.0).timestamp,
+    )
+
+    # Then
+    assert len(result.fusion_episodes) == 2
+    assert result.fusion_time == trajectory[1].timestamp
+    assert result.fusion_time != result.fusion_episodes[1].start_time
