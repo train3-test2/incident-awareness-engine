@@ -20,7 +20,7 @@ def make_evidence(
         timestamp=timestamp or datetime(2026, 8, 30, 1, 0, tzinfo=UTC),
         entity_id="HOST-01",
         evidence_type=evidence_type,
-        source_event_ids=[f"EVT-{evidence_id}"],
+        event_ids=[f"EVT-{evidence_id}"],
         derived_from_source_layer="raw_telemetry",
         feature_channel_group=feature_channel_group,
         extractor_version="fixture-v0.1",
