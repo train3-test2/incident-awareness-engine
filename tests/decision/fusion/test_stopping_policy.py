@@ -445,10 +445,10 @@ def test_rejects_out_of_order_timestamps() -> None:
         )
 
     # Then
-    assert str(exc_info.value) == "ScorePoint timestamps must be non-decreasing"
+    assert str(exc_info.value) == "ScorePoint timestamps must be strictly increasing"
 
 
-def test_allows_equal_timestamps() -> None:
+def test_rejects_duplicate_timestamps() -> None:
     # Given
     policy = ThresholdStoppingPolicy(
         threshold_on=0.7,
@@ -461,16 +461,16 @@ def test_allows_equal_timestamps() -> None:
     ]
 
     # When
-    result = policy.evaluate(
-        trajectory,
-        run_id="RUN-01",
-        entity_id="HOST-01",
-        run_end=make_point(10, 0.0).timestamp,
-    )
+    with pytest.raises(ValueError) as exc_info:
+        policy.evaluate(
+            trajectory,
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_end=make_point(10, 0.0).timestamp,
+        )
 
     # Then
-    assert result.fusion_status == "detected"
-    assert result.fusion_time == trajectory[1].timestamp
+    assert str(exc_info.value) == ("ScorePoint timestamps must be strictly increasing")
 
 
 def test_rejects_timestamp_after_run_end() -> None:

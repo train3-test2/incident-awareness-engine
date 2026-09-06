@@ -88,8 +88,8 @@ class ThresholdStoppingPolicy:
                 field_name="ScorePoint timestamp",
             )
 
-            if previous_timestamp is not None and point.timestamp < previous_timestamp:
-                raise ValueError("ScorePoint timestamps must be non-decreasing")
+            if previous_timestamp is not None and point.timestamp <= previous_timestamp:
+                raise ValueError("ScorePoint timestamps must be strictly increasing")
 
             if point.timestamp > run_end:
                 raise ValueError("ScorePoint timestamp must not exceed run_end")
