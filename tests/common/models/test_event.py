@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -213,3 +213,137 @@ def test_normalized_event_rejects_non_string_source_event_id() -> None:
     # when & then: 원본 Event 식별자는 문자열이어야 한다
     with pytest.raises(ValidationError):
         NormalizedEvent.model_validate(invalid_payload)
+
+
+def test_normalized_event_rejects_analysis_result_field() -> None:
+    # given: Event Contract에 정의되지 않은 분석 결과 필드
+    timestamp = datetime(2026, 9, 6, 1, 0, tzinfo=UTC)
+
+    invalid_payload = {
+        "event_id": "evt-001",
+        "run_id": "RUN-20260906-001",
+        "timestamp": timestamp,
+        "timestamp_source": "event_time",
+        "event_time": timestamp,
+        "host_id": "WIN-01",
+        "source": "sysmon",
+        "source_layer": "raw_telemetry",
+        "source_event_id": "153",
+        "event_type": "process_create",
+        "raw_ref": {
+            "raw_log_id": "RAW-001",
+            "segment_no": 1,
+            "record_no": 153,
+        },
+        "risk_score": 0.9,
+    }
+
+    # when & then: 분석 결과 필드는 Event 입력으로 허용되지 않는다
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        NormalizedEvent.model_validate(invalid_payload)
+
+
+@pytest.mark.parametrize(
+    "required_field",
+    [
+        "event_id",
+        "run_id",
+        "timestamp",
+        "timestamp_source",
+        "host_id",
+        "source",
+        "source_layer",
+        "source_event_id",
+        "event_type",
+        "raw_ref",
+    ],
+)
+def test_normalized_event_requires_contract_fields(required_field: str) -> None:
+    # given: 필수 Contract 필드 하나가 누락된 Event 입력
+    timestamp = datetime(2026, 9, 6, 1, 0, tzinfo=UTC)
+
+    invalid_payload: dict[str, object] = {
+        "event_id": "evt-001",
+        "run_id": "RUN-20260906-001",
+        "timestamp": timestamp,
+        "timestamp_source": "event_time",
+        "event_time": timestamp,
+        "host_id": "WIN-01",
+        "source": "sysmon",
+        "source_layer": "raw_telemetry",
+        "source_event_id": "153",
+        "event_type": "process_create",
+        "raw_ref": {
+            "raw_log_id": "RAW-001",
+            "segment_no": 1,
+            "record_no": 153,
+        },
+    }
+    invalid_payload.pop(required_field)
+
+    # when & then: 필수 필드 누락은 검증 오류로 거부된다
+    with pytest.raises(ValidationError):
+        NormalizedEvent.model_validate(invalid_payload)
+
+
+def test_normalized_event_rejects_naive_timestamp() -> None:
+    # given: 시간대 정보가 없는 timestamp
+    invalid_payload = _valid_normalized_event_payload()
+    invalid_payload["timestamp"] = "2026-09-06T01:00:00"
+
+    # when & then: UTC 시간대 정보가 없으면 거부된다
+    with pytest.raises(ValidationError, match="시간대 정보"):
+        NormalizedEvent.model_validate(invalid_payload)
+
+
+def test_normalized_event_rejects_non_utc_timestamp() -> None:
+    # given: UTC가 아닌 timestamp
+    invalid_payload = _valid_normalized_event_payload()
+    korea_timezone = timezone(timedelta(hours=9))
+    invalid_payload["timestamp"] = datetime(2026, 9, 6, 10, 0, tzinfo=korea_timezone)
+
+    # when & then: UTC가 아닌 시간대는 거부된다
+    with pytest.raises(ValidationError, match="UTC 시간대"):
+        NormalizedEvent.model_validate(invalid_payload)
+
+
+def test_normalized_event_requires_timestamp_source_time() -> None:
+    # given: timestamp_source가 가리키는 시간이 없는 Event 입력
+    invalid_payload = _valid_normalized_event_payload()
+    invalid_payload["event_time"] = None
+
+    # when & then: 선택한 시간 필드가 없으면 거부된다
+    with pytest.raises(ValidationError, match="반드시 존재"):
+        NormalizedEvent.model_validate(invalid_payload)
+
+
+def test_normalized_event_rejects_mismatched_timestamp_source_time() -> None:
+    # given: timestamp와 timestamp_source가 가리키는 시간이 서로 다른 Event 입력
+    invalid_payload = _valid_normalized_event_payload()
+    invalid_payload["event_time"] = datetime(2026, 9, 6, 1, 0, 1, tzinfo=UTC)
+
+    # when & then: 두 시간이 다르면 거부된다
+    with pytest.raises(ValidationError, match="동일해야 합니다"):
+        NormalizedEvent.model_validate(invalid_payload)
+
+
+def _valid_normalized_event_payload() -> dict[str, object]:
+    timestamp = datetime(2026, 9, 6, 1, 0, tzinfo=UTC)
+
+    return {
+        "event_id": "evt-001",
+        "run_id": "RUN-20260906-001",
+        "timestamp": timestamp,
+        "timestamp_source": "event_time",
+        "event_time": timestamp,
+        "host_id": "WIN-01",
+        "source": "sysmon",
+        "source_layer": "raw_telemetry",
+        "source_event_id": "153",
+        "event_type": "process_create",
+        "raw_ref": {
+            "raw_log_id": "RAW-001",
+            "segment_no": 1,
+            "record_no": 153,
+        },
+    }
