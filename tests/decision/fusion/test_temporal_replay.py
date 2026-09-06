@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from incident_awareness.common.models.evidence import Evidence
 from incident_awareness.decision.fusion.simple_score import SimpleScorer
 from incident_awareness.decision.fusion.stopping_policy import ThresholdStoppingPolicy
@@ -152,3 +154,71 @@ def test_future_evidence_does_not_change_past_scores() -> None:
     ]
 
     assert future_past == base_past
+
+
+def test_rejects_evidence_with_mismatched_run_id() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=0,
+        evidence_type="encoded_powershell_command",
+    ).model_copy(update={"run_id": "RUN-OTHER"})
+
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [evidence],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_start + timedelta(seconds=10),
+        )
+
+    # Then
+    assert str(exc_info.value) == "Evidence run_id must match replay run_id"
+
+
+def test_rejects_evidence_with_mismatched_entity_id() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=0,
+        evidence_type="encoded_powershell_command",
+    ).model_copy(update={"entity_id": "HOST-OTHER"})
+
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [evidence],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_start + timedelta(seconds=10),
+        )
+
+    # Then
+    assert str(exc_info.value) == "Evidence entity_id must match replay entity_id"
