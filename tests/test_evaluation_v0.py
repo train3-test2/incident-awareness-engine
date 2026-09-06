@@ -6,7 +6,7 @@ from incident_awareness.evaluation.evaluation_v0 import evaluate
 def test_basic_attack_evaluation():
     df = pd.DataFrame(
         {
-            "run_id": ["R001"],
+            "run_id": ["RUN-20260902-001"],
             "class": ["attack"],
             "reference_time": [
                 pd.Timestamp("2026-09-02T00:02:00Z")
