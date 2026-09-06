@@ -85,3 +85,70 @@ def test_replays_scores_at_fixed_cadence() -> None:
 
     assert result.stopping_result.fusion_status == "detected"
     assert result.stopping_result.fusion_time == run_start + timedelta(seconds=20)
+
+
+def test_future_evidence_does_not_change_past_scores() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(
+            evidence_types=[
+                "encoded_powershell_command",
+                "suspicious_process",
+            ]
+        ),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=40)
+
+    base_evidences = [
+        make_evidence(
+            evidence_id="EVD-001",
+            seconds=0,
+            evidence_type="encoded_powershell_command",
+        ),
+    ]
+    evidences_with_future = [
+        *base_evidences,
+        make_evidence(
+            evidence_id="EVD-002",
+            seconds=25,
+            evidence_type="suspicious_process",
+        ),
+    ]
+
+    # When
+    base_result = runner.run(
+        base_evidences,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+    future_result = runner.run(
+        evidences_with_future,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+
+    # Then
+    base_past = [
+        point
+        for point in base_result.trajectory
+        if point.timestamp < run_start + timedelta(seconds=25)
+    ]
+    future_past = [
+        point
+        for point in future_result.trajectory
+        if point.timestamp < run_start + timedelta(seconds=25)
+    ]
+
+    assert future_past == base_past
