@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 type EventSource = str
 type EventType = str
@@ -72,3 +72,29 @@ class NormalizedEvent(BaseModel):
     user: str | None = None
     process: ProcessInfo | None = None
     network: NetworkInfo | None = None
+
+    @field_validator("timestamp", "event_time", "record_time", "ingest_time")
+    @classmethod
+    def validate_utc_datetime(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("datetime에는 시간대 정보가 포함되어야 합니다.")
+
+        if value.utcoffset() != timedelta(0):
+            raise ValueError("datetime은 UTC 시간대여야 합니다.")
+
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_timestamp_source(self) -> "NormalizedEvent":
+        source_time = getattr(self, self.timestamp_source)
+
+        if source_time is None:
+            raise ValueError("timestamp_source가 가리키는 시간 필드는 반드시 존재해야 합니다.")
+
+        if self.timestamp != source_time:
+            raise ValueError("timestamp는 timestamp_source가 가리키는 시간과 동일해야 합니다.")
+
+        return self
