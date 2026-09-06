@@ -1,0 +1,213 @@
+[
+  {
+    "name": "encoded_powershell_short_option",
+    "event": {
+      "event_id": "evt-process-001",
+      "run_id": "RUN-S0-001",
+      "timestamp": "2026-09-02T01:00:00.000Z",
+      "host_id": "WIN-01",
+      "source": "sysmon",
+      "source_event_id": "1",
+      "event_type": "process_create",
+      "user": "labuser",
+      "process": {
+        "pid": 4100,
+        "name": "PowerShell.EXE",
+        "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "command_line": "powershell.exe -enc SQBFAFgA",
+        "parent_pid": 2100,
+        "parent_name": "explorer.exe"
+      },
+      "network": null,
+      "raw_ref": null
+    },
+    "expected": [
+      {
+        "evidence_type": "encoded_powershell_command",
+        "features": {
+          "process_name": "powershell.exe",
+          "matched_option": "-enc"
+        }
+      }
+    ]
+  },
+  {
+    "name": "encoded_pwsh_long_quoted_option",
+    "event": {
+      "event_id": "evt-process-002",
+      "run_id": "RUN-S0-001",
+      "timestamp": "2026-09-02T01:00:01.000Z",
+      "host_id": "WIN-01",
+      "source": "sysmon",
+      "source_event_id": "1",
+      "event_type": "process_create",
+      "process": {
+        "pid": 4101,
+        "name": "pwsh.exe",
+        "command_line": "pwsh.exe \"-EncodedCommand\" SQBFAFgA",
+        "parent_pid": 2100,
+        "parent_name": "explorer.exe"
+      },
+      "network": null
+    },
+    "expected": [
+      {
+        "evidence_type": "encoded_powershell_command",
+        "features": {
+          "process_name": "pwsh.exe",
+          "matched_option": "-encodedcommand"
+        }
+      }
+    ]
+  },
+  {
+    "name": "encoding_substring_is_not_option",
+    "event": {
+      "event_id": "evt-process-003",
+      "run_id": "RUN-S0-001",
+      "timestamp": "2026-09-02T01:00:02.000Z",
+      "host_id": "WIN-01",
+      "source": "sysmon",
+      "source_event_id": "1",
+      "event_type": "process_create",
+      "process": {
+        "name": "powershell.exe",
+        "command_line": "powershell.exe -encoding utf8"
+      },
+      "network": null
+    },
+    "expected": []
+  },
+  {
+    "name": "enc_inside_string_is_not_option",
+    "event": {
+      "event_id": "evt-process-004",
+      "run_id": "RUN-S0-001",
+      "timestamp": "2026-09-02T01:00:03.000Z",
+      "host_id": "WIN-01",
+      "source": "sysmon",
+      "source_event_id": "1",
+      "event_type": "process_create",
+      "process": {
+        "name": "powershell.exe",
+        "command_line": "powershell.exe Write-Output value-enc-test"
+      },
+      "network": null
+    },
+    "expected": []
+  },
+  {
+    "name": "script_interpreter_global_connection",
+    "event": {
+      "event_id": "evt-network-001",
+      "run_id": "RUN-S0-001",
+      "timestamp": "2026-09-02T01:01:00.000Z",
+      "host_id": "WIN-01",
+      "source": "sysmon",
+      "source_event_id": "3",
+      "event_type": "network_connection",
+      "process": {
+        "pid": 4100,
+        "name": "powershell.exe"
+      },
+      "network": {
+        "protocol": "TCP",
+        "src_ip": "192.168.10.15",
+        "src_port": 52132,
+        "dst_ip": "8.8.8.8",
+        "dst_port": 443
+      }
+    },
+    "expected": [
+      {
+        "evidence_type": "script_interpreter_external_connection",
+        "features": {
+          "process_name": "powershell.exe",
+          "protocol": "tcp",
+          "dst_ip": "8.8.8.8",
+          "dst_port": 443
+        }
+      }
+    ]
+  },
+  {
+    "name": "script_interpreter_private_connection",
+    "event": {
+      "event_id": "evt-network-002",
+      "run_id": "RUN-S0-001",
+      "timestamp": "2026-09-02T01:01:01.000Z",
+      "host_id": "WIN-01",
+      "source": "sysmon",
+      "source_event_id": "3",
+      "event_type": "network_connection",
+      "process": {
+        "name": "cmd.exe"
+      },
+      "network": {
+        "protocol": "tcp",
+        "dst_ip": "10.0.0.8",
+        "dst_port": 445
+      }
+    },
+    "expected": []
+  },
+  {
+    "name": "non_interpreter_global_connection",
+    "event": {
+      "event_id": "evt-network-003",
+      "run_id": "RUN-S0-001",
+      "timestamp": "2026-09-02T01:01:02.000Z",
+      "host_id": "WIN-01",
+      "source": "sysmon",
+      "source_event_id": "3",
+      "event_type": "network_connection",
+      "process": {
+        "name": "chrome.exe"
+      },
+      "network": {
+        "protocol": "tcp",
+        "dst_ip": "8.8.4.4",
+        "dst_port": 443
+      }
+    },
+    "expected": []
+  },
+  {
+    "name": "invalid_destination_ip",
+    "event": {
+      "event_id": "evt-network-004",
+      "run_id": "RUN-S0-001",
+      "timestamp": "2026-09-02T01:01:03.000Z",
+      "host_id": "WIN-01",
+      "source": "sysmon",
+      "source_event_id": "3",
+      "event_type": "network_connection",
+      "process": {
+        "name": "wscript.exe"
+      },
+      "network": {
+        "protocol": "tcp",
+        "dst_ip": "not-an-ip",
+        "dst_port": 443
+      }
+    },
+    "expected": []
+  },
+  {
+    "name": "null_optional_payloads",
+    "event": {
+      "event_id": "evt-network-005",
+      "run_id": "RUN-S0-001",
+      "timestamp": "2026-09-02T01:01:04.000Z",
+      "host_id": "WIN-01",
+      "source": "sysmon",
+      "source_event_id": "3",
+      "event_type": "network_connection",
+      "user": null,
+      "process": null,
+      "network": null,
+      "raw_ref": null
+    },
+    "expected": []
+  }
+]
