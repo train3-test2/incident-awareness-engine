@@ -1,8 +1,11 @@
+from datetime import UTC, datetime
+
 import pytest
 from pydantic import ValidationError
 
 from incident_awareness.common.models.event import (
     NetworkInfo,
+    NormalizedEvent,
     ProcessInfo,
     RawLogReference,
 )
@@ -50,7 +53,7 @@ def test_network_info_rejects_ports_outside_contract_range(port: int) -> None:
 
     # when & then: NetworkInfo 생성 시 검증 오류가 발생한다
     with pytest.raises(ValidationError):
-        NetworkInfo(**invalid_payload)
+        NetworkInfo.model_validate(invalid_payload)
 
 
 @pytest.mark.parametrize(
@@ -76,7 +79,7 @@ def test_event_components_reject_undefined_fields(
     # given: Contract에 정의되지 않은 필드가 포함된 입력
     # when & then: 입력 생성 시 검증 오류가 발생한다
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        model(**payload)
+        model.model_validate(payload)
 
 
 def test_raw_log_reference_accepts_valid_values() -> None:
@@ -156,3 +159,57 @@ def test_raw_log_reference_rejects_invalid_identifier_or_position(
     # when & then: Raw Log 참조 생성 시 검증 오류가 발생한다
     with pytest.raises(ValidationError):
         RawLogReference(**invalid_payload)
+
+
+def test_normalized_event_preserves_source_event_id_as_string() -> None:
+    # given: 문자열로 표현한 원본 Event 식별자
+    timestamp = datetime(2026, 9, 6, 1, 0, tzinfo=UTC)
+
+    # when: 정규화 Event를 생성
+    event = NormalizedEvent(
+        event_id="evt-001",
+        run_id="RUN-20260906-001",
+        timestamp=timestamp,
+        timestamp_source="event_time",
+        event_time=timestamp,
+        host_id="WIN-01",
+        source="sysmon",
+        source_layer="raw_telemetry",
+        source_event_id="153",
+        event_type="process_create",
+        raw_ref=RawLogReference(
+            raw_log_id="RAW-001",
+            segment_no=1,
+            record_no=153,
+        ),
+    )
+
+    # then: 원본 Event 식별자가 문자열로 보존된다
+    assert event.source_event_id == "153"
+
+
+def test_normalized_event_rejects_non_string_source_event_id() -> None:
+    # given: 문자열이 아닌 원본 Event 식별자
+    timestamp = datetime(2026, 9, 6, 1, 0, tzinfo=UTC)
+
+    invalid_payload = {
+        "event_id": "evt-001",
+        "run_id": "RUN-20260906-001",
+        "timestamp": timestamp,
+        "timestamp_source": "event_time",
+        "event_time": timestamp,
+        "host_id": "WIN-01",
+        "source": "sysmon",
+        "source_layer": "raw_telemetry",
+        "source_event_id": 153,
+        "event_type": "process_create",
+        "raw_ref": {
+            "raw_log_id": "RAW-001",
+            "segment_no": 1,
+            "record_no": 153,
+        },
+    }
+
+    # when & then: 원본 Event 식별자는 문자열이어야 한다
+    with pytest.raises(ValidationError):
+        NormalizedEvent.model_validate(invalid_payload)
