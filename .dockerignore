@@ -14,5 +14,20 @@ htmlcov/
 .env.*
 !.env.example
 
+# Runtime data and logs
+data/
+*.log
+
+# VMware
+*.vmdk
+*.vmem
+*.vmsn
+*.vmss
+*.nvram
+
+# Secrets
+*.pem
+*.key
+
 docs/
 tests/
