@@ -606,3 +606,76 @@ def test_returns_same_result_for_same_input_and_config() -> None:
 
     # Then
     assert first_result == second_result
+
+
+def test_rejects_naive_evidence_timestamp() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=0,
+        evidence_type="encoded_powershell_command",
+    ).model_copy(update={"timestamp": datetime(2026, 9, 7, 1, 0, tzinfo=UTC).replace(tzinfo=None)})
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=10)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [evidence],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == ("Evidence timestamp must include timezone information")
+
+
+def test_rejects_non_utc_evidence_timestamp() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    kst = timezone(timedelta(hours=9))
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=0,
+        evidence_type="encoded_powershell_command",
+    ).model_copy(
+        update={
+            "timestamp": datetime(2026, 9, 7, 10, 0, tzinfo=kst),
+        }
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=10)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [evidence],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "Evidence timestamp must be UTC"
