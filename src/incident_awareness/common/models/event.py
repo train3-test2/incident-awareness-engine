@@ -1,3 +1,6 @@
+from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 type EventSource = str
@@ -42,3 +45,30 @@ class RawLogReference(BaseModel):
             raise ValueError("raw_log_id는 비어 있거나 공백만으로 구성될 수 없습니다.")
 
         return value
+
+
+class NormalizedEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    run_id: str
+
+    timestamp: datetime
+    timestamp_source: Literal[
+        "event_time",
+        "record_time",
+        "ingest_time",
+    ]
+    event_time: datetime | None = None
+    record_time: datetime | None = None
+    ingest_time: datetime | None = None
+
+    host_id: str
+    source: str
+    source_layer: Literal["raw_telemetry", "detector_output"]
+    source_event_id: str
+    event_type: str
+    raw_ref: RawLogReference
+    user: str | None = None
+    process: ProcessInfo | None = None
+    network: NetworkInfo | None = None
