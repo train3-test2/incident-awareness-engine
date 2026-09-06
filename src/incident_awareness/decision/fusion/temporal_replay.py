@@ -55,6 +55,13 @@ class TemporalReplayRunner:
             key=lambda evidence: (evidence.timestamp, evidence.evidence_id),
         )
 
+        for evidence in ordered_evidences:
+            if evidence.run_id != run_id:
+                raise ValueError("Evidence run_id must match replay run_id")
+
+            if evidence.entity_id != entity_id:
+                raise ValueError("Evidence entity_id must match replay entity_id")
+
         self.window_engine.reset(
             run_id=run_id,
             entity_id=entity_id,
