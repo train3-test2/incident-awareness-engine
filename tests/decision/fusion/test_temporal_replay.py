@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -343,3 +343,121 @@ def test_rejects_non_positive_step_size(step_size: timedelta) -> None:
 
     # Then
     assert str(exc_info.value) == "step_size must be greater than zero"
+
+
+def test_rejects_naive_run_start() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC).replace(tzinfo=None)
+    run_end = datetime(2026, 9, 7, 1, 0, 10, tzinfo=UTC)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "run_start must include timezone information"
+
+
+def test_rejects_non_utc_run_start() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    kst = timezone(timedelta(hours=9))
+    run_start = datetime(2026, 9, 7, 10, 0, tzinfo=kst)
+    run_end = datetime(2026, 9, 7, 1, 0, 10, tzinfo=UTC)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "run_start must be UTC"
+
+
+def test_rejects_naive_run_end() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = datetime(2026, 9, 7, 1, 0, 10, tzinfo=UTC).replace(tzinfo=None)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "run_end must include timezone information"
+
+
+def test_rejects_non_utc_run_end() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    kst = timezone(timedelta(hours=9))
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = datetime(2026, 9, 7, 10, 0, 10, tzinfo=kst)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "run_end must be UTC"
