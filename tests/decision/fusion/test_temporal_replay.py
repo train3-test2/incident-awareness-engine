@@ -222,3 +222,94 @@ def test_rejects_evidence_with_mismatched_entity_id() -> None:
 
     # Then
     assert str(exc_info.value) == "Evidence entity_id must match replay entity_id"
+
+
+def test_rejects_run_end_before_run_start() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, 10, tzinfo=UTC)
+    run_end = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "run_end must not be earlier than run_start"
+
+
+def test_does_not_add_irregular_tick_at_non_aligned_run_end() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=25)
+
+    # When
+    result = runner.run(
+        [],
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+
+    # Then
+    assert [point.timestamp for point in result.trajectory] == [
+        run_start,
+        run_start + timedelta(seconds=10),
+        run_start + timedelta(seconds=20),
+    ]
+
+
+def test_empty_evidence_produces_zero_scores_and_miss() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=20)
+
+    # When
+    result = runner.run(
+        [],
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+
+    # Then
+    assert [point.score for point in result.trajectory] == [0.0, 0.0, 0.0]
+    assert result.stopping_result.fusion_status == "miss"
+    assert result.stopping_result.fusion_time is None
