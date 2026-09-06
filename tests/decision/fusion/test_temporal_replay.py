@@ -313,3 +313,33 @@ def test_empty_evidence_produces_zero_scores_and_miss() -> None:
     assert [point.score for point in result.trajectory] == [0.0, 0.0, 0.0]
     assert result.stopping_result.fusion_status == "miss"
     assert result.stopping_result.fusion_time is None
+
+
+@pytest.mark.parametrize(
+    "step_size",
+    [
+        timedelta(0),
+        timedelta(seconds=-1),
+    ],
+)
+def test_rejects_non_positive_step_size(step_size: timedelta) -> None:
+    # Given
+    window_engine = WindowEngine(window_size=timedelta(seconds=60))
+    scorer = SimpleScorer(evidence_types=["encoded_powershell_command"])
+    stopping_policy = ThresholdStoppingPolicy(
+        threshold_on=0.8,
+        threshold_off=0.4,
+        persistence_k=1,
+    )
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        TemporalReplayRunner(
+            window_engine=window_engine,
+            scorer=scorer,
+            stopping_policy=stopping_policy,
+            step_size=step_size,
+        )
+
+    # Then
+    assert str(exc_info.value) == "step_size must be greater than zero"
