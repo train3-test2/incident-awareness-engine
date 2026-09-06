@@ -26,12 +26,26 @@ def load_data(path: str) -> pd.DataFrame:
 def evaluate(df: pd.DataFrame) -> dict:
     attack_df = df[df["class"] == "attack"].copy()
 
-    attack_df["ttsd_sec"] = (
-        attack_df["timestamp"] - attack_df["reference_time"]
+    total_attack_runs = attack_df["run_id"].nunique()
+
+    detected_df = attack_df.dropna(
+        subset=["reference_time", "timestamp"]
+    ).copy()
+
+    detected_df["ttsd_sec"] = (
+        detected_df["timestamp"] - detected_df["reference_time"]
     ).dt.total_seconds()
 
-    total_attack_runs = attack_df["run_id"].nunique()
-    detected_runs = attack_df["run_id"].nunique()
+    # reference_time 이전 탐지는 성공 탐지로 인정하지 않음
+    detected_df = detected_df[detected_df["ttsd_sec"] >= 0]
+
+    # 동일 run에 여러 탐지가 있으면 최초 탐지만 반영
+    first_detection_per_run = (
+        detected_df.groupby("run_id", as_index=False)["ttsd_sec"]
+        .min()
+    )
+
+    detected_runs = first_detection_per_run["run_id"].nunique()
 
     recall = (
         detected_runs / total_attack_runs
@@ -39,7 +53,11 @@ def evaluate(df: pd.DataFrame) -> dict:
         else None
     )
 
-    median_ttsd = attack_df["ttsd_sec"].median()
+    median_ttsd = (
+        first_detection_per_run["ttsd_sec"].median()
+        if detected_runs > 0
+        else None
+    )
 
     return {
         "total_attack_runs": total_attack_runs,
@@ -49,11 +67,16 @@ def evaluate(df: pd.DataFrame) -> dict:
     }
 
 
+
+
 if __name__ == "__main__":
-    path = Path("fake_runs_v0.csv")
-    
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "samples"
+        / "fake_runs_v0.csv"
+    )
+
     df = load_data(path)
     result = evaluate(df)
 
     print(result)
-    
