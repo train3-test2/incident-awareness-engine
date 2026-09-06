@@ -50,10 +50,8 @@ class TemporalReplayRunner:
         if run_end < run_start:
             raise ValueError("run_end must not be earlier than run_start")
 
-        ordered_evidences = sorted(
-            evidences,
-            key=lambda evidence: (evidence.timestamp, evidence.evidence_id),
-        )
+        ordered_evidences = list(evidences)
+        previous_evidence_timestamp: datetime | None = None
 
         for evidence in ordered_evidences:
             if evidence.run_id != run_id:
@@ -61,6 +59,14 @@ class TemporalReplayRunner:
 
             if evidence.entity_id != entity_id:
                 raise ValueError("Evidence entity_id must match replay entity_id")
+
+            if (
+                previous_evidence_timestamp is not None
+                and evidence.timestamp < previous_evidence_timestamp
+            ):
+                raise ValueError("Evidence timestamps must be non-decreasing")
+
+            previous_evidence_timestamp = evidence.timestamp
 
         self.window_engine.reset(
             run_id=run_id,
