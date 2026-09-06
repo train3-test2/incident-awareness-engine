@@ -8,10 +8,9 @@ ENV PATH="/app/.venv/bin:$PATH" \
 COPY --from=ghcr.io/astral-sh/uv:0.12.10 /uv /uvx /bin/
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --locked --no-dev --no-install-project
 
 COPY src ./src
-RUN uv sync --frozen --no-dev
 
 RUN groupadd --system app && useradd --system --gid app --create-home app
 
