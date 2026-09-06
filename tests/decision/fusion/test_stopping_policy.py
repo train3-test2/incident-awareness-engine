@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta, timezone
+from math import inf, nan
 
 import pytest
 
@@ -639,3 +640,59 @@ def test_rejects_non_utc_score_point_timestamp() -> None:
 
     # Then
     assert str(exc_info.value) == "ScorePoint timestamp must be UTC"
+
+
+@pytest.mark.parametrize("invalid_score", [nan, inf, -inf])
+def test_rejects_non_finite_score(invalid_score: float) -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    trajectory = [
+        ScorePoint(
+            timestamp=make_point(0, 0.0).timestamp,
+            score=invalid_score,
+        ),
+    ]
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        policy.evaluate(
+            trajectory,
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_end=make_point(10, 0.0).timestamp,
+        )
+
+    # Then
+    assert str(exc_info.value) == "ScorePoint score must be finite"
+
+
+@pytest.mark.parametrize("invalid_score", [-0.1, 1.1])
+def test_rejects_score_outside_unit_interval(invalid_score: float) -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    trajectory = [
+        ScorePoint(
+            timestamp=make_point(0, 0.0).timestamp,
+            score=invalid_score,
+        ),
+    ]
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        policy.evaluate(
+            trajectory,
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_end=make_point(10, 0.0).timestamp,
+        )
+
+    # Then
+    assert str(exc_info.value) == "ScorePoint score must be between 0 and 1"

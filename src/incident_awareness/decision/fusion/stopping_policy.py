@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from math import isfinite
 from typing import Literal
 
 
@@ -9,6 +10,14 @@ def _validate_utc_datetime(value: datetime, *, field_name: str) -> None:
 
     if value.utcoffset() != timedelta(0):
         raise ValueError(f"{field_name} must be UTC")
+
+
+def _validate_score(value: float) -> None:
+    if not isfinite(value):
+        raise ValueError("ScorePoint score must be finite")
+
+    if not 0.0 <= value <= 1.0:
+        raise ValueError("ScorePoint score must be between 0 and 1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +96,10 @@ class ThresholdStoppingPolicy:
                 point.timestamp,
                 field_name="ScorePoint timestamp",
             )
+            _validate_score(point.score)
+
+            if previous_timestamp is not None and point.timestamp <= previous_timestamp:
+                raise ValueError("ScorePoint timestamps must be strictly increasing")
 
             if previous_timestamp is not None and point.timestamp <= previous_timestamp:
                 raise ValueError("ScorePoint timestamps must be strictly increasing")
