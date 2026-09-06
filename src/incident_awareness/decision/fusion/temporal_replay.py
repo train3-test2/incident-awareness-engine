@@ -54,6 +54,11 @@ class TemporalReplayRunner:
         previous_evidence_timestamp: datetime | None = None
 
         for evidence in ordered_evidences:
+            self._validate_run_time(
+                evidence.timestamp,
+                field_name="Evidence timestamp",
+            )
+
             if evidence.run_id != run_id:
                 raise ValueError("Evidence run_id must match replay run_id")
 
