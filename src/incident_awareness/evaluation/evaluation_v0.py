@@ -14,11 +14,21 @@ def load_data(path: str) -> pd.DataFrame:
     ]
 
     for column in time_columns:
-        df[column] = pd.to_datetime(
-            df[column],
+        original = df[column]
+
+        parsed = pd.to_datetime(
+            original,
             utc=True,
             errors="coerce",
         )
+
+        malformed = original.notna() & parsed.isna()
+        if malformed.any():
+            raise ValueError(
+                f"malformed timestamp in column: {column}"
+            )
+
+        df[column] = parsed
 
     return df
 
