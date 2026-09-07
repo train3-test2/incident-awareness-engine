@@ -50,6 +50,9 @@ class TemporalReplayRunner:
         if run_end < run_start:
             raise ValueError("run_end must not be earlier than run_start")
 
+        if (run_end - run_start) % self.step_size != timedelta(0):
+            raise ValueError("run_end must align with step_size from run_start")
+
         ordered_evidences = list(evidences)
         previous_evidence_timestamp: datetime | None = None
 
