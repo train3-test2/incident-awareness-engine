@@ -749,7 +749,7 @@ Rule hit
 |---|---|---|
 | Audit Log Clear 1102 | 정의됨 | candidate, 정상/pilot FP 검증 전 |
 | Encoded PowerShell | 정의됨 | candidate, 정상/pilot FP 검증 전 |
-| ADMIN$ Share Access | Rule compatibility 확인 필요 | 미확정 |
+| ADMIN$ Share Access | ShareName 표현 호환성 처리 필요 (§12.3 참고) | 미확정 |
 
 현재 단계에서는 qualifying policy가 freeze되지 않았으므로
 최종 detector_time 산출 규칙으로 사용하지 않는다.
