@@ -286,6 +286,20 @@ def test_normalized_event_requires_contract_fields(required_field: str) -> None:
         NormalizedEvent.model_validate(invalid_payload)
 
 
+def test_normalized_event_generates_json_schema() -> None:
+    # when: Pydantic JSON Schema를 생성
+    schema = NormalizedEvent.model_json_schema()
+
+    # then: Contract 필드와 추가 필드 차단 설정이 Schema에 반영된다
+    properties = schema["properties"]
+    required_fields = set(schema["required"])
+
+    assert {"event_id", "timestamp", "source_event_id", "raw_ref"} <= set(properties)
+    assert {"user", "process", "network"} <= set(properties)
+    assert {"event_id", "timestamp", "source_event_id", "raw_ref"} <= required_fields
+    assert schema["additionalProperties"] is False
+
+
 def test_normalized_event_rejects_naive_timestamp() -> None:
     # given: 시간대 정보가 없는 timestamp
     invalid_payload = _valid_normalized_event_payload()
