@@ -65,6 +65,12 @@ class TemporalReplayRunner:
             if evidence.entity_id != entity_id:
                 raise ValueError("Evidence entity_id must match replay entity_id")
 
+            if evidence.timestamp < run_start:
+                raise ValueError("Evidence timestamp must not be earlier than run_start")
+
+            if evidence.timestamp > run_end:
+                raise ValueError("Evidence timestamp must not exceed run_end")
+
             if (
                 previous_evidence_timestamp is not None
                 and evidence.timestamp < previous_evidence_timestamp
