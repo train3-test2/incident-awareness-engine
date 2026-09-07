@@ -131,3 +131,19 @@ def test_detection_after_run_end_is_not_counted():
     assert result["run_recall"] == 0.0
     assert result["median_ttsd_sec"] is None
 
+def test_basic_attack_evaluation():
+    df = pd.DataFrame(
+        {
+            "run_id": ["RUN-20260902-001"],
+            "class": ["attack"],
+            "run_end": [
+                pd.Timestamp("2026-09-02T00:10:00Z")
+            ],
+            "reference_time": [
+                pd.Timestamp("2026-09-02T00:02:00Z")
+            ],
+            "timestamp": [
+                pd.Timestamp("2026-09-02T00:03:00Z")
+            ],
+        }
+    )
