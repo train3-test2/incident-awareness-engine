@@ -253,7 +253,7 @@ def test_rejects_run_end_before_run_start() -> None:
     assert str(exc_info.value) == "run_end must not be earlier than run_start"
 
 
-def test_does_not_add_irregular_tick_at_non_aligned_run_end() -> None:
+def test_rejects_non_aligned_run_end() -> None:
     # Given
     runner = TemporalReplayRunner(
         window_engine=WindowEngine(window_size=timedelta(seconds=60)),
@@ -269,20 +269,17 @@ def test_does_not_add_irregular_tick_at_non_aligned_run_end() -> None:
     run_end = run_start + timedelta(seconds=25)
 
     # When
-    result = runner.run(
-        [],
-        run_id="RUN-01",
-        entity_id="HOST-01",
-        run_start=run_start,
-        run_end=run_end,
-    )
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
 
     # Then
-    assert [point.timestamp for point in result.trajectory] == [
-        run_start,
-        run_start + timedelta(seconds=10),
-        run_start + timedelta(seconds=20),
-    ]
+    assert str(exc_info.value) == ("run_end must align with step_size from run_start")
 
 
 def test_empty_evidence_produces_zero_scores_and_miss() -> None:
