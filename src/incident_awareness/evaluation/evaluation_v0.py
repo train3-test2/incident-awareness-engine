@@ -33,7 +33,15 @@ def load_data(path: str) -> pd.DataFrame:
     return df
 
 
-def evaluate(df: pd.DataFrame) -> dict:
+def evaluate(
+    df: pd.DataFrame,
+    *,
+    evaluation_horizon: pd.Timedelta,
+) -> dict:
+    methods = df["method"].dropna().unique()
+    if len(methods) > 1:
+        raise ValueError("evaluate() accepts one method at a time")
+
     attack_df = df[df["class"] == "attack"].copy()
 
     total_attack_runs = attack_df["run_id"].nunique()
@@ -49,9 +57,16 @@ def evaluate(df: pd.DataFrame) -> dict:
     # reference_time 이전 탐지는 성공 탐지로 인정하지 않음
     detected_df = detected_df[detected_df["ttsd_sec"] >= 0]
 
-    # run_end 이후 탐지는 evaluation horizon 밖이므로 miss 처리
+    # 평가 종료 시점: min(reference_time + evaluation_horizon, run_end)
+    detected_df["evaluation_end"] = (
+        detected_df["reference_time"] + evaluation_horizon
+    )
+    detected_df["evaluation_end"] = detected_df[
+        ["evaluation_end", "run_end"]
+    ].min(axis=1)
+
     detected_df = detected_df[
-        detected_df["timestamp"] <= detected_df["run_end"]
+        detected_df["timestamp"] <= detected_df["evaluation_end"]
     ]
 
     # 동일 run에 여러 탐지가 있으면 최초 탐지만 반영
@@ -82,8 +97,6 @@ def evaluate(df: pd.DataFrame) -> dict:
     }
 
 
-
-
 if __name__ == "__main__":
     path = (
         Path(__file__).resolve().parents[3]
@@ -92,6 +105,7 @@ if __name__ == "__main__":
     )
 
     df = load_data(path)
-    result = evaluate(df)
+    result = evaluate(df, evaluation_horizon=pd.Timedelta(minutes=10))
 
     print(result)
+    
