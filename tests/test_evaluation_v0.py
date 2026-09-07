@@ -102,7 +102,32 @@ def test_pre_reference_detection_is_not_counted():
 
     result = evaluate(df)
 
+def test_detection_after_run_end_is_not_counted():
+    df = pd.DataFrame(
+        {
+            "run_id": ["RUN-20260902-001"],
+            "class": ["attack"],
+            "run_end": [
+                pd.Timestamp("2026-09-02T00:10:00Z")
+            ],
+            "reference_time": [
+                pd.Timestamp("2026-09-02T00:02:00Z")
+            ],
+            "timestamp": [
+                pd.Timestamp("2026-09-02T00:11:00Z")
+            ],
+        }
+    )
+
+    result = evaluate(df)
+
     assert result["total_attack_runs"] == 1
     assert result["detected_runs"] == 0
     assert result["run_recall"] == 0.0
     assert result["median_ttsd_sec"] is None
+
+    assert result["total_attack_runs"] == 1
+    assert result["detected_runs"] == 0
+    assert result["run_recall"] == 0.0
+    assert result["median_ttsd_sec"] is None
+
