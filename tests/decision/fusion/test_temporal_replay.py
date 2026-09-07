@@ -679,3 +679,107 @@ def test_rejects_non_utc_evidence_timestamp() -> None:
 
     # Then
     assert str(exc_info.value) == "Evidence timestamp must be UTC"
+
+
+def test_rejects_evidence_before_run_start() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=20)
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=-1,
+        evidence_type="encoded_powershell_command",
+    )
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [evidence],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == ("Evidence timestamp must not be earlier than run_start")
+
+
+def test_rejects_evidence_after_run_end() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=20)
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=21,
+        evidence_type="encoded_powershell_command",
+    )
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [evidence],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "Evidence timestamp must not exceed run_end"
+
+
+def test_allows_evidence_at_run_end() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=20)
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=20,
+        evidence_type="encoded_powershell_command",
+    )
+
+    # When
+    result = runner.run(
+        [evidence],
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+
+    # Then
+    assert result.trajectory[-1].timestamp == run_end
+    assert result.trajectory[-1].score == 1.0
+    assert result.stopping_result.fusion_status == "detected"
+    assert result.stopping_result.fusion_time == run_end
