@@ -1,10 +1,31 @@
 from datetime import UTC, datetime, timedelta
+from functools import cache
+from pathlib import Path
 from typing import Literal
 
+import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 type EventSource = str
 type EventType = str
+
+_EVENT_TYPES_CONFIG_PATH = Path(__file__).resolve().parents[4] / "configs" / "event_types_v0.2.yaml"
+
+
+@cache
+def _load_event_types() -> frozenset[str]:
+    config = yaml.safe_load(_EVENT_TYPES_CONFIG_PATH.read_text(encoding="utf-8"))
+
+    if not isinstance(config, dict):
+        raise TypeError("Event type 설정은 객체여야 합니다.")
+
+    event_types = config.get("event_types")
+    if not isinstance(event_types, list) or not all(
+        isinstance(event_type, str) for event_type in event_types
+    ):
+        raise TypeError("Event type 설정은 문자열 목록이어야 합니다.")
+
+    return frozenset(event_types)
 
 
 class ProcessInfo(BaseModel):
@@ -73,6 +94,14 @@ class NormalizedEvent(BaseModel):
     process: ProcessInfo | None = None
     network: NetworkInfo | None = None
 
+    @field_validator("event_type")
+    @classmethod
+    def validate_event_type(cls, value: str) -> str:
+        if value not in _load_event_types():
+            raise ValueError("event_type은 v0.2 관리 어휘에 정의되어야 합니다.")
+
+        return value
+
     @field_validator("timestamp", "event_time", "record_time", "ingest_time")
     @classmethod
     def validate_utc_datetime(cls, value: datetime | None) -> datetime | None:
@@ -84,6 +113,9 @@ class NormalizedEvent(BaseModel):
 
         if value.utcoffset() != timedelta(0):
             raise ValueError("datetime은 UTC 시간대여야 합니다.")
+
+        if value.microsecond % 1000 != 0:
+            raise ValueError("datetime은 밀리초 단위여야 합니다.")
 
         return value.astimezone(UTC)
 

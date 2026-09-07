@@ -300,6 +300,22 @@ def test_normalized_event_generates_json_schema() -> None:
     assert schema["additionalProperties"] is False
 
 
+@pytest.mark.parametrize("timestamp_source", ["record_time", "ingest_time"])
+def test_normalized_event_accepts_each_timestamp_source(timestamp_source: str) -> None:
+    # given: timestamp_source가 가리키는 UTC 시간이 포함된 Event 입력
+    valid_payload = _valid_normalized_event_payload()
+    timestamp = valid_payload["timestamp"]
+    valid_payload["timestamp_source"] = timestamp_source
+    valid_payload["event_time"] = None
+    valid_payload[timestamp_source] = timestamp
+
+    # when: record_time 또는 ingest_time을 기준 시간으로 사용해 Event를 생성
+    event = NormalizedEvent.model_validate(valid_payload)
+
+    # then: 선택한 시간 필드가 timestamp와 동일하게 보존된다
+    assert getattr(event, timestamp_source) == event.timestamp
+
+
 def test_normalized_event_rejects_naive_timestamp() -> None:
     # given: 시간대 정보가 없는 timestamp
     invalid_payload = _valid_normalized_event_payload()
@@ -321,6 +337,30 @@ def test_normalized_event_rejects_non_utc_timestamp() -> None:
         NormalizedEvent.model_validate(invalid_payload)
 
 
+def test_normalized_event_accepts_millisecond_precision_timestamp() -> None:
+    # given: 밀리초 단위의 UTC timestamp
+    valid_payload = _valid_normalized_event_payload()
+    timestamp = datetime(2026, 9, 6, 1, 0, 0, 123000, tzinfo=UTC)
+    valid_payload["timestamp"] = timestamp
+    valid_payload["event_time"] = timestamp
+
+    # when: Event를 생성
+    event = NormalizedEvent.model_validate(valid_payload)
+
+    # then: 밀리초 단위 timestamp가 보존된다
+    assert event.timestamp.microsecond == 123000
+
+
+def test_normalized_event_rejects_sub_millisecond_precision_timestamp() -> None:
+    # given: 밀리초보다 세밀한 UTC timestamp
+    invalid_payload = _valid_normalized_event_payload()
+    invalid_payload["timestamp"] = datetime(2026, 9, 6, 1, 0, 0, 123456, tzinfo=UTC)
+
+    # when & then: 밀리초 단위가 아니면 거부된다
+    with pytest.raises(ValidationError, match="밀리초 단위"):
+        NormalizedEvent.model_validate(invalid_payload)
+
+
 def test_normalized_event_requires_timestamp_source_time() -> None:
     # given: timestamp_source가 가리키는 시간이 없는 Event 입력
     invalid_payload = _valid_normalized_event_payload()
@@ -338,6 +378,38 @@ def test_normalized_event_rejects_mismatched_timestamp_source_time() -> None:
 
     # when & then: 두 시간이 다르면 거부된다
     with pytest.raises(ValidationError, match="동일해야 합니다"):
+        NormalizedEvent.model_validate(invalid_payload)
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        "process_create",
+        "network_connection",
+        "script_block",
+        "file_create",
+        "registry_change",
+    ],
+)
+def test_normalized_event_accepts_configured_event_types(event_type: str) -> None:
+    # given: v0.2 관리 어휘에 정의된 Event type
+    valid_payload = _valid_normalized_event_payload()
+    valid_payload["event_type"] = event_type
+
+    # when: Event를 생성
+    event = NormalizedEvent.model_validate(valid_payload)
+
+    # then: 관리 어휘의 Event type이 보존된다
+    assert event.event_type == event_type
+
+
+def test_normalized_event_rejects_unconfigured_event_type() -> None:
+    # given: v0.2 관리 어휘에 없는 Event type
+    invalid_payload = _valid_normalized_event_payload()
+    invalid_payload["event_type"] = "unknown_event"
+
+    # when & then: 관리 어휘 밖의 Event type은 거부된다
+    with pytest.raises(ValidationError, match="관리 어휘"):
         NormalizedEvent.model_validate(invalid_payload)
 
 
