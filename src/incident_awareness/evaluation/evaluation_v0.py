@@ -49,6 +49,11 @@ def evaluate(df: pd.DataFrame) -> dict:
     # reference_time 이전 탐지는 성공 탐지로 인정하지 않음
     detected_df = detected_df[detected_df["ttsd_sec"] >= 0]
 
+    # run_end 이후 탐지는 evaluation horizon 밖이므로 miss 처리
+    detected_df = detected_df[
+        detected_df["timestamp"] <= detected_df["run_end"]
+    ]
+
     # 동일 run에 여러 탐지가 있으면 최초 탐지만 반영
     first_detection_per_run = (
         detected_df.groupby("run_id", as_index=False)["ttsd_sec"]
