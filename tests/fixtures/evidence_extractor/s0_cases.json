@@ -7,6 +7,7 @@
       "timestamp": "2026-09-02T01:00:00.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
+      "source_layer": "raw_telemetry",
       "source_event_id": "1",
       "event_type": "process_create",
       "user": "labuser",
@@ -39,6 +40,7 @@
       "timestamp": "2026-09-02T01:00:01.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
+      "source_layer": "raw_telemetry",
       "source_event_id": "1",
       "event_type": "process_create",
       "process": {
@@ -68,6 +70,7 @@
       "timestamp": "2026-09-02T01:00:02.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
+      "source_layer": "raw_telemetry",
       "source_event_id": "1",
       "event_type": "process_create",
       "process": {
@@ -86,6 +89,7 @@
       "timestamp": "2026-09-02T01:00:03.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
+      "source_layer": "raw_telemetry",
       "source_event_id": "1",
       "event_type": "process_create",
       "process": {
@@ -104,6 +108,7 @@
       "timestamp": "2026-09-02T01:01:00.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
+      "source_layer": "raw_telemetry",
       "source_event_id": "3",
       "event_type": "network_connection",
       "process": {
@@ -138,6 +143,7 @@
       "timestamp": "2026-09-02T01:01:01.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
+      "source_layer": "raw_telemetry",
       "source_event_id": "3",
       "event_type": "network_connection",
       "process": {
@@ -159,6 +165,7 @@
       "timestamp": "2026-09-02T01:01:02.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
+      "source_layer": "raw_telemetry",
       "source_event_id": "3",
       "event_type": "network_connection",
       "process": {
@@ -180,6 +187,7 @@
       "timestamp": "2026-09-02T01:01:03.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
+      "source_layer": "raw_telemetry",
       "source_event_id": "3",
       "event_type": "network_connection",
       "process": {
@@ -201,6 +209,7 @@
       "timestamp": "2026-09-02T01:01:04.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
+      "source_layer": "raw_telemetry",
       "source_event_id": "3",
       "event_type": "network_connection",
       "user": null,

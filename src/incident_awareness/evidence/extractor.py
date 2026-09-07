@@ -1,9 +1,10 @@
 import json
 import shlex
 from collections.abc import Mapping
-from dataclasses import dataclass
 from ipaddress import ip_address
 from uuid import NAMESPACE_URL, uuid5
+
+from incident_awareness.common.models.evidence import Evidence
 
 EXTRACTOR_VERSION = "s0-v0.1"
 
@@ -20,35 +21,23 @@ _SCRIPT_INTERPRETER_PROCESS_NAMES = frozenset(
 _ENCODED_COMMAND_OPTIONS = frozenset({"-enc", "-encodedcommand"})
 
 
-@dataclass(frozen=True, slots=True)
-class EvidenceCandidate:
-    evidence_id: str
-    run_id: str
-    timestamp: str
-    entity_id: str
-    evidence_type: str
-    source_event_ids: list[str]
-    extractor_version: str
-    features: dict[str, object]
-
-
-def extract_evidence(event: Mapping[str, object]) -> tuple[EvidenceCandidate, ...]:
-    """Extract S0 evidence candidates from one event_v0 draft event."""
+def extract_evidence(event: Mapping[str, object]) -> list[Evidence]:
+    """Extract S0 Evidence from one NormalizedEvent v0.2 mapping."""
     event_type = event.get("event_type")
 
     if event_type == "process_create":
-        candidate = _extract_encoded_powershell_command(event)
+        evidence = _extract_encoded_powershell_command(event)
     elif event_type == "network_connection":
-        candidate = _extract_script_interpreter_external_connection(event)
+        evidence = _extract_script_interpreter_external_connection(event)
     else:
-        candidate = None
+        evidence = None
 
-    return (candidate,) if candidate is not None else ()
+    return [evidence] if evidence is not None else []
 
 
 def _extract_encoded_powershell_command(
     event: Mapping[str, object],
-) -> EvidenceCandidate | None:
+) -> Evidence | None:
     process = _mapping_value(event, "process")
     if process is None:
         return None
@@ -65,7 +54,7 @@ def _extract_encoded_powershell_command(
     if matched_option is None:
         return None
 
-    return _new_candidate(
+    return _new_evidence(
         event,
         evidence_type="encoded_powershell_command",
         features={
@@ -77,7 +66,7 @@ def _extract_encoded_powershell_command(
 
 def _extract_script_interpreter_external_connection(
     event: Mapping[str, object],
-) -> EvidenceCandidate | None:
+) -> Evidence | None:
     process = _mapping_value(event, "process")
     network = _mapping_value(event, "network")
     if process is None or network is None:
@@ -101,7 +90,7 @@ def _extract_script_interpreter_external_connection(
 
     protocol = _normalized_string(network, "protocol")
 
-    return _new_candidate(
+    return _new_evidence(
         event,
         evidence_type="script_interpreter_external_connection",
         features={
@@ -133,16 +122,16 @@ def _strip_matching_quotes(value: str) -> str:
     return value
 
 
-def _new_candidate(
+def _new_evidence(
     event: Mapping[str, object],
     *,
     evidence_type: str,
     features: dict[str, object],
-) -> EvidenceCandidate:
+) -> Evidence:
     event_id = _required_string(event, "event_id")
     run_id = _required_string(event, "run_id")
-    timestamp = _required_string(event, "timestamp")
     host_id = _required_string(event, "host_id")
+    source_layer = _required_string(event, "source_layer")
 
     identity = json.dumps(
         [run_id, event_id, evidence_type, EXTRACTOR_VERSION],
@@ -151,15 +140,19 @@ def _new_candidate(
     )
     evidence_id = f"evd-{uuid5(NAMESPACE_URL, identity)}"
 
-    return EvidenceCandidate(
-        evidence_id=evidence_id,
-        run_id=run_id,
-        timestamp=timestamp,
-        entity_id=host_id,
-        evidence_type=evidence_type,
-        source_event_ids=[event_id],
-        extractor_version=EXTRACTOR_VERSION,
-        features=features,
+    return Evidence.model_validate(
+        {
+            "evidence_id": evidence_id,
+            "run_id": run_id,
+            "timestamp": event.get("timestamp"),
+            "entity_id": host_id,
+            "evidence_type": evidence_type,
+            "event_ids": [event_id],
+            "derived_from_source_layer": source_layer,
+            "feature_channel_group": "fusion_feature",
+            "extractor_version": EXTRACTOR_VERSION,
+            "features": features,
+        }
     )
 
 

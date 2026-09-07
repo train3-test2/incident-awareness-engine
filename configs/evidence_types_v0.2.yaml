@@ -1,0 +1,4 @@
+version: v0.2
+evidence_types:
+  - encoded_powershell_command
+  - script_interpreter_external_connection
