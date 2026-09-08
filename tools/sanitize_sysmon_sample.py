@@ -4,9 +4,19 @@ collect_sysmon_sample.ps1 이 만든 원본 JSONL 을 samples/raw/ 에 올릴 �
 호스트명·사용자명·사용자 프로필 경로를 문서 예시값(WIN-01, labuser)으로 치환하고,
 무엇을 바꿨는지 메타데이터에 기록한다.
 
-치환은 JSON 을 파싱한 뒤 문자열 값 단위로 수행한다. 원문 텍스트를 그대로 치환하지
-않는 이유는 Windows PowerShell 5.1 의 ConvertTo-Json 이 비 ASCII 문자를 `\\uXXXX` 로
-이스케이프하기 때문이다. 사용자명이 한글이면 원문에 그 글자가 그대로 나타나지 않는다.
+치환은 세 단계로 나눈다.
+
+    1단계  원본 식별자 -> 충돌하지 않는 sentinel
+    2단계  누출 검사
+    3단계  sentinel -> 최종 예시값
+
+바로 최종값으로 치환하면 두 가지 문제가 생긴다. 치환 규칙이 이미 치환된 결과에 다시 걸려
+값이 중복 확장되고(`user` -> `labuser` -> `lablabuser`), 최종값이 원본 토큰을 부분 문자열로
+포함할 때(`labuser` 안의 `user`) 정상 결과를 누출로 오판한다.
+
+치환은 JSON 을 파싱한 뒤 문자열 값 단위로 수행한다. 원문 텍스트를 그대로 치환하지 않는
+이유는 Windows PowerShell 5.1 의 ConvertTo-Json 이 비 ASCII 문자를 `\\uXXXX` 로 이스케이프할
+수 있기 때문이다. 사용자명이 한글이면 원문에 그 글자가 그대로 나타나지 않는다.
 
 Sysmon 원본 구조 자체는 바꾸지 않는다. event_v0 변환은 역할 3 담당이다.
 
@@ -18,7 +28,8 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Iterable
+import re
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +37,29 @@ from typing import Any
 PLACEHOLDER_COMPUTER = "WIN-01"
 PLACEHOLDER_USER = "labuser"
 
-Replacement = tuple[str, str]
+ # 중간 단계 표식. Private Use Area 문자라 실제 telemetry 와 충돌하지 않는다
+SENTINEL_COMPUTER = "\ue000"
+SENTINEL_USER = "\ue001"
+
+SENTINELS = {
+    SENTINEL_COMPUTER: PLACEHOLDER_COMPUTER,
+    SENTINEL_USER: PLACEHOLDER_USER,
+}
+
+Replacement = tuple[re.Pattern[str], str]
+
+
+def _boundaried(token: str) -> str:
+    """토큰 양끝이 ASCII 영숫자면 경계 조건을 붙인다.
+
+    사용자명이 `user` 처럼 짧으면 `C:\\Users\\` 의 `User` 부분에도 걸린다.
+    경계를 두면 부분 일치를 막을 수 있다.
+    """
+    head = token[:1]
+    tail = token[-1:]
+    prefix = r"(?<![A-Za-z0-9])" if head.isascii() and head.isalnum() else ""
+    suffix = r"(?![A-Za-z0-9])" if tail.isascii() and tail.isalnum() else ""
+    return prefix + re.escape(token) + suffix
 
 
 def build_replacements(raw_computer: str, raw_user: str) -> list[Replacement]:
@@ -34,67 +67,103 @@ def build_replacements(raw_computer: str, raw_user: str) -> list[Replacement]:
 
     파싱된 문자열 값에 적용하므로 경로 구분자는 단일 역슬래시다.
     짧은 문자열을 먼저 바꾸면 긴 문자열 안의 일부만 바뀌어 결과가 깨진다.
+    Windows 경로는 대소문자를 가리지 않으므로 대소문자를 무시하고 비교한다.
     """
-    pairs: list[Replacement] = []
+    pairs: list[tuple[str, str]] = []
 
     if raw_user:
-        pairs.append((f"\\Users\\{raw_user}", f"\\Users\\{PLACEHOLDER_USER}"))
+        pairs.append((f"\\Users\\{raw_user}", f"\\Users\\{SENTINEL_USER}"))
         if raw_computer:
-            account = f"{raw_computer}\\{raw_user}"
-            pairs.append((account, f"{PLACEHOLDER_COMPUTER}\\{PLACEHOLDER_USER}"))
-        pairs.append((raw_user, PLACEHOLDER_USER))
+            pairs.append((f"{raw_computer}\\{raw_user}", f"{SENTINEL_COMPUTER}\\{SENTINEL_USER}"))
+        pairs.append((raw_user, SENTINEL_USER))
 
     if raw_computer:
-        pairs.append((raw_computer, PLACEHOLDER_COMPUTER))
+        pairs.append((raw_computer, SENTINEL_COMPUTER))
 
     pairs.sort(key=lambda pair: len(pair[0]), reverse=True)
-    return pairs
+    return [(re.compile(_boundaried(src), re.IGNORECASE), dst) for src, dst in pairs]
 
 
-def sanitize_text(value: str, replacements: Iterable[Replacement]) -> str:
-    """문자열 하나에 치환 규칙을 적용한다.
-
-    Windows 경로는 대소문자를 가리지 않으므로 소문자·대문자 변형도 함께 처리한다.
-    한글처럼 대소문자가 없는 문자는 변형이 원문과 같아 중복 적용해도 결과가 같다.
-    """
+def stage_text(value: str, replacements: Iterable[Replacement]) -> str:
+    """문자열 하나를 sentinel 단계까지 치환한다."""
     result = value
-    for source, target in replacements:
-        for variant in (source, source.lower(), source.upper()):
-            result = result.replace(variant, target)
+    for pattern, target in replacements:
+         # 치환값에 역슬래시가 있어 re.sub 의 escape 해석을 피한다
+        result = pattern.sub(lambda _match, value=target: value, result)
     return result
 
 
-def sanitize_object(node: Any, replacements: Iterable[Replacement]) -> Any:
+def stage_object(node: Any, replacements: Iterable[Replacement]) -> Any:
     """JSON 구조를 따라가며 문자열 값만 치환한다.
 
     Key 는 Sysmon 이 정한 필드명이므로 건드리지 않는다.
     """
     if isinstance(node, str):
-        return sanitize_text(node, replacements)
+        return stage_text(node, replacements)
     if isinstance(node, dict):
-        return {key: sanitize_object(value, replacements) for key, value in node.items()}
+        return {key: stage_object(value, replacements) for key, value in node.items()}
     if isinstance(node, list):
-        return [sanitize_object(item, replacements) for item in node]
+        return [stage_object(item, replacements) for item in node]
     return node
 
 
-def sanitize_line(line: str, replacements: Iterable[Replacement]) -> str:
-    """JSONL 한 줄을 파싱해 치환한 뒤 다시 직렬화한다."""
+def iter_string_values(node: Any) -> Iterator[str]:
+    """JSON 구조에서 문자열 값만 순회한다.
+
+    Key 는 Sysmon 이 정한 필드명이라 치환 대상이 아니므로 검사에서도 제외한다.
+    """
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from iter_string_values(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from iter_string_values(item)
+
+
+def stage_line(line: str, replacements: Iterable[Replacement]) -> str:
+    """JSONL 한 줄을 파싱해 sentinel 단계까지 치환한 뒤 다시 직렬화한다."""
     parsed = json.loads(line)
-    sanitized = sanitize_object(parsed, replacements)
-    return json.dumps(sanitized, ensure_ascii=False, separators=(",", ":"))
+
+     # 이스케이프 표기와 무관하게 판정하려면 파싱한 값에서 확인해야 한다
+    for value in iter_string_values(parsed):
+        for sentinel in SENTINELS:
+            if sentinel in value:
+                raise ValueError("입력에 sentinel 문자가 이미 존재한다.")
+
+    staged = stage_object(parsed, replacements)
+    return json.dumps(staged, ensure_ascii=False, separators=(",", ":"))
 
 
-def count_remaining(lines: Iterable[str], tokens: Iterable[str]) -> dict[str, int]:
-    """치환이 끝난 뒤에도 원본 토큰이 남아 있는지 센다."""
-    joined = "\n".join(lines)
-    lowered = joined.lower()
-    counts: dict[str, int] = {}
-    for token in tokens:
-        if not token:
-            continue
-        counts[token] = lowered.count(token.lower())
-    return counts
+def restore_line(staged: str) -> str:
+    """sentinel 을 최종 예시값으로 되돌린다."""
+    result = staged
+    for sentinel, placeholder in SENTINELS.items():
+        result = result.replace(sentinel, placeholder)
+    return result
+
+
+def sanitize_line(line: str, replacements: Iterable[Replacement]) -> str:
+    """JSONL 한 줄을 최종 형태까지 치환한다."""
+    return restore_line(stage_line(line, replacements))
+
+
+def count_remaining(lines: Iterable[str], replacements: Iterable[Replacement]) -> dict[str, int]:
+    """치환이 끝난 뒤에도 원본 식별자가 남아 있는지 센다.
+
+    sentinel 단계의 줄을 대상으로 호출한다. 최종값으로 되돌린 뒤에 세면
+    `labuser` 안의 `user` 처럼 치환 결과가 원본 토큰을 포함해 오판한다.
+
+    검사 범위는 문자열 값으로 한정한다. 직렬화된 원문을 그대로 세면 `User` 같은
+    Sysmon 필드명이 사용자명과 일치해 오판한다.
+    """
+    values: list[str] = []
+    for line in lines:
+        values.extend(iter_string_values(json.loads(line)))
+
+    joined = "\n".join(values)
+    return {pattern.pattern: len(pattern.findall(joined)) for pattern, _ in replacements}
 
 
 def main() -> int:
@@ -117,13 +186,16 @@ def main() -> int:
 
     replacements = build_replacements(raw_computer, raw_user)
     source_lines = jsonl_path.read_text(encoding="utf-8").splitlines()
-    sanitized = [sanitize_line(line, replacements) for line in source_lines if line.strip()]
+    staged = [stage_line(line, replacements) for line in source_lines if line.strip()]
 
-    remaining = count_remaining(sanitized, [raw_computer, raw_user])
+     # 누출 검사는 sentinel 을 되돌리기 전에 수행한다
+    remaining = count_remaining(staged, replacements)
     leaked = {token: count for token, count in remaining.items() if count > 0}
     if leaked:
         print(f"[!] 치환되지 않은 식별자가 남아 있다: {leaked}")
         return 1
+
+    sanitized = [restore_line(line) for line in staged]
 
     args.out.mkdir(parents=True, exist_ok=True)
     out_jsonl = args.out / "sysmon-0001.jsonl"
@@ -138,6 +210,8 @@ def main() -> int:
         "purpose": meta.get("purpose", "schema-development-sample"),
         "collected_at": meta.get("collected_at"),
         "sysmon_config_version": meta.get("sysmon_config_version"),
+        "sysmon_config_sha256": meta.get("sysmon_config_sha256"),
+        "sysmon_active_config_sha256": meta.get("sysmon_active_config_sha256"),
         "sysmon_version": meta.get("sysmon_version"),
         "os_caption": meta.get("os_caption"),
         "os_version": meta.get("os_version"),

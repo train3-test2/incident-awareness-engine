@@ -7,7 +7,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.sanitize_sysmon_sample import (  # noqa: E402
     build_replacements,
     count_remaining,
+    restore_line,
     sanitize_line,
+    stage_line,
 )
 
 
@@ -38,7 +40,7 @@ def test_한글_사용자명이_유니코드_이스케이프_상태에서도_치
      # given - PowerShell 5.1 이 비 ASCII 를 \uXXXX 로 이스케이프한 줄
     record = {"EventData": {"Image": "C:\\Users\\김현희\\tool.exe"}}
     line = json.dumps(record, ensure_ascii=True)
-    assert "\\ud558" in line or "\\uae40" in line
+    assert "\\uae40" in line
     replacements = build_replacements("DESKTOP-A1B2C3", "김현희")
 
      # when - 치환을 적용하면
@@ -50,17 +52,61 @@ def test_한글_사용자명이_유니코드_이스케이프_상태에서도_치
     assert "김현희" not in sanitized
 
 
-def test_대소문자가_다른_경로도_치환된다():
-     # given - 경로가 대문자로 기록된 레코드
-    line = json.dumps({"EventData": {"Image": "C:\\USERS\\KHH09\\a.exe"}})
+def test_임의의_혼합_대소문자도_치환된다():
+     # given - 경로와 사용자명이 혼합 대소문자로 기록된 레코드
+    line = json.dumps({"EventData": {"Image": "C:\\UsErS\\kHh09\\a.exe"}})
     replacements = build_replacements("DESKTOP-A1B2C3", "khh09")
 
      # when - 치환을 적용하면
     sanitized = sanitize_line(line, replacements)
 
-     # then - 사용자명이 남지 않는다
-    assert "KHH09" not in sanitized
+     # then - 대소문자와 무관하게 사용자명이 사라진다
+    assert "kHh09" not in sanitized
     assert "labuser" in sanitized
+    assert count_remaining([stage_line(line, replacements)], replacements) == {
+        pattern.pattern: 0 for pattern, _ in replacements
+    }
+
+
+def test_치환값과_겹치는_사용자명도_한_번만_치환된다():
+     # given - 치환 결과 labuser 에 부분 문자열로 포함되는 사용자명
+    record = {"EventData": {"User": "PC\\user", "Image": "C:\\Users\\user\\a.exe"}}
+    replacements = build_replacements("PC", "user")
+
+     # when - 치환을 적용하면
+    sanitized = sanitize_line(json.dumps(record), replacements)
+
+     # then - 값이 중복 확장되지 않는다
+    result = json.loads(sanitized)
+    assert result["EventData"]["User"] == "WIN-01\\labuser"
+    assert result["EventData"]["Image"] == "C:\\Users\\labuser\\a.exe"
+    assert "lablabuser" not in sanitized
+
+
+def test_치환값과_겹치는_사용자명을_누출로_세지_않는다():
+     # given - 사용자명이 user 라서 결과의 labuser 와 겹치는 경우
+    record = {"EventData": {"User": "PC\\user", "Image": "C:\\Users\\user\\a.exe"}}
+    replacements = build_replacements("PC", "user")
+
+     # when - sentinel 단계에서 누출을 세면
+    staged = stage_line(json.dumps(record), replacements)
+    counts = count_remaining([staged], replacements)
+
+     # then - 남은 원본 식별자가 없다
+    assert all(count == 0 for count in counts.values())
+    assert "labuser" in restore_line(staged)
+
+
+def test_사용자명이_Users_경로의_일부와_혼동되지_않는다():
+     # given - 사용자명이 user 이고 경로에 Users 디렉터리가 있는 레코드
+    line = json.dumps({"EventData": {"Image": "C:\\Users\\admin\\a.exe"}})
+    replacements = build_replacements("PC", "user")
+
+     # when - 치환을 적용하면
+    sanitized = sanitize_line(line, replacements)
+
+     # then - Users 디렉터리 이름은 그대로 남는다
+    assert json.loads(sanitized)["EventData"]["Image"] == "C:\\Users\\admin\\a.exe"
 
 
 def test_숫자와_구조는_보존된다():
@@ -77,15 +123,17 @@ def test_숫자와_구조는_보존된다():
     assert result["EventData"]["DestinationPort"] == "443"
 
 
-def test_치환_후_남은_식별자를_센다():
-     # given - 치환이 끝난 줄 목록
-    lines = [json.dumps({"EventData": {"Image": "C:\\Users\\labuser\\a.exe"}})]
+def test_입력에_sentinel_이_있으면_거부한다():
+     # given - sentinel 문자가 이미 포함된 줄
+    line = json.dumps({"EventData": {"Image": "C:\\a\ue000b.exe"}})
+    replacements = build_replacements("PC", "user")
 
-     # when - 원본 토큰이 남았는지 세면
-    counts = count_remaining(lines, ["DESKTOP-A1B2C3", "khh09"])
-
-     # then - 모두 0 이다
-    assert counts == {"DESKTOP-A1B2C3": 0, "khh09": 0}
+     # when / then - 치환을 시도하면 예외가 발생한다
+    try:
+        stage_line(line, replacements)
+    except ValueError:
+        return
+    raise AssertionError("ValueError 가 발생해야 한다")
 
 
 def test_json_이_아니면_예외가_발생한다():
