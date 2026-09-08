@@ -32,6 +32,14 @@
                              (the process that made the connection, not its parent)
                 dst_ip     = external (global) IP
 
+        Output formats:
+            JSONL  normalization input for the Data Platform role
+            EVTX   native format required by Hayabusa and other EVTX-only tools
+
+        EVTX cannot be sanitized. It is a binary format, so the text replacement used
+        for the JSONL sample does not apply. Collect it on a VM whose computer and
+        account names are already non-identifying, and do not commit it to the repo.
+
         NOTE: this file is intentionally ASCII only. Windows PowerShell 5.1 misreads
         UTF-8 source files without a BOM, and a lost BOM corrupts string literals.
 
@@ -49,11 +57,22 @@
         script records its SHA-256 so the metadata reflects the configuration that
         was actually used instead of a hardcoded label.
 
+    .PARAMETER IncludeSecurityLog
+        Also export the Windows Security channel as EVTX and report how many
+        1102 / 4624 / 5140 records the collection window contains. Use this when the
+        Detection role needs Security-channel records for false positive checks.
+
+    .PARAMETER SkipEvtx
+        Skip the EVTX export and produce JSONL only.
+
     .EXAMPLE
         .\collect_sysmon_sample.ps1
 
     .EXAMPLE
         .\collect_sysmon_sample.ps1 -ExternalTarget 1.1.1.1 -SysmonConfigPath C:\Tools\sysmonconfig-sample-v0.1.xml
+
+    .EXAMPLE
+        .\collect_sysmon_sample.ps1 -IncludeSecurityLog
 #>
 
 [CmdletBinding()]
@@ -61,11 +80,17 @@ param(
     [string]$OutputDir = (Join-Path (Get-Location) "sysmon-sample"),
     [string]$ExternalTarget = "",
     [int]$ExternalPort = 443,
-    [string]$SysmonConfigPath = ""
+    [string]$SysmonConfigPath = "",
+    [switch]$IncludeSecurityLog,
+    [switch]$SkipEvtx
 )
 
 $ErrorActionPreference = "Stop"
 $SYSMON_LOG = "Microsoft-Windows-Sysmon/Operational"
+$SECURITY_LOG = "Security"
+
+ # Security channel IDs the Detection role checks for false positives
+$SECURITY_IDS_OF_INTEREST = @(1102, 4624, 5140)
 
  # Evidence conditions fixed by the Evidence role
 $SCRIPT_INTERPRETERS = @("powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.exe")
@@ -152,6 +177,47 @@ function Get-ImageFileName {
     param([string]$ImagePath)
     if ([string]::IsNullOrWhiteSpace($ImagePath)) { return "" }
     return (Split-Path $ImagePath -Leaf).ToLower()
+}
+
+function Export-ChannelEvtx {
+    <#
+        Export one channel to EVTX, limited to the collection window.
+
+        The window is expressed with the event log timediff() XPath function rather
+        than a literal timestamp comparison. XPath 1.0 compares strings numerically
+        with >=, so comparing @SystemTime against an ISO 8601 string does not work.
+    #>
+    param(
+        [string]$Channel,
+        [string]$DestinationPath,
+        [int]$WindowMilliseconds,
+        [int[]]$EventIds = @()
+    )
+
+    $timeClause = "TimeCreated[timediff(@SystemTime) <= $WindowMilliseconds]"
+    if ($EventIds.Count -gt 0) {
+        $idClause = ($EventIds | ForEach-Object { "EventID=$_" }) -join " or "
+        $query = "*[System[($idClause) and $timeClause]]"
+    } else {
+        $query = "*[System[$timeClause]]"
+    }
+
+    if (Test-Path $DestinationPath) {
+        Remove-Item $DestinationPath -Force
+    }
+
+    & wevtutil epl $Channel $DestinationPath "/q:$query" /ow:true 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $DestinationPath)) {
+        return $null
+    }
+
+    return $DestinationPath
+}
+
+function Get-Sha256 {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return $null }
+    return (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLower()
 }
 
  # 1. Preflight
@@ -384,6 +450,95 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllLines($jsonlPath, $lines, $utf8NoBom)
 Write-Ok "JSONL written: $jsonlPath"
 
+ # 10-1. Export EVTX
+ # Hayabusa and other detection tools read EVTX, not JSONL.
+$artifacts = New-Object System.Collections.Generic.List[object]
+$artifacts.Add([ordered]@{
+    file    = "sysmon-0001.jsonl"
+    kind    = "jsonl"
+    channel = $SYSMON_LOG
+    sha256  = (Get-Sha256 $jsonlPath)
+})
+
+$securityCounts = $null
+$fileShareAudit = $null
+
+if ($SkipEvtx) {
+    Write-Step "EVTX export skipped (-SkipEvtx)"
+} else {
+    Write-Step "Exporting EVTX"
+
+     # Cover the whole collection window plus a margin for late writes
+    $windowMs = [int]((Get-Date) - $startTime).TotalMilliseconds + 60000
+
+    $sysmonEvtx = Join-Path $OutputDir "sysmon-0001.evtx"
+    $exported = Export-ChannelEvtx -Channel $SYSMON_LOG -DestinationPath $sysmonEvtx `
+        -WindowMilliseconds $windowMs -EventIds @(1, 3)
+
+    if ($exported) {
+        $evtxCount = @(Get-WinEvent -Path $sysmonEvtx -ErrorAction SilentlyContinue).Count
+        Write-Ok "Sysmon EVTX written: $sysmonEvtx ($evtxCount events)"
+        $artifacts.Add([ordered]@{
+            file    = "sysmon-0001.evtx"
+            kind    = "evtx"
+            channel = $SYSMON_LOG
+            events  = $evtxCount
+            sha256  = (Get-Sha256 $sysmonEvtx)
+        })
+        if ($evtxCount -ne $events.Count) {
+            Write-Host "[-] EVTX has $evtxCount events, JSONL has $($events.Count)." `
+                -ForegroundColor Yellow
+            Write-Host "    The EVTX window is wider than the JSONL filter by design." `
+                -ForegroundColor Yellow
+        }
+    } else {
+        Write-Fail "Sysmon EVTX export failed."
+        $failures.Add("sysmon_evtx_export_failed")
+    }
+
+    if ($IncludeSecurityLog) {
+        $securityEvtx = Join-Path $OutputDir "security-0001.evtx"
+        $exportedSecurity = Export-ChannelEvtx -Channel $SECURITY_LOG `
+            -DestinationPath $securityEvtx -WindowMilliseconds $windowMs
+
+        if ($exportedSecurity) {
+            $securityEvents = @(Get-WinEvent -Path $securityEvtx -ErrorAction SilentlyContinue)
+            Write-Ok "Security EVTX written: $securityEvtx ($($securityEvents.Count) events)"
+
+            $securityCounts = [ordered]@{}
+            foreach ($id in $SECURITY_IDS_OF_INTEREST) {
+                $hits = @($securityEvents | Where-Object { $_.Id -eq $id }).Count
+                $securityCounts["id_$id"] = $hits
+                Write-Host "    EventID $id : $hits"
+            }
+
+            $artifacts.Add([ordered]@{
+                file    = "security-0001.evtx"
+                kind    = "evtx"
+                channel = $SECURITY_LOG
+                events  = $securityEvents.Count
+                sha256  = (Get-Sha256 $securityEvtx)
+            })
+
+             # 5140 needs the File Share audit subcategory, which is off by default.
+             # Report the setting so a zero count is not mistaken for a clean result.
+            try {
+                $auditOutput = & auditpol /get /subcategory:"File Share" 2>&1 | Out-String
+                $match = [regex]::Match($auditOutput, "File Share\s+(.+)")
+                if ($match.Success) {
+                    $fileShareAudit = $match.Groups[1].Value.Trim()
+                    Write-Host "    File Share audit policy : $fileShareAudit"
+                }
+            } catch {
+                Write-Host "[-] Could not read the File Share audit policy." -ForegroundColor Yellow
+            }
+        } else {
+            Write-Fail "Security EVTX export failed."
+            $failures.Add("security_evtx_export_failed")
+        }
+    }
+}
+
  # 11. Collection metadata
 Write-Step "Writing collection metadata"
 $sysmonVersion = "unknown"
@@ -452,6 +607,12 @@ $meta = [ordered]@{
         encoded_powershell_command             = $encodedHits
         script_interpreter_external_connection = $externalHits
     }
+    artifacts                   = @($artifacts)
+    security_log                = [ordered]@{
+        included           = [bool]$IncludeSecurityLog
+        event_counts       = $securityCounts
+        file_share_audit   = $fileShareAudit
+    }
     validation_failures         = @($failures)
 }
 
@@ -464,11 +625,20 @@ if ($failures.Count -gt 0) {
     Write-Fail "Required checks failed: $($failures -join ', ')"
     Write-Host "    Output was still written so the run can be diagnosed."
     Write-Host "    Do not publish this sample until the checks pass."
-    Write-Host "    $jsonlPath"
-    Write-Host "    $metaPath"
+    Write-Host "    $OutputDir"
     exit 1
 }
 
-Write-Ok "Done. Copy these two files to the host."
-Write-Host "    $jsonlPath"
-Write-Host "    $metaPath"
+Write-Ok "Done. Copy this folder to the host: $OutputDir"
+foreach ($artifact in $artifacts) {
+    Write-Host "    $($artifact.file)  [$($artifact.kind)]"
+}
+Write-Host "    collection-meta.json"
+
+if (-not $SkipEvtx) {
+    Write-Host ""
+    Write-Host "EVTX carries the real computer and account names and cannot be sanitized." `
+        -ForegroundColor Yellow
+    Write-Host "Share it only if those names are already non-identifying." `
+        -ForegroundColor Yellow
+}

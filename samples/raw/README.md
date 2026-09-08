@@ -66,6 +66,8 @@ dst_port   = 조건 없음
 | `sysmon-0001.jsonl` | Sysmon 원본 레코드. 한 줄에 한 건 |
 | `sysmon-sample-meta.json` | 수집 조건과 치환 사실 |
 
+수집 스크립트는 EVTX 도 함께 만들지만 **저장소에는 JSONL 만 올린다.** 이유는 §4-1 참조.
+
 ### 현재 샘플 구성
 
 Windows 11 Enterprise Evaluation / Sysmon 15.21 에서 수집한 57 건이다.
@@ -154,6 +156,23 @@ Get-Content samples\raw\sysmon-0001.jsonl | ForEach-Object { ($_ | ConvertFrom-J
 > `sysmon_config_sha256` 과 `sysmon_active_config_sha256` 이 `null` 이다.
 > 다음 재수집 때 채운다.
 
+## 4-1. EVTX 는 저장소에 올리지 않는다
+
+Hayabusa 등 탐지 도구는 EVTX 를 입력으로 받으므로 수집 스크립트가 EVTX 도 만든다.
+그러나 저장소에는 올리지 않는다.
+
+```text
+JSONL  정규화 입력. 치환 가능 -> samples/raw/ 에 올린다
+EVTX   탐지 도구 입력. 치환 불가 -> 공유 드라이브로 전달한다
+```
+
+**EVTX 는 이진 형식이라 §4 의 문자열 치환을 적용할 수 없다.** 따라서 EVTX 에는 수집한
+VM 의 실제 컴퓨터명과 계정명이 그대로 남는다. 공유하려면 **처음부터 식별되지 않는 이름을
+쓰는 VM 에서 수집**해야 한다. 실험 VM 을 `WIN-01` / `labuser` 로 맞춰 두면 별도 처리 없이
+공유할 수 있다.
+
+무결성은 `collection-meta.json` 의 `artifacts` 항목에 기록되는 SHA-256 으로 확인한다.
+
 ## 5. 재수집 절차
 
 ### 5-0. VM 으로 파일을 옮길 때 주의
@@ -236,6 +255,31 @@ script_interpreter_external_connection 조건 충족 건수
 | Event ID 3 수집 | 필수 |
 | `encoded_powershell_command` | 필수 |
 | `script_interpreter_external_connection` | `-ExternalTarget` 을 준 경우에만 필수 |
+| Sysmon EVTX export | `-SkipEvtx` 를 주지 않은 경우 필수 |
+| Security EVTX export | `-IncludeSecurityLog` 를 준 경우에만 필수 |
+
+### 5-3-1. Security 채널 수집
+
+탐지 담당이 Fast 후보의 오탐을 확인하려면 Security 채널 레코드가 필요하다.
+
+```powershell
+C:\Tools\collect_sysmon_sample.ps1 -IncludeSecurityLog
+```
+
+`security-0001.evtx` 를 만들고 1102 / 4624 / 5140 건수를 보고한다.
+
+| EventID | 기본 수집 여부 |
+| --- | --- |
+| 1102 (로그 삭제) | 기본 기록됨 |
+| 4624 (로그온) | 기본 기록됨. Type 3 은 원격 접근이 있어야 발생 |
+| 5140 (공유 접근) | **기본 미기록.** `Audit File Share` 하위범주를 켜야 한다 |
+
+5140 이 0 건일 때 그것이 "오탐이 없다" 인지 "수집 자체가 꺼져 있다" 인지 구분해야 하므로,
+스크립트가 `auditpol /get /subcategory:"File Share"` 결과를 함께 기록한다. 감사 정책을
+바꾸지는 않는다.
+
+> 4624 Logon Type 3 과 5140 은 원격 접근에서 발생한다. S0 는 단일 VM 로컬 시나리오라
+> 구조적으로 나오지 않으며, Controller 와 Target 을 함께 쓰는 R1 단계에서 확보한다.
 
 ### 5-4. 호스트에서 치환 후 반영
 
