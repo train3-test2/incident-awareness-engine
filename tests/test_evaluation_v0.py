@@ -290,3 +290,104 @@ def test_normal_run_allows_null_reference_time(valid_attack):
     assert result["total_attack_runs"] == 0
     assert result["run_recall"] is None
     assert result["median_ttsd_sec"] is None
+
+
+@pytest.mark.parametrize("miss", [False, True])
+def test_reversed_run_interval_is_invalid(valid_attack, miss):
+    valid_attack["run_end"] = valid_attack["reference_time"] - pd.Timedelta(seconds=1)
+    if miss:
+        valid_attack["timestamp"] = pd.NaT
+    with pytest.raises(ValueError, match="run_end must be >= reference_time"):
+        evaluate(valid_attack, evaluation_horizon=HORIZON)
+
+
+@pytest.mark.parametrize("horizon", [pd.Timedelta(seconds=-1), pd.NaT, None, "10min"])
+def test_invalid_horizon_is_rejected_even_without_hits(valid_attack, horizon):
+    valid_attack["timestamp"] = pd.NaT
+    with pytest.raises(ValueError, match="evaluation_horizon"):
+        evaluate(valid_attack, evaluation_horizon=horizon)
+
+
+@pytest.mark.parametrize("delay, detected", [(0, 1), (1, 0)])
+def test_zero_horizon_allows_only_immediate_detection(valid_attack, delay, detected):
+    valid_attack["timestamp"] = valid_attack["reference_time"] + pd.Timedelta(seconds=delay)
+    result = evaluate(valid_attack, evaluation_horizon=pd.Timedelta(0))
+    assert result["detected_runs"] == detected
+    assert result["median_ttsd_sec"] == (0.0 if detected else None)
+
+
+@pytest.mark.parametrize("column", ["run_start", "run_end", "reference_time", "timestamp"])
+def test_csv_requires_timezone_before_normalization(tmp_path, column):
+    row = dict.fromkeys(
+        ["run_start", "run_end", "reference_time", "timestamp"], "2026-09-02T09:00:00+09:00"
+    )
+    row[column] = "2026-09-02T09:00:00"
+    path = tmp_path / "naive.csv"
+    pd.DataFrame([row]).to_csv(path, index=False)
+    with pytest.raises(ValueError, match=f"timezone required in column: {column}"):
+        load_data(path)
+
+
+def test_csv_mixed_offsets_normalize_and_preserve_miss(tmp_path):
+    path = tmp_path / "offsets.csv"
+    pd.DataFrame(
+        {
+            "run_id": ["R1", "R2"],
+            "class": ["attack", "attack"],
+            "method": ["Sigma", "Sigma"],
+            "run_start": ["2026-09-02T00:00:00Z", "2026-09-02T09:00:00+09:00"],
+            "reference_time": ["2026-09-02T00:00:00Z", "2026-09-02T09:00:00+09:00"],
+            "run_end": ["2026-09-02T00:10:00Z", "2026-09-02T09:10:00+09:00"],
+            "timestamp": ["2026-09-02T09:01:00+09:00", None],
+        }
+    ).to_csv(path, index=False)
+    df = load_data(path)
+    assert df.loc[0, "reference_time"] == df.loc[1, "reference_time"]
+    assert str(df["timestamp"].dt.tz) == "UTC"
+    result = evaluate(df, evaluation_horizon=HORIZON)
+    assert result["run_recall"] == 0.5
+    assert result["median_ttsd_sec"] == 60.0
+
+
+@pytest.mark.parametrize("column", ["run_end", "reference_time", "timestamp"])
+def test_dataframe_naive_datetimes_are_rejected(valid_attack, column):
+    valid_attack[column] = valid_attack[column].dt.tz_localize(None)
+    with pytest.raises(ValueError, match=f"timezone-aware datetime required in column: {column}"):
+        evaluate(valid_attack, evaluation_horizon=HORIZON)
+
+
+@pytest.mark.parametrize("column", ["class", "reference_time", "run_end", "method"])
+def test_conflicting_run_metadata_is_rejected(valid_attack, column):
+    other = valid_attack.copy()
+    if column == "class":
+        other[column] = "normal"
+    elif column == "method":
+        other[column] = "Fusion"
+    else:
+        other[column] += pd.Timedelta(seconds=1)
+    with pytest.raises(ValueError, match="one method|inconsistent Run metadata"):
+        evaluate(pd.concat([valid_attack, other]), evaluation_horizon=HORIZON)
+
+
+def test_normal_run_reference_null_and_value_conflict(valid_attack):
+    valid_attack["class"] = "normal"
+    other = valid_attack.copy()
+    other["reference_time"] = pd.NaT
+    with pytest.raises(ValueError, match="inconsistent Run metadata: reference_time"):
+        evaluate(pd.concat([valid_attack, other]), evaluation_horizon=HORIZON)
+
+
+def test_run_end_equal_reference_is_valid(valid_attack):
+    valid_attack["run_end"] = valid_attack["reference_time"]
+    valid_attack["timestamp"] = valid_attack["reference_time"]
+    result = evaluate(valid_attack, evaluation_horizon=HORIZON)
+    assert result["detected_runs"] == 1
+    assert result["median_ttsd_sec"] == 0.0
+
+
+def test_dataframe_offsets_normalize_without_mutating_input(valid_attack):
+    valid_attack["timestamp"] = valid_attack["timestamp"].dt.tz_convert("Asia/Seoul")
+    original = valid_attack.copy(deep=True)
+    result = evaluate(valid_attack, evaluation_horizon=HORIZON)
+    assert result["median_ttsd_sec"] == 60.0
+    pd.testing.assert_frame_equal(valid_attack, original)

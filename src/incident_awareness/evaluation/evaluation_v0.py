@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -16,10 +17,21 @@ def load_data(path: str) -> pd.DataFrame:
     for column in time_columns:
         original = df[column]
 
+        for value in original.dropna():
+            try:
+                timestamp = pd.Timestamp(value)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"malformed timestamp in column: {column}") from exc
+            if pd.isna(timestamp):
+                raise ValueError(f"malformed timestamp in column: {column}")
+            if timestamp.tzinfo is None:
+                raise ValueError(f"timezone required in column: {column}")
+
         parsed = pd.to_datetime(
             original,
             utc=True,
             errors="coerce",
+            format="mixed",
         )
 
         malformed = original.notna() & parsed.isna()
@@ -42,6 +54,9 @@ def evaluate(
     a miss. A hit-only table cannot supply the Recall denominator. Future
     integrations must obtain the complete inventory from run_metadata.
     Eligible timestamps include both reference_time and evaluation_end.
+    Horizon must be a non-negative pd.Timedelta; zero permits only immediate
+    detection. Non-null times must be timezone-aware datetimes. Run metadata
+    must agree across rows, and attack run_end cannot precede reference_time.
     """
     required = {"run_id", "class", "run_end", "method", "reference_time", "timestamp"}
     missing = required.difference(df.columns)
@@ -66,6 +81,30 @@ def evaluate(
         isinstance(value, str) and not value.strip() for value in attack_df["reference_time"]
     ):
         raise ValueError("reference_time is required for attack Runs")
+
+    if (
+        not isinstance(evaluation_horizon, pd.Timedelta)
+        or pd.isna(evaluation_horizon)
+        or evaluation_horizon < pd.Timedelta(0)
+    ):
+        raise ValueError("evaluation_horizon must be a non-negative pd.Timedelta")
+
+    df = df.copy()
+    for column in ("run_start", "run_end", "reference_time", "timestamp"):
+        if column not in df.columns:
+            continue
+        for value in df[column].dropna():
+            if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError(f"timezone-aware datetime required in column: {column}")
+        df[column] = pd.to_datetime(df[column], utc=True)
+
+    for column in ("class", "reference_time", "run_end", "method"):
+        if (df.groupby("run_id")[column].nunique(dropna=False) > 1).any():
+            raise ValueError(f"inconsistent Run metadata: {column}")
+
+    attack_df = df[df["class"] == "attack"].copy()
+    if (attack_df["run_end"] < attack_df["reference_time"]).any():
+        raise ValueError("attack run_end must be >= reference_time")
 
     total_attack_runs = attack_df["run_id"].nunique()
 
