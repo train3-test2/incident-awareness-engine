@@ -95,9 +95,14 @@ $SECURITY_IDS_OF_INTEREST = @(1102, 4624, 5140)
  # Slack absorbed by the EVTX time window. See the export step for why it is small.
 $EVTX_WINDOW_MARGIN_MS = 10000
 
- # Evidence conditions fixed by the Evidence role
+ # Evidence conditions fixed by the Evidence role.
+ #
+ # This script reimplements them to check whether a collected sample can satisfy
+ # them. It is NOT the authority on Evidence; the Evidence extractor owns that.
+ # Record which condition set was mirrored so later drift is visible.
 $SCRIPT_INTERPRETERS = @("powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.exe")
 $ENCODED_OPTIONS = @("-enc", "-encodedcommand")
+$EVIDENCE_CONDITION_SOURCE = "configs/evidence_types_v0.2.yaml"
 
 function Write-Step {
     param([string]$Message)
@@ -646,6 +651,12 @@ $meta = [ordered]@{
     evidence_condition_hits     = [ordered]@{
         encoded_powershell_command             = $encodedHits
         script_interpreter_external_connection = $externalHits
+    }
+    evidence_condition_check    = [ordered]@{
+        conditions_from = $EVIDENCE_CONDITION_SOURCE
+        implemented_in  = "tools/collect_sysmon_sample.ps1"
+        authoritative   = $false
+        note            = "collection sanity check; the Evidence extractor decides Evidence"
     }
      # Assign the lists directly. In Windows PowerShell 5.1 an [ordered] literal
      # throws "Argument types do not match" when a value is @(<List of IDictionary>).

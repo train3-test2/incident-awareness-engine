@@ -39,6 +39,15 @@ dst_port   = 조건 없음
 `dst_ip` 조건 때문에 **loopback 이나 사설 IP 로는 두 번째 조건을 만족시킬 수 없다.**
 수집 스크립트의 `-ExternalTarget` 옵션이 이 조건을 위한 것이다.
 
+> **수집기의 조건 검사는 Evidence 판정의 근거가 아니다.** 수집 스크립트는 샘플이 조건을
+> 만족할 수 있는지 확인하려고 같은 조건을 따로 구현한다. Evidence 를 실제로 만드는 것은
+> 역할 2의 Extractor 이고, 판정 기준도 그쪽이 소유한다. 어느 조건 집합을 따라 구현했는지는
+> `collection-meta.json` 의 `evidence_condition_check` 에 기록한다.
+>
+> 두 구현은 이미 한 곳에서 갈린다. 수집기는 IPv6 와 멀티캐스트를 외부로 보지 않지만,
+> Extractor 가 쓰는 `ip_address().is_global` 은 `224.0.0.251` 과 글로벌 IPv6 를 외부로
+> 판정한다. 조건 정의는 역할 2에 확인이 필요하다.
+
 > 두 유형은 First Cycle 의 `Event → Evidence → Fusion` 흐름을 검증하기 위한 대표값이며
 > 최종 목록이 아니다. 실제 공격 시나리오에 맞춘 Evidence 추가는 시나리오 확정 이후
 > 역할 2와 역할 4가 함께 정한다.
@@ -118,9 +127,17 @@ Sysmon 원본 구조를 유지한다. `event_v0` 로 변환하지 않는다.
 }
 ```
 
-`RecordId` 는 `raw_ref.record_no` 및 `source_record_id` 의 후보값이다. Sysmon Event ID
-(`1`, `3`) 는 `event_type` 결정에 사용하는 값이며 `source_event_id` 자체가 아니다
-(`docs/schema/event-v0.md` §5).
+`RecordId` 는 Sysmon 이 부여한 **source-native Record 식별자**이므로 `raw_ref.source_record_id`
+에 해당한다. `raw_ref.record_no` 와 혼동하지 않는다.
+
+| 계약 필드 | 의미 | 이 샘플에서 대응하는 값 |
+| --- | --- | --- |
+| `raw_ref.source_record_id` | Source-native Record 식별자 | `RecordId` |
+| `raw_ref.record_no` | Segment 안의 원본 Record 1-based 위치 | JSONL 파일 안에서의 줄 순번 |
+| `raw_ref.segment_no` | 파일 분할 번호 | 분할하지 않았으므로 `1` |
+
+정의는 `docs/data-contract-v0.2.md` §5-2 를 따른다. Sysmon Event ID(`1`, `3`)는 `event_type`
+결정에 사용하는 값이며 `source_event_id` 자체가 아니다(`docs/schema/event-v0.md` §5).
 
 ## 4. 식별자 치환
 
@@ -156,7 +173,16 @@ Get-Content samples\raw\sysmon-0001.jsonl | ForEach-Object { ($_ | ConvertFrom-J
 값이 깨지고(`user` -> `labuser` -> `lablabuser`), 정상 결과를 누출로 오판한다.
 
 현재 샘플은 `sysmon_config_sha256` 과 `sysmon_active_config_sha256` 이 모두 채워져 있다.
-두 값이 다르면 의도한 설정이 Sysmon 에 적용되지 않은 것이므로 재수집한다.
+
+**두 값은 서로 비교하지 않는다.** 해시 대상이 다르기 때문에 항상 다른 값이 나온다.
+
+| 필드 | 해시 대상 |
+| --- | --- |
+| `sysmon_config_sha256` | `-SysmonConfigPath` 로 지정한 XML 파일 |
+| `sysmon_active_config_sha256` | `Sysmon64.exe -c` 가 출력한 적용 중 설정 덤프 |
+
+각 값은 **같은 값끼리 Run 사이에서 비교**할 때 의미가 있다. 두 Run 의
+`sysmon_active_config_sha256` 이 다르면 그 사이에 Sysmon 설정이 바뀐 것이다.
 
 ## 4-1. EVTX 는 저장소에 올리지 않는다
 
@@ -235,9 +261,9 @@ C:\Tools\collect_sysmon_sample.ps1 -ExternalTarget 1.1.1.1 -SysmonConfigPath C:\
 `script_interpreter_external_connection` 조건은 충족되지 않으며, 해당 조건은 필수 검사에서
 제외된다.
 
-`-SysmonConfigPath` 를 주면 설정 파일의 SHA-256 을 기록한다. 함께 기록되는
-`sysmon_active_config_sha256` 은 실행 중인 Sysmon 이 실제로 적용한 설정에서 얻은 값이며,
-이쪽이 재현성 판단의 기준이다. 두 값이 다르면 의도한 설정이 적용되지 않은 것이다.
+`-SysmonConfigPath` 를 주면 설정 파일의 SHA-256 을 기록한다. `sysmon_active_config_sha256`
+은 실행 중인 Sysmon 이 적용하고 있는 설정 덤프에서 얻는다. **두 값은 해시 대상이 달라
+서로 비교하지 않는다**(§4 참조). 재현성 판단은 같은 필드끼리 Run 사이에서 비교한다.
 
 종료 시 아래를 출력한다.
 

@@ -211,3 +211,22 @@ def test_json_이_아니면_예외가_발생한다():
     # when / then - 파싱 단계에서 예외가 발생한다
     with pytest.raises(json.JSONDecodeError):
         sanitize_line(line, [])
+
+
+def test_치환_대상이_하나라도_없으면_규칙을_만들지_않는다():
+    # given - raw_computer 만 있고 raw_user 가 없는 경우
+    only_computer = build_replacements("DESKTOP-TEST01", "")
+
+    # when / then - 사용자명 규칙이 없어 호스트명만 치환된다
+    line = json.dumps({"Computer": "DESKTOP-TEST01", "EventData": {"User": "DESKTOP-TEST01\bob"}})
+    result = json.loads(sanitize_line(line, only_computer))
+    assert result["Computer"] == "WIN-01"
+    assert result["EventData"]["User"] == "WIN-01\bob"
+
+
+def test_치환_대상이_모두_없으면_규칙이_비어_있다():
+    # given / when - 둘 다 빈 값이면
+    replacements = build_replacements("", "")
+
+    # then - 규칙이 하나도 만들어지지 않는다
+    assert replacements == []

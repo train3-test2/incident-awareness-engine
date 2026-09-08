@@ -207,8 +207,16 @@ def main() -> int:
 
     # 치환할 대상을 모르면 아무것도 바꾸지 못한 채 통과한다. 그 상태로 게시하면
     # 원본이 그대로 나가면서 메타데이터에는 치환했다는 거짓 진술이 남는다.
-    if not raw_computer and not raw_user:
-        print("[!] collection-meta.json 에 raw_computer 와 raw_user 가 모두 없다.")
+    #
+    # 하나만 없어도 막는다. Sysmon 레코드는 Computer 필드를 항상 가지므로
+    # raw_computer 가 없으면 호스트명이 치환되지 않은 채 게시된다.
+    missing_inputs = [
+        name
+        for name, value in (("raw_computer", raw_computer), ("raw_user", raw_user))
+        if not value
+    ]
+    if missing_inputs:
+        print(f"[!] collection-meta.json 에 {', '.join(missing_inputs)} 가 없다.")
         print("[!] 치환 대상을 알 수 없으므로 샘플을 만들지 않는다.")
         return 1
 
@@ -267,6 +275,7 @@ def main() -> int:
         "event_counts": meta.get("event_counts"),
         "external_connection": meta.get("external_connection"),
         "evidence_condition_hits": meta.get("evidence_condition_hits"),
+        "evidence_condition_check": meta.get("evidence_condition_check"),
         "sanitized": {
             "computer": PLACEHOLDER_COMPUTER,
             "user": PLACEHOLDER_USER,
