@@ -128,7 +128,23 @@ Sysmon 원본 구조를 유지한다. `event_v0` 로 변환하지 않는다.
 | 사용자 프로필 경로 | `C:\Users\labuser\...` |
 
 치환은 `tools/sanitize_sysmon_sample.py` 가 수행하고, 원본 값은 저장소에 남기지 않는다.
-그 외 필드(프로세스 경로, 명령줄, 포트, 시각, GUID)는 원본 그대로다.
+
+**치환 대상은 호스트명과 사용자명뿐이다.** 아래 값은 원본 그대로 남는다.
+
+```text
+프로세스 경로 · 명령줄 · 포트 · 시각
+ProcessGuid · LogonGuid       머신에서 파생되는 값
+IP 주소                       사설 · 링크로컬 IPv6 · 멀티캐스트 · 외부 목적지 포함
+DNS 이름                      SourceHostname / DestinationHostname
+```
+
+수집 환경의 네트워크 구성이 드러날 수 있다. 게시 전에 아래를 확인한다. 배경 트래픽에
+외부 목적지가 섞이면 그 역DNS 이름이 회선이나 IDC 를 특정할 수 있다.
+
+```powershell
+Get-Content samples\raw\sysmon-0001.jsonl | ForEach-Object { ($_ | ConvertFrom-Json).EventData } |
+    Select-Object SourceIp, DestinationIp, SourceHostname, DestinationHostname -Unique
+```
 
 치환기는 원본 식별자를 먼저 sentinel 로 바꾸고, 누출 검사를 거친 뒤 예시값으로 되돌린다.
 바로 예시값으로 바꾸면 사용자명이 `user` 처럼 결과값의 부분 문자열일 때 치환이 중복 적용되어

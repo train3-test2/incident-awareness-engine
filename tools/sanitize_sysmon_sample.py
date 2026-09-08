@@ -33,11 +33,11 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
- # 치환 후 사용할 값. docs/schema/event-v0.md 예시와 맞춘다
+# 치환 후 사용할 값. docs/schema/event-v0.md 예시와 맞춘다
 PLACEHOLDER_COMPUTER = "WIN-01"
 PLACEHOLDER_USER = "labuser"
 
- # 중간 단계 표식. Private Use Area 문자라 실제 telemetry 와 충돌하지 않는다
+# 중간 단계 표식. Private Use Area 문자라 실제 telemetry 와 충돌하지 않는다
 SENTINEL_COMPUTER = "\ue000"
 SENTINEL_USER = "\ue001"
 
@@ -49,7 +49,7 @@ SENTINELS = {
 Replacement = tuple[re.Pattern[str], str]
 
 
- # 경계 판정 문자. `\w` 는 유니코드를 포함하므로 한글 사용자명에도 경계가 걸린다
+# 경계 판정 문자. `\w` 는 유니코드를 포함하므로 한글 사용자명에도 경계가 걸린다
 WORD_CHAR = re.compile(r"\w")
 
 
@@ -101,7 +101,7 @@ def stage_text(value: str, replacements: Iterable[Replacement]) -> str:
     """문자열 하나를 sentinel 단계까지 치환한다."""
     result = value
     for pattern, target in replacements:
-         # 치환값에 역슬래시가 있어 re.sub 의 escape 해석을 피한다
+        # 치환값에 역슬래시가 있어 re.sub 의 escape 해석을 피한다
         result = pattern.sub(lambda _match, value=target: value, result)
     return result
 
@@ -139,7 +139,7 @@ def stage_line(line: str, replacements: Iterable[Replacement]) -> str:
     """JSONL 한 줄을 파싱해 sentinel 단계까지 치환한 뒤 다시 직렬화한다."""
     parsed = json.loads(line)
 
-     # 이스케이프 표기와 무관하게 판정하려면 파싱한 값에서 확인해야 한다
+    # 이스케이프 표기와 무관하게 판정하려면 파싱한 값에서 확인해야 한다
     for value in iter_string_values(parsed):
         for sentinel in SENTINELS:
             if sentinel in value:
@@ -195,7 +195,7 @@ def main() -> int:
 
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
 
-     # 수집기가 필수 검사에 실패한 Run 은 샘플로 올리지 않는다
+    # 수집기가 필수 검사에 실패한 Run 은 샘플로 올리지 않는다
     failures = meta.get("validation_failures") or []
     if failures:
         print(f"[!] 수집 단계 검사에 실패한 Run 이다: {', '.join(failures)}")
@@ -205,18 +205,46 @@ def main() -> int:
     raw_computer = meta.get("raw_computer", "")
     raw_user = meta.get("raw_user", "")
 
-    replacements = build_replacements(raw_computer, raw_user)
-    source_lines = jsonl_path.read_text(encoding="utf-8").splitlines()
-    staged = [stage_line(line, replacements) for line in source_lines if line.strip()]
+    # 치환할 대상을 모르면 아무것도 바꾸지 못한 채 통과한다. 그 상태로 게시하면
+    # 원본이 그대로 나가면서 메타데이터에는 치환했다는 거짓 진술이 남는다.
+    if not raw_computer and not raw_user:
+        print("[!] collection-meta.json 에 raw_computer 와 raw_user 가 모두 없다.")
+        print("[!] 치환 대상을 알 수 없으므로 샘플을 만들지 않는다.")
+        return 1
 
-     # 누출 검사는 sentinel 을 되돌리기 전에 수행한다
+    replacements = build_replacements(raw_computer, raw_user)
+    if not replacements:
+        print("[!] 치환 규칙을 만들지 못했다. 샘플을 만들지 않는다.")
+        return 1
+
+    source_lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+    try:
+        staged = [stage_line(line, replacements) for line in source_lines if line.strip()]
+    except (ValueError, json.JSONDecodeError) as error:
+        print(f"[!] 입력을 처리할 수 없다: {error}")
+        return 1
+
+    # 누출 검사는 sentinel 을 되돌리기 전에 수행한다.
+    # 남은 건수만 보고한다. 원본 식별자를 그대로 찍으면 실패 경로가 곧 유출 경로가 된다.
     remaining = count_remaining(staged, replacements)
-    leaked = {token: count for token, count in remaining.items() if count > 0}
-    if leaked:
-        print(f"[!] 치환되지 않은 식별자가 남아 있다: {leaked}")
+    leaked_count = sum(count for count in remaining.values() if count > 0)
+    if leaked_count:
+        print(f"[!] 치환되지 않은 원본 식별자가 {leaked_count} 건 남아 있다.")
+        print("[!] 값은 출력하지 않는다. 수집 폴더에서 직접 확인할 것.")
         return 1
 
     sanitized = [restore_line(line) for line in staged]
+
+    # 사후 검증. 치환이 실제로 일어났는지 결과물에서 확인한다.
+    joined = "\n".join(sanitized)
+    expected = [PLACEHOLDER_COMPUTER] if raw_computer else []
+    if raw_user:
+        expected.append(PLACEHOLDER_USER)
+    missing = [value for value in expected if value not in joined]
+    if missing:
+        print(f"[!] 결과물에 치환 결과가 나타나지 않는다: {missing}")
+        print("[!] 치환이 실제로 수행되지 않았을 수 있다. 샘플을 만들지 않는다.")
+        return 1
 
     args.out.mkdir(parents=True, exist_ok=True)
     out_jsonl = args.out / "sysmon-0001.jsonl"
@@ -226,7 +254,7 @@ def main() -> int:
         newline="\n",
     )
 
-     # 원본 호스트명·사용자명은 기록하지 않는다. 치환했다는 사실만 남긴다
+    # 원본 호스트명·사용자명은 기록하지 않는다. 치환했다는 사실만 남긴다
     published_meta = {
         "purpose": meta.get("purpose", "schema-development-sample"),
         "collected_at": meta.get("collected_at"),
