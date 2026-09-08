@@ -149,13 +149,14 @@ Evidence.entity_id
     ↓
 Temporal Fusion (run_id, entity_id)
     ↓
-Evaluation entity_id 단위 집계
+Evaluation entity_id host-level grouping/provenance key
 ```
 
 - `Evidence.entity_id`에는 해당 Evidence의 Source Event가 관측된 `NormalizedEvent.host_id`를 사용하며 non-null로 기록한다.
 - Temporal Fusion 입력의 `entity_id`는 non-null이다. Window와 Fusion Episode는 `(run_id, entity_id)` 단위로 분리해 관리한다.
-- Evaluation은 Evidence와 Fusion이 사용하는 동일한 host `entity_id` 단위로 결과를 집계한다.
-- R1 다중 호스트 환경에서도 각 Evidence는 우선 Source Event가 관측된 host에 귀속하며, 추출 단계에서 서로 다른 host를 하나의 entity로 합치지 않는다.
+- Evaluation에서 `entity_id`는 Evidence와 Fusion 결과의 host-level grouping/provenance key로 사용한다. 서로 다른 host의 Evidence와 Fusion Episode를 동일한 entity로 합치지 않는다.
+- Recall, TTSD 등 Run-level metric의 다중 호스트 reduction 규칙은 Evaluation 계약이 소유한다. D-01은 해당 reduction 규칙을 정의하지 않는다.
+- R1 다중 호스트 환경에서도 각 Evidence는 우선 Source Event가 관측된 host에 귀속한다.
 - cross-host, host+user, session, incident correlation은 PoC v0 범위 밖이다. 필요한 경우 명시적인 변환 규칙과 Schema 버전을 갖춘 후속 계약으로 확장한다.
 - 후속 단계에서 기존 `entity_id`의 의미를 암묵적으로 다른 단위로 변경하지 않는다.
 
@@ -198,7 +199,7 @@ Evaluation entity_id 단위 집계
 
 | 필드                        | 타입         | 필수 | null | 설명                                                    |
 | --------------------------- | ------------ | ---: | ---: | ------------------------------------------------------- |
-| `episode_id`                | String       |    O |    X | Run 안에서 불변인 Fusion Episode 식별자                 |
+| `episode_id`                | String       |    O |    X | `(run_id, entity_id)` 범위에서 로컬 고유한 Episode ID   |
 | `run_id`                    | String       |    O |    X | 소속 실행                                               |
 | `entity_id`                 | String       |    O |    X | PoC v0 canonical Endpoint Host 식별자                   |
 | `start_time`                | DateTime     |    O |    X | ACTIVE 진입 시각                                        |
@@ -209,6 +210,8 @@ Evaluation entity_id 단위 집계
 | `contributing_evidence_ids` | List[String] |    X |    O | Episode에 기여한 Evidence 식별자                        |
 
 Run이 종료될 때 ACTIVE 상태인 Episode는 `end_time`을 `run_end`로 기록하고 `end_reason`을 `run_end`로 기록한다.
+
+`episode_id`는 전역 식별자가 아니다. 서로 다른 host는 각각 `FEP-001`을 가질 수 있으며, Fusion Episode의 논리적 식별자는 `(run_id, entity_id, episode_id)` 복합키다.
 
 ### 7-1. FastHitRecord v0.2
 

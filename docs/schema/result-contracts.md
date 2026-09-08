@@ -71,8 +71,10 @@ Evidence.entity_id
     ↓
 Temporal Fusion (run_id, entity_id)
     ↓
-Evaluation entity_id 단위 집계
+Evaluation entity_id host-level grouping/provenance key
 ```
+
+Evaluation에서 `entity_id`는 host-level grouping/provenance key다. 서로 다른 host의 Evidence와 Fusion Episode를 동일한 entity로 합치지 않는다. Recall, TTSD 등 Run-level metric의 다중 호스트 reduction 규칙은 Evaluation 계약이 소유하며 D-01에서는 정의하지 않는다.
 
 R1 다중 호스트 환경에서도 Evidence는 Source Event가 관측된 host에 우선 귀속한다. cross-host, host+user, session, incident correlation은 PoC v0 범위 밖이며, 후속 계약 없이 기존 `entity_id`의 의미를 변경하지 않는다.
 
@@ -259,7 +261,7 @@ score_at_decision = null
   "scoring_method": "temporal_fusion",
   "scorer_version": "v0.2",
   "fusion_episodes": [{
-    "episode_id": "FE-001",
+    "episode_id": "FEP-001",
     "run_id": "RUN-20260901-001",
     "entity_id": "WIN-01",
     "start_time": "2026-09-01T01:05:00.000Z",
@@ -277,7 +279,7 @@ score_at_decision = null
 
 | 필드 | 타입 | 필수 | null | 설명 |
 | --- | --- | ---: | ---: | --- |
-| `episode_id` | String | O | X | Run 안에서 불변인 Episode 식별자 |
+| `episode_id` | String | O | X | `(run_id, entity_id)` 범위에서 로컬 고유한 Episode ID |
 | `run_id` | String | O | X | 소속 실행 |
 | `entity_id` | String | O | X | PoC v0 canonical Endpoint Host 식별자 |
 | `start_time` | DateTime | O | X | ACTIVE 진입 시각 |
@@ -288,6 +290,8 @@ score_at_decision = null
 | `contributing_evidence_ids` | List[String] | X | O | 기여 Evidence ID |
 
 Run 종료 시 ACTIVE인 Episode는 `end_time=run_end`, `end_reason=run_end`로 기록한다.
+
+서로 다른 host는 각각 `FEP-001`을 가질 수 있다. Fusion Episode의 논리적 식별자는 `(run_id, entity_id, episode_id)` 복합키다.
 
 ---
 

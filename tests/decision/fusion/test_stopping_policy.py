@@ -175,6 +175,29 @@ def test_enters_active_after_k_consecutive_scores() -> None:
     assert episode.end_reason == "run_end"
 
 
+@pytest.mark.parametrize("entity_id", [None, "", "   "])
+def test_rejects_invalid_entity_id(entity_id: object) -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=1,
+    )
+    run_end = make_point(10, 0.0).timestamp
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        policy.evaluate(
+            [],
+            run_id="RUN-01",
+            entity_id=entity_id,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "entity_id must be a non-empty string"
+
+
 def test_resets_persistence_when_score_falls_below_threshold() -> None:
     # Given
     policy = ThresholdStoppingPolicy(
