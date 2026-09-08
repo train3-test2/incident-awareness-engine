@@ -24,9 +24,7 @@ def load_data(path: str) -> pd.DataFrame:
 
         malformed = original.notna() & parsed.isna()
         if malformed.any():
-            raise ValueError(
-                f"malformed timestamp in column: {column}"
-            )
+            raise ValueError(f"malformed timestamp in column: {column}")
 
         df[column] = parsed
 
@@ -38,17 +36,40 @@ def evaluate(
     *,
     evaluation_horizon: pd.Timedelta,
 ) -> dict:
-    methods = df["method"].dropna().unique()
-    if len(methods) > 1:
-        raise ValueError("evaluate() accepts one method at a time")
+    """Evaluate one method using a complete Run inventory.
+
+    Every attack Run must have at least one row; timestamp=null represents
+    a miss. A hit-only table cannot supply the Recall denominator. Future
+    integrations must obtain the complete inventory from run_metadata.
+    Eligible timestamps include both reference_time and evaluation_end.
+    """
+    required = {"run_id", "class", "run_end", "method", "reference_time", "timestamp"}
+    missing = required.difference(df.columns)
+    if missing:
+        raise ValueError(f"missing required columns: {sorted(missing)}")
+
+    for column in ("run_id", "class", "run_end", "method"):
+        if df[column].isna().any() or any(
+            isinstance(value, str) and not value.strip() for value in df[column]
+        ):
+            raise ValueError(f"missing required value: {column}")
+
+    if not df["class"].isin(["attack", "normal"]).all():
+        raise ValueError("class must be attack or normal")
+
+    methods = df["method"].unique()
+    if len(methods) != 1:
+        raise ValueError("evaluate() accepts exactly one method at a time")
 
     attack_df = df[df["class"] == "attack"].copy()
+    if attack_df["reference_time"].isna().any() or any(
+        isinstance(value, str) and not value.strip() for value in attack_df["reference_time"]
+    ):
+        raise ValueError("reference_time is required for attack Runs")
 
     total_attack_runs = attack_df["run_id"].nunique()
 
-    detected_df = attack_df.dropna(
-        subset=["reference_time", "timestamp"]
-    ).copy()
+    detected_df = attack_df.dropna(subset=["timestamp"]).copy()
 
     detected_df["ttsd_sec"] = (
         detected_df["timestamp"] - detected_df["reference_time"]
@@ -58,38 +79,22 @@ def evaluate(
     detected_df = detected_df[detected_df["ttsd_sec"] >= 0]
 
     # 평가 종료 시점: min(reference_time + evaluation_horizon, run_end)
-    detected_df["evaluation_end"] = (
-        detected_df["reference_time"] + evaluation_horizon
-    )
-    detected_df["evaluation_end"] = detected_df[
-        ["evaluation_end", "run_end"]
-    ].min(axis=1)
+    detected_df["evaluation_end"] = detected_df["reference_time"] + evaluation_horizon
+    detected_df["evaluation_end"] = detected_df[["evaluation_end", "run_end"]].min(axis=1)
 
-    detected_df = detected_df[
-        detected_df["timestamp"] <= detected_df["evaluation_end"]
-    ]
+    detected_df = detected_df[detected_df["timestamp"] <= detected_df["evaluation_end"]]
 
     # 동일 run에 여러 탐지가 있으면 최초 탐지만 반영
-    first_detection_per_run = (
-        detected_df.groupby("run_id", as_index=False)["ttsd_sec"]
-        .min()
-    )
+    first_detection_per_run = detected_df.groupby("run_id", as_index=False)["ttsd_sec"].min()
 
     detected_runs = first_detection_per_run["run_id"].nunique()
 
-    recall = (
-        detected_runs / total_attack_runs
-        if total_attack_runs > 0
-        else None
-    )
+    recall = detected_runs / total_attack_runs if total_attack_runs > 0 else None
 
-    median_ttsd = (
-        first_detection_per_run["ttsd_sec"].median()
-        if detected_runs > 0
-        else None
-    )
+    median_ttsd = first_detection_per_run["ttsd_sec"].median() if detected_runs > 0 else None
 
     return {
+        "method": methods[0],
         "total_attack_runs": total_attack_runs,
         "detected_runs": detected_runs,
         "run_recall": recall,
@@ -98,14 +103,9 @@ def evaluate(
 
 
 if __name__ == "__main__":
-    path = (
-        Path(__file__).resolve().parents[3]
-        / "samples"
-        / "fake_runs_v0.csv"
-    )
+    path = Path(__file__).resolve().parents[3] / "samples" / "fake_runs_v0.csv"
 
     df = load_data(path)
     result = evaluate(df, evaluation_horizon=pd.Timedelta(minutes=10))
 
     print(result)
-    

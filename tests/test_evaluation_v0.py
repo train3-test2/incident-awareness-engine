@@ -11,15 +11,9 @@ def test_basic_attack_evaluation():
         {
             "run_id": ["RUN-20260902-001"],
             "class": ["attack"],
-            "run_end": [
-                pd.Timestamp("2026-09-02T00:10:00Z")
-            ],
-            "reference_time": [
-                pd.Timestamp("2026-09-02T00:02:00Z")
-            ],
-            "timestamp": [
-                pd.Timestamp("2026-09-02T00:03:00Z")
-            ],
+            "run_end": [pd.Timestamp("2026-09-02T00:10:00Z")],
+            "reference_time": [pd.Timestamp("2026-09-02T00:02:00Z")],
+            "timestamp": [pd.Timestamp("2026-09-02T00:03:00Z")],
             "method": ["Sigma"],
         }
     )
@@ -109,15 +103,9 @@ def test_pre_reference_detection_is_not_counted():
         {
             "run_id": ["RUN-20260902-001"],
             "class": ["attack"],
-            "run_end": [
-                pd.Timestamp("2026-09-02T00:10:00Z")
-            ],
-            "reference_time": [
-                pd.Timestamp("2026-09-02T00:02:00Z")
-            ],
-            "timestamp": [
-                pd.Timestamp("2026-09-02T00:01:00Z")
-            ],
+            "run_end": [pd.Timestamp("2026-09-02T00:10:00Z")],
+            "reference_time": [pd.Timestamp("2026-09-02T00:02:00Z")],
+            "timestamp": [pd.Timestamp("2026-09-02T00:01:00Z")],
             "method": ["Sigma"],
         }
     )
@@ -135,15 +123,9 @@ def test_detection_after_run_end_is_not_counted():
         {
             "run_id": ["RUN-20260902-001"],
             "class": ["attack"],
-            "run_end": [
-                pd.Timestamp("2026-09-02T00:10:00Z")
-            ],
-            "reference_time": [
-                pd.Timestamp("2026-09-02T00:02:00Z")
-            ],
-            "timestamp": [
-                pd.Timestamp("2026-09-02T00:11:00Z")
-            ],
+            "run_end": [pd.Timestamp("2026-09-02T00:10:00Z")],
+            "reference_time": [pd.Timestamp("2026-09-02T00:02:00Z")],
+            "timestamp": [pd.Timestamp("2026-09-02T00:11:00Z")],
             "method": ["Sigma"],
         }
     )
@@ -155,20 +137,15 @@ def test_detection_after_run_end_is_not_counted():
     assert result["run_recall"] == 0.0
     assert result["median_ttsd_sec"] is None
 
+
 def test_detection_after_evaluation_horizon_is_not_counted():
     df = pd.DataFrame(
         {
             "run_id": ["RUN-20260902-001"],
             "class": ["attack"],
-            "run_end": [
-                pd.Timestamp("2026-09-02T00:30:00Z")
-            ],
-            "reference_time": [
-                pd.Timestamp("2026-09-02T00:00:00Z")
-            ],
-            "timestamp": [
-                pd.Timestamp("2026-09-02T00:11:00Z")
-            ],
+            "run_end": [pd.Timestamp("2026-09-02T00:30:00Z")],
+            "reference_time": [pd.Timestamp("2026-09-02T00:00:00Z")],
+            "timestamp": [pd.Timestamp("2026-09-02T00:11:00Z")],
             "method": ["Sigma"],
         }
     )
@@ -233,4 +210,83 @@ def test_malformed_timestamp_raises(tmp_path):
         match="malformed timestamp",
     ):
         load_data(csv_path)
-        
+
+
+@pytest.fixture
+def valid_attack():
+    return pd.DataFrame(
+        {
+            "run_id": ["RUN-001"],
+            "class": ["attack"],
+            "run_end": [pd.Timestamp("2026-09-02T00:20:00Z")],
+            "reference_time": [pd.Timestamp("2026-09-02T00:00:00Z")],
+            "timestamp": [pd.Timestamp("2026-09-02T00:01:00Z")],
+            "method": ["Sigma"],
+        }
+    )
+
+
+@pytest.mark.parametrize("column", ["run_id", "class", "run_end", "method", "reference_time"])
+def test_required_null_value_is_not_a_miss(valid_attack, column):
+    valid_attack.loc[0, column] = None
+    with pytest.raises(ValueError, match=column):
+        evaluate(valid_attack, evaluation_horizon=HORIZON)
+
+
+@pytest.mark.parametrize("column", ["run_id", "class", "method"])
+def test_required_blank_value_is_rejected(valid_attack, column):
+    valid_attack.loc[0, column] = " "
+    with pytest.raises(ValueError, match=column):
+        evaluate(valid_attack, evaluation_horizon=HORIZON)
+
+
+def test_partially_missing_method_is_rejected(valid_attack):
+    other = valid_attack.copy()
+    other["run_id"] = "RUN-002"
+    other["method"] = None
+    with pytest.raises(ValueError, match="method"):
+        evaluate(pd.concat([valid_attack, other]), evaluation_horizon=HORIZON)
+
+
+def test_invalid_class_is_rejected(valid_attack):
+    valid_attack["class"] = "unknown"
+    with pytest.raises(ValueError, match="class"):
+        evaluate(valid_attack, evaluation_horizon=HORIZON)
+
+
+def test_empty_input_is_rejected(valid_attack):
+    with pytest.raises(ValueError, match="one method"):
+        evaluate(valid_attack.iloc[:0], evaluation_horizon=HORIZON)
+
+
+def test_missing_required_column_is_rejected(valid_attack):
+    with pytest.raises(ValueError, match="run_end"):
+        evaluate(valid_attack.drop(columns="run_end"), evaluation_horizon=HORIZON)
+
+
+@pytest.mark.parametrize(
+    ("run_end", "timestamp", "expected"),
+    [
+        ("00:20:00", "00:00:00", 0.0),
+        ("00:20:00", "00:10:00", 600.0),
+        ("00:05:00", "00:05:00", 300.0),
+    ],
+)
+def test_eligible_boundaries_are_inclusive(valid_attack, run_end, timestamp, expected):
+    valid_attack["run_end"] = pd.Timestamp(f"2026-09-02T{run_end}Z")
+    valid_attack["timestamp"] = pd.Timestamp(f"2026-09-02T{timestamp}Z")
+    result = evaluate(valid_attack, evaluation_horizon=HORIZON)
+    assert result["method"] == "Sigma"
+    assert result["detected_runs"] == 1
+    assert result["run_recall"] == 1.0
+    assert result["median_ttsd_sec"] == expected
+
+
+def test_normal_run_allows_null_reference_time(valid_attack):
+    valid_attack["class"] = "normal"
+    valid_attack.loc[0, "reference_time"] = pd.NaT
+    result = evaluate(valid_attack, evaluation_horizon=HORIZON)
+    assert result["method"] == "Sigma"
+    assert result["total_attack_runs"] == 0
+    assert result["run_recall"] is None
+    assert result["median_ttsd_sec"] is None
