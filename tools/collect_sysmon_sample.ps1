@@ -92,6 +92,9 @@ $SECURITY_LOG = "Security"
  # Security channel IDs the Detection role checks for false positives
 $SECURITY_IDS_OF_INTEREST = @(1102, 4624, 5140)
 
+ # Slack absorbed by the EVTX time window. See the export step for why it is small.
+$EVTX_WINDOW_MARGIN_MS = 10000
+
  # Evidence conditions fixed by the Evidence role
 $SCRIPT_INTERPRETERS = @("powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.exe")
 $ENCODED_OPTIONS = @("-enc", "-encodedcommand")
@@ -206,7 +209,10 @@ function Export-ChannelEvtx {
         Remove-Item $DestinationPath -Force
     }
 
-    & wevtutil epl $Channel $DestinationPath "/q:$query" /ow:true 2>&1 | Out-Null
+     # Do not redirect stderr. In Windows PowerShell 5.1 "2>&1" on a native command
+     # wraps stderr lines in ErrorRecord objects, which raises NativeCommandError
+     # under $ErrorActionPreference = "Stop" before the exit code can be inspected.
+    & wevtutil epl $Channel $DestinationPath "/q:$query" /ow:true | Out-Null
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $DestinationPath)) {
         return $null
     }
@@ -468,8 +474,11 @@ if ($SkipEvtx) {
 } else {
     Write-Step "Exporting EVTX"
 
-     # Cover the whole collection window plus a margin for late writes
-    $windowMs = [int]((Get-Date) - $startTime).TotalMilliseconds + 60000
+     # timediff() measures backwards from the moment the query runs, so any margin
+     # reaches further into the past and pulls in events from before the collection
+     # started. Keep it small: it only has to absorb the delay between computing the
+     # window here and wevtutil evaluating it.
+    $windowMs = [int]((Get-Date) - $startTime).TotalMilliseconds + $EVTX_WINDOW_MARGIN_MS
 
     $sysmonEvtx = Join-Path $OutputDir "sysmon-0001.evtx"
     $exported = Export-ChannelEvtx -Channel $SYSMON_LOG -DestinationPath $sysmonEvtx `
@@ -488,7 +497,9 @@ if ($SkipEvtx) {
         if ($evtxCount -ne $events.Count) {
             Write-Host "[-] EVTX has $evtxCount events, JSONL has $($events.Count)." `
                 -ForegroundColor Yellow
-            Write-Host "    The EVTX window is wider than the JSONL filter by design." `
+            Write-Host "    EVTX reaches $EVTX_WINDOW_MARGIN_MS ms further back than the JSONL filter." `
+                -ForegroundColor Yellow
+            Write-Host "    A small difference is expected; a large one means the margin is wrong." `
                 -ForegroundColor Yellow
         }
     } else {
@@ -521,16 +532,45 @@ if ($SkipEvtx) {
             })
 
              # 5140 needs the File Share audit subcategory, which is off by default.
-             # Report the setting so a zero count is not mistaken for a clean result.
+             # Record the policy so a zero count is not mistaken for a clean result.
+             #
+             # The whole policy is saved as CSV because the subcategory display name is
+             # localized, so matching it by name fails on a non-English Windows.
             try {
-                $auditOutput = & auditpol /get /subcategory:"File Share" 2>&1 | Out-String
-                $match = [regex]::Match($auditOutput, "File Share\s+(.+)")
-                if ($match.Success) {
-                    $fileShareAudit = $match.Groups[1].Value.Trim()
-                    Write-Host "    File Share audit policy : $fileShareAudit"
+                $auditCsvPath = Join-Path $OutputDir "auditpol.csv"
+                $auditRows = & auditpol /get /category:* /r
+                if ($LASTEXITCODE -eq 0 -and $auditRows) {
+                    [System.IO.File]::WriteAllLines($auditCsvPath, $auditRows, $utf8NoBom)
+                    Write-Ok "Audit policy written: $auditCsvPath"
+                    $artifacts.Add([ordered]@{
+                        file    = "auditpol.csv"
+                        kind    = "csv"
+                        channel = "audit-policy"
+                        sha256  = (Get-Sha256 $auditCsvPath)
+                    })
+
+                     # Documented GUID of the File Share subcategory. The script does not
+                     # depend on it: when the lookup misses, the full CSV is still saved.
+                    $fileShareGuid = "{0CCE9224-69AE-11D9-BED3-505054503030}"
+                    $row = $auditRows | Where-Object { $_ -like "*$fileShareGuid*" } |
+                        Select-Object -First 1
+                    if ($row) {
+                        $fields = $row -split ","
+                        if ($fields.Count -ge 5) {
+                            $fileShareAudit = $fields[4].Trim()
+                            Write-Host "    File Share audit policy : $fileShareAudit"
+                        }
+                    } else {
+                        Write-Host "    File Share row not matched; see auditpol.csv" `
+                            -ForegroundColor Yellow
+                    }
+                } else {
+                    Write-Host "[-] auditpol returned $LASTEXITCODE; audit policy not saved." `
+                        -ForegroundColor Yellow
                 }
             } catch {
-                Write-Host "[-] Could not read the File Share audit policy." -ForegroundColor Yellow
+                Write-Host "[-] Could not read the audit policy: $($_.Exception.Message)" `
+                    -ForegroundColor Yellow
             }
         } else {
             Write-Fail "Security EVTX export failed."
@@ -569,7 +609,7 @@ if (-not [string]::IsNullOrWhiteSpace($SysmonConfigPath)) {
 
 if ($sysmonBinary) {
     try {
-        $activeConfig = & $sysmonBinary.Source -c 2>&1 | Out-String
+        $activeConfig = & $sysmonBinary.Source -c | Out-String
         if (-not [string]::IsNullOrWhiteSpace($activeConfig)) {
             $stream = New-Object System.IO.MemoryStream(
                 , [System.Text.Encoding]::UTF8.GetBytes($activeConfig))
@@ -607,13 +647,15 @@ $meta = [ordered]@{
         encoded_powershell_command             = $encodedHits
         script_interpreter_external_connection = $externalHits
     }
-    artifacts                   = @($artifacts)
+     # Assign the lists directly. In Windows PowerShell 5.1 an [ordered] literal
+     # throws "Argument types do not match" when a value is @(<List of IDictionary>).
+    artifacts                   = $artifacts
     security_log                = [ordered]@{
-        included           = [bool]$IncludeSecurityLog
-        event_counts       = $securityCounts
-        file_share_audit   = $fileShareAudit
+        included         = [bool]$IncludeSecurityLog
+        event_counts     = $securityCounts
+        file_share_audit = $fileShareAudit
     }
-    validation_failures         = @($failures)
+    validation_failures         = $failures
 }
 
 $metaPath = Join-Path $OutputDir "collection-meta.json"
