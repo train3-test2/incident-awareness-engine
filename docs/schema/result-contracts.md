@@ -401,6 +401,24 @@ Fast runner가 생산한 개별 qualifying hit는 `DetectionResult`와 별도인
 
 `FastHitRecord`에는 Comparator 관측 사실과 실행 context만 기록한다. Ground Truth, eligible 여부, episode credit, TTSD, Recall 등 평가 파생값은 포함하지 않는다. 모든 유효한 `hit_id`는 Fast Adapter 이후에도 Provenance 보존 표현으로 추적 가능해야 한다.
 
+### `hit_id` 생성 규칙
+
+`hit_id`는 개별 qualifying Fast hit를 식별하고,
+Fast Adapter 이후에도 해당 hit의 provenance를 추적하기 위한 식별자다.
+
+First Cycle 현재 구현에서는 최종 규칙 확정 전까지
+다음 임시 규칙을 사용한다.
+
+```text
+{run_id}-hit-{source_row_index}
+
+source_row_index는 Hayabusa 원본 출력에서의 행 순서를 의미한다.
+
+이 규칙은 row 순서가 변경될 경우 동일한 hit라도
+hit_id가 달라질 수 있으므로 재실행 간 안정성을 보장하지 않는다.
+
+최종 hit_id 의미와 생성 규칙은 3번과 5번이 합의 후 확정한다
+
 ---
 
 # 6. DecisionResult
