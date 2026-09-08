@@ -44,18 +44,24 @@
     .PARAMETER ExternalPort
         Port for the external connection. Defaults to 443.
 
+    .PARAMETER SysmonConfigPath
+        Path to the Sysmon configuration applied to this VM. When supplied the
+        script records its SHA-256 so the metadata reflects the configuration that
+        was actually used instead of a hardcoded label.
+
     .EXAMPLE
         .\collect_sysmon_sample.ps1
 
     .EXAMPLE
-        .\collect_sysmon_sample.ps1 -ExternalTarget 1.1.1.1
+        .\collect_sysmon_sample.ps1 -ExternalTarget 1.1.1.1 -SysmonConfigPath C:\Tools\sysmonconfig-sample-v0.1.xml
 #>
 
 [CmdletBinding()]
 param(
     [string]$OutputDir = (Join-Path (Get-Location) "sysmon-sample"),
     [string]$ExternalTarget = "",
-    [int]$ExternalPort = 443
+    [int]$ExternalPort = 443,
+    [string]$SysmonConfigPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -81,7 +87,12 @@ function Write-Fail {
 }
 
 function Test-GlobalIPv4 {
-     # Loopback, private, link-local and multicast are not global.
+    <#
+        Returns true only for globally reachable IPv4 addresses.
+        Special-purpose ranges from the IANA IPv4 Special-Purpose Address Registry
+        are rejected, including documentation and benchmarking blocks that are
+        otherwise easy to mistake for public addresses.
+    #>
     param([string]$Address)
 
     $parsed = [System.Net.IPAddress]::Any
@@ -93,12 +104,45 @@ function Test-GlobalIPv4 {
     }
 
     $octet = $parsed.GetAddressBytes()
+
+     # 192.0.0.9 and 192.0.0.10 are the only globally reachable hosts in 192.0.0.0/24
+    if ($octet[0] -eq 192 -and $octet[1] -eq 0 -and $octet[2] -eq 0) {
+        return ($octet[3] -eq 9 -or $octet[3] -eq 10)
+    }
+
+     # 0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8
     if ($octet[0] -eq 0) { return $false }
     if ($octet[0] -eq 10) { return $false }
     if ($octet[0] -eq 127) { return $false }
-    if ($octet[0] -eq 172 -and $octet[1] -ge 16 -and $octet[1] -le 31) { return $false }
-    if ($octet[0] -eq 192 -and $octet[1] -eq 168) { return $false }
+
+     # 100.64.0.0/10 carrier-grade NAT
+    if ($octet[0] -eq 100 -and $octet[1] -ge 64 -and $octet[1] -le 127) { return $false }
+
+     # 169.254.0.0/16 link-local
     if ($octet[0] -eq 169 -and $octet[1] -eq 254) { return $false }
+
+     # 172.16.0.0/12 private
+    if ($octet[0] -eq 172 -and $octet[1] -ge 16 -and $octet[1] -le 31) { return $false }
+
+     # 192.0.2.0/24 TEST-NET-1
+    if ($octet[0] -eq 192 -and $octet[1] -eq 0 -and $octet[2] -eq 2) { return $false }
+
+     # 192.88.99.0/24 deprecated 6to4 relay anycast
+    if ($octet[0] -eq 192 -and $octet[1] -eq 88 -and $octet[2] -eq 99) { return $false }
+
+     # 192.168.0.0/16 private
+    if ($octet[0] -eq 192 -and $octet[1] -eq 168) { return $false }
+
+     # 198.18.0.0/15 benchmarking
+    if ($octet[0] -eq 198 -and ($octet[1] -eq 18 -or $octet[1] -eq 19)) { return $false }
+
+     # 198.51.100.0/24 TEST-NET-2
+    if ($octet[0] -eq 198 -and $octet[1] -eq 51 -and $octet[2] -eq 100) { return $false }
+
+     # 203.0.113.0/24 TEST-NET-3
+    if ($octet[0] -eq 203 -and $octet[1] -eq 0 -and $octet[2] -eq 113) { return $false }
+
+     # 224.0.0.0/4 multicast and 240.0.0.0/4 reserved
     if ($octet[0] -ge 224) { return $false }
 
     return $true
@@ -242,11 +286,18 @@ $count1 = ($events | Where-Object { $_.Id -eq 1 }).Count
 $count3 = ($events | Where-Object { $_.Id -eq 3 }).Count
 Write-Ok "Collected $($events.Count) events (EID 1 = $count1, EID 3 = $count3)"
 
+ # Required checks are accumulated and reported at the end.
+ # Output files are still written so a failed run can be diagnosed, but the
+ # script exits non-zero so the sample is never mistaken for a valid one.
+$failures = New-Object System.Collections.Generic.List[string]
+
 if ($count1 -eq 0) {
     Write-Fail "Event ID 1 count is 0. ProcessCreate is not being logged."
+    $failures.Add("event_id_1_missing")
 }
 if ($count3 -eq 0) {
     Write-Fail "Event ID 3 count is 0. NetworkConnect is not being logged."
+    $failures.Add("event_id_3_missing")
 }
 
  # 9. Check Evidence conditions. This does not create Evidence.
@@ -287,12 +338,20 @@ if ($encodedHits -gt 0) {
     Write-Ok "encoded_powershell_command : $encodedHits"
 } else {
     Write-Fail "encoded_powershell_command : 0"
+    $failures.Add("encoded_powershell_command_missing")
 }
 
+ # This condition needs a global destination IP, so it is only required when
+ # an external target was requested.
+$externalRequested = -not [string]::IsNullOrWhiteSpace($ExternalTarget)
 if ($externalHits -gt 0) {
     Write-Ok "script_interpreter_external_connection : $externalHits"
-} else {
+} elseif ($externalRequested) {
     Write-Fail "script_interpreter_external_connection : 0 (no global-IP destination)"
+    $failures.Add("script_interpreter_external_connection_missing")
+} else {
+    Write-Host "[-] script_interpreter_external_connection : 0 (-ExternalTarget not supplied)" `
+        -ForegroundColor Yellow
 }
 
  # 10. Convert to JSONL
@@ -334,26 +393,66 @@ if ($sysmonBinary) {
     $sysmonVersion = $sysmonBinary.Version.ToString()
 }
 
+ # Record what the configuration actually was instead of a fixed label.
+ # The file hash identifies the configuration that was handed to Sysmon; the
+ # active hash is taken from the running service and is the authoritative one.
+$configVersion = "unspecified"
+$configSha256 = $null
+$activeConfigSha256 = $null
+
+if (-not [string]::IsNullOrWhiteSpace($SysmonConfigPath)) {
+    if (Test-Path $SysmonConfigPath) {
+        $configVersion = [System.IO.Path]::GetFileNameWithoutExtension($SysmonConfigPath)
+        $configSha256 = (Get-FileHash -Path $SysmonConfigPath -Algorithm SHA256).Hash.ToLower()
+    } else {
+        Write-Fail "SysmonConfigPath not found: $SysmonConfigPath"
+        $failures.Add("sysmon_config_path_missing")
+    }
+} else {
+    Write-Host "[-] -SysmonConfigPath not supplied; config identity is unverified." -ForegroundColor Yellow
+}
+
+if ($sysmonBinary) {
+    try {
+        $activeConfig = & $sysmonBinary.Source -c 2>&1 | Out-String
+        if (-not [string]::IsNullOrWhiteSpace($activeConfig)) {
+            $stream = New-Object System.IO.MemoryStream(
+                , [System.Text.Encoding]::UTF8.GetBytes($activeConfig))
+            $activeConfigSha256 = (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.ToLower()
+            $stream.Dispose()
+        }
+    } catch {
+        Write-Host "[-] Could not read the active Sysmon configuration." -ForegroundColor Yellow
+    }
+}
+
 $meta = [ordered]@{
-    collected_at            = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-    collection_start        = $startLabel
-    purpose                 = "schema-development-sample"
-    sysmon_config_version   = "sysmonconfig-sample-v0.1"
-    sysmon_version          = $sysmonVersion
-    os_caption              = (Get-CimInstance Win32_OperatingSystem).Caption
-    os_version              = [System.Environment]::OSVersion.Version.ToString()
-    raw_computer            = $env:COMPUTERNAME
-    raw_user                = $env:USERNAME
-    event_counts            = [ordered]@{ id_1 = $count1; id_3 = $count3; total = $events.Count }
-    external_connection     = [ordered]@{
-        requested = -not [string]::IsNullOrWhiteSpace($ExternalTarget)
+    collected_at                = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+    collection_start            = $startLabel
+    purpose                     = "schema-development-sample"
+    sysmon_config_version       = $configVersion
+    sysmon_config_sha256        = $configSha256
+    sysmon_active_config_sha256 = $activeConfigSha256
+    sysmon_version              = $sysmonVersion
+    os_caption                  = (Get-CimInstance Win32_OperatingSystem).Caption
+    os_version                  = [System.Environment]::OSVersion.Version.ToString()
+    raw_computer                = $env:COMPUTERNAME
+    raw_user                    = $env:USERNAME
+    event_counts                = [ordered]@{
+        id_1  = $count1
+        id_3  = $count3
+        total = $events.Count
+    }
+    external_connection         = [ordered]@{
+        requested = $externalRequested
         succeeded = $externalConnected
         port      = $ExternalPort
     }
-    evidence_condition_hits = [ordered]@{
+    evidence_condition_hits     = [ordered]@{
         encoded_powershell_command             = $encodedHits
         script_interpreter_external_connection = $externalHits
     }
+    validation_failures         = @($failures)
 }
 
 $metaPath = Join-Path $OutputDir "collection-meta.json"
@@ -361,6 +460,15 @@ $metaPath = Join-Path $OutputDir "collection-meta.json"
 Write-Ok "Metadata written: $metaPath"
 
 Write-Host ""
+if ($failures.Count -gt 0) {
+    Write-Fail "Required checks failed: $($failures -join ', ')"
+    Write-Host "    Output was still written so the run can be diagnosed."
+    Write-Host "    Do not publish this sample until the checks pass."
+    Write-Host "    $jsonlPath"
+    Write-Host "    $metaPath"
+    exit 1
+}
+
 Write-Ok "Done. Copy these two files to the host."
 Write-Host "    $jsonlPath"
 Write-Host "    $metaPath"
