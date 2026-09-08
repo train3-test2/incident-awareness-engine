@@ -1,0 +1,27 @@
+{
+  "purpose": "schema-development-sample",
+  "collected_at": "2026-09-08T11:40:41.952Z",
+  "sysmon_config_version": "sysmonconfig-sample-v0.1",
+  "sysmon_version": "15.21.0.0",
+  "os_caption": "Microsoft Windows 11 Enterprise Evaluation",
+  "os_version": "10.0.26200.0",
+  "event_counts": {
+    "id_1": 6,
+    "id_3": 51,
+    "total": 57
+  },
+  "external_connection": {
+    "requested": true,
+    "succeeded": true,
+    "port": 443
+  },
+  "evidence_condition_hits": {
+    "encoded_powershell_command": 1,
+    "script_interpreter_external_connection": 1
+  },
+  "sanitized": {
+    "computer": "WIN-01",
+    "user": "labuser",
+    "rule": "원본 호스트명과 사용자명을 문서 예시값으로 치환"
+  }
+}
