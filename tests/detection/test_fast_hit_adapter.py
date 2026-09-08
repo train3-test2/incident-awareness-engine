@@ -3,6 +3,7 @@ import json
 import pytest
 
 from incident_awareness.detection.fast_hit_adapter import (
+    get_rule_metadata,
     hayabusa_row_to_fast_hit,
     hayabusa_rows_to_fast_hits,
     is_qualifying_hit,
@@ -109,10 +110,18 @@ def test_hayabusa_rows_to_fast_hits():
         rows,
         run_id="run-001",
         detector_engine_version="4.0.0",
-        rule_version="test",
-        alert_key="test-alert",
         detector_config_version="draft-v0.1",
         qualifying_rule_ids={"rule-1", "rule-2"},
+        rule_metadata={
+            "rule-1": {
+                "rule_version": "test",
+                "alert_key": "encoded-powershell",
+            },
+            "rule-2": {
+                "rule_version": "stable",
+                "alert_key": "audit-log-clear",
+            },
+        },
     )
 
     assert len(results) == 2
@@ -120,6 +129,10 @@ def test_hayabusa_rows_to_fast_hits():
     assert results[1]["hit_id"] == "run-001-hit-2"
     assert results[0]["rule_id"] == "rule-1"
     assert results[1]["rule_id"] == "rule-2"
+    assert results[0]["rule_version"] == "test"
+    assert results[0]["alert_key"] == "encoded-powershell"
+    assert results[1]["rule_version"] == "stable"
+    assert results[1]["alert_key"] == "audit-log-clear"
 
 
 def test_write_fast_hits_jsonl(tmp_path):
@@ -270,17 +283,18 @@ def test_hayabusa_rows_to_fast_hits_filters_non_qualifying_rows():
         rows,
         run_id="run-001",
         detector_engine_version="4.0.0",
-        rule_version="test",
-        alert_key="test-alert",
         detector_config_version="draft-v0.1",
-        qualifying_rule_ids={"rule-1", "rule-2"},
+        qualifying_rule_ids={"rule-1"},
+        rule_metadata={
+            "rule-1": {
+                "rule_version": "test",
+                "alert_key": "encoded-powershell",
+            },
+        },
     )
 
-    assert len(results) == 2
+    assert len(results) == 1
     assert results[0]["rule_id"] == "rule-1"
-    assert results[1]["rule_id"] == "rule-2"
-    assert results[0]["hit_id"] == "run-001-hit-1"
-    assert results[1]["hit_id"] == "run-001-hit-3"
 
 
 def test_missing_timestamp_raises_error():
@@ -300,3 +314,61 @@ def test_missing_timestamp_raises_error():
             alert_key="test-alert",
             detector_config_version="draft-v0.1",
         )
+
+
+def test_get_rule_metadata():
+    rule_metadata = {
+        "rule-1": {
+            "rule_version": "test",
+            "alert_key": "encoded-powershell",
+        },
+        "rule-2": {
+            "rule_version": "stable",
+            "alert_key": "audit-log-clear",
+        },
+    }
+
+    result = get_rule_metadata("rule-1", rule_metadata)
+
+    assert result == {
+        "rule_version": "test",
+        "alert_key": "encoded-powershell",
+    }
+
+
+def test_qualifying_rule_without_metadata_raises_key_error():
+    rows = [{"Timestamp": "2022-02-22T10:10:10.123Z", "RuleID": "rule-missing"}]
+
+    with pytest.raises(KeyError) as exc_info:
+        hayabusa_rows_to_fast_hits(
+            rows,
+            run_id="run-001",
+            detector_engine_version="4.0.0",
+            detector_config_version="draft-v0.1",
+            qualifying_rule_ids={"rule-missing"},
+            rule_metadata={},
+        )
+
+    assert exc_info.value.args == ("rule-missing",)
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "expected"),
+    [
+        ("2022-02-22T10:10:10.1234567Z", "2022-02-22T10:10:10.123Z"),
+        ("2022-02-22T10:10:10.9999999+09:00", "2022-02-22T01:10:10.999Z"),
+        ("2022-02-22 10:10:10.1234567 -05:00", "2022-02-22T15:10:10.123Z"),
+    ],
+)
+def test_timestamp_excess_fractional_precision(timestamp, expected):
+    result = hayabusa_row_to_fast_hit(
+        {"Timestamp": timestamp, "RuleID": "rule-1"},
+        run_id="run-001",
+        hit_id="hit-001",
+        detector_engine_version="4.0.0",
+        rule_version="test",
+        alert_key="test-alert",
+        detector_config_version="draft-v0.1",
+    )
+
+    assert result["timestamp"] == expected

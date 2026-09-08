@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,8 @@ _TIMESTAMP_FORMATS = (
 
 def _to_utc_iso8601_millis(timestamp: str) -> str:
     normalized = timestamp[:-1] + "+00:00" if timestamp.endswith("Z") else timestamp
+    # strptime accepts at most six fractional-second digits; preserve the timezone.
+    normalized = re.sub(r"(:[0-9]{2}\.[0-9]{6})[0-9]+", r"\1", normalized, count=1)
 
     for fmt in _TIMESTAMP_FORMATS:
         try:
@@ -65,10 +68,9 @@ def hayabusa_rows_to_fast_hits(
     *,
     run_id: str,
     detector_engine_version: str,
-    rule_version: str,
-    alert_key: str,
     detector_config_version: str,
     qualifying_rule_ids: set[str],
+    rule_metadata: dict[str, dict[str, str]],
 ) -> list[dict[str, Any]]:
     results = []
 
@@ -76,13 +78,15 @@ def hayabusa_rows_to_fast_hits(
         if not is_qualifying_hit(row, qualifying_rule_ids):
             continue
 
+        metadata = get_rule_metadata(row["RuleID"], rule_metadata)
+
         hit = hayabusa_row_to_fast_hit(
             row,
             run_id=run_id,
             hit_id=f"{run_id}-hit-{index}",
             detector_engine_version=detector_engine_version,
-            rule_version=rule_version,
-            alert_key=alert_key,
+            rule_version=metadata["rule_version"],
+            alert_key=metadata["alert_key"],
             detector_config_version=detector_config_version,
         )
         results.append(hit)
@@ -105,3 +109,10 @@ def is_qualifying_hit(
     rule_id = row["RuleID"]
 
     return rule_id in qualifying_rule_ids
+
+
+def get_rule_metadata(
+    rule_id: str,
+    rule_metadata: dict[str, dict[str, str]],
+) -> dict[str, str]:
+    return rule_metadata[rule_id]
