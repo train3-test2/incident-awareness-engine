@@ -62,7 +62,19 @@ docs/schema/run-id.md
 
 ## 2-3. entity_id
 
-`entity_id`는 해당 결과가 어느 분석 대상 Entity에 대한 것인지 나타낸다. canonical 범위와 R1 귀속 규칙이 확정되기 전까지는 nullable이며, 구현에서 Endpoint Host로 임의 고정하지 않는다.
+`entity_id`는 해당 결과가 어느 분석 대상 Entity에 대한 것인지 나타낸다. 상위 정본의 D-01 결정에 따라 PoC v0에서는 non-null인 Endpoint Host 식별자다.
+
+```text
+NormalizedEvent.host_id
+    ↓
+Evidence.entity_id
+    ↓
+Temporal Fusion (run_id, entity_id)
+    ↓
+Evaluation entity_id 단위 집계
+```
+
+R1 다중 호스트 환경에서도 Evidence는 Source Event가 관측된 host에 우선 귀속한다. cross-host, host+user, session, incident correlation은 PoC v0 범위 밖이며, 후속 계약 없이 기존 `entity_id`의 의미를 변경하지 않는다.
 
 ---
 
@@ -84,7 +96,7 @@ docs/schema/run-id.md
 | `run_id`                | String       |    O |    X | 실험 실행 식별자       |
 | `timestamp`             | DateTime     |    O |    X | 연결된 `NormalizedEvent.timestamp` 중 가장 늦은 시각 |
 | `first_source_event_time` | DateTime   |    X |    O | 연결된 Event 중 가장 이른 시각; 채점·Decision 시간 계산에 사용하지 않음 |
-| `entity_id`             | String       |    X |    O | 분석 대상 Entity       |
+| `entity_id`             | String       |    O |    X | Source Event가 관측된 Endpoint Host 식별자 |
 | `evidence_type`         | String       |    O |    X | Evidence 유형          |
 | `event_ids`             | List[String] |    O |    X | 최소 1개 정규화 Event ID(`NormalizedEvent.event_id`) |
 | `feature_channel_group` | Enum         |    O |    X | Fusion 입력 여부 구분  |
@@ -162,7 +174,7 @@ Fusion 내부 score/window/stopping 알고리즘은 역할 1이 담당한다.
 | 필드                        | 타입         | 필수 | null | 설명                   |
 | --------------------------- | ------------ | ---: | ---: | ---------------------- |
 | `run_id`                    | String       |    O |    X | 실험 실행 식별자       |
-| `entity_id`                 | String       |    X |    O | 분석 대상 Entity       |
+| `entity_id`                 | String       |    O |    X | PoC v0 canonical Endpoint Host 식별자 |
 | `fusion_time`               | DateTime     |    O |    O | Fusion 판단 시각       |
 | `fusion_status`             | Enum         |    O |    X | Fusion 평가 결과       |
 | `score_at_decision`         | Float        |    O |    O | 판단 시점의 Score      |
@@ -267,7 +279,7 @@ score_at_decision = null
 | --- | --- | ---: | ---: | --- |
 | `episode_id` | String | O | X | Run 안에서 불변인 Episode 식별자 |
 | `run_id` | String | O | X | 소속 실행 |
-| `entity_id` | String | X | O | 분석 대상 Entity |
+| `entity_id` | String | O | X | PoC v0 canonical Endpoint Host 식별자 |
 | `start_time` | DateTime | O | X | ACTIVE 진입 시각 |
 | `end_time` | DateTime | X | O | 종료 시각 |
 | `end_reason` | Enum | X | O | `released`, `run_end`; 종료 전에는 `null` |
@@ -294,7 +306,7 @@ Run 종료 시 ACTIVE인 Episode는 `end_time=run_end`, `end_reason=run_end`로 
 | 필드              | 타입     | 필수 | null | 설명                           |
 | ----------------- | -------- | ---: | ---: | ------------------------------ |
 | `run_id`          | String   |    O |    X | 실험 실행 식별자               |
-| `entity_id`       | String   |    X |    O | 분석 대상 Entity               |
+| `entity_id`       | String   |    O |    X | PoC v0 canonical Endpoint Host 식별자 |
 | `detector_time`   | DateTime |    O |    O | qualifying detection 발생 시각 |
 | `detector_status` | Enum     |    O |    X | Detector 평가 결과             |
 | `detector_id`     | String   |    O |    O | Detector 식별자                |
@@ -437,7 +449,7 @@ Fusion Path와 Fast Detection Path의 결과를 결합하여 기술적 후보 �
 | ----------------- | -------- | ---: | ---: | --------------------------- |
 | `run_id`          | String   |    O |    X | 실험 실행 식별자            |
 | `decision_id`     | String   |    O |    X | 불변 Decision 식별자 |
-| `entity_id`       | String   |    X |    O | 분석 대상 Entity            |
+| `entity_id`       | String   |    O |    X | PoC v0 canonical Endpoint Host 식별자 |
 | `fast_status`     | Enum     |    O |    X | `detected`, `miss`, `not_evaluated` |
 | `fusion_status`   | Enum     |    O |    X | `detected`, `miss`, `not_evaluated` |
 | `fusion_time`     | DateTime |    O |    O | Fusion 판단 시각            |

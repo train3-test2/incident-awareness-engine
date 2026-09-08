@@ -30,7 +30,7 @@ class ScorePoint:
 class FusionEpisode:
     episode_id: str
     run_id: str
-    entity_id: str | None
+    entity_id: str
     start_time: datetime
     end_time: datetime
     end_reason: Literal["released", "run_end"]
@@ -75,7 +75,7 @@ class ThresholdStoppingPolicy:
         trajectory: list[ScorePoint],
         *,
         run_id: str,
-        entity_id: str | None,
+        entity_id: str,
         run_end: datetime,
     ) -> StoppingResult:
         consecutive = 0

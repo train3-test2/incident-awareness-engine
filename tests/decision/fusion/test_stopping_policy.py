@@ -167,6 +167,8 @@ def test_enters_active_after_k_consecutive_scores() -> None:
     assert len(result.fusion_episodes) == 1
 
     episode = result.fusion_episodes[0]
+    assert episode.run_id == "RUN-01"
+    assert episode.entity_id == "HOST-01"
     assert episode.start_time == trajectory[2].timestamp
     assert episode.score_at_start == 0.81
     assert episode.end_time == run_end
