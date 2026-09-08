@@ -70,26 +70,29 @@ dst_port   = 조건 없음
 
 ### 현재 샘플 구성
 
-Windows 11 Enterprise Evaluation / Sysmon 15.21 에서 수집한 57 건이다.
+Windows 11 Enterprise Evaluation / Sysmon 15.21 에서 수집한 7 건이다.
 
 | Event ID | 건수 |
 | --- | ---: |
-| 1 (ProcessCreate) | 6 |
-| 3 (NetworkConnect) | 51 |
+| 1 (ProcessCreate) | 4 |
+| 3 (NetworkConnect) | 3 |
 
 Evidence 조건 검증에 쓰는 레코드는 다음과 같다.
 
 | RecordId | 내용 | 용도 |
 | --- | --- | --- |
-| 13 | `powershell.exe -EncodedCommand ...` | `encoded_powershell_command` **양성** |
-| 61 | `powershell.exe` -> `1.1.1.1:443` | `script_interpreter_external_connection` **양성** |
-| 59 | `powershell.exe` -> `127.0.0.1:135` | dst 가 loopback 이라 **음성** |
-| 5 | `powershell.exe` (옵션 없음) | command line 조건 **음성** |
+| 3391 | `powershell.exe -EncodedCommand ...` | `encoded_powershell_command` **양성** |
+| 3395 | `powershell.exe` -> `1.1.1.1:443` | `script_interpreter_external_connection` **양성** |
+| 3393 | `powershell.exe` -> `127.0.0.1:135` | dst 가 loopback 이라 **음성** |
+| 3394 | `svchost.exe` -> `127.0.0.1:135` | 프로세스가 인터프리터가 아니라 **음성** |
+| 3389 | `powershell.exe` (옵션 없음) | command line 조건 **음성** |
 
-나머지 EID 3 은 배경 트래픽이다(svchost 43 / System 3 / msedgewebview2 3). 인터프리터가
-아닌 프로세스가 외부 IP 로 연결한 건이 포함되어 있어, `script_interpreter_external_connection`
-의 프로세스 조건을 검증하는 **음성 표본**으로 사용할 수 있다. IPv6 와 멀티캐스트 주소도
-들어 있어 Parser 의 필드 처리 범위를 함께 확인할 수 있다.
+양성 2 건과 음성 3 건이 들어 있어 두 조건의 판정 경계를 모두 확인할 수 있다.
+
+> 이 샘플에는 배경 트래픽이 거의 없다. 조용한 VM 에서 수집했기 때문이다. Parser 의 필드
+> 처리 범위(IPv6, 멀티캐스트, 다양한 프로세스)를 넓게 확인하려면 활동이 있는 상태에서
+> 더 길게 수집해야 한다. 다만 그 경우 배경 트래픽에 외부 목적지가 섞이므로 §4 의 게시 전
+> 확인을 반드시 거친다.
 
 ### 레코드 구조
 
@@ -152,9 +155,8 @@ Get-Content samples\raw\sysmon-0001.jsonl | ForEach-Object { ($_ | ConvertFrom-J
 바로 예시값으로 바꾸면 사용자명이 `user` 처럼 결과값의 부분 문자열일 때 치환이 중복 적용되어
 값이 깨지고(`user` -> `labuser` -> `lablabuser`), 정상 결과를 누출로 오판한다.
 
-> 현재 샘플은 `-SysmonConfigPath` 도입 이전에 수집한 것이라
-> `sysmon_config_sha256` 과 `sysmon_active_config_sha256` 이 `null` 이다.
-> 다음 재수집 때 채운다.
+현재 샘플은 `sysmon_config_sha256` 과 `sysmon_active_config_sha256` 이 모두 채워져 있다.
+두 값이 다르면 의도한 설정이 Sysmon 에 적용되지 않은 것이므로 재수집한다.
 
 ## 4-1. EVTX 는 저장소에 올리지 않는다
 

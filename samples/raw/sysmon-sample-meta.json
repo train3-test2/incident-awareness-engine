@@ -1,16 +1,16 @@
 {
   "purpose": "schema-development-sample",
-  "collected_at": "2026-09-08T11:40:41.952Z",
+  "collected_at": "2026-09-08T16:35:41.200Z",
   "sysmon_config_version": "sysmonconfig-sample-v0.1",
-  "sysmon_config_sha256": null,
-  "sysmon_active_config_sha256": null,
+  "sysmon_config_sha256": "ee2cff646231999f3d08c1a9deb0177518c53192aa6489671e5c27629d2a90bf",
+  "sysmon_active_config_sha256": "335b3a6128147d5cb94be223decec887024b55c7a9472a4586d2914a05756a7d",
   "sysmon_version": "15.21.0.0",
   "os_caption": "Microsoft Windows 11 Enterprise Evaluation",
   "os_version": "10.0.26200.0",
   "event_counts": {
-    "id_1": 6,
-    "id_3": 51,
-    "total": 57
+    "id_1": 4,
+    "id_3": 3,
+    "total": 7
   },
   "external_connection": {
     "requested": true,
