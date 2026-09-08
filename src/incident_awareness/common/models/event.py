@@ -102,6 +102,16 @@ class NormalizedEvent(BaseModel):
 
         return value
 
+    @field_validator("timestamp", "event_time", "record_time", "ingest_time", mode="before")
+    @classmethod
+    def reject_numeric_datetime(cls, value: object) -> object:
+        if isinstance(value, int | float):
+            raise ValueError(  # noqa: TRY004
+                "datetime에 숫자형 Unix timestamp를 사용할 수 없습니다."
+            )
+
+        return value
+
     @field_validator("timestamp", "event_time", "record_time", "ingest_time")
     @classmethod
     def validate_utc_datetime(cls, value: datetime | None) -> datetime | None:
