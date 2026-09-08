@@ -391,3 +391,16 @@ def test_dataframe_offsets_normalize_without_mutating_input(valid_attack):
     result = evaluate(valid_attack, evaluation_horizon=HORIZON)
     assert result["median_ttsd_sec"] == 60.0
     pd.testing.assert_frame_equal(valid_attack, original)
+
+
+@pytest.mark.parametrize("column", ["run_start", "run_end", "reference_time", "timestamp"])
+@pytest.mark.parametrize("value", ["N/A", "NaN", "NULL", "null", "NA", "NaT"])
+def test_csv_nonempty_null_tokens_are_invalid_timestamps(tmp_path, column, value):
+    row = dict.fromkeys(
+        ["run_start", "run_end", "reference_time", "timestamp"], "2026-09-02T00:00:00Z"
+    )
+    row[column] = value
+    path = tmp_path / "invalid_null.csv"
+    pd.DataFrame([row]).to_csv(path, index=False)
+    with pytest.raises(ValueError, match=f"malformed timestamp in column: {column}"):
+        load_data(path)

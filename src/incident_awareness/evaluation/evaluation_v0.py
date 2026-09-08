@@ -5,7 +5,8 @@ import pandas as pd
 
 
 def load_data(path: str) -> pd.DataFrame:
-    df = pd.read_csv(path)
+    """Load CSV with only empty fields treated as missing values."""
+    df = pd.read_csv(path, keep_default_na=False, na_values=[""])
 
     time_columns = [
         "run_start",
