@@ -143,7 +143,7 @@ Rule status stable과 severity high는 정상/pilot 검증을 대체하지 않�
 - RecordID: 452811
 
 Timestamp는 원본 CSV 값을 그대로 기록했다.
-최종 DetectionResult의 밀리초 정밀도 변환 정책은 별도로 적용한다.
+canonical FastHitRecord / DetectionResult로의 UTC·밀리초 정규화는 §14의 변환 경계에서 적용한다.
 RecordID만으로 프로젝트 source_event_ids를 생성하지 않는다.
 
 ### Sigma 후보 실행 결과
@@ -583,14 +583,25 @@ FP 발생 여부를 확인한 뒤 qualifying 여부를 결정한다.
 |---|---|---|---|
 | Audit Log Clear (1102) | 공격 샘플에서 단일 Rule hit 재현 | 단독 hit를 qualifying 후보로 검토. 단, 정상 운영/에이전트/이미지 생성 과정에서의 1102 발생 가능성 확인 필요 | 미확정 |
 | Encoded PowerShell (Sysmon EID 1) | 공격 샘플에서 단일 Rule hit 재현 | `-enc` 등 encoded 명령행만으로 단독 qualifying할지 검토. 정상 배포/관리 스크립트 FP 확인 필요 | 미확정 |
-| ADMIN$ Share Access (5140) | 원본 Rule은 sample에서 0 hit, ShareName 표현 수정 시 1 hit 재현 | 정상 관리자 활동과 구분이 어려울 수 있으므로 단독 qualifying보다는 추가 조건 결합 여부 검토 | 미확정 |
+| ADMIN$ Share Access (5140) | 원본 Rule은 sample에서 0 hit, ShareName 표현 수정 시 1 hit 재현 | 동일 hit의 native context filtering과 단독 decisive 적합성 검토. Event correlation은 별도 detector로 분리 | 미확정 |
 
 ### 공통 원칙
 
 - 공격 샘플 hit만으로 qualifying을 확정하지 않는다.
-- 정상/pilot FP 검증 전에는 detector set을 freeze하지 않는다.
+- 정상/pilot FP 검증만으로 final freeze하지 않으며, R1 전 provisional 고정과 test 전 final freeze를 구분한다 (§13).
 - Rule 자체의 동작 여부와 Fast qualifying 여부는 별도로 판단한다.
 - Rule 수정이 필요한 경우 원본 Rule과 수정본을 구분하여 기록한다.
+
+Fast qualifying filter는 동일 Rule hit에서 이미 관측 가능한 native field/context에 대한
+사전 정의 조건으로 제한한다. 이후 다른 Event와의 correlation이나 프로젝트 Semantic Evidence
+결합은 기존 Fast comparator의 qualifying filter로 사용하지 않는다. 이러한 결합이 필요하면
+별도 detector/comparator로 정의하고, 필요한 조건을 실제로 확정할 수 있게 된 시각을
+해당 detector의 hit 시각으로 사용한다. 예를 들어 10:00 hit에 10:03 Event가 필요하면
+10:00으로 소급하지 않는다. Evidence/Fusion 경로의 산출물을 Fast qualifying에 재사용하지 않는다.
+
+계정·host·IP·path 조건은 사전에 정의한 역할, 자산군, 관리정책 등 일반화 가능한 기준으로
+표현한다. 특정 R1 공격 계정명·host명·source IP·고정 경로 자체로 attack을 분기하는
+scenario literal shortcut은 금지한다. R1 결과를 확인한 뒤 조건 값을 추가하지 않는다.
 
 ### 12.1 Audit Log Clear (1102) qualifying condition 초안
 
@@ -645,15 +656,14 @@ qualifying policy 초안:
 - 다만 encoded PowerShell은 정상 배포/관리 자동화에서도 사용될 수 있으므로
   정상/pilot FP 검증 전에는 단독 qualifying으로 확정하지 않는다.
 - 정상 환경에서 FP가 확인될 경우
-  추가 조건 결합을 검토한다.
+  동일 hit에서 이미 관측 가능한 native context의 사전 정의 filtering을 검토한다.
 
-추가 조건 후보 예시:
+추가 조건 후보 예시 (동일 hit에서 이미 관측 가능한 필드에 한함):
 
 - parent process
 - 실행 계정
 - 실행 경로
 - 명령행의 추가 의심 pattern
-- 동일 시간대의 다른 Evidence 존재 여부
 
 현재 상태는 `candidate`이며,
 정상/pilot FP 검증 전에는 최종 qualifying으로 freeze하지 않는다.
@@ -686,16 +696,18 @@ qualifying policy 초안:
 - 원본 Rule의 `ShareName` 표현 문제를 해결하기 전에는
   해당 Rule을 canonical Fast detector로 freeze하지 않는다.
 - 정상/pilot 로그에서 동일 유형의 접근 빈도와 false positive 여부를 확인한 뒤
-  단독 qualifying 또는 복합 조건 사용 여부를 결정한다.
+  동일-hit qualifying filter 및 단독 decisive 적합성을 검토한다.
+  다른 Event 결합이 필요하면 기존 Fast qualifying이 아닌 별도 detector로 분리한다.
 
-추가 조건 후보 예시:
+추가 조건 후보 예시 (동일 hit에서 이미 관측 가능한 필드에 한함):
 
 - 접근 주체 계정
 - source IP / source host
-- 평소 관리용 host인지 여부
+- 사전 정의한 관리용 host 자산군에 속하는지 여부
 - 접근 대상 host
-- 동일 시간대의 4624 Logon Type 3
-- 같은 시간대의 다른 의심 Evidence 존재 여부
+
+동일 시간대의 4624 Logon Type 3 또는 다른 Evidence 결합은 위 filter 후보에 포함하지 않는다.
+필요하면 §12 공통 원칙에 따라 별도 correlation detector 또는 Fusion/diagnostic 대상으로 검토한다.
 
 현재 상태는 `candidate`이며,
 정상/pilot FP 검증 및 Rule 표현 문제 확인 전에는
@@ -713,15 +725,55 @@ qualifying policy 초안:
 
 현재 detector set은 초안이며 freeze되지 않았다.
 
-freeze 전 확인 항목:
+### 동결 lifecycle
+
+1. R1 실행 전: 사용할 comparator set, qualifying policy 및 실행 artifact를
+   provisional comparator set/version으로 실제 고정한다.
+2. R1 결과 확인 후: 해당 결과에 유리하도록 detector 또는 qualifying condition을
+   사후 변경하지 않는다. R1 결과 기반 조건 값 추가도 금지한다.
+3. validation: 최종 detector set과 qualifying condition을 선택한다.
+4. test 실행 전: 선택한 set과 실행 artifact를 final freeze하고 고정 버전으로 평가한다.
+
+현재 PR은 후보 조사 단계로 provisional version을 발급하지 않는다.
+그러나 R1 실행 전 provisional 고정은 필수이며, final freeze까지 미룰 수 없다.
+
+### 후보 선정 및 동결 전 확인 항목
 
 - 정상/pilot false positive 검증
-- 각 후보의 final qualifying condition 확정
+- 각 후보의 동일-hit qualifying filter 및 decisive comparator 적합성 확인
 - ADMIN$ Rule의 ShareName 표현 호환성 처리
 - 동일 이벤트에 대한 중복 Rule hit 처리 기준
-- detector set version 부여
+- 단계별 comparator set/version 및 실행 artifact 고정
 
-위 항목이 완료된 후 `detector_set_v0.1` 등의 버전으로 freeze한다.
+낮은 FP만으로 Fast 후보를 확정하지 않는다. 해당 Rule hit와 허용된 동일-hit context만으로
+temporal accumulation 없이 decisive Fast 판단이 가능한지 별도로 확인한다.
+다른 Evidence 결합이 필요한 후보는 Fusion 또는 별도 diagnostic detector 대상으로 분류한다.
+
+### ADMIN$ compatibility 분류
+
+현재 ShareName 조건을 바꾼 임시 Rule 실험은 Rule 수정본을 사용한 diagnostic 실행이다.
+원본의 0 hit와 수정본의 1 hit는 동일 Rule ID가 출력되더라도 별도 configuration 결과로 보존한다.
+원본 공개 detector의 native operating point와 수정본 결과를 섞지 않는다.
+
+향후 compatibility 처리는 다음 두 경우를 구분한다.
+
+- backend field mapping/normalization 수정: 원본 공개 Rule의 의미를 그대로 실행하는지 검증하고 backend/config 변경을 기록한다.
+- Rule 수정/fork: 변경한 Rule artifact와 configuration을 별도로 식별하고 원본 comparator 결과와 분리한다.
+
+### 재현 artifact identity
+
+R1 전 provisional freeze에 포함할 각 실행에 대해 다음을 기록한다.
+
+- 실제 사용 Rule 파일의 SHA-256 (원본과 임시 수정본 구분)
+- Sigma/Hayabusa ruleset commit 또는 release/tag 및 로컬 변경 여부
+- Rule load에 영향을 준 config version/hash (예: `exclude_rules.txt`, `proven_rules.txt` 및 적용 설정)
+- 전체 실행 command/options, 엔진 버전, 입력 및 출력 artifact 식별 정보
+- 해당 Rule의 실제 로드/활성화 여부
+
+현재 Encoded PowerShell과 ADMIN$ 재현의 Rule SHA-256, ruleset revision 및 실행 config identity는
+미확인이다. Audit Log Clear도 기록된 Rule 해시만으로 ruleset/config 고정을 대체하지 않는다.
+과거 실행 artifact를 확인할 수 없다면 현재 파일의 해시를 과거 실행 정보로 소급하지 않고,
+정보를 갖춘 새 재현 실행을 별도로 기록한다. 이 항목은 provisional freeze 전 완료해야 한다.
 
 ## 14. Qualifying hit 공통 판정 형식 초안
 
@@ -736,12 +788,22 @@ Rule hit
 
 ### 공통 원칙
 
-- detector_time은 freeze된 detector set과 qualifying condition을 기준으로 계산한다.
+- detector_time은 해당 평가 단계에서 고정한 detector set과 qualifying condition을 기준으로 계산한다 (R1 provisional / test final).
 - qualifying condition을 만족하지 않는 Rule hit는 detector_time 계산에 사용하지 않는다.
 - 동일 Run에서 qualifying hit가 여러 번 발생하면 최초 qualifying hit의 시각을 사용한다.
 - qualifying hit가 없으면 detector_time은 null로 처리한다.
 - 원본 Rule hit trace는 detector_time 계산과 별도로 보존한다.
 - detector set 또는 qualifying condition이 변경되면 동일 입력에서도 detector_time이 달라질 수 있으므로 version을 함께 기록한다.
+
+### Raw timestamp와 canonical 결과의 경계
+
+조사 로그와 원본 CSV의 timestamp는 원문 그대로 보존한다.
+Raw Hayabusa output에서 canonical `FastHitRecord`를 생성하는 Fast runner의 출력 변환 경계에서
+UTC ISO 8601 millisecond 형식으로 정규화하고, Fast Adapter가 생성하는 `DetectionResult`에도
+같은 형식을 유지한다. 기준은 [공통 결과 Contract](../schema/result-contracts.md)의 시간 규칙과
+[Data Contract v0.2](../data-contract-v0.2.md)의 FastHitRecord 정의다.
+밀리초 미만 처리 방식은 공통 Contract와 맞춰 구현 시 명시하며 이 문서에서 독자적으로 확정하지 않는다.
+시간 형식 정규화는 §12의 판단 가능 시각을 원 hit 시각으로 소급하는 근거가 되지 않는다.
 
 ### 현재 후보별 상태
 
@@ -788,10 +850,13 @@ episode/cooldown의 세부 평가 정의는 후속 단계에서 확정한다.
 
 ### 미완료 / blocker
 - [ ] 정상/pilot EVTX 기반 false positive 검증
-- [ ] 후보별 final qualifying condition 확정
+- [ ] 후보별 동일-hit qualifying filter 및 decisive comparator 적합성 확인
 - [ ] ADMIN$ Rule compatibility 처리 방향 확정
 - [ ] 동일 이벤트 중복 Rule hit 처리 기준 확정
-- [ ] detector set version 부여 및 freeze
+- [ ] 실제 Rule/ruleset/config identity 및 전체 재현 command/options 기록
+- [ ] R1 실행 전 provisional comparator set/version 고정
+- [ ] validation에서 최종 detector set 및 qualifying condition 선택
+- [ ] test 실행 전 final freeze
 
 ### 현재 결론
 
@@ -800,5 +865,5 @@ Issue #44의 후보 조사와 qualifying policy 초안 작성은 완료했다.
 다만 정상/pilot 로그가 아직 확보되지 않았으므로
 Fast detector set은 freeze하지 않는다.
 
-정상/pilot FP 검증 후 final qualifying condition을 확정하고
-detector set version을 부여한다.
+정상/pilot 검증과 후보 적합성·재현 정보 확인을 거쳐 R1 실행 전 provisional version을 고정한다.
+R1 결과 기반 사후 tuning은 금지하며, validation에서 최종 set을 선택한 뒤 test 전에 final freeze한다.
