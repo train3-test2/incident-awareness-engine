@@ -49,16 +49,29 @@ SENTINELS = {
 Replacement = tuple[re.Pattern[str], str]
 
 
-def _boundaried(token: str) -> str:
-    """토큰 양끝이 ASCII 영숫자면 경계 조건을 붙인다.
+ # 경계 판정 문자. `\w` 는 유니코드를 포함하므로 한글 사용자명에도 경계가 걸린다
+WORD_CHAR = re.compile(r"\w")
 
-    사용자명이 `user` 처럼 짧으면 `C:\\Users\\` 의 `User` 부분에도 걸린다.
-    경계를 두면 부분 일치를 막을 수 있다.
+
+def _boundaried(token: str) -> str:
+    """토큰 양끝이 단어 문자면 경계 조건을 붙인다.
+
+    경계가 없으면 짧은 토큰이 엉뚱한 곳에 걸린다. 사용자명이 `user` 면
+    `C:\\Users\\` 의 `User` 에, 한글 사용자명이면 다른 한글 문자열 안에도 걸린다.
+
+    경계는 토큰 끝이 단어 문자일 때만 붙인다. `\\Users\\<name>` 처럼 구분자로
+    시작하는 토큰에 앞 경계를 붙이면 `D:\\Data\\Users\\<name>` 같은 경로에서
+    치환이 막힌다.
+
+    경계 문자에 `.` 과 `-` 는 넣지 않는다. Sysmon NetworkConnect 의
+    `SourceHostname` 은 `<host>.localdomain` 형태라, `.` 을 경계로 보면 호스트명이
+    치환되지 않고 그대로 남는다.
+
+    한계: 단어 문자로 이어 붙은 형태(`<name>_backup.zip`)는 치환하지 않는다.
+    누출 검사도 같은 규칙을 쓰므로 검사와 치환의 판정이 어긋나지는 않는다.
     """
-    head = token[:1]
-    tail = token[-1:]
-    prefix = r"(?<![A-Za-z0-9])" if head.isascii() and head.isalnum() else ""
-    suffix = r"(?![A-Za-z0-9])" if tail.isascii() and tail.isalnum() else ""
+    prefix = r"(?<!\w)" if WORD_CHAR.match(token[:1]) else ""
+    suffix = r"(?!\w)" if WORD_CHAR.match(token[-1:]) else ""
     return prefix + re.escape(token) + suffix
 
 
@@ -181,6 +194,14 @@ def main() -> int:
             return 1
 
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+     # 수집기가 필수 검사에 실패한 Run 은 샘플로 올리지 않는다
+    failures = meta.get("validation_failures") or []
+    if failures:
+        print(f"[!] 수집 단계 검사에 실패한 Run 이다: {', '.join(failures)}")
+        print("[!] 원인을 해결하고 다시 수집할 것. 샘플을 만들지 않는다.")
+        return 1
+
     raw_computer = meta.get("raw_computer", "")
     raw_user = meta.get("raw_user", "")
 
