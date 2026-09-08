@@ -130,6 +130,14 @@ Sysmon 원본 구조를 유지한다. `event_v0` 로 변환하지 않는다.
 치환은 `tools/sanitize_sysmon_sample.py` 가 수행하고, 원본 값은 저장소에 남기지 않는다.
 그 외 필드(프로세스 경로, 명령줄, 포트, 시각, GUID)는 원본 그대로다.
 
+치환기는 원본 식별자를 먼저 sentinel 로 바꾸고, 누출 검사를 거친 뒤 예시값으로 되돌린다.
+바로 예시값으로 바꾸면 사용자명이 `user` 처럼 결과값의 부분 문자열일 때 치환이 중복 적용되어
+값이 깨지고(`user` -> `labuser` -> `lablabuser`), 정상 결과를 누출로 오판한다.
+
+> 현재 샘플은 `-SysmonConfigPath` 도입 이전에 수집한 것이라
+> `sysmon_config_sha256` 과 `sysmon_active_config_sha256` 이 `null` 이다.
+> 다음 재수집 때 채운다.
+
 ## 5. 재수집 절차
 
 ### 5-0. VM 으로 파일을 옮길 때 주의
@@ -183,11 +191,16 @@ C:\Tools\Sysmon\Sysmon64.exe -c C:\Tools\sysmonconfig-sample-v0.1.xml
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
-C:\Tools\collect_sysmon_sample.ps1 -ExternalTarget 1.1.1.1
+C:\Tools\collect_sysmon_sample.ps1 -ExternalTarget 1.1.1.1 -SysmonConfigPath C:\Tools\sysmonconfig-sample-v0.1.xml
 ```
 
 `-ExternalTarget` 을 생략하면 loopback 연결만 수행한다. 이 경우 Event ID 3 은 수집되지만
-`script_interpreter_external_connection` 조건은 충족되지 않는다.
+`script_interpreter_external_connection` 조건은 충족되지 않으며, 해당 조건은 필수 검사에서
+제외된다.
+
+`-SysmonConfigPath` 를 주면 설정 파일의 SHA-256 을 기록한다. 함께 기록되는
+`sysmon_active_config_sha256` 은 실행 중인 Sysmon 이 실제로 적용한 설정에서 얻은 값이며,
+이쪽이 재현성 판단의 기준이다. 두 값이 다르면 의도한 설정이 적용되지 않은 것이다.
 
 종료 시 아래를 출력한다.
 
@@ -197,7 +210,16 @@ encoded_powershell_command 조건 충족 건수
 script_interpreter_external_connection 조건 충족 건수
 ```
 
-건수가 0 인 항목이 있으면 Sysmon 설정 또는 VM 네트워크 상태를 확인한다.
+필수 검사에 실패하면 종료 코드가 `1` 이 된다. 이때도 JSONL 과 메타데이터는 기록하므로
+원인을 확인할 수 있으나, **그 결과를 샘플로 올려서는 안 된다.** 실패 항목은
+`collection-meta.json` 의 `validation_failures` 에도 남는다.
+
+| 검사 | 필수 여부 |
+| --- | --- |
+| Event ID 1 수집 | 필수 |
+| Event ID 3 수집 | 필수 |
+| `encoded_powershell_command` | 필수 |
+| `script_interpreter_external_connection` | `-ExternalTarget` 을 준 경우에만 필수 |
 
 ### 5-4. 호스트에서 치환 후 반영
 
