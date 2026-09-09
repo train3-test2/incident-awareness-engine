@@ -37,6 +37,27 @@ AWS CLI 인증을 확인한다.
 aws sts get-caller-identity --profile incident-dev --region ap-northeast-2
 ```
 
+ECR 로그인과 이미지 업로드에는 별도 권한이 필요하다. 사용하는 IAM 사용자 또는 역할에 다음 ECR 권한이 있어야 한다.
+
+```text
+ecr:GetAuthorizationToken
+ecr:DescribeRepositories
+ecr:BatchCheckLayerAvailability
+ecr:InitiateLayerUpload
+ecr:UploadLayerPart
+ecr:CompleteLayerUpload
+ecr:PutImage
+```
+
+이미지를 업로드하기 전에 대상 리포지터리에 접근할 수 있는지 확인한다. 이 명령이 권한 오류로 실패하면 IAM 권한을 임의로 변경하지 말고 계정 관리자 또는 담당자에게 필요한 ECR push 권한을 요청한다.
+
+```powershell
+aws ecr describe-repositories `
+  --repository-names incident-awareness-engine `
+  --region ap-northeast-2 `
+  --profile incident-dev
+```
+
 ## ECR 이미지 업로드
 
 로컬 이미지를 빌드한다.
