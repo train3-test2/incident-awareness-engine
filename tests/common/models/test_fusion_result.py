@@ -317,3 +317,73 @@ def test_rejects_episode_end_time_before_start_time() -> None:
 
     # Then
     assert expected_message in str(exc_info.value)
+
+
+def test_rejects_episode_with_mismatched_run_id() -> None:
+    # Given
+    episode = FusionEpisodeResult(
+        episode_id="FEP-001",
+        run_id="RUN-OTHER",
+        entity_id="HOST-01",
+        start_time=datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC),
+        end_time=datetime(2026, 9, 9, 1, 0, 40, tzinfo=UTC),
+        end_reason="released",
+        score_at_start=0.8,
+        peak_score=0.9,
+        contributing_evidence_ids=["EVD-001"],
+    )
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionResult(
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            fusion_time=datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC),
+            fusion_status="detected",
+            score_at_decision=0.8,
+            contributing_evidence_ids=["EVD-001"],
+            scoring_config_version="fusion-config-v0.1",
+            scoring_profile_id="s0-profile",
+            model_version=None,
+            scoring_method="simple_score",
+            scorer_version="simple-score-v0.1",
+            fusion_episodes=[episode],
+        )
+
+    # Then
+    assert "FusionEpisodeResult run_id must match FusionResult run_id" in str(exc_info.value)
+
+
+def test_rejects_episode_with_mismatched_entity_id() -> None:
+    # Given
+    episode = FusionEpisodeResult(
+        episode_id="FEP-001",
+        run_id="RUN-01",
+        entity_id="HOST-OTHER",
+        start_time=datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC),
+        end_time=datetime(2026, 9, 9, 1, 0, 40, tzinfo=UTC),
+        end_reason="released",
+        score_at_start=0.8,
+        peak_score=0.9,
+        contributing_evidence_ids=["EVD-001"],
+    )
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionResult(
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            fusion_time=datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC),
+            fusion_status="detected",
+            score_at_decision=0.8,
+            contributing_evidence_ids=["EVD-001"],
+            scoring_config_version="fusion-config-v0.1",
+            scoring_profile_id="s0-profile",
+            model_version=None,
+            scoring_method="simple_score",
+            scorer_version="simple-score-v0.1",
+            fusion_episodes=[episode],
+        )
+
+    # Then
+    assert "FusionEpisodeResult entity_id must match FusionResult entity_id" in str(exc_info.value)
