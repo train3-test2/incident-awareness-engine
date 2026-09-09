@@ -28,7 +28,7 @@ def test_execution_record_serializes_to_json() -> None:
     assert payload["timestamp"].startswith("2026-09-03T01:00:00")
 
 
-def test_정상_Run_의_행위도_같은_형식으로_기록한다() -> None:
+def test_normal_run_action_uses_same_contract() -> None:
     # given: 정상 Run 의 행위 한 건
     row = ExecutionRecordRow(
         run_id="RUN-20260903-002",
@@ -44,7 +44,7 @@ def test_정상_Run_의_행위도_같은_형식으로_기록한다() -> None:
     assert row.action_type == "admin_action"
 
 
-def test_UTC가_아닌_시각은_거부한다() -> None:
+def test_rejects_non_utc_timestamp() -> None:
     # given: KST 로 표기한 시각
     korea_timezone = timezone(timedelta(hours=9))
 
@@ -59,7 +59,7 @@ def test_UTC가_아닌_시각은_거부한다() -> None:
         )
 
 
-def test_시간대_없는_시각은_거부한다() -> None:
+def test_rejects_naive_timestamp() -> None:
     # given: 시간대 정보가 없는 시각
     invalid_payload = {
         "run_id": "RUN-20260903-001",
@@ -74,7 +74,7 @@ def test_시간대_없는_시각은_거부한다() -> None:
         ExecutionRecordRow(**invalid_payload)
 
 
-def test_빈_설명은_거부한다() -> None:
+def test_rejects_empty_description() -> None:
     # given / when / then: description 이 비면 검증 오류가 발생한다
     with pytest.raises(ValidationError):
         ExecutionRecordRow(
@@ -86,7 +86,7 @@ def test_빈_설명은_거부한다() -> None:
         )
 
 
-def test_정의되지_않은_필드는_거부한다() -> None:
+def test_rejects_undefined_field() -> None:
     # given: Ground Truth 에 두지 않기로 한 필드를 넣은 입력
     # when / then: extra=forbid 로 거부된다
     with pytest.raises(ValidationError):
@@ -100,7 +100,7 @@ def test_정의되지_않은_필드는_거부한다() -> None:
         )
 
 
-def test_식별자의_앞뒤_공백은_거부한다() -> None:
+def test_rejects_identifier_with_surrounding_space() -> None:
     # given / when / then: action_id 에 공백이 붙으면 거부된다
     with pytest.raises(ValidationError):
         ExecutionRecordRow(
