@@ -91,7 +91,7 @@
 | Precision | Millisecond 유지           |
 | 예시      | `2026-08-27T13:20:31.123Z` |
 
-Normalizer는 원본 Source의 고정밀도 시각을 UTC로 변환한 뒤, 밀리초 미만 자릿수를 절사하며 반올림하지 않는다. `NormalizedEvent`는 변환된 UTC 밀리초 시각만 검증하고 입력 시각을 변환하지 않는다.
+Normalizer는 원본 Source의 고정밀도 시각을 UTC로 변환한 뒤, 밀리초 미만 자릿수를 절사하며 반올림하지 않는다. `NormalizedEvent`는 UTC offset이 0인 입력을 `astimezone(UTC)`로 정규화하고 UTC 밀리초 정밀도를 검증한다.
 
 추후 필요할 경우 다음 필드를 별도로 추가한다.
 

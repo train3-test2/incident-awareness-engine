@@ -91,7 +91,7 @@
 
 `timestamp_source`가 가리키는 시간 필드는 반드시 존재하고 `timestamp`와 동일해야 한다. 모든 시간은 UTC ISO 8601 밀리초 표기를 사용한다.
 
-Normalizer는 원본 Source의 고정밀도 시각을 먼저 UTC로 변환한 뒤, 밀리초 미만 자릿수는 절사하고 반올림하지 않는다. `NormalizedEvent` 모델은 이미 변환된 UTC 밀리초 시각만 검증하며 입력 시각을 변환하지 않는다.
+Normalizer는 원본 Source의 고정밀도 시각을 먼저 UTC로 변환한 뒤, 밀리초 미만 자릿수는 절사하고 반올림하지 않는다. `NormalizedEvent` 모델은 UTC offset이 0인 입력을 `astimezone(UTC)`로 정규화하고 UTC 밀리초 정밀도를 검증한다.
 
 `event_id`, `run_id`, `host_id`, `source_event_id`는 빈 문자열을 허용하지 않는다.
 

@@ -379,6 +379,23 @@ def test_normalized_event_rejects_non_utc_timestamp() -> None:
         NormalizedEvent.model_validate(invalid_payload)
 
 
+def test_normalized_event_normalizes_zero_offset_timestamp_to_utc() -> None:
+    # given: UTC와 offset은 같지만 tzinfo가 다른 timestamp
+    zero_offset_timezone = timezone(timedelta(0), name="zero-offset")
+    timestamp = datetime(2026, 9, 6, 1, 0, tzinfo=zero_offset_timezone)
+    valid_payload = _valid_normalized_event_payload()
+    valid_payload["timestamp"] = timestamp
+    valid_payload["event_time"] = timestamp
+
+    # when: Event를 생성
+    event = NormalizedEvent.model_validate(valid_payload)
+
+    # then: UTC offset 0 timestamp는 UTC tzinfo로 정규화된다
+    assert event.timestamp.tzinfo is UTC
+    assert event.event_time is not None
+    assert event.event_time.tzinfo is UTC
+
+
 @pytest.mark.parametrize(
     ("time_field", "numeric_timestamp"),
     [
