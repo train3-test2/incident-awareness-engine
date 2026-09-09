@@ -105,10 +105,8 @@ class NormalizedEvent(BaseModel):
     @field_validator("timestamp", "event_time", "record_time", "ingest_time", mode="before")
     @classmethod
     def reject_numeric_datetime(cls, value: object) -> object:
-        if isinstance(value, int | float):
-            raise ValueError(  # noqa: TRY004
-                "datetime에 숫자형 Unix timestamp를 사용할 수 없습니다."
-            )
+        if isinstance(value, int | float) or (isinstance(value, str) and _is_numeric_string(value)):
+            raise ValueError("datetime에 숫자형 Unix timestamp를 사용할 수 없습니다.")
 
         return value
 
@@ -140,3 +138,12 @@ class NormalizedEvent(BaseModel):
             raise ValueError("timestamp는 timestamp_source가 가리키는 시간과 동일해야 합니다.")
 
         return self
+
+
+def _is_numeric_string(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+
+    return True

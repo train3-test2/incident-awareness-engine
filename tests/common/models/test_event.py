@@ -342,24 +342,46 @@ def test_normalized_event_rejects_non_utc_timestamp() -> None:
     [
         ("timestamp", 1_788_588_800),
         ("timestamp", 1_788_588_800.0),
+        ("timestamp", "1788588800"),
+        ("timestamp", "1788588800.0"),
         ("event_time", 1_788_588_800),
         ("event_time", 1_788_588_800.0),
+        ("event_time", "1788588800"),
+        ("event_time", "1788588800.0"),
         ("record_time", 1_788_588_800),
         ("record_time", 1_788_588_800.0),
+        ("record_time", "1788588800"),
+        ("record_time", "1788588800.0"),
         ("ingest_time", 1_788_588_800),
         ("ingest_time", 1_788_588_800.0),
+        ("ingest_time", "1788588800"),
+        ("ingest_time", "1788588800.0"),
     ],
 )
 def test_normalized_event_rejects_numeric_timestamp(
     time_field: str, numeric_timestamp: float
 ) -> None:
-    # given: Unix timestamp 숫자로 표현한 Contract 시간 필드
+    # given: 숫자형 또는 숫자 문자열로 표현한 Unix timestamp 시간 필드
     invalid_payload = _valid_normalized_event_payload()
     invalid_payload[time_field] = numeric_timestamp
 
     # when & then: 숫자형 timestamp는 ISO 8601 시간 입력이 아니므로 거부된다
     with pytest.raises(ValidationError, match="숫자형 Unix timestamp"):
         NormalizedEvent.model_validate(invalid_payload)
+
+
+def test_normalized_event_accepts_iso_8601_datetime_string() -> None:
+    # given: UTC ISO 8601 밀리초 형식의 시간 문자열
+    valid_payload = _valid_normalized_event_payload()
+    timestamp = "2026-09-06T01:00:00.000Z"
+    valid_payload["timestamp"] = timestamp
+    valid_payload["event_time"] = timestamp
+
+    # when: Event를 생성
+    event = NormalizedEvent.model_validate(valid_payload)
+
+    # then: 숫자가 아닌 유효한 ISO 8601 문자열은 허용된다
+    assert event.timestamp == datetime(2026, 9, 6, 1, 0, tzinfo=UTC)
 
 
 def test_normalized_event_accepts_millisecond_precision_timestamp() -> None:
