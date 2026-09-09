@@ -1,7 +1,14 @@
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 FusionStatus = Literal["detected", "miss", "not_evaluated"]
 FusionEndReason = Literal["released", "run_end"]
@@ -22,6 +29,13 @@ def _validate_utc_datetime(
         raise ValueError(f"{field_name} must be UTC")
 
     return value.astimezone(UTC)
+
+
+def _serialize_utc_milliseconds(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+
+    return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 class FusionEpisodeResult(BaseModel):
@@ -47,6 +61,13 @@ class FusionEpisodeResult(BaseModel):
             value,
             field_name="FusionEpisode timestamp",
         )
+
+    @field_serializer("start_time", "end_time", when_used="json")
+    def serialize_timestamp(
+        self,
+        value: datetime | None,
+    ) -> str | None:
+        return _serialize_utc_milliseconds(value)
 
     @model_validator(mode="after")
     def validate_episode_contract(self) -> "FusionEpisodeResult":
@@ -88,6 +109,13 @@ class FusionResult(BaseModel):
             value,
             field_name="fusion_time",
         )
+
+    @field_serializer("fusion_time", when_used="json")
+    def serialize_fusion_time(
+        self,
+        value: datetime | None,
+    ) -> str | None:
+        return _serialize_utc_milliseconds(value)
 
     @model_validator(mode="after")
     def validate_status_contract(self) -> "FusionResult":
