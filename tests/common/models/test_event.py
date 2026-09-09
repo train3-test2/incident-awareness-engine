@@ -260,6 +260,17 @@ def test_normalized_event_rejects_binary_string_field(
         NormalizedEvent.model_validate(invalid_payload)
 
 
+@pytest.mark.parametrize("identifier_field", ["event_id", "run_id", "host_id", "source_event_id"])
+def test_normalized_event_rejects_empty_required_identifier(identifier_field: str) -> None:
+    # given: 빈 문자열로 표현한 필수 Event 식별자
+    invalid_payload = _valid_normalized_event_payload()
+    invalid_payload[identifier_field] = ""
+
+    # when & then: 필수 Event 식별자는 비어 있을 수 없다
+    with pytest.raises(ValidationError):
+        NormalizedEvent.model_validate(invalid_payload)
+
+
 def test_normalized_event_rejects_analysis_result_field() -> None:
     # given: Event Contract에 정의되지 않은 분석 결과 필드
     timestamp = datetime(2026, 9, 6, 1, 0, tzinfo=UTC)

@@ -72,6 +72,8 @@
 | `source_layer` | Enum | O | `raw_telemetry`, `detector_output` | `raw_telemetry` |
 | `raw_ref`         | Object   | O    | 원본 Raw Log 위치 추적 정보             | 아래 정의 참고             |
 
+`event_id`, `run_id`, `host_id`, `source_event_id`는 빈 문자열을 허용하지 않는다.
+
 ---
 
 ## 4. 시간 규칙

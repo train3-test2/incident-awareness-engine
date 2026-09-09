@@ -84,8 +84,8 @@ class RawLogReference(BaseModel):
 class NormalizedEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    event_id: StrictStr
-    run_id: StrictStr
+    event_id: StrictStr = Field(min_length=1)
+    run_id: StrictStr = Field(min_length=1)
 
     timestamp: datetime
     timestamp_source: Literal[
@@ -97,10 +97,10 @@ class NormalizedEvent(BaseModel):
     record_time: datetime | None = None
     ingest_time: datetime | None = None
 
-    host_id: StrictStr
+    host_id: StrictStr = Field(min_length=1)
     source: EventSource
     source_layer: Literal["raw_telemetry", "detector_output"]
-    source_event_id: StrictStr
+    source_event_id: StrictStr = Field(min_length=1)
     event_type: EventType
     raw_ref: RawLogReference
     user: StrictStr | None = None
