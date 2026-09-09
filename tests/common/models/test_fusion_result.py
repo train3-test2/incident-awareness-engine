@@ -131,14 +131,27 @@ def test_rejects_detected_result_without_fusion_time() -> None:
 
 def test_rejects_detected_result_without_score_at_decision() -> None:
     # Given
+    fusion_time = datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC)
     expected_message = "detected FusionResult must include score_at_decision"
+
+    episode = FusionEpisodeResult(
+        episode_id="FEP-001",
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        start_time=fusion_time,
+        end_time=datetime(2026, 9, 9, 1, 0, 40, tzinfo=UTC),
+        end_reason="released",
+        score_at_start=0.8,
+        peak_score=0.9,
+        contributing_evidence_ids=["EVD-001"],
+    )
 
     # When
     with pytest.raises(ValueError) as exc_info:
         FusionResult(
             run_id="RUN-01",
             entity_id="HOST-01",
-            fusion_time=datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC),
+            fusion_time=fusion_time,
             fusion_status="detected",
             score_at_decision=None,
             contributing_evidence_ids=["EVD-001"],
@@ -147,7 +160,7 @@ def test_rejects_detected_result_without_score_at_decision() -> None:
             model_version=None,
             scoring_method="simple_score",
             scorer_version="simple-score-v0.1",
-            fusion_episodes=[],
+            fusion_episodes=[episode],
         )
 
     # Then
@@ -156,14 +169,27 @@ def test_rejects_detected_result_without_score_at_decision() -> None:
 
 def test_rejects_detected_result_without_contributing_evidence() -> None:
     # Given
+    fusion_time = datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC)
     expected_message = "detected FusionResult must include contributing_evidence_ids"
+
+    episode = FusionEpisodeResult(
+        episode_id="FEP-001",
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        start_time=fusion_time,
+        end_time=datetime(2026, 9, 9, 1, 0, 40, tzinfo=UTC),
+        end_reason="released",
+        score_at_start=0.8,
+        peak_score=0.9,
+        contributing_evidence_ids=["EVD-001"],
+    )
 
     # When
     with pytest.raises(ValueError) as exc_info:
         FusionResult(
             run_id="RUN-01",
             entity_id="HOST-01",
-            fusion_time=datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC),
+            fusion_time=fusion_time,
             fusion_status="detected",
             score_at_decision=0.8,
             contributing_evidence_ids=[],
@@ -172,7 +198,7 @@ def test_rejects_detected_result_without_contributing_evidence() -> None:
             model_version=None,
             scoring_method="simple_score",
             scorer_version="simple-score-v0.1",
-            fusion_episodes=[],
+            fusion_episodes=[episode],
         )
 
     # Then
