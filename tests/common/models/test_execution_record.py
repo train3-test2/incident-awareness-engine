@@ -110,3 +110,58 @@ def test_rejects_identifier_with_surrounding_space() -> None:
             action_type="execution",
             description="난독화 PowerShell 실행",
         )
+
+
+def test_rejects_whitespace_only_description() -> None:
+    # given: 공백만으로 채운 설명
+    # when / then: 역추적에 쓸 수 없으므로 거부된다
+    with pytest.raises(ValidationError, match="공백"):
+        ExecutionRecordRow(
+            run_id="RUN-20260903-001",
+            action_id="A01",
+            timestamp=datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
+            action_type="execution",
+            description="   ",
+        )
+
+
+@pytest.mark.parametrize("numeric_timestamp", [0, 1757376000, 1757376000.5])
+def test_rejects_numeric_timestamp(numeric_timestamp: float) -> None:
+    # given: Unix timestamp 로 넣은 시각
+    # when / then: aware datetime 으로 변환되기 전에 거부된다
+    with pytest.raises(ValidationError, match="Unix timestamp"):
+        ExecutionRecordRow(
+            run_id="RUN-20260903-001",
+            action_id="A01",
+            timestamp=numeric_timestamp,
+            action_type="execution",
+            description="난독화 PowerShell 실행",
+        )
+
+
+@pytest.mark.parametrize("numeric_text", ["0", "1234567890", "1.5e9"])
+def test_rejects_numeric_string_timestamp(numeric_text: str) -> None:
+    # given: 숫자로만 이루어진 문자열 시각
+    # when / then: 같은 이유로 거부된다
+    with pytest.raises(ValidationError, match="Unix timestamp"):
+        ExecutionRecordRow(
+            run_id="RUN-20260903-001",
+            action_id="A01",
+            timestamp=numeric_text,
+            action_type="execution",
+            description="난독화 PowerShell 실행",
+        )
+
+
+def test_accepts_iso_8601_string_timestamp() -> None:
+    # given: ISO 8601 문자열로 넣은 UTC 시각
+    row = ExecutionRecordRow(
+        run_id="RUN-20260903-001",
+        action_id="A01",
+        timestamp="2026-09-03T01:00:00Z",
+        action_type="execution",
+        description="난독화 PowerShell 실행",
+    )
+
+    # then: 숫자 차단이 정상 입력을 막지 않는다
+    assert row.timestamp == datetime(2026, 9, 3, 1, 0, tzinfo=UTC)

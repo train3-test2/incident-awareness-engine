@@ -34,6 +34,22 @@ class ExecutionRecordRow(BaseModel):
 
         return value
 
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("description은 공백만으로 구성될 수 없습니다.")
+
+        return value
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def reject_numeric_datetime(cls, value: object) -> object:
+        if isinstance(value, int | float) or (isinstance(value, str) and _is_numeric_string(value)):
+            raise ValueError("datetime에 숫자형 Unix timestamp를 사용할 수 없습니다.")
+
+        return value
+
     @field_validator("timestamp")
     @classmethod
     def validate_utc_datetime(cls, value: datetime) -> datetime:
@@ -44,3 +60,12 @@ class ExecutionRecordRow(BaseModel):
             raise ValueError("datetime은 UTC 시간대여야 합니다.")
 
         return value.astimezone(UTC)
+
+
+def _is_numeric_string(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+
+    return True
