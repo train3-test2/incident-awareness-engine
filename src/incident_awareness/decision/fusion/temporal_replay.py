@@ -13,8 +13,15 @@ from incident_awareness.decision.fusion.window_engine import WindowEngine
 
 
 @dataclass(frozen=True, slots=True)
+class ReplayEvidenceSnapshot:
+    timestamp: datetime
+    contributing_evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class TemporalReplayResult:
     trajectory: tuple[ScorePoint, ...]
+    evidence_snapshots: tuple[ReplayEvidenceSnapshot, ...]
     stopping_result: StoppingResult
 
 
@@ -88,6 +95,7 @@ class TemporalReplayRunner:
         )
 
         trajectory: list[ScorePoint] = []
+        evidence_snapshots: list[ReplayEvidenceSnapshot] = []
         evidence_index = 0
         current_time = run_start
 
@@ -119,6 +127,15 @@ class TemporalReplayRunner:
                 )
             )
 
+            evidence_snapshots.append(
+                ReplayEvidenceSnapshot(
+                    timestamp=current_time,
+                    contributing_evidence_ids=self.scorer.contributing_evidence_ids(
+                        active_evidence
+                    ),
+                )
+            )
+
             current_time += self.step_size
 
         stopping_result = self.stopping_policy.evaluate(
@@ -130,6 +147,7 @@ class TemporalReplayRunner:
 
         return TemporalReplayResult(
             trajectory=tuple(trajectory),
+            evidence_snapshots=tuple(evidence_snapshots),
             stopping_result=stopping_result,
         )
 
