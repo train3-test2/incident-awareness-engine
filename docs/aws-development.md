@@ -82,11 +82,15 @@ docker push "$($EcrRegistry):$ImageTag"
 docker logout "<account-id>.dkr.ecr.ap-northeast-2.amazonaws.com"
 ```
 
-업로드한 태그는 ECS Task Definition의 image URI 끝에 동일하게 지정한다.
+ECR에 새 태그를 업로드해도 기존 ECS Task Definition revision의 image URI는 자동으로 변경되지 않는다. ECS 콘솔에서 다음 순서로 새 revision을 등록한다.
+
+1. Task Definition `incident-awareness-engine-smoke`에서 새 revision을 생성한다.
+2. 컨테이너 image URI 끝을 방금 업로드한 `:$ImageTag`로 바꾼다.
+3. revision을 등록한 뒤, 태스크 실행 시 방금 등록한 revision을 선택한다.
 
 ## Fargate smoke 태스크 실행
 
-ECS 콘솔에서 `incident-awareness-engine-dev` 클러스터를 연 뒤, `incident-awareness-engine-smoke`의 최신 Task Definition revision으로 태스크 한 개를 실행한다.
+ECS 콘솔에서 `incident-awareness-engine-dev` 클러스터를 연 뒤, 방금 등록한 `incident-awareness-engine-smoke` Task Definition revision으로 태스크 한 개를 실행한다.
 
 | 항목 | 값 |
 | --- | --- |
