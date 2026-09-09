@@ -9,6 +9,8 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    env:
+      INCIDENT_AWARENESS_EVENT_TYPES_PATH: configs/event_types_v0.2.yaml
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6

@@ -128,6 +128,8 @@ v0.2 First Cycle은 Raw Log에서 정규화한 Event만 다루므로 `raw_ref`�
 
 `event_type`의 허용값은 코드 Enum에 고정하지 않고 `configs/event_types_v0.x.yaml` 관리 어휘 파일에서 관리한다. 해당 어휘는 수집 가능한 Source가 아니라 시나리오·Evidence·평가 요구사항을 기준으로 확정한다.
 
+실행 환경은 `INCIDENT_AWARENESS_EVENT_TYPES_PATH` 환경 변수로 사용할 관리 어휘 파일의 경로를 반드시 제공한다. 로컬 개발에서는 `configs/event_types_v0.2.yaml`을 지정하며, Docker·ECS에서는 이미지에 포함하거나 마운트한 동일 파일의 컨테이너 내부 경로를 지정한다. 경로가 없거나 파일을 찾을 수 없으면 Event type 검증은 실패한다.
+
 Event에는 Evidence·Fusion·Detection·Ground Truth 결과를 넣지 않는다.
 
 `event_id`는 정규화 Event의 식별자이고, `source_event_id`는 source-native Event 또는 Record 식별자다. v0.2의 artifact까지 이어지는 기계적 Provenance 체인은 `Evidence.event_ids → NormalizedEvent.event_id → NormalizedEvent.raw_ref → Run Manifest`다. `source_event_id`는 source-native Event 또는 Record identity를 보존하는 cross-reference이며, Manifest를 직접 resolve하는 필드는 아니다. 이 전환 이후 `source_event_ids`는 v0.2 Evidence에 함께 보존하지 않는다.

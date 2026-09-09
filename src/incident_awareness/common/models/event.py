@@ -1,3 +1,4 @@
+import os
 from datetime import UTC, datetime, timedelta
 from functools import cache
 from pathlib import Path
@@ -9,12 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 type EventSource = str
 type EventType = str
 
-_EVENT_TYPES_CONFIG_PATH = Path(__file__).resolve().parents[4] / "configs" / "event_types_v0.2.yaml"
+_EVENT_TYPES_CONFIG_PATH_ENV = "INCIDENT_AWARENESS_EVENT_TYPES_PATH"
 
 
 @cache
-def _load_event_types() -> frozenset[str]:
-    config = yaml.safe_load(_EVENT_TYPES_CONFIG_PATH.read_text(encoding="utf-8"))
+def _load_event_types(config_path: Path) -> frozenset[str]:
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
     if not isinstance(config, dict):
         raise TypeError("Event type 설정은 객체여야 합니다.")
@@ -26,6 +27,18 @@ def _load_event_types() -> frozenset[str]:
         raise TypeError("Event type 설정은 문자열 목록이어야 합니다.")
 
     return frozenset(event_types)
+
+
+def _event_types_config_path() -> Path:
+    configured_path = os.getenv(_EVENT_TYPES_CONFIG_PATH_ENV)
+    if configured_path is None:
+        raise RuntimeError(f"{_EVENT_TYPES_CONFIG_PATH_ENV} 환경 변수가 필요합니다.")
+
+    config_path = Path(configured_path)
+    if not config_path.is_file():
+        raise RuntimeError(f"Event type 설정 파일을 찾을 수 없습니다: {config_path}")
+
+    return config_path
 
 
 class ProcessInfo(BaseModel):
@@ -97,7 +110,7 @@ class NormalizedEvent(BaseModel):
     @field_validator("event_type")
     @classmethod
     def validate_event_type(cls, value: str) -> str:
-        if value not in _load_event_types():
+        if value not in _load_event_types(_event_types_config_path()):
             raise ValueError("event_type은 v0.2 관리 어휘에 정의되어야 합니다.")
 
         return value
