@@ -450,3 +450,86 @@ def test_serializes_null_fusion_time_as_null() -> None:
 
     # Then
     assert payload["fusion_time"] is None
+
+
+def test_rejects_blank_required_string_fields() -> None:
+    # Given
+    base_payload = {
+        "run_id": "RUN-01",
+        "entity_id": "HOST-01",
+        "fusion_time": None,
+        "fusion_status": "miss",
+        "score_at_decision": None,
+        "contributing_evidence_ids": [],
+        "scoring_config_version": "fusion-config-v0.1",
+        "scoring_profile_id": "s0-profile",
+        "model_version": None,
+        "scoring_method": "simple_score",
+        "scorer_version": "simple-score-v0.1",
+        "fusion_episodes": [],
+    }
+
+    required_fields = [
+        "run_id",
+        "entity_id",
+        "scoring_config_version",
+        "scoring_profile_id",
+        "scoring_method",
+        "scorer_version",
+    ]
+
+    # When / Then
+    for field_name in required_fields:
+        payload = {**base_payload, field_name: ""}
+
+        with pytest.raises(ValueError):
+            FusionResult(**payload)
+
+
+def test_rejects_extra_fusion_result_fields() -> None:
+    # Given
+    payload = {
+        "run_id": "RUN-01",
+        "entity_id": "HOST-01",
+        "fusion_time": None,
+        "fusion_status": "miss",
+        "score_at_decision": None,
+        "contributing_evidence_ids": [],
+        "scoring_config_version": "fusion-config-v0.1",
+        "scoring_profile_id": "s0-profile",
+        "model_version": None,
+        "scoring_method": "simple_score",
+        "scorer_version": "simple-score-v0.1",
+        "fusion_episodes": [],
+        "unexpected_field": "unexpected",
+    }
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionResult(**payload)
+
+    # Then
+    assert "Extra inputs are not permitted" in str(exc_info.value)
+
+
+def test_rejects_extra_fusion_episode_fields() -> None:
+    # Given
+    payload = {
+        "episode_id": "FEP-001",
+        "run_id": "RUN-01",
+        "entity_id": "HOST-01",
+        "start_time": datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC),
+        "end_time": datetime(2026, 9, 9, 1, 0, 40, tzinfo=UTC),
+        "end_reason": "released",
+        "score_at_start": 0.8,
+        "peak_score": 0.9,
+        "contributing_evidence_ids": ["EVD-001"],
+        "unexpected_field": "unexpected",
+    }
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionEpisodeResult(**payload)
+
+    # Then
+    assert "Extra inputs are not permitted" in str(exc_info.value)
