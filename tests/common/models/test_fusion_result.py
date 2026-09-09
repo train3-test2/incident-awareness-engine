@@ -251,3 +251,69 @@ def test_rejects_not_evaluated_result_with_score_at_decision() -> None:
 
     # Then
     assert expected_message in str(exc_info.value)
+
+
+def test_rejects_episode_end_reason_without_end_time() -> None:
+    # Given
+    expected_message = "FusionEpisodeResult without end_time must not include end_reason"
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionEpisodeResult(
+            episode_id="FEP-001",
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            start_time=datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC),
+            end_time=None,
+            end_reason="released",
+            score_at_start=0.8,
+            peak_score=0.9,
+            contributing_evidence_ids=["EVD-001"],
+        )
+
+    # Then
+    assert expected_message in str(exc_info.value)
+
+
+def test_rejects_episode_end_time_without_end_reason() -> None:
+    # Given
+    expected_message = "FusionEpisodeResult with end_time must include end_reason"
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionEpisodeResult(
+            episode_id="FEP-001",
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            start_time=datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC),
+            end_time=datetime(2026, 9, 9, 1, 0, 40, tzinfo=UTC),
+            end_reason=None,
+            score_at_start=0.8,
+            peak_score=0.9,
+            contributing_evidence_ids=["EVD-001"],
+        )
+
+    # Then
+    assert expected_message in str(exc_info.value)
+
+
+def test_rejects_episode_end_time_before_start_time() -> None:
+    # Given
+    expected_message = "FusionEpisodeResult end_time must not be earlier than start_time"
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionEpisodeResult(
+            episode_id="FEP-001",
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            start_time=datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC),
+            end_time=datetime(2026, 9, 9, 1, 0, 10, tzinfo=UTC),
+            end_reason="released",
+            score_at_start=0.8,
+            peak_score=0.9,
+            contributing_evidence_ids=["EVD-001"],
+        )
+
+    # Then
+    assert expected_message in str(exc_info.value)
