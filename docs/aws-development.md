@@ -63,8 +63,10 @@ aws ecr describe-repositories `
 로컬 이미지를 빌드한다.
 
 ```powershell
-docker build -t incident-awareness-engine:local .
+docker build --platform linux/amd64 -t incident-awareness-engine:local .
 ```
+
+Fargate Task Definition의 `runtimePlatform.cpuArchitecture`는 `X86_64`로 설정한다. 따라서 이미지 빌드 플랫폼도 `linux/amd64`로 고정한다.
 
 현재 커밋의 짧은 SHA를 이미지 태그로 사용한다. `<account-id>`는 AWS 계정 ID로 교체한다.
 
@@ -92,6 +94,7 @@ ECS 콘솔에서 `incident-awareness-engine-dev` 클러스터를 연 뒤, `incid
 | 태스크 수 | `1` |
 | 네트워크 모드 | `awsvpc` |
 | 태스크 CPU / 메모리 | `256` / `512` |
+| CPU 아키텍처 | `X86_64` |
 | VPC | 기본 VPC |
 | 서브넷 | 기본 VPC의 public subnet 하나 |
 | 퍼블릭 IP 자동 할당 | 활성화 |
