@@ -7,8 +7,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
-type EventSource = str
-type EventType = str
+type EventSource = StrictStr
+type EventType = StrictStr
 
 _EVENT_TYPES_CONFIG_PATH_ENV = "INCIDENT_AWARENESS_EVENT_TYPES_PATH"
 
@@ -84,8 +84,8 @@ class RawLogReference(BaseModel):
 class NormalizedEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    event_id: str
-    run_id: str
+    event_id: StrictStr
+    run_id: StrictStr
 
     timestamp: datetime
     timestamp_source: Literal[
@@ -97,13 +97,13 @@ class NormalizedEvent(BaseModel):
     record_time: datetime | None = None
     ingest_time: datetime | None = None
 
-    host_id: str
-    source: str
+    host_id: StrictStr
+    source: EventSource
     source_layer: Literal["raw_telemetry", "detector_output"]
     source_event_id: StrictStr
-    event_type: str
+    event_type: EventType
     raw_ref: RawLogReference
-    user: str | None = None
+    user: StrictStr | None = None
     process: ProcessInfo | None = None
     network: NetworkInfo | None = None
 

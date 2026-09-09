@@ -229,15 +229,33 @@ def test_normalized_event_rejects_non_string_source_event_id() -> None:
         NormalizedEvent.model_validate(invalid_payload)
 
 
-@pytest.mark.parametrize("source_event_id", [b"153", bytearray(b"153")])
-def test_normalized_event_rejects_binary_source_event_id(
-    source_event_id: bytes | bytearray,
+@pytest.mark.parametrize(
+    ("string_field", "binary_value"),
+    [
+        ("event_id", b"evt-001"),
+        ("event_id", bytearray(b"evt-001")),
+        ("run_id", b"RUN-20260906-001"),
+        ("run_id", bytearray(b"RUN-20260906-001")),
+        ("host_id", b"WIN-01"),
+        ("host_id", bytearray(b"WIN-01")),
+        ("source", b"sysmon"),
+        ("source", bytearray(b"sysmon")),
+        ("source_event_id", b"153"),
+        ("source_event_id", bytearray(b"153")),
+        ("event_type", b"process_create"),
+        ("event_type", bytearray(b"process_create")),
+        ("user", b"labuser"),
+        ("user", bytearray(b"labuser")),
+    ],
+)
+def test_normalized_event_rejects_binary_string_field(
+    string_field: str, binary_value: bytes | bytearray
 ) -> None:
-    # given: bytes 또는 bytearray로 표현한 원본 Event 식별자
+    # given: bytes 또는 bytearray로 표현한 Contract 문자열 필드
     invalid_payload = _valid_normalized_event_payload()
-    invalid_payload["source_event_id"] = source_event_id
+    invalid_payload[string_field] = binary_value
 
-    # when & then: 원본 Event 식별자는 bytes 변환 없이 문자열이어야 한다
+    # when & then: Contract 문자열은 bytes 변환 없이 문자열이어야 한다
     with pytest.raises(ValidationError):
         NormalizedEvent.model_validate(invalid_payload)
 
