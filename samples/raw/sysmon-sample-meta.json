@@ -21,6 +21,12 @@
     "encoded_powershell_command": 1,
     "script_interpreter_external_connection": 1
   },
+  "evidence_condition_check": {
+    "conditions_from": "configs/evidence_types_v0.2.yaml",
+    "implemented_in": "tools/collect_sysmon_sample.ps1",
+    "authoritative": false,
+    "note": "collection sanity check; the Evidence extractor decides Evidence"
+  },
   "sanitized": {
     "computer": "WIN-01",
     "user": "labuser",

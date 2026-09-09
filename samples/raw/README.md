@@ -42,7 +42,8 @@ dst_port   = 조건 없음
 > **수집기의 조건 검사는 Evidence 판정의 근거가 아니다.** 수집 스크립트는 샘플이 조건을
 > 만족할 수 있는지 확인하려고 같은 조건을 따로 구현한다. Evidence 를 실제로 만드는 것은
 > 역할 2의 Extractor 이고, 판정 기준도 그쪽이 소유한다. 어느 조건 집합을 따라 구현했는지는
-> `collection-meta.json` 의 `evidence_condition_check` 에 기록한다.
+> `evidence_condition_check` 에 기록하며, 이 값은 수집 폴더의 `collection-meta.json` 과
+> 게시본인 `sysmon-sample-meta.json` 양쪽에 남는다.
 >
 > 두 구현은 이미 한 곳에서 갈린다. 수집기는 IPv6 와 멀티캐스트를 외부로 보지 않지만,
 > Extractor 가 쓰는 `ip_address().is_global` 은 `224.0.0.251` 과 글로벌 IPv6 를 외부로
