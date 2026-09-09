@@ -91,6 +91,13 @@ class FusionResult(BaseModel):
 
     @model_validator(mode="after")
     def validate_status_contract(self) -> "FusionResult":
+        for episode in self.fusion_episodes:
+            if episode.run_id != self.run_id:
+                raise ValueError("FusionEpisodeResult run_id must match FusionResult run_id")
+
+            if episode.entity_id != self.entity_id:
+                raise ValueError("FusionEpisodeResult entity_id must match FusionResult entity_id")
+
         if self.fusion_status == "detected":
             if self.fusion_time is None:
                 raise ValueError("detected FusionResult must include fusion_time")
