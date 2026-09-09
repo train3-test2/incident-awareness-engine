@@ -48,6 +48,19 @@ class FusionEpisodeResult(BaseModel):
             field_name="FusionEpisode timestamp",
         )
 
+    @model_validator(mode="after")
+    def validate_episode_contract(self) -> "FusionEpisodeResult":
+        if self.end_time is None and self.end_reason is not None:
+            raise ValueError("FusionEpisodeResult without end_time must not include end_reason")
+
+        if self.end_time is not None and self.end_reason is None:
+            raise ValueError("FusionEpisodeResult with end_time must include end_reason")
+
+        if self.end_time is not None and self.end_time < self.start_time:
+            raise ValueError("FusionEpisodeResult end_time must not be earlier than start_time")
+
+        return self
+
 
 class FusionResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
