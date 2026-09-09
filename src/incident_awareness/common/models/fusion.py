@@ -126,9 +126,25 @@ class FusionResult(BaseModel):
             if episode.entity_id != self.entity_id:
                 raise ValueError("FusionEpisodeResult entity_id must match FusionResult entity_id")
 
+        episode_ids = [episode.episode_id for episode in self.fusion_episodes]
+
+        if len(episode_ids) != len(set(episode_ids)):
+            raise ValueError("FusionEpisodeResult episode_id must be unique within FusionResult")
+
         if self.fusion_status == "detected":
             if self.fusion_time is None:
                 raise ValueError("detected FusionResult must include fusion_time")
+
+            if not self.fusion_episodes:
+                raise ValueError("detected FusionResult must include fusion_episodes")
+
+            first_episode_start = min(episode.start_time for episode in self.fusion_episodes)
+
+            if self.fusion_time != first_episode_start:
+                raise ValueError(
+                    "detected FusionResult fusion_time must match "
+                    "the first FusionEpisode start_time"
+                )
 
             if self.score_at_decision is None:
                 raise ValueError("detected FusionResult must include score_at_decision")
