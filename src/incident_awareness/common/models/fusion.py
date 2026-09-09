@@ -138,9 +138,12 @@ class FusionResult(BaseModel):
             if not self.fusion_episodes:
                 raise ValueError("detected FusionResult must include fusion_episodes")
 
-            first_episode_start = min(episode.start_time for episode in self.fusion_episodes)
+            first_episode = min(
+                self.fusion_episodes,
+                key=lambda episode: episode.start_time,
+            )
 
-            if self.fusion_time != first_episode_start:
+            if self.fusion_time != first_episode.start_time:
                 raise ValueError(
                     "detected FusionResult fusion_time must match "
                     "the first FusionEpisode start_time"
@@ -149,8 +152,24 @@ class FusionResult(BaseModel):
             if self.score_at_decision is None:
                 raise ValueError("detected FusionResult must include score_at_decision")
 
+            if self.score_at_decision != first_episode.score_at_start:
+                raise ValueError(
+                    "detected FusionResult score_at_decision must match "
+                    "the first FusionEpisode score_at_start"
+                )
+
             if not self.contributing_evidence_ids:
                 raise ValueError("detected FusionResult must include contributing_evidence_ids")
+
+            if (
+                first_episode.contributing_evidence_ids is not None
+                and self.contributing_evidence_ids != first_episode.contributing_evidence_ids
+            ):
+                raise ValueError(
+                    "detected FusionResult contributing_evidence_ids "
+                    "must match the first FusionEpisode "
+                    "contributing_evidence_ids"
+                )
 
         elif self.fusion_status == "miss":
             if self.fusion_time is not None:
