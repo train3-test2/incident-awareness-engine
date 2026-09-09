@@ -130,7 +130,7 @@ v0.2 First Cycle은 Raw Log에서 정규화한 Event만 다루므로 `raw_ref`�
 
 `event_type`의 허용값은 코드 Enum에 고정하지 않고 `configs/event_types_v0.x.yaml` 관리 어휘 파일에서 관리한다. 해당 어휘는 수집 가능한 Source가 아니라 시나리오·Evidence·평가 요구사항을 기준으로 확정한다.
 
-실행 환경은 `INCIDENT_AWARENESS_EVENT_TYPES_PATH` 환경 변수로 사용할 관리 어휘 파일의 경로를 반드시 제공한다. 로컬 개발에서는 `configs/event_types_v0.2.yaml`을 지정하며, Docker·ECS에서는 이미지에 포함하거나 마운트한 동일 파일의 컨테이너 내부 경로를 지정한다. 경로가 없거나 파일을 찾을 수 없으면 Event type 검증은 실패한다.
+실행 환경은 `INCIDENT_AWARENESS_EVENT_TYPES_PATH` 환경 변수로 사용할 관리 어휘 파일의 경로를 반드시 제공한다. 로컬 개발에서는 `configs/event_types_v0.2.yaml`을 지정하며, Docker·ECS에서는 이미지에 포함하거나 마운트한 동일 파일의 컨테이너 내부 경로를 지정한다. 경로가 없거나 파일을 찾을 수 없으면 Event type 검증은 실패한다. 관리 어휘는 Contract 버전·배포 단위로 고정하며, 프로세스가 읽은 뒤 파일을 바꾸어도 실행 중에는 반영하지 않는다. 변경 사항은 새 프로세스 배포로 반영한다.
 
 Event에는 Evidence·Fusion·Detection·Ground Truth 결과를 넣지 않는다.
 

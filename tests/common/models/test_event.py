@@ -1,5 +1,4 @@
 from datetime import UTC, datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -9,20 +8,7 @@ from incident_awareness.common.models.event import (
     NormalizedEvent,
     ProcessInfo,
     RawLogReference,
-    _load_event_types,
 )
-
-
-@pytest.fixture(autouse=True)
-def configure_event_types_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    # given: 저장소의 v0.2 관리 어휘 파일 경로
-    config_path = Path(__file__).parents[3] / "configs" / "event_types_v0.2.yaml"
-    monkeypatch.setenv("INCIDENT_AWARENESS_EVENT_TYPES_PATH", str(config_path))
-    _load_event_types.cache_clear()
-
-    yield
-
-    _load_event_types.cache_clear()
 
 
 def test_process_info_allows_omitted_fields() -> None:
@@ -521,7 +507,6 @@ def test_normalized_event_requires_event_types_config_path(
 ) -> None:
     # given: Event type 관리 어휘 경로 환경 변수가 없는 실행 환경
     monkeypatch.delenv("INCIDENT_AWARENESS_EVENT_TYPES_PATH")
-    _load_event_types.cache_clear()
 
     # when & then: Event type 검증은 설정 경로 없이 실행되지 않는다
     with pytest.raises(RuntimeError, match="INCIDENT_AWARENESS_EVENT_TYPES_PATH"):
@@ -533,7 +518,6 @@ def test_normalized_event_rejects_missing_event_types_config_path(
 ) -> None:
     # given: 존재하지 않는 Event type 관리 어휘 파일 경로
     monkeypatch.setenv("INCIDENT_AWARENESS_EVENT_TYPES_PATH", "configs/missing.yaml")
-    _load_event_types.cache_clear()
 
     # when & then: Event type 검증은 존재하지 않는 설정 파일을 거부한다
     with pytest.raises(RuntimeError, match="설정 파일을 찾을 수 없습니다"):
