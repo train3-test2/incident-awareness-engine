@@ -559,3 +559,121 @@ def test_rejects_extra_fusion_episode_fields() -> None:
 
     # Then
     assert "Extra inputs are not permitted" in str(exc_info.value)
+
+
+def test_rejects_detected_result_when_score_differs_from_first_episode() -> None:
+    # Given
+    fusion_time = datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC)
+    expected_message = (
+        "detected FusionResult score_at_decision must match the first FusionEpisode score_at_start"
+    )
+
+    episode = FusionEpisodeResult(
+        episode_id="FEP-001",
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        start_time=fusion_time,
+        end_time=datetime(2026, 9, 9, 1, 0, 40, tzinfo=UTC),
+        end_reason="released",
+        score_at_start=0.8,
+        peak_score=0.9,
+        contributing_evidence_ids=["EVD-001"],
+    )
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionResult(
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            fusion_time=fusion_time,
+            fusion_status="detected",
+            score_at_decision=0.9,
+            contributing_evidence_ids=["EVD-001"],
+            scoring_config_version="fusion-config-v0.1",
+            scoring_profile_id="s0-profile",
+            model_version=None,
+            scoring_method="simple_score",
+            scorer_version="simple-score-v0.1",
+            fusion_episodes=[episode],
+        )
+
+    # Then
+    assert expected_message in str(exc_info.value)
+
+
+def test_rejects_detected_result_when_contributing_evidence_differs_from_first_episode() -> None:
+    # Given
+    fusion_time = datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC)
+    expected_message = (
+        "detected FusionResult contributing_evidence_ids "
+        "must match the first FusionEpisode contributing_evidence_ids"
+    )
+
+    episode = FusionEpisodeResult(
+        episode_id="FEP-001",
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        start_time=fusion_time,
+        end_time=datetime(2026, 9, 9, 1, 0, 40, tzinfo=UTC),
+        end_reason="released",
+        score_at_start=0.8,
+        peak_score=0.9,
+        contributing_evidence_ids=["EVD-001"],
+    )
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionResult(
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            fusion_time=fusion_time,
+            fusion_status="detected",
+            score_at_decision=0.8,
+            contributing_evidence_ids=["EVD-002"],
+            scoring_config_version="fusion-config-v0.1",
+            scoring_profile_id="s0-profile",
+            model_version=None,
+            scoring_method="simple_score",
+            scorer_version="simple-score-v0.1",
+            fusion_episodes=[episode],
+        )
+
+    # Then
+    assert expected_message in str(exc_info.value)
+
+
+def test_allows_detected_result_when_first_episode_contributing_evidence_is_none() -> None:
+    # Given
+    fusion_time = datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC)
+
+    episode = FusionEpisodeResult(
+        episode_id="FEP-001",
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        start_time=fusion_time,
+        end_time=datetime(2026, 9, 9, 1, 0, 40, tzinfo=UTC),
+        end_reason="released",
+        score_at_start=0.8,
+        peak_score=0.9,
+        contributing_evidence_ids=None,
+    )
+
+    # When
+    result = FusionResult(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        fusion_time=fusion_time,
+        fusion_status="detected",
+        score_at_decision=0.8,
+        contributing_evidence_ids=["EVD-001"],
+        scoring_config_version="fusion-config-v0.1",
+        scoring_profile_id="s0-profile",
+        model_version=None,
+        scoring_method="simple_score",
+        scorer_version="simple-score-v0.1",
+        fusion_episodes=[episode],
+    )
+
+    # Then
+    assert result.fusion_status == "detected"
+    assert result.fusion_episodes[0].contributing_evidence_ids is None
