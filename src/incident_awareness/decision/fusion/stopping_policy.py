@@ -20,6 +20,11 @@ def _validate_score(value: float) -> None:
         raise ValueError("ScorePoint score must be between 0 and 1")
 
 
+def _validate_entity_id(value: object) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("entity_id must be a non-empty string")
+
+
 @dataclass(frozen=True, slots=True)
 class ScorePoint:
     timestamp: datetime
@@ -30,7 +35,7 @@ class ScorePoint:
 class FusionEpisode:
     episode_id: str
     run_id: str
-    entity_id: str | None
+    entity_id: str
     start_time: datetime
     end_time: datetime
     end_reason: Literal["released", "run_end"]
@@ -75,9 +80,11 @@ class ThresholdStoppingPolicy:
         trajectory: list[ScorePoint],
         *,
         run_id: str,
-        entity_id: str | None,
+        entity_id: str,
         run_end: datetime,
     ) -> StoppingResult:
+        _validate_entity_id(entity_id)
+
         consecutive = 0
         active = False
         fusion_time: datetime | None = None
