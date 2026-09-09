@@ -91,6 +91,8 @@
 
 `timestamp_source`가 가리키는 시간 필드는 반드시 존재하고 `timestamp`와 동일해야 한다. 모든 시간은 UTC ISO 8601 밀리초 표기를 사용한다.
 
+Normalizer는 원본 Source의 고정밀도 시각을 먼저 UTC로 변환한 뒤, 밀리초 미만 자릿수는 절사하고 반올림하지 않는다. `NormalizedEvent` 모델은 이미 변환된 UTC 밀리초 시각만 검증하며 입력 시각을 변환하지 않는다.
+
 `event_id`, `run_id`, `host_id`, `source_event_id`는 빈 문자열을 허용하지 않는다.
 
 이 시간 축과 `source_layer`는 v0.2의 신규 확장이 아니라 기존 정본과 Repo의 `event-v0.md` 사이에 발생한 schema drift를 복구한 항목이다. `event-v0.md`, Pydantic 모델, JSON Schema, 소비자 모듈과 테스트는 이 규칙을 같은 변경 단위로 따른다.
