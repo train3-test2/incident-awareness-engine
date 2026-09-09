@@ -229,6 +229,19 @@ def test_normalized_event_rejects_non_string_source_event_id() -> None:
         NormalizedEvent.model_validate(invalid_payload)
 
 
+@pytest.mark.parametrize("source_event_id", [b"153", bytearray(b"153")])
+def test_normalized_event_rejects_binary_source_event_id(
+    source_event_id: bytes | bytearray,
+) -> None:
+    # given: bytes 또는 bytearray로 표현한 원본 Event 식별자
+    invalid_payload = _valid_normalized_event_payload()
+    invalid_payload["source_event_id"] = source_event_id
+
+    # when & then: 원본 Event 식별자는 bytes 변환 없이 문자열이어야 한다
+    with pytest.raises(ValidationError):
+        NormalizedEvent.model_validate(invalid_payload)
+
+
 def test_normalized_event_rejects_analysis_result_field() -> None:
     # given: Event Contract에 정의되지 않은 분석 결과 필드
     timestamp = datetime(2026, 9, 6, 1, 0, tzinfo=UTC)

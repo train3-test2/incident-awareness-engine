@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
 type EventSource = str
 type EventType = str
@@ -100,7 +100,7 @@ class NormalizedEvent(BaseModel):
     host_id: str
     source: str
     source_layer: Literal["raw_telemetry", "detector_output"]
-    source_event_id: str
+    source_event_id: StrictStr
     event_type: str
     raw_ref: RawLogReference
     user: str | None = None
