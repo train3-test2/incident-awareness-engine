@@ -74,3 +74,29 @@ def build_fusion_result(
         scorer_version=scorer_version,
         fusion_episodes=fusion_episodes,
     )
+
+
+def build_not_evaluated_fusion_result(
+    *,
+    run_id: str,
+    entity_id: str,
+    scoring_config_version: str,
+    scoring_profile_id: str,
+    scoring_method: str,
+    scorer_version: str,
+    model_version: str | None = None,
+) -> FusionResult:
+    return FusionResult(
+        run_id=run_id,
+        entity_id=entity_id,
+        fusion_time=None,
+        fusion_status="not_evaluated",
+        score_at_decision=None,
+        contributing_evidence_ids=[],
+        scoring_config_version=scoring_config_version,
+        scoring_profile_id=scoring_profile_id,
+        model_version=model_version,
+        scoring_method=scoring_method,
+        scorer_version=scorer_version,
+        fusion_episodes=[],
+    )
