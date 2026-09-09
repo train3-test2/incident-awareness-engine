@@ -17,6 +17,7 @@
 | ECS 클러스터 | `incident-awareness-engine-dev` | Fargate 태스크 실행 |
 | 태스크 정의 family | `incident-awareness-engine-smoke` | 단발성 smoke 명령 실행 |
 | CloudWatch 로그 그룹 | `/ecs/incident-awareness-engine-dev` | 컨테이너 표준 출력 확인 |
+| CloudWatch 로그 스트림 prefix | `ecs` | 로그 스트림 이름 접두사 |
 | 실행 역할 | `ecsTaskExecutionRole` | ECR 이미지 pull 및 CloudWatch 로그 전송 |
 
 `ecsTaskExecutionRole`에는 AWS 관리형 정책 `AmazonECSTaskExecutionRolePolicy`가 연결되어야 한다.
@@ -126,7 +127,7 @@ python, -c, from incident_awareness.common.models.event import NetworkInfo; prin
 
 태스크는 명령 출력 후 종료되므로 최종 상태 `STOPPED`는 정상일 수 있다. ECS 태스크 상세에서 컨테이너 종료 코드가 `0`인지 확인한다.
 
-CloudWatch Logs의 `/ecs/incident-awareness-engine-dev` 로그 그룹에서 `ecs/` 접두사의 로그 스트림을 연다. 다음 출력이 있으면 ECR → ECS Fargate → CloudWatch Logs 경로가 정상이다.
+CloudWatch Logs의 `/ecs/incident-awareness-engine-dev` 로그 그룹에서 `ecs/incident-awareness-engine-smoke/<task-id>` 형식의 로그 스트림을 연다. `ecs`는 Task Definition의 `awslogs-stream-prefix` 값이다. 다음 출력이 있으면 ECR → ECS Fargate → CloudWatch Logs 경로가 정상이다.
 
 ```text
 protocol=None src_ip=None src_port=None dst_ip=None dst_port=None
