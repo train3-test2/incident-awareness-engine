@@ -15,7 +15,7 @@ from tools.sanitize_sysmon_sample import (
 )
 
 
-def test_사용자명이_경로와_계정_양쪽에서_치환된다():
+def test_replaces_user_in_both_path_and_account():
     # given - 원본 호스트명과 사용자명을 담은 Sysmon 레코드
     record = {
         "RecordId": 153,
@@ -38,7 +38,7 @@ def test_사용자명이_경로와_계정_양쪽에서_치환된다():
     assert result["EventData"]["User"] == "WIN-01\\labuser"
 
 
-def test_한글_사용자명이_유니코드_이스케이프_상태에서도_치환된다():
+def test_replaces_non_ascii_user_escaped_as_unicode():
     # given - PowerShell 5.1 이 비 ASCII 를 \uXXXX 로 이스케이프한 줄
     record = {"EventData": {"Image": "C:\\Users\\홍길동\\tool.exe"}}
     line = json.dumps(record, ensure_ascii=True)
@@ -54,7 +54,7 @@ def test_한글_사용자명이_유니코드_이스케이프_상태에서도_치
     assert "홍길동" not in sanitized
 
 
-def test_임의의_혼합_대소문자도_치환된다():
+def test_replaces_arbitrary_mixed_case():
     # given - 경로와 사용자명이 혼합 대소문자로 기록된 레코드
     line = json.dumps({"EventData": {"Image": "C:\\UsErS\\tEsTuSeR\\a.exe"}})
     replacements = build_replacements("DESKTOP-TEST01", "testuser")
@@ -70,7 +70,7 @@ def test_임의의_혼합_대소문자도_치환된다():
     }
 
 
-def test_치환값과_겹치는_사용자명도_한_번만_치환된다():
+def test_replaces_once_when_user_overlaps_placeholder():
     # given - 치환 결과 labuser 에 부분 문자열로 포함되는 사용자명
     record = {"EventData": {"User": "PC\\user", "Image": "C:\\Users\\user\\a.exe"}}
     replacements = build_replacements("PC", "user")
@@ -85,7 +85,7 @@ def test_치환값과_겹치는_사용자명도_한_번만_치환된다():
     assert "lablabuser" not in sanitized
 
 
-def test_치환값과_겹치는_사용자명을_누출로_세지_않는다():
+def test_does_not_count_placeholder_overlap_as_leak():
     # given - 사용자명이 user 라서 결과의 labuser 와 겹치는 경우
     record = {"EventData": {"User": "PC\\user", "Image": "C:\\Users\\user\\a.exe"}}
     replacements = build_replacements("PC", "user")
@@ -99,7 +99,7 @@ def test_치환값과_겹치는_사용자명을_누출로_세지_않는다():
     assert "labuser" in restore_line(staged)
 
 
-def test_한글_사용자명이_독립_토큰일_때만_치환된다():
+def test_replaces_non_ascii_user_only_as_standalone_token():
     # given - 한글 사용자명이 경로 구분자로 둘러싸인 경우와 다른 글자에 붙은 경우
     record = {
         "EventData": {
@@ -117,7 +117,7 @@ def test_한글_사용자명이_독립_토큰일_때만_치환된다():
     assert result["EventData"]["CommandLine"] == "abc홍길동def"
 
 
-def test_호스트명이_FQDN_형태에서도_치환된다():
+def test_replaces_hostname_in_fqdn_form():
     # given - Sysmon NetworkConnect 가 기록하는 <host>.localdomain 형태
     record = {
         "Computer": "DESKTOP-TEST01",
@@ -138,7 +138,7 @@ def test_호스트명이_FQDN_형태에서도_치환된다():
     assert "DESKTOP-TEST01" not in sanitized
 
 
-def test_짧은_토큰이_PowerShell_옵션_안에서_치환되지_않는다():
+def test_short_token_is_not_replaced_inside_powershell_option():
     # given - 사용자명이 옵션 문자열에 부분 일치할 수 있는 짧은 토큰인 경우
     record = {
         "EventData": {
@@ -156,7 +156,7 @@ def test_짧은_토큰이_PowerShell_옵션_안에서_치환되지_않는다():
     assert result["EventData"]["User"] == "WIN-01\\labuser"
 
 
-def test_중간_경로에_Users_가_있어도_치환된다():
+def test_replaces_when_users_appears_mid_path():
     # given - 사용자 프로필이 최상위가 아닌 경로
     line = json.dumps({"EventData": {"Image": "D:\\Data\\Users\\testuser\\a.exe"}})
     replacements = build_replacements("PC", "testuser")
@@ -168,7 +168,7 @@ def test_중간_경로에_Users_가_있어도_치환된다():
     assert json.loads(sanitized)["EventData"]["Image"] == "D:\\Data\\Users\\labuser\\a.exe"
 
 
-def test_사용자명이_Users_경로의_일부와_혼동되지_않는다():
+def test_user_is_not_confused_with_users_directory():
     # given - 사용자명이 user 이고 경로에 Users 디렉터리가 있는 레코드
     line = json.dumps({"EventData": {"Image": "C:\\Users\\admin\\a.exe"}})
     replacements = build_replacements("PC", "user")
@@ -180,7 +180,7 @@ def test_사용자명이_Users_경로의_일부와_혼동되지_않는다():
     assert json.loads(sanitized)["EventData"]["Image"] == "C:\\Users\\admin\\a.exe"
 
 
-def test_숫자와_구조는_보존된다():
+def test_preserves_numbers_and_structure():
     # given - 숫자·중첩 구조를 가진 레코드
     record = {"RecordId": 153, "EventId": 3, "EventData": {"DestinationPort": "443"}}
     replacements = build_replacements("DESKTOP-TEST01", "testuser")
@@ -194,7 +194,7 @@ def test_숫자와_구조는_보존된다():
     assert result["EventData"]["DestinationPort"] == "443"
 
 
-def test_입력에_sentinel_이_있으면_거부한다():
+def test_rejects_input_containing_sentinel():
     # given - sentinel 문자가 이미 포함된 줄
     line = json.dumps({"EventData": {"Image": "C:\\a\ue000b.exe"}})
     replacements = build_replacements("PC", "user")
@@ -204,7 +204,7 @@ def test_입력에_sentinel_이_있으면_거부한다():
         stage_line(line, replacements)
 
 
-def test_json_이_아니면_예외가_발생한다():
+def test_raises_when_input_is_not_json():
     # given - JSON 으로 파싱되지 않는 줄
     line = "{invalid json"
 
@@ -213,7 +213,7 @@ def test_json_이_아니면_예외가_발생한다():
         sanitize_line(line, [])
 
 
-def test_치환_대상이_하나라도_없으면_규칙을_만들지_않는다():
+def test_builds_rules_only_for_supplied_identifiers():
     # given - raw_computer 만 있고 raw_user 가 없는 경우
     only_computer = build_replacements("DESKTOP-TEST01", "")
 
@@ -224,7 +224,7 @@ def test_치환_대상이_하나라도_없으면_규칙을_만들지_않는다()
     assert result["EventData"]["User"] == "WIN-01\bob"
 
 
-def test_치환_대상이_모두_없으면_규칙이_비어_있다():
+def test_builds_no_rules_when_both_identifiers_missing():
     # given / when - 둘 다 빈 값이면
     replacements = build_replacements("", "")
 
