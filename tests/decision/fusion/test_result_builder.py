@@ -4,6 +4,7 @@ import pytest
 
 from incident_awareness.decision.fusion.result_builder import (
     build_fusion_result,
+    build_not_evaluated_fusion_result,
 )
 from incident_awareness.decision.fusion.stopping_policy import (
     FusionEpisode,
@@ -231,3 +232,34 @@ def test_rejects_missing_snapshot_for_episode_start() -> None:
 
     # Then
     assert "Missing Evidence snapshot for FusionEpisode start_time" in str(exc_info.value)
+
+
+def test_builds_not_evaluated_fusion_result_without_replay() -> None:
+    # Given
+    run_id = "RUN-01"
+    entity_id = "HOST-01"
+
+    # When
+    result = build_not_evaluated_fusion_result(
+        run_id=run_id,
+        entity_id=entity_id,
+        scoring_config_version="fusion-config-v0.1",
+        scoring_profile_id="s0-profile",
+        scoring_method="simple_score",
+        scorer_version="simple-score-v0.1",
+        model_version=None,
+    )
+
+    # Then
+    assert result.run_id == run_id
+    assert result.entity_id == entity_id
+    assert result.fusion_status == "not_evaluated"
+    assert result.fusion_time is None
+    assert result.score_at_decision is None
+    assert result.contributing_evidence_ids == []
+    assert result.fusion_episodes == []
+    assert result.scoring_config_version == "fusion-config-v0.1"
+    assert result.scoring_profile_id == "s0-profile"
+    assert result.scoring_method == "simple_score"
+    assert result.scorer_version == "simple-score-v0.1"
+    assert result.model_version is None
