@@ -106,10 +106,20 @@ ECS 콘솔에서 `incident-awareness-engine-dev` 클러스터를 연 뒤, 방금
 
 퍼블릭 IP는 NAT Gateway 없이 ECR 및 CloudWatch에 연결하기 위한 개발 smoke 환경의 아웃바운드 연결 용도다. 이 태스크는 외부 요청을 받지 않으므로 인바운드 포트를 열지 않는다.
 
-컨테이너 명령은 현재 공통 모델 import를 확인하는 다음 smoke 명령이다.
+컨테이너 명령은 현재 공통 모델 import를 확인하는 다음 smoke 명령이다. Task Definition JSON 또는 `ContainerOverride`의 `command`에는 각 인자를 별도 문자열로 둔 배열을 사용해야 한다.
+
+```json
+[
+  "python",
+  "-c",
+  "from incident_awareness.common.models.event import NetworkInfo; print(NetworkInfo())"
+]
+```
+
+ECS 콘솔의 일반 Command 입력란에서는 대괄호 없이 아래처럼 쉼표로 인자를 구분해 입력한다. 콘솔 JSON 편집기를 사용하는 경우에는 위 JSON 배열 형식을 그대로 사용한다.
 
 ```text
-python -c "from incident_awareness.common.models.event import NetworkInfo; print(NetworkInfo())"
+python, -c, from incident_awareness.common.models.event import NetworkInfo; print(NetworkInfo())
 ```
 
 ## 성공 기준과 상태 확인
