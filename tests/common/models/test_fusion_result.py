@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -387,3 +388,65 @@ def test_rejects_episode_with_mismatched_entity_id() -> None:
 
     # Then
     assert "FusionEpisodeResult entity_id must match FusionResult entity_id" in str(exc_info.value)
+
+
+def test_serializes_detected_timestamps_as_utc_milliseconds() -> None:
+    # Given
+    fusion_time = datetime(2026, 9, 9, 1, 0, 20, 123456, tzinfo=UTC)
+    episode = FusionEpisodeResult(
+        episode_id="FEP-001",
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        start_time=fusion_time,
+        end_time=datetime(2026, 9, 9, 1, 0, 40, 987654, tzinfo=UTC),
+        end_reason="released",
+        score_at_start=0.8,
+        peak_score=0.9,
+        contributing_evidence_ids=["EVD-001"],
+    )
+    result = FusionResult(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        fusion_time=fusion_time,
+        fusion_status="detected",
+        score_at_decision=0.8,
+        contributing_evidence_ids=["EVD-001"],
+        scoring_config_version="fusion-config-v0.1",
+        scoring_profile_id="s0-profile",
+        model_version=None,
+        scoring_method="simple_score",
+        scorer_version="simple-score-v0.1",
+        fusion_episodes=[episode],
+    )
+
+    # When
+    payload = json.loads(result.model_dump_json())
+
+    # Then
+    assert payload["fusion_time"] == "2026-09-09T01:00:20.123Z"
+    assert payload["fusion_episodes"][0]["start_time"] == "2026-09-09T01:00:20.123Z"
+    assert payload["fusion_episodes"][0]["end_time"] == "2026-09-09T01:00:40.987Z"
+
+
+def test_serializes_null_fusion_time_as_null() -> None:
+    # Given
+    result = FusionResult(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        fusion_time=None,
+        fusion_status="miss",
+        score_at_decision=None,
+        contributing_evidence_ids=[],
+        scoring_config_version="fusion-config-v0.1",
+        scoring_profile_id="s0-profile",
+        model_version=None,
+        scoring_method="simple_score",
+        scorer_version="simple-score-v0.1",
+        fusion_episodes=[],
+    )
+
+    # When
+    payload = json.loads(result.model_dump_json())
+
+    # Then
+    assert payload["fusion_time"] is None
