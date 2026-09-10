@@ -4,9 +4,12 @@ import pytest
 from pydantic import ValidationError
 
 from incident_awareness.common.models.result import (
+    DecisionPath,
+    DecisionResult,
     DetectionResult,
     DetectorStatus,
     Severity,
+    WinningPath,
 )
 
 
@@ -20,6 +23,23 @@ def _valid_detection_payload() -> dict[str, object]:
         "rule_id": "RULE-001",
         "rule_version": "v0.1",
         "severity": "high",
+    }
+
+
+def _valid_decision_payload() -> dict[str, object]:
+    return {
+        "run_id": "RUN-20260901-001",
+        "decision_id": "D-001",
+        "entity_id": "WIN-01",
+        "fast_status": "detected",
+        "fusion_status": "detected",
+        "fusion_time": datetime(2026, 9, 1, 1, 5, tzinfo=UTC),
+        "detector_time": datetime(2026, 9, 1, 1, 8, tzinfo=UTC),
+        "t_e": datetime(2026, 9, 1, 1, 5, tzinfo=UTC),
+        "decision_path": "fast_and_fusion",
+        "winning_path": "fusion",
+        "decision_reason": "두 경로가 모두 탐지했습니다.",
+        "config_version": "v0.2",
     }
 
 
@@ -100,3 +120,56 @@ def test_detection_result_rejects_invalid_detector_time(detector_time: datetime)
 def test_detection_result_rejects_undefined_field() -> None:
     with pytest.raises(ValidationError):
         DetectionResult(**{**_valid_detection_payload(), "unknown": "value"})
+
+
+def test_decision_result_preserves_v02_contract_fields() -> None:
+    result = DecisionResult(**_valid_decision_payload())
+
+    assert result.decision_path is DecisionPath.FAST_AND_FUSION
+    assert result.winning_path is WinningPath.FUSION
+    assert result.t_e == datetime(2026, 9, 1, 1, 5, tzinfo=UTC)
+
+
+def test_decision_result_allows_nullable_optional_fields() -> None:
+    result = DecisionResult(
+        **{
+            **_valid_decision_payload(),
+            "contributing_evidence_ids": None,
+            "model_version": None,
+            "rule_version": None,
+            "detector_set_version": None,
+            "supersedes_decision_id": None,
+        }
+    )
+
+    assert result.contributing_evidence_ids is None
+    assert result.supersedes_decision_id is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("fast_status", "unknown"),
+        ("fusion_status", "unknown"),
+        ("decision_path", "hybrid"),
+        ("winning_path", "hybrid"),
+    ],
+)
+def test_decision_result_rejects_invalid_enum_value(field: str, value: str) -> None:
+    with pytest.raises(ValidationError):
+        DecisionResult(**{**_valid_decision_payload(), field: value})
+
+
+def test_decision_result_rejects_invalid_timestamp() -> None:
+    with pytest.raises(ValidationError):
+        DecisionResult(
+            **{
+                **_valid_decision_payload(),
+                "fusion_time": datetime.fromisoformat("2026-09-01T01:05:00"),
+            }
+        )
+
+
+def test_decision_result_rejects_undefined_field() -> None:
+    with pytest.raises(ValidationError):
+        DecisionResult(**{**_valid_decision_payload(), "decision_source": "fast"})

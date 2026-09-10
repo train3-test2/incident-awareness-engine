@@ -21,6 +21,20 @@ class Severity(str, Enum):
     UNKNOWN = "unknown"
 
 
+class DecisionPath(str, Enum):
+    FAST = "fast"
+    FUSION = "fusion"
+    FAST_AND_FUSION = "fast_and_fusion"
+    NONE = "none"
+
+
+class WinningPath(str, Enum):
+    FAST = "fast"
+    FUSION = "fusion"
+    TIE = "tie"
+    NONE = "none"
+
+
 class DetectionResult(BaseModel):
     """Fast Adapter가 Fast runner 출력을 정규화한 결과 계약이다."""
 
@@ -84,3 +98,58 @@ class DetectionResult(BaseModel):
             )
 
         return self
+
+
+class DecisionResult(BaseModel):
+    """Fast와 Fusion 경로를 결합한 Hybrid Decision 결과 계약이다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = Field(min_length=1)
+    decision_id: str = Field(min_length=1)
+    entity_id: str = Field(min_length=1)
+    fast_status: DetectorStatus
+    fusion_status: DetectorStatus
+    fusion_time: datetime | None
+    detector_time: datetime | None
+    t_e: datetime | None
+    decision_path: DecisionPath | None
+    winning_path: WinningPath | None
+    decision_reason: str = Field(min_length=1)
+    config_version: str = Field(min_length=1)
+    contributing_evidence_ids: list[str] | None = None
+    model_version: str | None = None
+    rule_version: str | None = None
+    detector_set_version: str | None = None
+    supersedes_decision_id: str | None = None
+
+    @field_validator("run_id")
+    @classmethod
+    def validate_run_id(cls, value: str) -> str:
+        match = _RUN_ID_PATTERN.fullmatch(value)
+        if match is None:
+            raise ValueError("run_id는 RUN-YYYYMMDD-NNN의 형태를 가져야합니다.")
+
+        try:
+            date.fromisoformat(match.group("date"))
+        except ValueError as error:
+            raise ValueError("run_id는 유효한 날짜이어야 합니다.") from error
+
+        return value
+
+    @field_validator("fusion_time", "detector_time", "t_e")
+    @classmethod
+    def validate_utc_datetime(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("datetime에는 시간대 정보가 포함되어야 합니다.")
+
+        if value.utcoffset() != timedelta(0):
+            raise ValueError("datetime은 UTC 시간대여야 합니다.")
+
+        if value.microsecond % 1000 != 0:
+            raise ValueError("datetime은 밀리초 단위여야 합니다.")
+
+        return value.astimezone(UTC)
