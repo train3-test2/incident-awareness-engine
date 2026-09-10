@@ -16,6 +16,7 @@
 | ECR 리포지터리 | `incident-awareness-engine` | Docker 이미지 저장 |
 | ECS 클러스터 | `incident-awareness-engine-dev` | Fargate 태스크 실행 |
 | 태스크 정의 family | `incident-awareness-engine-smoke` | 단발성 smoke 명령 실행 |
+| 컨테이너 이름 | `incident-awareness-engine-smoke` | 로그 스트림 이름의 두 번째 경로 요소 |
 | CloudWatch 로그 그룹 | `/ecs/incident-awareness-engine-dev` | 컨테이너 표준 출력 확인 |
 | CloudWatch 로그 스트림 prefix | `ecs` | 로그 스트림 이름 접두사 |
 | 실행 역할 | `ecsTaskExecutionRole` | ECR 이미지 pull 및 CloudWatch 로그 전송 |
@@ -60,6 +61,14 @@ aws ecr describe-repositories `
 ```
 
 ## ECR 이미지 업로드
+
+커밋 SHA 태그가 이미지의 실제 소스 상태를 가리키도록, 빌드 전에 working tree가 clean인지 확인한다. 아래 명령이 오류를 내면 변경 사항을 커밋하거나 별도로 보관한 뒤 다시 빌드한다.
+
+```powershell
+if (git status --porcelain) {
+  throw "커밋 SHA 태그를 사용하려면 working tree가 clean해야 합니다."
+}
+```
 
 로컬 이미지를 빌드한다.
 
@@ -127,7 +136,7 @@ python, -c, from incident_awareness.common.models.event import NetworkInfo; prin
 
 태스크는 명령 출력 후 종료되므로 최종 상태 `STOPPED`는 정상일 수 있다. ECS 태스크 상세에서 컨테이너 종료 코드가 `0`인지 확인한다.
 
-CloudWatch Logs의 `/ecs/incident-awareness-engine-dev` 로그 그룹에서 `ecs/incident-awareness-engine-smoke/<task-id>` 형식의 로그 스트림을 연다. `ecs`는 Task Definition의 `awslogs-stream-prefix` 값이다. 다음 출력이 있으면 ECR → ECS Fargate → CloudWatch Logs 경로가 정상이다.
+CloudWatch Logs의 `/ecs/incident-awareness-engine-dev` 로그 그룹에서 `ecs/<container-name>/<task-id>` 형식의 로그 스트림을 연다. `ecs`는 Task Definition의 `awslogs-stream-prefix` 값이고, `<container-name>`은 container definition의 `name` 값이다. 현재 smoke 태스크의 경로는 `ecs/incident-awareness-engine-smoke/<task-id>`다. 다음 출력이 있으면 ECR → ECS Fargate → CloudWatch Logs 경로가 정상이다.
 
 ```text
 protocol=None src_ip=None src_port=None dst_ip=None dst_port=None
