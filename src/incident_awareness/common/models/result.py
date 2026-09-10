@@ -187,3 +187,67 @@ class DecisionResult(BaseModel):
             )
 
         return self
+
+    @model_validator(mode="after")
+    def validate_decision_paths(self) -> "DecisionResult":
+        if DetectorStatus.NOT_EVALUATED in {self.fast_status, self.fusion_status}:
+            return self
+
+        if (
+            self.fast_status is DetectorStatus.DETECTED
+            and self.fusion_status is DetectorStatus.DETECTED
+        ):
+            if self.detector_time is None or self.fusion_time is None:
+                return self
+
+            expected_time = min(self.detector_time, self.fusion_time)
+            if self.t_e != expected_time:
+                raise ValueError("두 경로가 detected이면 t_e는 더 이른 판단 시각이어야 합니다.")
+
+            if self.decision_path is not DecisionPath.FAST_AND_FUSION:
+                raise ValueError(
+                    "두 경로가 detected이면 decision_path는 fast_and_fusion이어야 합니다."
+                )
+
+            expected_winning_path = (
+                WinningPath.FAST
+                if self.detector_time < self.fusion_time
+                else WinningPath.FUSION
+                if self.fusion_time < self.detector_time
+                else WinningPath.TIE
+            )
+            if self.winning_path is not expected_winning_path:
+                raise ValueError("winning_path는 더 이른 판단 시각의 경로와 일치해야 합니다.")
+
+        elif self.fast_status is DetectorStatus.DETECTED:
+            if self.detector_time is None:
+                return self
+            if (
+                self.t_e != self.detector_time
+                or self.decision_path is not DecisionPath.FAST
+                or self.winning_path is not WinningPath.FAST
+            ):
+                raise ValueError(
+                    "Fast 경로만 detected이면 t_e와 경로는 Fast 결과와 일치해야 합니다."
+                )
+
+        elif self.fusion_status is DetectorStatus.DETECTED:
+            if self.fusion_time is None:
+                return self
+            if (
+                self.t_e != self.fusion_time
+                or self.decision_path is not DecisionPath.FUSION
+                or self.winning_path is not WinningPath.FUSION
+            ):
+                raise ValueError(
+                    "Fusion 경로만 detected이면 t_e와 경로는 Fusion 결과와 일치해야 합니다."
+                )
+
+        elif (
+            self.t_e is not None
+            or self.decision_path is not DecisionPath.NONE
+            or self.winning_path is not WinningPath.NONE
+        ):
+            raise ValueError("두 경로가 miss이면 t_e는 null이고 경로는 none이어야 합니다.")
+
+        return self

@@ -147,6 +147,78 @@ def test_decision_result_allows_nullable_optional_fields() -> None:
 
 
 @pytest.mark.parametrize(
+    "payload_updates",
+    [
+        {},
+        {
+            "fusion_status": "miss",
+            "fusion_time": None,
+            "t_e": datetime(2026, 9, 1, 1, 8, tzinfo=UTC),
+            "decision_path": "fast",
+            "winning_path": "fast",
+        },
+        {
+            "fast_status": "miss",
+            "detector_time": None,
+            "t_e": datetime(2026, 9, 1, 1, 5, tzinfo=UTC),
+            "decision_path": "fusion",
+            "winning_path": "fusion",
+        },
+        {
+            "fast_status": "miss",
+            "fusion_status": "miss",
+            "detector_time": None,
+            "fusion_time": None,
+            "t_e": None,
+            "decision_path": "none",
+            "winning_path": "none",
+        },
+    ],
+)
+def test_decision_result_accepts_determined_status_combinations(
+    payload_updates: dict[str, object],
+) -> None:
+    DecisionResult(**{**_valid_decision_payload(), **payload_updates})
+
+
+@pytest.mark.parametrize(
+    "payload_updates",
+    [
+        {"t_e": datetime(2026, 9, 1, 1, 8, tzinfo=UTC)},
+        {"winning_path": "fast"},
+        {
+            "fusion_status": "miss",
+            "fusion_time": None,
+            "t_e": datetime(2026, 9, 1, 1, 8, tzinfo=UTC),
+            "decision_path": "fast_and_fusion",
+            "winning_path": "fast",
+        },
+        {
+            "fast_status": "miss",
+            "detector_time": None,
+            "t_e": None,
+            "decision_path": "fusion",
+            "winning_path": "fusion",
+        },
+        {
+            "fast_status": "miss",
+            "fusion_status": "miss",
+            "detector_time": None,
+            "fusion_time": None,
+            "t_e": datetime(2026, 9, 1, 1, 5, tzinfo=UTC),
+            "decision_path": "none",
+            "winning_path": "none",
+        },
+    ],
+)
+def test_decision_result_rejects_inconsistent_determined_status_combinations(
+    payload_updates: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        DecisionResult(**{**_valid_decision_payload(), **payload_updates})
+
+
+@pytest.mark.parametrize(
     ("field", "value"),
     [
         ("fast_status", "unknown"),
