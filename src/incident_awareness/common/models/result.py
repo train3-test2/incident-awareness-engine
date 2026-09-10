@@ -153,3 +153,37 @@ class DecisionResult(BaseModel):
             raise ValueError("datetime은 밀리초 단위여야 합니다.")
 
         return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_status_times(self) -> "DecisionResult":
+        if self.fast_status is DetectorStatus.DETECTED and self.detector_time is None:
+            raise ValueError("fast_status가 detected이면 detector_time이 필요합니다.")
+
+        if (
+            self.fast_status
+            in {
+                DetectorStatus.MISS,
+                DetectorStatus.NOT_EVALUATED,
+            }
+            and self.detector_time is not None
+        ):
+            raise ValueError(
+                "fast_status가 miss 또는 not_evaluated이면 detector_time은 null이어야 합니다."
+            )
+
+        if self.fusion_status is DetectorStatus.DETECTED and self.fusion_time is None:
+            raise ValueError("fusion_status가 detected이면 fusion_time이 필요합니다.")
+
+        if (
+            self.fusion_status
+            in {
+                DetectorStatus.MISS,
+                DetectorStatus.NOT_EVALUATED,
+            }
+            and self.fusion_time is not None
+        ):
+            raise ValueError(
+                "fusion_status가 miss 또는 not_evaluated이면 fusion_time은 null이어야 합니다."
+            )
+
+        return self

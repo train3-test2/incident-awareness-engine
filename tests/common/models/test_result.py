@@ -170,6 +170,55 @@ def test_decision_result_rejects_invalid_timestamp() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("fast_status", "fusion_status", "detector_time", "fusion_time"),
+    [
+        ("detected", "detected", None, datetime(2026, 9, 1, 1, 5, tzinfo=UTC)),
+        (
+            "miss",
+            "detected",
+            datetime(2026, 9, 1, 1, 8, tzinfo=UTC),
+            datetime(2026, 9, 1, 1, 5, tzinfo=UTC),
+        ),
+        (
+            "not_evaluated",
+            "detected",
+            datetime(2026, 9, 1, 1, 8, tzinfo=UTC),
+            datetime(2026, 9, 1, 1, 5, tzinfo=UTC),
+        ),
+        ("detected", "detected", datetime(2026, 9, 1, 1, 8, tzinfo=UTC), None),
+        (
+            "detected",
+            "miss",
+            datetime(2026, 9, 1, 1, 8, tzinfo=UTC),
+            datetime(2026, 9, 1, 1, 5, tzinfo=UTC),
+        ),
+        (
+            "detected",
+            "not_evaluated",
+            datetime(2026, 9, 1, 1, 8, tzinfo=UTC),
+            datetime(2026, 9, 1, 1, 5, tzinfo=UTC),
+        ),
+    ],
+)
+def test_decision_result_rejects_inconsistent_status_times(
+    fast_status: str,
+    fusion_status: str,
+    detector_time: datetime | None,
+    fusion_time: datetime | None,
+) -> None:
+    with pytest.raises(ValidationError):
+        DecisionResult(
+            **{
+                **_valid_decision_payload(),
+                "fast_status": fast_status,
+                "fusion_status": fusion_status,
+                "detector_time": detector_time,
+                "fusion_time": fusion_time,
+            }
+        )
+
+
 def test_decision_result_rejects_undefined_field() -> None:
     with pytest.raises(ValidationError):
         DecisionResult(**{**_valid_decision_payload(), "decision_source": "fast"})
