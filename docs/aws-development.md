@@ -74,6 +74,9 @@ if (git status --porcelain) {
 
 ```powershell
 docker build --platform linux/amd64 -t incident-awareness-engine:local .
+if ($LASTEXITCODE -ne 0) {
+  throw "Docker 이미지 빌드에 실패했습니다. tag 또는 push를 진행하지 않습니다."
+}
 ```
 
 Fargate Task Definition의 `runtimePlatform.cpuArchitecture`는 `X86_64`로 설정한다. 따라서 이미지 빌드 플랫폼도 `linux/amd64`로 고정한다.
@@ -86,9 +89,20 @@ $ImageTag = (git rev-parse --short HEAD).Trim()
 
 aws ecr get-login-password --region ap-northeast-2 --profile incident-dev `
   | docker login --username AWS --password-stdin "<account-id>.dkr.ecr.ap-northeast-2.amazonaws.com"
+if ($LASTEXITCODE -ne 0) {
+  throw "ECR 로그인에 실패했습니다."
+}
 
 docker tag incident-awareness-engine:local "$($EcrRegistry):$ImageTag"
+if ($LASTEXITCODE -ne 0) {
+  throw "Docker 이미지 태그 지정에 실패했습니다."
+}
+
 docker push "$($EcrRegistry):$ImageTag"
+if ($LASTEXITCODE -ne 0) {
+  throw "ECR 이미지 업로드에 실패했습니다."
+}
+
 docker logout "<account-id>.dkr.ecr.ap-northeast-2.amazonaws.com"
 ```
 
