@@ -280,6 +280,81 @@ Timestamp, Computer, EventID, RecordID, RuleID가 모두 일치했다.
 
 Fast qualifying 여부는 계속 미확정으로 유지한다.
 
+### 정상 샘플 sanity check
+
+#### 입력
+
+- 입력 파일: `sysmon-0001.evtx`
+- 수집 Run: 약 13초의 단기 sanity-check 샘플
+- 포함 이벤트:
+  - 평문 PowerShell Process Creation
+  - benign `-EncodedCommand` PowerShell Process Creation
+- 엔진: Hayabusa 4.0.0 / macOS arm64
+- Rule:
+  - `Suspicious Encoded PowerShell Command Line`
+  - Rule ID: `40d8f009-02f9-7db7-6504-25193624ab0a`
+
+#### 실행 결과
+
+단일 Rule로 `sysmon-0001.evtx`를 실행한 결과:
+
+- 전체 이벤트: 7개
+- hit 이벤트: 0개
+- unique detection: 0개
+
+EVTX 내 Sysmon Event ID 1을 직접 확인한 결과,
+다음 두 종류의 PowerShell 실행이 존재했다.
+
+1. 평문 PowerShell
+
+```text
+powershell.exe -NoProfile -NonInteractive -Command Get-Date | Out-Null
+```
+
+2. benign Encoded PowerShell
+
+```text
+powershell.exe -NoProfile -NonInteractive -EncodedCommand VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAnAHMAMAAtAHMAYQBtAHAAbABlAC0AZQBuAGMAbwBkAGUAZAAnAA==
+```
+
+해당 EncodedCommand payload는 다음 정상 테스트 명령이다.
+
+```text
+Write-Output 's0-sample-encoded'
+```
+
+#### Rule 조건 비교
+
+해당 Sigma Rule은 `-EncodedCommand` 사용 자체만으로 탐지하지 않는다.
+
+Rule은 다음 조건을 함께 요구한다.
+
+- Sysmon Event ID 1
+- PowerShell 또는 pwsh 프로세스
+- CommandLine의 ` -e` 계열 옵션
+- Rule에 정의된 suspicious Base64 content pattern 중 하나
+
+이번 benign EncodedCommand는 앞의 조건들은 만족하지만,
+`selection_cli_content`에 정의된 suspicious content pattern을 만족하지 않아 hit가 발생하지 않았다.
+
+따라서 이번 0 hit는 수집 실패나 Hayabusa 실행 오류가 아니라,
+현재 정상 테스트 payload가 해당 Sigma Rule의 탐지 조건에 해당하지 않은
+결과로 해석한다.
+
+#### 현재 판단
+
+- 평문 PowerShell: no hit
+- benign EncodedCommand: no hit
+- 짧은 정상 샘플에 대한 negative sanity check 완료
+- `-EncodedCommand` 사용 자체와 해당 Sigma Rule의 positive 조건은 구분해야 함
+
+다만 본 Run은 약 13초의 단기 수집/스키마 검증용 샘플이므로,
+정상 업무 환경에 대한 충분한 false positive 검증으로 사용하지 않는다.
+
+따라서 Encoded PowerShell 후보의 정상/pilot FP 검증은 계속 미완료로 유지하고,
+별도의 longer normal Run 확보 후 추가 검증한다.
+
+
 ## 9. 파일 공유 접근 — Sigma 후보 조사
 
 - Rule title: Access To ADMIN$ Network Share
@@ -328,17 +403,13 @@ Security 5140이라는 Event ID만으로 Fast qualifying을 인정하지 않는�
 (Rule ID: `37b219bc-37bb-1261-f179-64307c1a1829`)는
 현재 Hayabusa 4.0.0 + sample EVTX 조합에서 0 hit였다.
 
-동일 조건에서 `ShareName` 표현만 실제 이벤트 형식에 맞춘
-임시 검증 Rule에서는 1 hit가 재현되었다.
+동일 조건에서 `ShareName` 표현만 실제 이벤트 형식에 맞춘 임시 검증 Rule에서는 1 hit가 재현되었다.
 
-따라서 현재 sample에서는 `ShareName` 표현 차이가
-원본 Rule 비매치에 영향을 준 것을 확인했다.
+따라서 현재 sample에서는 `ShareName` 표현 차이가 원본 Rule 비매치에 영향을 준 것을 확인했다.
 
-다만 이는 현재 샘플과 실행 환경에 대한 동작 검증이며,
-수정 Rule을 프로젝트 Fast detector로 채택했다는 의미는 아니다.
+다만 이는 현재 샘플과 실행 환경에 대한 동작 검증이며, 수정 Rule을 프로젝트 Fast detector로 채택했다는 의미는 아니다.
 
-정상/pilot 로그의 FP 검증은 아직 미완료이며,
-단독 Fast qualifying 여부도 계속 미결정으로 유지한다.
+정상/pilot 로그의 FP 검증은 아직 미완료이며, 단독 Fast qualifying 여부도 계속 미결정으로 유지한다.
 
 
 ## 10. 파일 공유 접근 — 샘플 실행 결과
