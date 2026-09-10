@@ -93,17 +93,21 @@ if ($LASTEXITCODE -ne 0) {
   throw "ECR 로그인에 실패했습니다."
 }
 
-docker tag incident-awareness-engine:local "$($EcrRegistry):$ImageTag"
-if ($LASTEXITCODE -ne 0) {
-  throw "Docker 이미지 태그 지정에 실패했습니다."
+try {
+  docker tag incident-awareness-engine:local "$($EcrRegistry):$ImageTag"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Docker 이미지 태그 지정에 실패했습니다."
+  }
+
+  docker push "$($EcrRegistry):$ImageTag"
+  if ($LASTEXITCODE -ne 0) {
+    throw "ECR 이미지 업로드에 실패했습니다."
+  }
+}
+finally {
+  docker logout "<account-id>.dkr.ecr.ap-northeast-2.amazonaws.com"
 }
 
-docker push "$($EcrRegistry):$ImageTag"
-if ($LASTEXITCODE -ne 0) {
-  throw "ECR 이미지 업로드에 실패했습니다."
-}
-
-docker logout "<account-id>.dkr.ecr.ap-northeast-2.amazonaws.com"
 ```
 
 ECR에 새 태그를 업로드해도 기존 ECS Task Definition revision의 image URI는 자동으로 변경되지 않는다. ECS 콘솔에서 다음 순서로 새 revision을 등록한다.
