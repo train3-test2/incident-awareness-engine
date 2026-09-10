@@ -933,8 +933,81 @@ episode/cooldown의 세부 평가 정의는 후속 단계에서 확정한다.
 
 Issue #44의 후보 조사와 qualifying policy 초안 작성은 완료했다.
 
-다만 정상/pilot 로그가 아직 확보되지 않았으므로
-Fast detector set은 freeze하지 않는다.
+다만 FP 평가에 충분한 정상/pilot Run은 아직 확보되지 않았으므로
+Fast detector set은 freeze하지 않는다. 전달받은 스키마 개발용 샘플의 검증 결과는 §17에 기록한다.
 
 정상/pilot 검증과 후보 적합성·재현 정보 확인을 거쳐 R1 실행 전 provisional version을 고정한다.
 R1 결과 기반 사후 tuning은 금지하며, validation에서 최종 set을 선택한 뒤 test 전에 final freeze한다.
+
+
+## 17. Encoded PowerShell — 전달받은 스키마 샘플 검증 (2026-09-10)
+
+### 입력과 실행 조건
+
+- 수집 목적: `schema-development-sample` (`collection-meta.json` 기준)
+- 입력 파일: `sysmon-0001.evtx`
+- 입력 SHA-256: `437036b13a88aa11cf8d7177285c1af6bb0b18c1b0f0be19ef67162e1c335cd1`
+- 전달된 EVTX의 SHA-256이 수집 메타데이터와 일치함을 확인했다.
+- 엔진: Hayabusa 4.0.0 / macOS arm64
+- 지정 Rule ID: `40d8f009-02f9-7db7-6504-25193624ab0a`
+- 실행 당시 로컬 룰 본문을 확인했다. 이 실행의 룰·설정 파일 해시는 별도로 확보하지 않았다.
+
+실제 실행 명령 (Hayabusa 설치 디렉터리 기준):
+
+```bash
+./hayabusa-4.0.0-mac-aarch64 dfir-timeline \
+  -f /Users/seolyeonhui/Desktop/sysmon-0001.evtx \
+  -r rules/sigma/sysmon/process_creation/proc_creation_win_powershell_base64_encoded_cmd.yml \
+  -w -O -t csv \
+  -o /tmp/sysmon-0001-encoded-powershell-20260910.csv
+```
+
+- 로드·활성화된 룰: 1개
+- 검사 이벤트: 7개 (EID 1: 4개, EID 3: 3개)
+- hit: 0건
+- 결과 CSV: 0바이트로 생성됨
+- 룰 제외 설정 변경과 중복 탐지 제거 옵션은 사용하지 않았다.
+
+### EID 1의 명령행과 룰 조건 대조
+
+원본 EVTX를 Hayabusa search로 읽어 전체 7개 이벤트의 필드를 확인했다.
+EID 1은 평문 PowerShell 1건, Encoded PowerShell 1건, conhost.exe 2건이었다.
+
+Encoded PowerShell 이벤트:
+
+- Computer: `WIN-01`
+- RecordID: `3391`
+- 출력 Timestamp: `2026-09-08T16:35:32.884680Z`
+- 명령행 주요 부분: `powershell.exe -NoProfile -NonInteractive -EncodedCommand VwByAGkAdABl...`
+
+| 조건 | 대조 결과 |
+| --- | --- |
+| Sysmon 채널 + EventID 1 | 충족 |
+| PowerShell Image / OriginalFileName | 충족 |
+| CommandLine의 ` -e` 패턴 | ` -EncodedCommand`가 해당 |
+| selection_cli_content의 지정 인코딩 문자열 | 불충족 |
+| selection_standalone의 `.exe -ENCOD ` 또는 ` BA^J e-` | 불충족 |
+| RemoteSigned 제외 조건 | 해당 없음 |
+
+따라서 `selection_cli_content`와 대체 `selection_standalone` 분기가 모두
+불충족하여 룰이 매칭되지 않았다. 룰 로드 실패가 아니다.
+
+Base64를 UTF-16LE 텍스트로 디코딩한 결과는 다음과 같다.
+명령은 실행하지 않았다.
+
+```powershell
+Write-Output 's0-sample-encoded'
+```
+
+### 해석과 검증 한계
+
+- 메타데이터의 `encoded_powershell_command: 1`은 이 Sigma 룰의 hit 수가 아니다.
+- 단순 EncodedCommand 사용이 존재해도 해당 룰의 내용 패턴에는 매칭되지 않을 수 있다.
+- 이번 결과는 이 샘플에서 해당 룰의 hit가 없었다는 확인이다.
+- 스키마 샘플의 명령 내용 확인만으로 정상 업무 Run 라벨·관측시간을 확정하지 않는다.
+- 정상 FP 검증 완료, 프로젝트 미탐, Recall/TTSD 성능 결과로 집계하지 않는다.
+- 샘플에 맞춰 룰을 변경하거나 qualifying policy를 동결하지 않는다.
+- 정상/pilot FP 검증과 R1 전 comparator 적합성 확인은 계속 미완료다.
+
+진단 출력은 `/tmp/sysmon-0001-search-20260910.jsonl`에 보존했다.
+위 `/tmp` 경로는 로컬 임시 산출물이며 저장소에 포함된 재현 artifact는 아니다.
