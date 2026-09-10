@@ -93,17 +93,21 @@ if ($LASTEXITCODE -ne 0) {
   throw "ECR 로그인에 실패했습니다."
 }
 
-docker tag incident-awareness-engine:local "$($EcrRegistry):$ImageTag"
-if ($LASTEXITCODE -ne 0) {
-  throw "Docker 이미지 태그 지정에 실패했습니다."
+try {
+  docker tag incident-awareness-engine:local "$($EcrRegistry):$ImageTag"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Docker 이미지 태그 지정에 실패했습니다."
+  }
+
+  docker push "$($EcrRegistry):$ImageTag"
+  if ($LASTEXITCODE -ne 0) {
+    throw "ECR 이미지 업로드에 실패했습니다."
+  }
+}
+finally {
+  docker logout "<account-id>.dkr.ecr.ap-northeast-2.amazonaws.com"
 }
 
-docker push "$($EcrRegistry):$ImageTag"
-if ($LASTEXITCODE -ne 0) {
-  throw "ECR 이미지 업로드에 실패했습니다."
-}
-
-docker logout "<account-id>.dkr.ecr.ap-northeast-2.amazonaws.com"
 ```
 
 ECR에 새 태그를 업로드해도 기존 ECS Task Definition revision의 image URI는 자동으로 변경되지 않는다. ECS 콘솔에서 다음 순서로 새 revision을 등록한다.
@@ -163,4 +167,4 @@ protocol=None src_ip=None src_port=None dst_ip=None dst_port=None
 - 로컬 Docker Compose E2E 구현
 - 실제 Pipeline Docker E2E 및 AWS E2E 검증
 - 지속 실행이 필요한 컴포넌트가 생긴 뒤 ECS Service 구성
-- 수동 AWS 배포가 안정화된 뒤 GitHub Actions 기반 배포 자동화 검토
+- `develop` push 기준 GitHub Actions smoke 배포 실행 결과 확인 및 실패 대응 절차 보완
