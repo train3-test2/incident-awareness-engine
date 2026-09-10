@@ -2,7 +2,7 @@ import re
 from datetime import UTC, date, datetime, timedelta
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _RUN_ID_PATTERN = re.compile(r"^RUN-(?P<date>[0-9]{8})-(?P<sequence>[0-9]{3})$")
 
@@ -65,3 +65,22 @@ class DetectionResult(BaseModel):
             raise ValueError("datetime은 밀리초 단위여야 합니다.")
 
         return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_detector_status_time(self) -> "DetectionResult":
+        if self.detector_status is DetectorStatus.DETECTED and self.detector_time is None:
+            raise ValueError("detected 상태에서는 detector_time이 필요합니다.")
+
+        if (
+            self.detector_status
+            in {
+                DetectorStatus.MISS,
+                DetectorStatus.NOT_EVALUATED,
+            }
+            and self.detector_time is not None
+        ):
+            raise ValueError(
+                "miss 또는 not_evaluated 상태에서는 detector_time이 null이어야 합니다."
+            )
+
+        return self

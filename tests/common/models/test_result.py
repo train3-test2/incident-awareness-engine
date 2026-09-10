@@ -36,6 +36,7 @@ def test_detection_result_allows_nullable_detector_metadata() -> None:
         **{
             **_valid_detection_payload(),
             "detector_time": None,
+            "detector_status": "miss",
             "detector_id": None,
             "rule_id": None,
             "rule_version": None,
@@ -45,6 +46,28 @@ def test_detection_result_allows_nullable_detector_metadata() -> None:
 
     assert result.detector_time is None
     assert result.severity is None
+
+
+@pytest.mark.parametrize(
+    ("detector_status", "detector_time"),
+    [
+        ("detected", None),
+        ("miss", datetime(2026, 9, 1, 1, 8, tzinfo=UTC)),
+        ("not_evaluated", datetime(2026, 9, 1, 1, 8, tzinfo=UTC)),
+    ],
+)
+def test_detection_result_rejects_inconsistent_detector_status_and_time(
+    detector_status: str,
+    detector_time: datetime | None,
+) -> None:
+    with pytest.raises(ValidationError):
+        DetectionResult(
+            **{
+                **_valid_detection_payload(),
+                "detector_status": detector_status,
+                "detector_time": detector_time,
+            }
+        )
 
 
 @pytest.mark.parametrize(
