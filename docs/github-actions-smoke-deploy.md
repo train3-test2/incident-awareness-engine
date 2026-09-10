@@ -37,7 +37,7 @@ AWS IAM에 GitHub OIDC provider `https://token.actions.githubusercontent.com`를
       "Condition": {
         "StringEquals": {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": "repo:train3-test2/incident-awareness-engine:ref:refs/heads/develop"
+          "token.actions.githubusercontent.com:sub": "repo:train3-test2@320191831/incident-awareness-engine@1343764997:ref:refs/heads/develop"
         }
       }
     }
