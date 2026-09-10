@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
 
 from incident_awareness.common.models.result import (
@@ -354,9 +355,11 @@ def test_detection_result_json_round_trip_and_schema() -> None:
 
     restored = DetectionResult.model_validate_json(serialized)
     schema = DetectionResult.model_json_schema()
-    Draft202012Validator(schema, format_checker=FormatChecker()).validate(
-        result.model_dump(mode="json")
-    )
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    validator.validate(result.model_dump(mode="json"))
+
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**result.model_dump(mode="json"), "detector_time": None})
 
     assert restored == result
     assert schema["additionalProperties"] is False
@@ -373,9 +376,14 @@ def test_decision_result_json_round_trip_and_schema() -> None:
 
     restored = DecisionResult.model_validate_json(serialized)
     schema = DecisionResult.model_json_schema()
-    Draft202012Validator(schema, format_checker=FormatChecker()).validate(
-        result.model_dump(mode="json")
-    )
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    validator.validate(result.model_dump(mode="json"))
+
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**result.model_dump(mode="json"), "detector_time": None})
+
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**result.model_dump(mode="json"), "fusion_status": "miss"})
 
     assert restored == result
     assert schema["additionalProperties"] is False

@@ -7,6 +7,38 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 _RUN_ID_PATTERN = re.compile(r"^RUN-(?P<date>[0-9]{8})-(?P<sequence>[0-9]{3})$")
 
 
+def _status_time_schema(status_field: str, time_field: str) -> list[dict[str, object]]:
+    return [
+        {
+            "if": {
+                "properties": {status_field: {"const": DetectorStatus.DETECTED.value}},
+                "required": [status_field],
+            },
+            "then": {
+                "properties": {time_field: {"type": "string", "format": "date-time"}},
+                "required": [time_field],
+            },
+        },
+        {
+            "if": {
+                "properties": {
+                    status_field: {
+                        "enum": [
+                            DetectorStatus.MISS.value,
+                            DetectorStatus.NOT_EVALUATED.value,
+                        ]
+                    }
+                },
+                "required": [status_field],
+            },
+            "then": {
+                "properties": {time_field: {"type": "null"}},
+                "required": [time_field],
+            },
+        },
+    ]
+
+
 class DetectorStatus(str, Enum):
     DETECTED = "detected"
     MISS = "miss"
@@ -38,7 +70,10 @@ class WinningPath(str, Enum):
 class DetectionResult(BaseModel):
     """Fast Adapter가 Fast runner 출력을 정규화한 결과 계약이다."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"allOf": _status_time_schema("detector_status", "detector_time")},
+    )
 
     run_id: str = Field(min_length=1)
     entity_id: str = Field(min_length=1)
@@ -103,7 +138,15 @@ class DetectionResult(BaseModel):
 class DecisionResult(BaseModel):
     """Fast와 Fusion 경로를 결합한 Hybrid Decision 결과 계약이다."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "allOf": [
+                *_status_time_schema("fast_status", "detector_time"),
+                *_status_time_schema("fusion_status", "fusion_time"),
+            ]
+        },
+    )
 
     run_id: str = Field(min_length=1)
     decision_id: str = Field(min_length=1)
