@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
+from jsonschema import Draft202012Validator, FormatChecker
 from pydantic import ValidationError
 
 from incident_awareness.common.models.result import (
@@ -66,6 +67,19 @@ def test_detection_result_allows_nullable_detector_metadata() -> None:
 
     assert result.detector_time is None
     assert result.severity is None
+
+
+def test_detection_result_allows_not_evaluated_status_with_null_detector_time() -> None:
+    result = DetectionResult(
+        **{
+            **_valid_detection_payload(),
+            "detector_status": "not_evaluated",
+            "detector_time": None,
+        }
+    )
+
+    assert result.detector_status is DetectorStatus.NOT_EVALUATED
+    assert result.detector_time is None
 
 
 @pytest.mark.parametrize(
@@ -219,6 +233,44 @@ def test_decision_result_rejects_inconsistent_determined_status_combinations(
 
 
 @pytest.mark.parametrize(
+    "payload_updates",
+    [
+        {
+            "fast_status": "not_evaluated",
+            "detector_time": None,
+            "t_e": None,
+            "decision_path": None,
+            "winning_path": None,
+        },
+        {
+            "fusion_status": "not_evaluated",
+            "fusion_time": None,
+            "t_e": None,
+            "decision_path": None,
+            "winning_path": None,
+        },
+        {
+            "fast_status": "not_evaluated",
+            "fusion_status": "not_evaluated",
+            "detector_time": None,
+            "fusion_time": None,
+            "t_e": None,
+            "decision_path": None,
+            "winning_path": None,
+        },
+    ],
+)
+def test_decision_result_accepts_not_evaluated_status_with_null_decision_fields(
+    payload_updates: dict[str, object],
+) -> None:
+    result = DecisionResult(**{**_valid_decision_payload(), **payload_updates})
+
+    assert result.t_e is None
+    assert result.decision_path is None
+    assert result.winning_path is None
+
+
+@pytest.mark.parametrize(
     ("field", "value"),
     [
         ("fast_status", "unknown"),
@@ -294,3 +346,43 @@ def test_decision_result_rejects_inconsistent_status_times(
 def test_decision_result_rejects_undefined_field() -> None:
     with pytest.raises(ValidationError):
         DecisionResult(**{**_valid_decision_payload(), "decision_source": "fast"})
+
+
+def test_detection_result_json_round_trip_and_schema() -> None:
+    result = DetectionResult(**_valid_detection_payload())
+    serialized = result.model_dump_json()
+
+    restored = DetectionResult.model_validate_json(serialized)
+    schema = DetectionResult.model_json_schema()
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(
+        result.model_dump(mode="json")
+    )
+
+    assert restored == result
+    assert schema["additionalProperties"] is False
+    assert schema["$defs"]["DetectorStatus"]["enum"] == [
+        "detected",
+        "miss",
+        "not_evaluated",
+    ]
+
+
+def test_decision_result_json_round_trip_and_schema() -> None:
+    result = DecisionResult(**_valid_decision_payload())
+    serialized = result.model_dump_json()
+
+    restored = DecisionResult.model_validate_json(serialized)
+    schema = DecisionResult.model_json_schema()
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(
+        result.model_dump(mode="json")
+    )
+
+    assert restored == result
+    assert schema["additionalProperties"] is False
+    assert "decision_source" not in schema["properties"]
+    assert schema["$defs"]["DecisionPath"]["enum"] == [
+        "fast",
+        "fusion",
+        "fast_and_fusion",
+        "none",
+    ]
