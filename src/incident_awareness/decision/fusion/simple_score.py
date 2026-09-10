@@ -16,8 +16,6 @@ class SimpleScorer:
         if len(set(profile_types)) != len(profile_types):
             raise ValueError("evidence_types must not contain duplicates")
 
-        
-
         self._profile_types = frozenset(profile_types)
 
     @property
