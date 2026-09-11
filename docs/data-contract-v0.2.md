@@ -38,7 +38,7 @@
 
 | 영역               | v0.2 규칙                                                                                                     |
 | ------------------ | ------------------------------------------------------------------------------------------------------------- |
-| Run 식별자         | `RUN-YYYYMMDD-NNN`을 사용하고, 시나리오·반복·환경 정보는 별도 메타데이터 필드로 분리한다.                     |
+| Run 식별자         | `RUN-YYYYMMDD-NNN`을 사용하고, 시나리오·반복·환경 정보는 별도 메타데이터 필드로 분리한다. `run_id`를 가진 모든 Contract는 입력 시점에 같은 형식·달력 유효성 검증을 적용한다(`docs/schema/run-id.md` §3-1). |
 | Event 식별자       | `event_id`는 정규화 Event의 식별자, `source_event_id`는 원본 Source의 Event/Record 식별자로 분리한다.         |
 | 시간 축            | `timestamp`와 함께 `timestamp_source`, `event_time`, `record_time`, `ingest_time`을 보존한다.                 |
 | Telemetry 층위     | `source_layer`로 `raw_telemetry`와 `detector_output`을 구분한다.                                              |
@@ -322,6 +322,8 @@ Human Workflow는 DecisionResult와 별도 계약이다. 사람의 확인·승�
 ## 11. 후속 결정 및 동기화 항목
 
 - [x] `entity_id`의 canonical 범위와 R1 귀속 규칙 확정(D-01: PoC v0 Endpoint Host)
+- [ ] `run_id` 형식·달력 유효성 검증을 `run_id`를 가진 모든 Pydantic 모델과 테스트 fixture에 동기화 (`run-id.md` §3-1)
+- [ ] `run_id`의 `YYYYMMDD`와 실제 생성일의 일치를 어느 계층에서 보장할지 확정
 - [ ] `source` 구조(공통 producer 필드 또는 소스별 분기 구조) 확정
 - [ ] FastHitRecord의 `hit_id` 생성 방식과 재실행 간 대응 방식 확정
 - [ ] Run Manifest의 `raw_log_id` resolve·SHA-256·`derived_from` 규칙 확인
