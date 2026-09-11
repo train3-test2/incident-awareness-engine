@@ -14,6 +14,30 @@ FusionStatus = Literal["detected", "miss", "not_evaluated"]
 FusionEndReason = Literal["released", "run_end"]
 
 
+def _reject_numeric_timestamp(
+    value: object,
+    *,
+    field_name: str,
+) -> object:
+    if isinstance(value, (int, float, bool)):
+        raise TypeError(f"{field_name} must be an ISO 8601 datetime, not a numeric timestamp")
+
+    if isinstance(value, str):
+        stripped = value.strip()
+
+        if stripped:
+            try:
+                float(stripped)
+            except ValueError:
+                pass
+            else:
+                raise ValueError(
+                    f"{field_name} must be an ISO 8601 datetime, not a numeric timestamp"
+                )
+
+    return value
+
+
 def _validate_utc_datetime(
     value: datetime | None,
     *,
@@ -50,6 +74,17 @@ class FusionEpisodeResult(BaseModel):
     score_at_start: float
     peak_score: float
     contributing_evidence_ids: list[str] | None = None
+
+    @field_validator("start_time", "end_time", mode="before")
+    @classmethod
+    def reject_numeric_timestamp(
+        cls,
+        value: object,
+    ) -> object:
+        return _reject_numeric_timestamp(
+            value,
+            field_name="FusionEpisode timestamp",
+        )
 
     @field_validator("start_time", "end_time")
     @classmethod
@@ -98,6 +133,17 @@ class FusionResult(BaseModel):
     scoring_method: str = Field(min_length=1)
     scorer_version: str = Field(min_length=1)
     fusion_episodes: list[FusionEpisodeResult]
+
+    @field_validator("fusion_time", mode="before")
+    @classmethod
+    def reject_numeric_fusion_time(
+        cls,
+        value: object,
+    ) -> object:
+        return _reject_numeric_timestamp(
+            value,
+            field_name="FusionResult fusion_time",
+        )
 
     @field_validator("fusion_time")
     @classmethod
@@ -175,11 +221,17 @@ class FusionResult(BaseModel):
             if self.fusion_time is not None:
                 raise ValueError("miss FusionResult must not include fusion_time")
 
+            if self.fusion_episodes:
+                raise ValueError("miss FusionResult must not include fusion_episodes")
+
         else:
             if self.fusion_time is not None:
                 raise ValueError("not_evaluated FusionResult must not include fusion_time")
 
             if self.score_at_decision is not None:
                 raise ValueError("not_evaluated FusionResult must not include score_at_decision")
+
+            if self.fusion_episodes:
+                raise ValueError("not_evaluated FusionResult must not include fusion_episodes")
 
         return self
