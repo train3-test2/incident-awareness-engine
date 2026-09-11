@@ -232,7 +232,7 @@ New-Item -ItemType Directory -Path C:\Tools -Force
 ### 5-2. Sysmon 설치
 
 ```powershell
- # 도구 설치 단계에서만 네트워크를 허용한다
+ # Sysmon 을 내려받으려면 외부 네트워크가 필요하다
 Invoke-WebRequest -Uri "https://download.sysinternals.com/files/Sysmon.zip" -OutFile "$env:TEMP\Sysmon.zip"
 Expand-Archive "$env:TEMP\Sysmon.zip" -DestinationPath "C:\Tools\Sysmon" -Force
 ```
@@ -261,6 +261,11 @@ C:\Tools\collect_sysmon_sample.ps1 -ExternalTarget 1.1.1.1 -SysmonConfigPath C:\
 `-ExternalTarget` 을 생략하면 loopback 연결만 수행한다. 이 경우 Event ID 3 은 수집되지만
 `script_interpreter_external_connection` 조건은 충족되지 않으며, 해당 조건은 필수 검사에서
 제외된다.
+
+> **네트워크 조건** — `-ExternalTarget` 을 주면 VM 이 외부 IP 로 TCP 연결을 한다. 게시 샘플은
+> NAT 모드 VM 에서 외부 대상 `1.1.1.1:443` 으로 수집했다(`sysmon-sample-meta.json` 의
+> `external_connection`). 외부 연결을 포함한 수집은 개인·업무 환경과 분리된 실험 VM 에서만
+> 실행한다. 실험 Run 의 네트워크 모드와 예외 승인은 #71 에서 정한다.
 
 `-SysmonConfigPath` 를 주면 설정 파일의 SHA-256 을 기록한다. `sysmon_active_config_sha256`
 은 실행 중인 Sysmon 이 적용하고 있는 설정 덤프에서 얻는다. **두 값은 해시 대상이 달라
@@ -320,13 +325,16 @@ python tools/sanitize_sysmon_sample.py <복사한폴더> --out samples/raw
 
 ## 6. 범위 밖
 
-다음은 이 샘플에 포함하지 않는다.
+다음은 게시 샘플(`sysmon-0001.jsonl`)에 포함하지 않는다.
 
 ```text
 PowerShell Operational (4104)
-Windows Security (4624 / 4688 / 1102)
+Windows Security 채널 (1102 / 4624 / 4688 / 5140 등)
 Sysmon 그 외 Event ID
 ```
+
+Security 채널은 수집기의 `-IncludeSecurityLog` 로 EVTX 를 만들 수 있지만(§5-3-1), EVTX 는 식별자를
+치환할 수 없어 저장소에 올리지 않는다(§4-1).
 
 `configs/event_types_v0.2.yaml` 에는 `script_block`, `file_create`, `registry_change` 가
 있으나, `docs/schema/event-v0.md` §6 이 초기 검증 대상을 `process_create` 와
