@@ -12,6 +12,7 @@ from pydantic import (
 )
 
 _RUN_ID_PATTERN = re.compile(r"^RUN-(?P<date>[0-9]{8})-(?P<sequence>[0-9]{3})$")
+_RUN_ID_SCHEMA_PATTERN = r"^RUN-\d{8}-\d{3}$"
 
 
 def _serialize_utc_datetime(value: datetime | None) -> str | None:
@@ -123,7 +124,7 @@ class DetectionResult(BaseModel):
         },
     )
 
-    run_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1, pattern=_RUN_ID_SCHEMA_PATTERN)
     entity_id: str = Field(min_length=1)
     detector_time: datetime | None
     detector_status: DetectorStatus
@@ -209,7 +210,7 @@ class DecisionResult(BaseModel):
         },
     )
 
-    run_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1, pattern=_RUN_ID_SCHEMA_PATTERN)
     decision_id: str = Field(min_length=1)
     entity_id: str = Field(min_length=1)
     fast_status: DetectorStatus

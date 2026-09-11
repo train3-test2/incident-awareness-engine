@@ -384,9 +384,13 @@ def test_detection_result_json_round_trip_and_schema() -> None:
     with pytest.raises(JsonSchemaValidationError):
         validator.validate({**result.model_dump(mode="json"), "detector_id": None})
 
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**result.model_dump(mode="json"), "run_id": "abc"})
+
     assert restored == result
     assert serialized_payload["detector_time"] == "2026-09-01T01:08:00.000Z"
     assert schema["additionalProperties"] is False
+    assert schema["properties"]["run_id"]["pattern"] == r"^RUN-\d{8}-\d{3}$"
     assert schema["$defs"]["DetectorStatus"]["enum"] == [
         "detected",
         "miss",
@@ -410,11 +414,15 @@ def test_decision_result_json_round_trip_and_schema() -> None:
     with pytest.raises(JsonSchemaValidationError):
         validator.validate({**result.model_dump(mode="json"), "fusion_status": "miss"})
 
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**result.model_dump(mode="json"), "run_id": "abc"})
+
     assert restored == result
     assert serialized_payload["fusion_time"] == "2026-09-01T01:05:00.000Z"
     assert serialized_payload["detector_time"] == "2026-09-01T01:08:00.000Z"
     assert serialized_payload["t_e"] == "2026-09-01T01:05:00.000Z"
     assert schema["additionalProperties"] is False
+    assert schema["properties"]["run_id"]["pattern"] == r"^RUN-\d{8}-\d{3}$"
     assert "decision_source" not in schema["properties"]
     assert schema["$defs"]["DecisionPath"]["enum"] == [
         "fast",
