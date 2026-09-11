@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
@@ -359,6 +360,7 @@ def test_detection_result_json_round_trip_and_schema() -> None:
     serialized = result.model_dump_json()
 
     restored = DetectionResult.model_validate_json(serialized)
+    serialized_payload = json.loads(serialized)
     schema = DetectionResult.model_json_schema()
     validator = Draft202012Validator(schema, format_checker=FormatChecker())
     validator.validate(result.model_dump(mode="json"))
@@ -370,6 +372,7 @@ def test_detection_result_json_round_trip_and_schema() -> None:
         validator.validate({**result.model_dump(mode="json"), "detector_id": None})
 
     assert restored == result
+    assert serialized_payload["detector_time"] == "2026-09-01T01:08:00.000Z"
     assert schema["additionalProperties"] is False
     assert schema["$defs"]["DetectorStatus"]["enum"] == [
         "detected",
@@ -383,6 +386,7 @@ def test_decision_result_json_round_trip_and_schema() -> None:
     serialized = result.model_dump_json()
 
     restored = DecisionResult.model_validate_json(serialized)
+    serialized_payload = json.loads(serialized)
     schema = DecisionResult.model_json_schema()
     validator = Draft202012Validator(schema, format_checker=FormatChecker())
     validator.validate(result.model_dump(mode="json"))
@@ -394,6 +398,9 @@ def test_decision_result_json_round_trip_and_schema() -> None:
         validator.validate({**result.model_dump(mode="json"), "fusion_status": "miss"})
 
     assert restored == result
+    assert serialized_payload["fusion_time"] == "2026-09-01T01:05:00.000Z"
+    assert serialized_payload["detector_time"] == "2026-09-01T01:08:00.000Z"
+    assert serialized_payload["t_e"] == "2026-09-01T01:05:00.000Z"
     assert schema["additionalProperties"] is False
     assert "decision_source" not in schema["properties"]
     assert schema["$defs"]["DecisionPath"]["enum"] == [

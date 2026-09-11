@@ -2,9 +2,23 @@ import re
 from datetime import UTC, date, datetime, timedelta
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 _RUN_ID_PATTERN = re.compile(r"^RUN-(?P<date>[0-9]{8})-(?P<sequence>[0-9]{3})$")
+
+
+def _serialize_utc_datetime(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+
+    return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _status_time_schema(status_field: str, time_field: str) -> list[dict[str, object]]:
@@ -133,6 +147,11 @@ class DetectionResult(BaseModel):
 
         return value.astimezone(UTC)
 
+    @field_serializer("detector_time", when_used="json")
+    @classmethod
+    def serialize_detector_time(cls, value: datetime | None) -> str | None:
+        return _serialize_utc_datetime(value)
+
     @model_validator(mode="after")
     def validate_detector_status_time(self) -> "DetectionResult":
         if self.detector_status is DetectorStatus.DETECTED and self.detector_time is None:
@@ -217,6 +236,11 @@ class DecisionResult(BaseModel):
             raise ValueError("datetime은 밀리초 단위여야 합니다.")
 
         return value.astimezone(UTC)
+
+    @field_serializer("fusion_time", "detector_time", "t_e", when_used="json")
+    @classmethod
+    def serialize_datetime(cls, value: datetime | None) -> str | None:
+        return _serialize_utc_datetime(value)
 
     @model_validator(mode="after")
     def validate_status_times(self) -> "DecisionResult":
