@@ -12,7 +12,8 @@
 | `end_time`, `family_id`, `variation_id`, `repetition` | X | O | 실행 종료·group split 정보 |
 | `reference_time`, `reference_action_id`, `reference_source_event_id` | X | O | 평가 기준 정보 |
 | `vm_snapshot`, `sysmon_config_version`, `detector_set_version`, `scenario_version` | X | O | 환경·재현 정보 |
-| `reference_policy_version`, `schema_versions` | O | X | 기준 정책과 Contract별 버전 |
+| `schema_versions` | O | X | Contract별 적용 버전 |
+| `reference_policy_version` | X | O | `reference_time` 산출에 적용한 attribution 정책 버전 |
 
 ## 1. 목적
 
@@ -338,6 +339,33 @@ RUN-20260827-002
 
 ## 11. 실험 메타데이터
 RunMetadata의 전체 필드·nullability·Contract별 버전 규칙은 이 문서 상단의 **v0.2 RunMetadata**와 `docs/data-contract-v0.2.md`를 따른다. 이 절에서는 별도 축약 Schema를 정의하지 않는다.
+
+### 11-1. 시각 규칙
+
+`start_time`, `end_time`, `reference_time`은 다음을 따른다.
+
+| 항목      | 규칙                                                                  |
+| --------- | --------------------------------------------------------------------- |
+| Timezone  | UTC. timezone 정보가 없는 값과 UTC offset이 0이 아닌 값은 거부한다 |
+| Format    | ISO 8601                                                              |
+| Precision | Millisecond                                                           |
+| 예시      | `2026-09-11T05:00:01.123Z`                                            |
+
+**숫자형 입력을 허용하지 않는다.** 정수·실수·숫자 문자열은 초 단위와 밀리초 단위 Unix epoch를 포함해 시각 입력으로 받지 않는다.
+
+| 입력                              | 결과 | 이유                                                                  |
+| --------------------------------- | ---- | --------------------------------------------------------------------- |
+| `"2026-09-11T05:00:01.123Z"`      | 허용 |                                                                       |
+| `0`                               | 거부 | `1970-01-01T00:00:00Z`로 해석됨                                       |
+| `"1757376000000"`                 | 거부 | 밀리초 epoch. `2025-09-09T00:00:00Z`로 해석되어 오류가 드러나지 않음 |
+| `"2026-09-11T05:00:01.123"`       | 거부 | timezone 없음                                                         |
+| `"2026-09-11T14:00:01.123+09:00"` | 거부 | UTC offset이 0이 아님                                                 |
+
+Pydantic은 숫자를 timezone-aware UTC datetime으로 변환하므로 UTC 검증만으로는 숫자형 입력이 걸리지 않는다. 모델은 datetime 변환 전에 숫자형 입력을 거부한다.
+
+RunMetadata를 생성하는 쪽은 원본 시각을 UTC로 변환한 뒤 밀리초 미만 자릿수를 절사하고 반올림하지 않는다. 모델은 UTC 밀리초 정밀도를 검증한다. 이 방식은 `docs/schema/event-v0.md` §4의 NormalizedEvent 규칙과 같다.
+
+시각 사이의 순서(`end_time`과 `start_time`)와 `run_type`별 `reference_time` null 규칙은 `docs/data-contract-v0.2.md` §4를 따른다.
 
 ---
 

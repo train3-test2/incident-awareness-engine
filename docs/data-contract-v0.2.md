@@ -75,6 +75,8 @@
 
 `schema_versions`는 `run_metadata`, `event`, `evidence`, `fast_hit`, `detection_result`, `fusion_result`, `decision_result`, `execution_record`, `evaluation_input` 키를 모두 포함해야 하며, 각 값은 비어 있지 않은 버전 문자열이어야 한다.
 
+`start_time`, `end_time`, `reference_time`은 UTC ISO 8601 밀리초 표기를 사용한다. timezone 정보가 없는 값과 UTC offset이 0이 아닌 값은 허용하지 않는다. 정수·실수 또는 숫자 문자열로 표현한 Unix epoch 값은 초·밀리초 단위 모두 시각 입력으로 허용하지 않는다. 세부 규칙은 `docs/schema/run-id.md` §11-1을 따른다.
+
 ## 5. NormalizedEvent v0.2
 
 ### 5-1. 식별자와 시간
@@ -328,3 +330,5 @@ Human Workflow는 DecisionResult와 별도 계약이다. 사람의 확인·승�
 - [ ] Evidence.`source_event_ids` → `event_ids` 전환에 따른 상위 Provenance 계약·모델·Schema·소비자·테스트 동기화
 - [ ] Stopping·Episode 계약의 `fusion_episodes[]` 구조표를 본 Data Contract 참조로 전환
 - [ ] Pydantic 모델, JSON Schema, 소비자 모듈, 테스트 동기화
+- [ ] RunMetadata 시각 규칙(숫자형 epoch 거부, 밀리초 정밀도)을 모델과 테스트에 동기화 (`run-id.md` §11-1)
+- [ ] attack Run의 `reference_time`이 `start_time`·`end_time` 범위 안에 있어야 하는지 확정 (clock skew 정책 선행)
