@@ -105,6 +105,11 @@ def test_detection_result_rejects_inconsistent_detector_status_and_time(
         )
 
 
+def test_detection_result_rejects_detected_status_without_detector_id() -> None:
+    with pytest.raises(ValidationError):
+        DetectionResult(**{**_valid_detection_payload(), "detector_id": None})
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -360,6 +365,9 @@ def test_detection_result_json_round_trip_and_schema() -> None:
 
     with pytest.raises(JsonSchemaValidationError):
         validator.validate({**result.model_dump(mode="json"), "detector_time": None})
+
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**result.model_dump(mode="json"), "detector_id": None})
 
     assert restored == result
     assert schema["additionalProperties"] is False

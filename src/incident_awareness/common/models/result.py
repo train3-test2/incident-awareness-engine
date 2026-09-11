@@ -39,6 +39,19 @@ def _status_time_schema(status_field: str, time_field: str) -> list[dict[str, ob
     ]
 
 
+def _detected_non_null_schema(status_field: str, field_name: str) -> dict[str, object]:
+    return {
+        "if": {
+            "properties": {status_field: {"const": DetectorStatus.DETECTED.value}},
+            "required": [status_field],
+        },
+        "then": {
+            "properties": {field_name: {"type": "string"}},
+            "required": [field_name],
+        },
+    }
+
+
 class DetectorStatus(str, Enum):
     DETECTED = "detected"
     MISS = "miss"
@@ -72,7 +85,12 @@ class DetectionResult(BaseModel):
 
     model_config = ConfigDict(
         extra="forbid",
-        json_schema_extra={"allOf": _status_time_schema("detector_status", "detector_time")},
+        json_schema_extra={
+            "allOf": [
+                *_status_time_schema("detector_status", "detector_time"),
+                _detected_non_null_schema("detector_status", "detector_id"),
+            ]
+        },
     )
 
     run_id: str = Field(min_length=1)
@@ -119,6 +137,9 @@ class DetectionResult(BaseModel):
     def validate_detector_status_time(self) -> "DetectionResult":
         if self.detector_status is DetectorStatus.DETECTED and self.detector_time is None:
             raise ValueError("detected 상태에서는 detector_time이 필요합니다.")
+
+        if self.detector_status is DetectorStatus.DETECTED and self.detector_id is None:
+            raise ValueError("detected 상태에서는 detector_id가 필요합니다.")
 
         if (
             self.detector_status
