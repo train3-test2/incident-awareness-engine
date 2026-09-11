@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from ipaddress import ip_address
 from uuid import NAMESPACE_URL, uuid5
 
+from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.common.models.evidence import Evidence
 
 EXTRACTOR_VERSION = "s0-v0.1"
@@ -21,8 +22,11 @@ _SCRIPT_INTERPRETER_PROCESS_NAMES = frozenset(
 _ENCODED_COMMAND_OPTIONS = frozenset({"-enc", "-encodedcommand"})
 
 
-def extract_evidence(event: Mapping[str, object]) -> list[Evidence]:
-    """Extract S0 Evidence from one NormalizedEvent v0.2 mapping."""
+def extract_evidence(event: NormalizedEvent | Mapping[str, object]) -> list[Evidence]:
+    """Extract S0 Evidence from one NormalizedEvent v0.2 model or mapping."""
+    if isinstance(event, NormalizedEvent):
+        event = event.model_dump()
+
     event_type = event.get("event_type")
 
     if event_type == "process_create":
@@ -85,7 +89,7 @@ def _extract_script_interpreter_external_connection(
     except ValueError:
         return None
 
-    if not destination_ip.is_global:
+    if not destination_ip.is_global or destination_ip.is_multicast:
         return None
 
     protocol = _normalized_string(network, "protocol")
@@ -138,7 +142,7 @@ def _new_evidence(
         ensure_ascii=True,
         separators=(",", ":"),
     )
-    evidence_id = f"evd-{uuid5(NAMESPACE_URL, identity)}"
+    evidence_id = f"E-{uuid5(NAMESPACE_URL, identity)}"
 
     return Evidence.model_validate(
         {
