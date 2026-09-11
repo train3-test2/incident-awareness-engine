@@ -246,3 +246,58 @@ def test_rejects_blank_profile_evidence_type(
 
     # Then
     assert str(exc_info.value) == "evidence_types must not contain blank values"
+
+
+def test_returns_contributing_evidence_ids_in_deterministic_order() -> None:
+    # Given
+    scorer = SimpleScorer(["type_a", "type_b"])
+    evidence = [
+        make_evidence("003", "type_b"),
+        make_evidence("001", "type_a"),
+        make_evidence("002", "type_a"),
+    ]
+
+    # When
+    evidence_ids = scorer.contributing_evidence_ids(evidence)
+
+    # Then
+    assert evidence_ids == ("001", "002", "003")
+
+
+def test_excludes_non_scoring_evidence_from_contributing_ids() -> None:
+    # Given
+    scorer = SimpleScorer(["type_a", "type_b"])
+    evidence = [
+        make_evidence("001", "type_a"),
+        make_evidence("002", "type_outside_profile"),
+        make_evidence(
+            "003",
+            "type_b",
+            feature_channel_group="diagnostic_only",
+        ),
+    ]
+
+    # When
+    evidence_ids = scorer.contributing_evidence_ids(evidence)
+
+    # Then
+    assert evidence_ids == ("001",)
+
+
+def test_returns_empty_contributing_ids_when_no_scoring_evidence() -> None:
+    # Given
+    scorer = SimpleScorer(["type_a", "type_b"])
+    evidence = [
+        make_evidence(
+            "001",
+            "type_a",
+            feature_channel_group="diagnostic_only",
+        ),
+        make_evidence("002", "type_outside_profile"),
+    ]
+
+    # When
+    evidence_ids = scorer.contributing_evidence_ids(evidence)
+
+    # Then
+    assert evidence_ids == ()
