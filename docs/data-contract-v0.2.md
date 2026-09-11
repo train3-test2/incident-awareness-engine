@@ -91,6 +91,10 @@
 
 `timestamp_source`가 가리키는 시간 필드는 반드시 존재하고 `timestamp`와 동일해야 한다. 모든 시간은 UTC ISO 8601 밀리초 표기를 사용한다.
 
+Normalizer는 원본 Source의 고정밀도 시각을 먼저 UTC로 변환한 뒤, 밀리초 미만 자릿수는 절사하고 반올림하지 않는다. `NormalizedEvent` 모델은 UTC offset이 0인 입력을 `astimezone(UTC)`로 정규화하고 UTC 밀리초 정밀도를 검증한다.
+
+`event_id`, `run_id`, `host_id`, `source_event_id`는 빈 문자열을 허용하지 않는다.
+
 이 시간 축과 `source_layer`는 v0.2의 신규 확장이 아니라 기존 정본과 Repo의 `event-v0.md` 사이에 발생한 schema drift를 복구한 항목이다. `event-v0.md`, Pydantic 모델, JSON Schema, 소비자 모듈과 테스트는 이 규칙을 같은 변경 단위로 따른다.
 
 ### 5-2. Source와 관측 정보
@@ -128,6 +132,8 @@ v0.2 First Cycle은 Raw Log에서 정규화한 Event만 다루므로 `raw_ref`�
 
 `event_type`의 허용값은 코드 Enum에 고정하지 않고 `configs/event_types_v0.x.yaml` 관리 어휘 파일에서 관리한다. 해당 어휘는 수집 가능한 Source가 아니라 시나리오·Evidence·평가 요구사항을 기준으로 확정한다.
 
+실행 환경은 `INCIDENT_AWARENESS_EVENT_TYPES_PATH` 환경 변수로 사용할 관리 어휘 파일의 경로를 반드시 제공한다. 로컬 개발에서는 `configs/event_types_v0.2.yaml`을 지정하며, Docker·ECS에서는 이미지에 포함하거나 마운트한 동일 파일의 컨테이너 내부 경로를 지정한다. 경로가 없거나 파일을 찾을 수 없으면 Event type 검증은 실패한다. 관리 어휘는 Contract 버전·배포 단위로 고정하며, 프로세스가 읽은 뒤 파일을 바꾸어도 실행 중에는 반영하지 않는다. 변경 사항은 새 프로세스 배포로 반영한다.
+
 Event에는 Evidence·Fusion·Detection·Ground Truth 결과를 넣지 않는다.
 
 `event_id`는 정규화 Event의 식별자이고, `source_event_id`는 source-native Event 또는 Record 식별자다. v0.2의 artifact까지 이어지는 기계적 Provenance 체인은 `Evidence.event_ids → NormalizedEvent.event_id → NormalizedEvent.raw_ref → Run Manifest`다. `source_event_id`는 source-native Event 또는 Record identity를 보존하는 cross-reference이며, Manifest를 직접 resolve하는 필드는 아니다. 이 전환 이후 `source_event_ids`는 v0.2 Evidence에 함께 보존하지 않는다.
@@ -137,6 +143,28 @@ Event에는 Evidence·Fusion·Detection·Ground Truth 결과를 넣지 않는다
 ### 5-3. Ground Truth 입력 경계
 
 Normalizer·Evidence·Fusion·Fast runner의 런타임 경로는 `class`, `run_type`, `reference_time` 등 Ground Truth를 읽지 않는다. Ground Truth는 Raw telemetry와 별도 경로로 보관하고, 역할 5의 평가 단계에서만 런타임 결과와 결합한다. 비정답 실행 메타데이터의 전달 방식은 Manifest, 별도 RunContext, CLI/config 중 구현에 맞는 방식을 선택할 수 있으나, 이 경계를 우회해서는 안 된다.
+
+### 5-4. D-01 PoC v0 canonical entity
+
+D-01에 따라 PoC v0의 canonical entity 단위는 Endpoint Host로 확정한다. `entity_id`는 PoC v0 전 구간에서 host를 의미하며 다음 귀속 관계를 유지한다.
+
+```text
+NormalizedEvent.host_id
+    ↓
+Evidence.entity_id
+    ↓
+Temporal Fusion (run_id, entity_id)
+    ↓
+Evaluation entity_id host-level grouping/provenance key
+```
+
+- `Evidence.entity_id`에는 해당 Evidence의 Source Event가 관측된 `NormalizedEvent.host_id`를 사용하며 non-null로 기록한다.
+- Temporal Fusion 입력의 `entity_id`는 non-null이다. Window와 Fusion Episode는 `(run_id, entity_id)` 단위로 분리해 관리한다.
+- Evaluation에서 `entity_id`는 Evidence와 Fusion 결과의 host-level grouping/provenance key로 사용한다. 서로 다른 host의 Evidence와 Fusion Episode를 동일한 entity로 합치지 않는다.
+- Recall, TTSD 등 Run-level metric의 다중 호스트 reduction 규칙은 Evaluation 계약이 소유한다. D-01은 해당 reduction 규칙을 정의하지 않는다.
+- R1 다중 호스트 환경에서도 각 Evidence는 우선 Source Event가 관측된 host에 귀속한다.
+- cross-host, host+user, session, incident correlation은 PoC v0 범위 밖이다. 필요한 경우 명시적인 변환 규칙과 Schema 버전을 갖춘 후속 계약으로 확장한다.
+- 후속 단계에서 기존 `entity_id`의 의미를 암묵적으로 다른 단위로 변경하지 않는다.
 
 ## 6. EvidenceResult v0.2
 
@@ -148,7 +176,7 @@ Normalizer·Evidence·Fusion·Fast runner의 런타임 경로는 `class`, `run_t
 | `run_id`                    | String       |    O |    X | 소속 실행                                                          |
 | `timestamp`                 | DateTime     |    O |    X | Evidence 성립 시각                                                 |
 | `first_source_event_time`   | DateTime     |    X |    O | 연결된 Source Event 중 가장 이른 시각; 분석·채점에는 사용하지 않음 |
-| `entity_id`                 | String       |    X |    O | 분석 대상 Entity; D-01 확정 후 필수 여부 결정                      |
+| `entity_id`                 | String       |    O |    X | Source Event가 관측된 Endpoint Host 식별자                         |
 | `evidence_type`             | String       |    O |    X | Evidence 유형                                                      |
 | `event_ids`                 | List[String] |    O |    X | 최소 1개 정규화 Event 식별자(`NormalizedEvent.event_id`)           |
 | `derived_from_source_layer` | Enum         |    O |    X | `raw_telemetry`, `detector_output`, `mixed`                        |
@@ -159,9 +187,7 @@ Normalizer·Evidence·Fusion·Fast runner의 런타임 경로는 `class`, `run_t
 
 `timestamp`는 `event_ids`가 가리키는 `NormalizedEvent.timestamp` 중 가장 늦은 값으로 정한다. 이는 Evidence를 확정할 수 있게 된 최초 시각을 나타낸다. 여러 Event의 시간 범위가 필요할 때만 `first_source_event_time`을 함께 기록하며, 이 값은 탐지 성능 채점이나 Decision 시간 계산에 사용하지 않는다.
 
-`entity_id`는 필드를 유지하되, v0.2에서 non-null 필수로 확정하려면 먼저 Entity 귀속 범위를 합의해야 한다. 합의 전에는 host·user-host·session·incident 중 어느 단위인지 가정해 구현하거나 기존 결과를 일괄 변환하지 않는다.
-
-이 결정은 역할 3이 주관하고 역할 1·2·5의 검토를 거쳐야 한다. 역할 4는 R1 정상·공격 시나리오가 선택한 단위로 표현 가능한지 확인한다.
+`entity_id`는 D-01에 따라 non-null인 Endpoint Host 식별자다. Evidence가 참조하는 Source Event의 `NormalizedEvent.host_id`를 사용한다.
 
 ## 7. FusionResult와 DetectionResult v0.2
 
@@ -179,9 +205,9 @@ Normalizer·Evidence·Fusion·Fast runner의 런타임 경로는 `class`, `run_t
 
 | 필드                        | 타입         | 필수 | null | 설명                                                    |
 | --------------------------- | ------------ | ---: | ---: | ------------------------------------------------------- |
-| `episode_id`                | String       |    O |    X | Run 안에서 불변인 Fusion Episode 식별자                 |
+| `episode_id`                | String       |    O |    X | `(run_id, entity_id)` 범위에서 로컬 고유한 Episode ID   |
 | `run_id`                    | String       |    O |    X | 소속 실행                                               |
-| `entity_id`                 | String       |    X |    O | 분석 대상 Entity; canonical 범위 확정 후 필수 여부 결정 |
+| `entity_id`                 | String       |    O |    X | PoC v0 canonical Endpoint Host 식별자                   |
 | `start_time`                | DateTime     |    O |    X | ACTIVE 진입 시각                                        |
 | `end_time`                  | DateTime     |    X |    O | Episode 종료 시각; `run_end` 전 미종료 상태면 `null`    |
 | `end_reason`                | Enum         |    X |    O | `released`, `run_end`; 종료 전에는 `null`               |
@@ -190,6 +216,8 @@ Normalizer·Evidence·Fusion·Fast runner의 런타임 경로는 `class`, `run_t
 | `contributing_evidence_ids` | List[String] |    X |    O | Episode에 기여한 Evidence 식별자                        |
 
 Run이 종료될 때 ACTIVE 상태인 Episode는 `end_time`을 `run_end`로 기록하고 `end_reason`을 `run_end`로 기록한다.
+
+`episode_id`는 전역 식별자가 아니다. 서로 다른 host는 각각 `FEP-001`을 가질 수 있으며, Fusion Episode의 논리적 식별자는 `(run_id, entity_id, episode_id)` 복합키다.
 
 ### 7-1. FastHitRecord v0.2
 
@@ -205,7 +233,7 @@ Fast runner가 생산한 개별 qualifying hit는 `DetectionResult`와 별도인
 | --------------------------- | ------------ | ---: | ---: | ------------------------------------------------------------------------------------------ |
 | `decision_id`               | String       |    O |    X | 불변 Decision 결과 식별자; `D-...`                                                         |
 | `run_id`                    | String       |    O |    X | 소속 실행                                                                                  |
-| `entity_id`                 | String       |    X |    O | 분석 대상 Entity; D-01 확정 후 필수 여부 결정                                              |
+| `entity_id`                 | String       |    O |    X | PoC v0 canonical Endpoint Host 식별자                                                       |
 | `fast_status`               | Enum         |    O |    X | `detected`, `miss`, `not_evaluated`                                                        |
 | `fusion_status`             | Enum         |    O |    X | `detected`, `miss`, `not_evaluated`                                                        |
 | `detector_time`             | DateTime     |    O |    O | Fast Path 판단 시각                                                                        |
@@ -293,7 +321,7 @@ Human Workflow는 DecisionResult와 별도 계약이다. 사람의 확인·승�
 
 ## 11. 후속 결정 및 동기화 항목
 
-- [ ] `entity_id`의 canonical 범위와 R1 귀속 규칙 확정
+- [x] `entity_id`의 canonical 범위와 R1 귀속 규칙 확정(D-01: PoC v0 Endpoint Host)
 - [ ] `source` 구조(공통 producer 필드 또는 소스별 분기 구조) 확정
 - [ ] FastHitRecord의 `hit_id` 생성 방식과 재실행 간 대응 방식 확정
 - [ ] Run Manifest의 `raw_log_id` resolve·SHA-256·`derived_from` 규칙 확인
