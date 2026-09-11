@@ -1,0 +1,34 @@
+{
+  "family": "incident-awareness-engine-smoke",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "networkMode": "awsvpc",
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::998301375101:role/ecsTaskExecutionRole",
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "containerDefinitions": [
+    {
+      "name": "incident-awareness-engine-smoke",
+      "image": "IMAGE_URI",
+      "essential": true,
+      "command": [
+        "python",
+        "-c",
+        "from incident_awareness.common.models.event import NetworkInfo; print(NetworkInfo())"
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/incident-awareness-engine-dev",
+          "awslogs-region": "ap-northeast-2",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

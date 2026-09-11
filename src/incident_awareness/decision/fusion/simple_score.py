@@ -16,20 +16,37 @@ class SimpleScorer:
         if len(set(profile_types)) != len(profile_types):
             raise ValueError("evidence_types must not contain duplicates")
 
-        
-
         self._profile_types = frozenset(profile_types)
 
     @property
     def denominator(self) -> int:
         return len(self._profile_types)
 
+    def _is_scoring_evidence(self, evidence: Evidence) -> bool:
+        return (
+            evidence.feature_channel_group == "fusion_feature"
+            and evidence.evidence_type in self._profile_types
+        )
+
     def score(self, active_evidence: Iterable[Evidence]) -> float:
         active_types = {
             evidence.evidence_type
             for evidence in active_evidence
-            if evidence.feature_channel_group == "fusion_feature"
-            and evidence.evidence_type in self._profile_types
+            if self._is_scoring_evidence(evidence)
         }
 
         return len(active_types) / self.denominator
+
+    def contributing_evidence_ids(
+        self,
+        active_evidence: Iterable[Evidence],
+    ) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    evidence.evidence_id
+                    for evidence in active_evidence
+                    if self._is_scoring_evidence(evidence)
+                }
+            )
+        )

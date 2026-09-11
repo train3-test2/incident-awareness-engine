@@ -1,0 +1,5 @@
+version: v0.2
+evidence_types:
+  - encoded_powershell_command
+  # external IP means globally reachable, non-multicast unicast IPv4 or IPv6.
+  - script_interpreter_external_connection
