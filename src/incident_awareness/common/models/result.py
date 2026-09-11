@@ -13,6 +13,7 @@ from pydantic import (
 
 _RUN_ID_PATTERN = re.compile(r"^RUN-(?P<date>[0-9]{8})-(?P<sequence>[0-9]{3})$")
 _RUN_ID_SCHEMA_PATTERN = r"^RUN-\d{8}-\d{3}$"
+_UTC_DATETIME_SCHEMA_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|\+00:00)$"
 
 
 def _serialize_utc_datetime(value: datetime | None) -> str | None:
@@ -38,6 +39,23 @@ def _is_numeric_string(value: str) -> bool:
     return True
 
 
+def _utc_datetime_schema(*, nullable: bool) -> dict[str, object]:
+    datetime_schema: dict[str, object] = {
+        "type": "string",
+        "format": "date-time",
+        "pattern": _UTC_DATETIME_SCHEMA_PATTERN,
+    }
+
+    if not nullable:
+        return datetime_schema
+
+    return {"anyOf": [datetime_schema, {"type": "null"}]}
+
+
+def _nullable_utc_datetime_schema(field_name: str) -> dict[str, object]:
+    return {"properties": {field_name: _utc_datetime_schema(nullable=True)}}
+
+
 def _status_time_schema(status_field: str, time_field: str) -> list[dict[str, object]]:
     return [
         {
@@ -46,7 +64,7 @@ def _status_time_schema(status_field: str, time_field: str) -> list[dict[str, ob
                 "required": [status_field],
             },
             "then": {
-                "properties": {time_field: {"type": "string", "format": "date-time"}},
+                "properties": {time_field: _utc_datetime_schema(nullable=False)},
                 "required": [time_field],
             },
         },
@@ -118,6 +136,7 @@ class DetectionResult(BaseModel):
         extra="forbid",
         json_schema_extra={
             "allOf": [
+                _nullable_utc_datetime_schema("detector_time"),
                 *_status_time_schema("detector_status", "detector_time"),
                 _detected_non_null_schema("detector_status", "detector_id"),
             ]
@@ -204,6 +223,9 @@ class DecisionResult(BaseModel):
         extra="forbid",
         json_schema_extra={
             "allOf": [
+                _nullable_utc_datetime_schema("fusion_time"),
+                _nullable_utc_datetime_schema("detector_time"),
+                _nullable_utc_datetime_schema("t_e"),
                 *_status_time_schema("fast_status", "detector_time"),
                 *_status_time_schema("fusion_status", "fusion_time"),
             ]

@@ -387,6 +387,16 @@ def test_detection_result_json_round_trip_and_schema() -> None:
     with pytest.raises(JsonSchemaValidationError):
         validator.validate({**result.model_dump(mode="json"), "run_id": "abc"})
 
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(
+            {**result.model_dump(mode="json"), "detector_time": "2026-09-01T10:08:00+09:00"}
+        )
+
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(
+            {**result.model_dump(mode="json"), "detector_time": "2026-09-01T01:08:00.1234Z"}
+        )
+
     assert restored == result
     assert serialized_payload["detector_time"] == "2026-09-01T01:08:00.000Z"
     assert schema["additionalProperties"] is False
@@ -430,3 +440,25 @@ def test_decision_result_json_round_trip_and_schema() -> None:
         "fast_and_fusion",
         "none",
     ]
+
+
+@pytest.mark.parametrize("field", ["fusion_time", "detector_time", "t_e"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-09-01T10:08:00+09:00",
+        "2026-09-01T01:08:00.1234Z",
+    ],
+)
+def test_decision_result_json_schema_rejects_non_utc_or_excess_precision_timestamp(
+    field: str,
+    value: str,
+) -> None:
+    result = DecisionResult(**_valid_decision_payload())
+    validator = Draft202012Validator(
+        DecisionResult.model_json_schema(),
+        format_checker=FormatChecker(),
+    )
+
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**result.model_dump(mode="json"), field: value})
