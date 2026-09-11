@@ -20,6 +20,12 @@ VOCABULARY_PATH = Path(__file__).parents[2] / "configs" / "evidence_types_v0.2.y
 CASES = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
+def _case_event(case: dict[str, object]) -> NormalizedEvent:
+    event = case["event"]
+    assert isinstance(event, dict)
+    return NormalizedEvent.model_validate(event)
+
+
 def _normalized_event(
     *,
     event_id: str,
@@ -54,10 +60,9 @@ def _normalized_event(
 @pytest.mark.parametrize("case", CASES, ids=[case["name"] for case in CASES])
 def test_extract_evidence_matches_s0_cases(case: dict[str, object]) -> None:
     # Given
-    event = case["event"]
+    event = _case_event(case)
     expected = case["expected"]
 
-    assert isinstance(event, dict)
     assert isinstance(expected, list)
 
     # When
@@ -82,23 +87,20 @@ def test_extract_evidence_matches_s0_cases(case: dict[str, object]) -> None:
 )
 def test_evidence_preserves_event_provenance(case: dict[str, object]) -> None:
     # Given
-    event = case["event"]
-    assert isinstance(event, dict)
-    timestamp = event["timestamp"]
-    assert isinstance(timestamp, str)
+    event = _case_event(case)
 
     # When
     (evidence,) = extract_evidence(event)
 
     # Then
     assert isinstance(evidence, Evidence)
-    assert evidence.run_id == event["run_id"]
+    assert evidence.run_id == event.run_id
     assert isinstance(evidence.timestamp, datetime)
-    assert evidence.timestamp == datetime.fromisoformat(timestamp)
-    assert evidence.entity_id == event["host_id"]
-    assert evidence.event_ids == [event["event_id"]]
-    assert evidence.event_ids != [event["source_event_id"]]
-    assert evidence.derived_from_source_layer == event["source_layer"]
+    assert evidence.timestamp == event.timestamp
+    assert evidence.entity_id == event.host_id
+    assert evidence.event_ids == [event.event_id]
+    assert evidence.event_ids != [event.source_event_id]
+    assert evidence.derived_from_source_layer == event.source_layer
     assert evidence.feature_channel_group == "fusion_feature"
     assert evidence.attack_technique_ids == []
 
@@ -112,9 +114,8 @@ def test_extraction_is_deterministic_and_does_not_mutate_input(
     case: dict[str, object],
 ) -> None:
     # Given
-    event = case["event"]
-    assert isinstance(event, dict)
-    original = copy.deepcopy(event)
+    event = _case_event(case)
+    original = event.model_copy(deep=True)
 
     # When
     first = extract_evidence(event)
@@ -130,8 +131,7 @@ def test_extraction_is_deterministic_and_does_not_mutate_input(
 def test_output_uses_required_common_evidence_contract() -> None:
     # Given
     case = next(case for case in CASES if case["expected"])
-    event = case["event"]
-    assert isinstance(event, dict)
+    event = _case_event(case)
 
     # When
     (evidence,) = extract_evidence(event)
@@ -156,11 +156,13 @@ def test_output_uses_required_common_evidence_contract() -> None:
 def test_different_event_ids_produce_different_evidence_ids() -> None:
     # Given
     case = next(case for case in CASES if case["expected"])
-    first_event = copy.deepcopy(case["event"])
-    second_event = copy.deepcopy(case["event"])
-    assert isinstance(first_event, dict)
-    assert isinstance(second_event, dict)
-    second_event["event_id"] = "evt-process-different"
+    first_event_payload = copy.deepcopy(case["event"])
+    second_event_payload = copy.deepcopy(case["event"])
+    assert isinstance(first_event_payload, dict)
+    assert isinstance(second_event_payload, dict)
+    second_event_payload["event_id"] = "evt-process-different"
+    first_event = NormalizedEvent.model_validate(first_event_payload)
+    second_event = NormalizedEvent.model_validate(second_event_payload)
 
     # When
     (first_evidence,) = extract_evidence(first_event)
@@ -177,7 +179,7 @@ def test_generated_evidence_types_are_in_shared_vocabulary() -> None:
 
     # When
     generated_types = {
-        evidence.evidence_type for case in CASES for evidence in extract_evidence(case["event"])
+        evidence.evidence_type for case in CASES for evidence in extract_evidence(_case_event(case))
     }
     allowed_evidence_types = set(vocabulary["evidence_types"])
     s0_generated_types = {
@@ -188,6 +190,18 @@ def test_generated_evidence_types_are_in_shared_vocabulary() -> None:
     # Then
     assert generated_types == s0_generated_types
     assert s0_generated_types <= allowed_evidence_types
+
+
+def test_extract_evidence_rejects_mapping_input() -> None:
+    # Given
+    event_mapping = _case_event(CASES[0]).model_dump()
+
+    # When
+    with pytest.raises(TypeError) as exc_info:
+        extract_evidence(event_mapping)  # type: ignore[arg-type]
+
+    # Then
+    assert str(exc_info.value) == "event must be a NormalizedEvent"
 
 
 def test_extracts_encoded_powershell_from_normalized_event() -> None:

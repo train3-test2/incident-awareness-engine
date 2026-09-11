@@ -3,8 +3,10 @@
     "name": "encoded_powershell_short_option",
     "event": {
       "event_id": "evt-process-001",
-      "run_id": "RUN-S0-001",
+      "run_id": "RUN-20260902-001",
       "timestamp": "2026-09-02T01:00:00.000Z",
+      "timestamp_source": "event_time",
+      "event_time": "2026-09-02T01:00:00.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
       "source_layer": "raw_telemetry",
@@ -20,7 +22,11 @@
         "parent_name": "explorer.exe"
       },
       "network": null,
-      "raw_ref": null
+      "raw_ref": {
+        "raw_log_id": "raw-s0",
+        "segment_no": 1,
+        "record_no": 1
+      }
     },
     "expected": [
       {
@@ -36,8 +42,10 @@
     "name": "encoded_pwsh_long_quoted_option",
     "event": {
       "event_id": "evt-process-002",
-      "run_id": "RUN-S0-001",
+      "run_id": "RUN-20260902-001",
       "timestamp": "2026-09-02T01:00:01.000Z",
+      "timestamp_source": "event_time",
+      "event_time": "2026-09-02T01:00:01.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
       "source_layer": "raw_telemetry",
@@ -50,7 +58,12 @@
         "parent_pid": 2100,
         "parent_name": "explorer.exe"
       },
-      "network": null
+      "network": null,
+      "raw_ref": {
+        "raw_log_id": "raw-s0",
+        "segment_no": 1,
+        "record_no": 2
+      }
     },
     "expected": [
       {
@@ -66,8 +79,10 @@
     "name": "encoding_substring_is_not_option",
     "event": {
       "event_id": "evt-process-003",
-      "run_id": "RUN-S0-001",
+      "run_id": "RUN-20260902-001",
       "timestamp": "2026-09-02T01:00:02.000Z",
+      "timestamp_source": "event_time",
+      "event_time": "2026-09-02T01:00:02.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
       "source_layer": "raw_telemetry",
@@ -77,7 +92,12 @@
         "name": "powershell.exe",
         "command_line": "powershell.exe -encoding utf8"
       },
-      "network": null
+      "network": null,
+      "raw_ref": {
+        "raw_log_id": "raw-s0",
+        "segment_no": 1,
+        "record_no": 3
+      }
     },
     "expected": []
   },
@@ -85,8 +105,10 @@
     "name": "enc_inside_string_is_not_option",
     "event": {
       "event_id": "evt-process-004",
-      "run_id": "RUN-S0-001",
+      "run_id": "RUN-20260902-001",
       "timestamp": "2026-09-02T01:00:03.000Z",
+      "timestamp_source": "event_time",
+      "event_time": "2026-09-02T01:00:03.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
       "source_layer": "raw_telemetry",
@@ -96,7 +118,12 @@
         "name": "powershell.exe",
         "command_line": "powershell.exe Write-Output value-enc-test"
       },
-      "network": null
+      "network": null,
+      "raw_ref": {
+        "raw_log_id": "raw-s0",
+        "segment_no": 1,
+        "record_no": 4
+      }
     },
     "expected": []
   },
@@ -104,8 +131,10 @@
     "name": "script_interpreter_global_connection",
     "event": {
       "event_id": "evt-network-001",
-      "run_id": "RUN-S0-001",
+      "run_id": "RUN-20260902-001",
       "timestamp": "2026-09-02T01:01:00.000Z",
+      "timestamp_source": "event_time",
+      "event_time": "2026-09-02T01:01:00.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
       "source_layer": "raw_telemetry",
@@ -121,6 +150,11 @@
         "src_port": 52132,
         "dst_ip": "8.8.8.8",
         "dst_port": 443
+      },
+      "raw_ref": {
+        "raw_log_id": "raw-s0",
+        "segment_no": 1,
+        "record_no": 5
       }
     },
     "expected": [
@@ -139,8 +173,10 @@
     "name": "script_interpreter_private_connection",
     "event": {
       "event_id": "evt-network-002",
-      "run_id": "RUN-S0-001",
+      "run_id": "RUN-20260902-001",
       "timestamp": "2026-09-02T01:01:01.000Z",
+      "timestamp_source": "event_time",
+      "event_time": "2026-09-02T01:01:01.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
       "source_layer": "raw_telemetry",
@@ -153,6 +189,11 @@
         "protocol": "tcp",
         "dst_ip": "10.0.0.8",
         "dst_port": 445
+      },
+      "raw_ref": {
+        "raw_log_id": "raw-s0",
+        "segment_no": 1,
+        "record_no": 6
       }
     },
     "expected": []
@@ -161,8 +202,10 @@
     "name": "non_interpreter_global_connection",
     "event": {
       "event_id": "evt-network-003",
-      "run_id": "RUN-S0-001",
+      "run_id": "RUN-20260902-001",
       "timestamp": "2026-09-02T01:01:02.000Z",
+      "timestamp_source": "event_time",
+      "event_time": "2026-09-02T01:01:02.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
       "source_layer": "raw_telemetry",
@@ -175,6 +218,11 @@
         "protocol": "tcp",
         "dst_ip": "8.8.4.4",
         "dst_port": 443
+      },
+      "raw_ref": {
+        "raw_log_id": "raw-s0",
+        "segment_no": 1,
+        "record_no": 7
       }
     },
     "expected": []
@@ -183,8 +231,10 @@
     "name": "invalid_destination_ip",
     "event": {
       "event_id": "evt-network-004",
-      "run_id": "RUN-S0-001",
+      "run_id": "RUN-20260902-001",
       "timestamp": "2026-09-02T01:01:03.000Z",
+      "timestamp_source": "event_time",
+      "event_time": "2026-09-02T01:01:03.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
       "source_layer": "raw_telemetry",
@@ -197,6 +247,11 @@
         "protocol": "tcp",
         "dst_ip": "not-an-ip",
         "dst_port": 443
+      },
+      "raw_ref": {
+        "raw_log_id": "raw-s0",
+        "segment_no": 1,
+        "record_no": 8
       }
     },
     "expected": []
@@ -205,8 +260,10 @@
     "name": "null_optional_payloads",
     "event": {
       "event_id": "evt-network-005",
-      "run_id": "RUN-S0-001",
+      "run_id": "RUN-20260902-001",
       "timestamp": "2026-09-02T01:01:04.000Z",
+      "timestamp_source": "event_time",
+      "event_time": "2026-09-02T01:01:04.000Z",
       "host_id": "WIN-01",
       "source": "sysmon",
       "source_layer": "raw_telemetry",
@@ -215,7 +272,11 @@
       "user": null,
       "process": null,
       "network": null,
-      "raw_ref": null
+      "raw_ref": {
+        "raw_log_id": "raw-s0",
+        "segment_no": 1,
+        "record_no": 9
+      }
     },
     "expected": []
   }

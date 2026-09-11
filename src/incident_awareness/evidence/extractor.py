@@ -22,17 +22,18 @@ _SCRIPT_INTERPRETER_PROCESS_NAMES = frozenset(
 _ENCODED_COMMAND_OPTIONS = frozenset({"-enc", "-encodedcommand"})
 
 
-def extract_evidence(event: NormalizedEvent | Mapping[str, object]) -> list[Evidence]:
-    """Extract S0 Evidence from one NormalizedEvent v0.2 model or mapping."""
-    if isinstance(event, NormalizedEvent):
-        event = event.model_dump()
+def extract_evidence(event: NormalizedEvent) -> list[Evidence]:
+    """Extract S0 Evidence from one NormalizedEvent v0.2 model."""
+    if not isinstance(event, NormalizedEvent):
+        raise TypeError("event must be a NormalizedEvent")
 
-    event_type = event.get("event_type")
+    event_data = event.model_dump()
+    event_type = event_data.get("event_type")
 
     if event_type == "process_create":
-        evidence = _extract_encoded_powershell_command(event)
+        evidence = _extract_encoded_powershell_command(event_data)
     elif event_type == "network_connection":
-        evidence = _extract_script_interpreter_external_connection(event)
+        evidence = _extract_script_interpreter_external_connection(event_data)
     else:
         evidence = None
 
