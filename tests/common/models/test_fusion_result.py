@@ -677,3 +677,203 @@ def test_allows_detected_result_when_first_episode_contributing_evidence_is_none
     # Then
     assert result.fusion_status == "detected"
     assert result.fusion_episodes[0].contributing_evidence_ids is None
+
+
+def test_rejects_miss_result_with_fusion_episodes() -> None:
+    # Given
+    start_time = datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC)
+    expected_message = "miss FusionResult must not include fusion_episodes"
+
+    episode = FusionEpisodeResult(
+        episode_id="FEP-001",
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        start_time=start_time,
+        end_time=datetime(2026, 9, 9, 1, 0, 40, tzinfo=UTC),
+        end_reason="released",
+        score_at_start=0.8,
+        peak_score=0.9,
+        contributing_evidence_ids=["EVD-001"],
+    )
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionResult(
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            fusion_time=None,
+            fusion_status="miss",
+            score_at_decision=None,
+            contributing_evidence_ids=[],
+            scoring_config_version="fusion-config-v0.1",
+            scoring_profile_id="s0-profile",
+            model_version=None,
+            scoring_method="simple_score",
+            scorer_version="simple-score-v0.1",
+            fusion_episodes=[episode],
+        )
+
+    # Then
+    assert expected_message in str(exc_info.value)
+
+
+def test_rejects_not_evaluated_result_with_fusion_episodes() -> None:
+    # Given
+    start_time = datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC)
+    expected_message = "not_evaluated FusionResult must not include fusion_episodes"
+
+    episode = FusionEpisodeResult(
+        episode_id="FEP-001",
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        start_time=start_time,
+        end_time=datetime(2026, 9, 9, 1, 0, 40, tzinfo=UTC),
+        end_reason="released",
+        score_at_start=0.8,
+        peak_score=0.9,
+        contributing_evidence_ids=["EVD-001"],
+    )
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionResult(
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            fusion_time=None,
+            fusion_status="not_evaluated",
+            score_at_decision=None,
+            contributing_evidence_ids=[],
+            scoring_config_version="fusion-config-v0.1",
+            scoring_profile_id="s0-profile",
+            model_version=None,
+            scoring_method="simple_score",
+            scorer_version="simple-score-v0.1",
+            fusion_episodes=[episode],
+        )
+
+    # Then
+    assert expected_message in str(exc_info.value)
+
+
+def test_rejects_numeric_fusion_time() -> None:
+    # Given
+    expected_message = (
+        "FusionResult fusion_time must be an ISO 8601 datetime, not a numeric timestamp"
+    )
+
+    # When
+    with pytest.raises(TypeError) as exc_info:
+        FusionResult(
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            fusion_time=1234567890,
+            fusion_status="miss",
+            score_at_decision=None,
+            contributing_evidence_ids=[],
+            scoring_config_version="fusion-config-v0.1",
+            scoring_profile_id="s0-profile",
+            model_version=None,
+            scoring_method="simple_score",
+            scorer_version="simple-score-v0.1",
+            fusion_episodes=[],
+        )
+
+    # Then
+    assert expected_message in str(exc_info.value)
+
+
+def test_rejects_numeric_string_fusion_time() -> None:
+    # Given
+    expected_message = (
+        "FusionResult fusion_time must be an ISO 8601 datetime, not a numeric timestamp"
+    )
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionResult(
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            fusion_time="1234567890",
+            fusion_status="miss",
+            score_at_decision=None,
+            contributing_evidence_ids=[],
+            scoring_config_version="fusion-config-v0.1",
+            scoring_profile_id="s0-profile",
+            model_version=None,
+            scoring_method="simple_score",
+            scorer_version="simple-score-v0.1",
+            fusion_episodes=[],
+        )
+
+    # Then
+    assert expected_message in str(exc_info.value)
+
+
+def test_rejects_numeric_episode_start_time() -> None:
+    # Given
+    expected_message = (
+        "FusionEpisode timestamp must be an ISO 8601 datetime, not a numeric timestamp"
+    )
+
+    # When
+    with pytest.raises(TypeError) as exc_info:
+        FusionEpisodeResult(
+            episode_id="FEP-001",
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            start_time=1234567890,
+            end_time=None,
+            end_reason=None,
+            score_at_start=0.8,
+            peak_score=0.9,
+            contributing_evidence_ids=["EVD-001"],
+        )
+
+    # Then
+    assert expected_message in str(exc_info.value)
+
+
+def test_accepts_iso_8601_string_timestamp() -> None:
+    # Given
+    fusion_time = "2026-09-09T01:00:20.123Z"
+
+    # When
+    result = FusionResult(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        fusion_time=None,
+        fusion_status="miss",
+        score_at_decision=None,
+        contributing_evidence_ids=[],
+        scoring_config_version="fusion-config-v0.1",
+        scoring_profile_id="s0-profile",
+        model_version=None,
+        scoring_method="simple_score",
+        scorer_version="simple-score-v0.1",
+        fusion_episodes=[],
+    )
+
+    episode = FusionEpisodeResult(
+        episode_id="FEP-001",
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        start_time=fusion_time,
+        end_time=None,
+        end_reason=None,
+        score_at_start=0.8,
+        peak_score=0.9,
+        contributing_evidence_ids=["EVD-001"],
+    )
+
+    # Then
+    assert result.fusion_status == "miss"
+    assert episode.start_time == datetime(
+        2026,
+        9,
+        9,
+        1,
+        0,
+        20,
+        123000,
+        tzinfo=UTC,
+    )
