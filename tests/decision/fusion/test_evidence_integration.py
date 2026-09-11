@@ -27,7 +27,7 @@ from incident_awareness.evidence import extract_evidence
 
 def test_extracted_evidence_runs_through_temporal_fusion() -> None:
     # Given
-    run_id = "RUN-INTEGRATION-001"
+    run_id = "RUN-20260911-001"
     entity_id = "HOST-INTEGRATION-001"
     run_start = datetime(2026, 9, 11, 1, 0, tzinfo=UTC)
     run_end = run_start + timedelta(seconds=30)
@@ -174,7 +174,7 @@ def test_extracted_evidence_runs_through_temporal_fusion() -> None:
 
 def test_extracted_evidence_can_produce_miss_fusion_result() -> None:
     # Given
-    run_id = "RUN-INTEGRATION-MISS-001"
+    run_id = "RUN-20260911-002"
     entity_id = "HOST-INTEGRATION-001"
     run_start = datetime(2026, 9, 11, 2, 0, tzinfo=UTC)
     run_end = run_start + timedelta(seconds=30)
@@ -271,7 +271,7 @@ def test_extracted_evidence_can_produce_miss_fusion_result() -> None:
 
 def test_diagnostic_only_evidence_does_not_affect_fusion_score() -> None:
     # Given
-    run_id = "RUN-INTEGRATION-DIAGNOSTIC-001"
+    run_id = "RUN-20260911-003"
     entity_id = "HOST-INTEGRATION-001"
     run_start = datetime(2026, 9, 11, 3, 0, tzinfo=UTC)
     run_end = run_start + timedelta(seconds=20)
@@ -366,7 +366,7 @@ def test_diagnostic_only_evidence_does_not_affect_fusion_score() -> None:
 
 def test_future_extracted_evidence_does_not_affect_past_cadence() -> None:
     # Given
-    run_id = "RUN-INTEGRATION-FUTURE-001"
+    run_id = "RUN-20260911-004"
     entity_id = "HOST-INTEGRATION-001"
     run_start = datetime(2026, 9, 11, 4, 0, tzinfo=UTC)
     evidence_time = run_start + timedelta(seconds=15)
@@ -447,7 +447,7 @@ def test_future_extracted_evidence_does_not_affect_past_cadence() -> None:
 
 def test_rejects_extracted_evidence_from_different_host() -> None:
     # Given
-    run_id = "RUN-INTEGRATION-HOST-001"
+    run_id = "RUN-20260911-005"
     replay_entity_id = "HOST-A"
     evidence_entity_id = "HOST-B"
     run_start = datetime(2026, 9, 11, 5, 0, tzinfo=UTC)
@@ -516,7 +516,7 @@ def test_rejects_extracted_evidence_from_different_host() -> None:
 
 def test_same_extracted_evidence_and_config_produce_same_fusion_result() -> None:
     # Given
-    run_id = "RUN-INTEGRATION-DETERMINISM-001"
+    run_id = "RUN-20260911-006"
     entity_id = "HOST-INTEGRATION-001"
     run_start = datetime(2026, 9, 11, 6, 0, tzinfo=UTC)
     run_end = run_start + timedelta(seconds=30)

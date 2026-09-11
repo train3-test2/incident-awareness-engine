@@ -33,6 +33,18 @@ def run_fusion_pipeline(
     scorer_version: str,
     model_version: str | None = None,
 ) -> FusionPipelineResult:
+    """Run Temporal Fusion for one run and entity pair.
+
+    Preconditions:
+    - All Evidence items must match the given run_id and entity_id.
+    - Evidence timestamps must be UTC and non-decreasing.
+    - Evidence timestamps must fall within [run_start, run_end].
+    - run_start and run_end must be UTC.
+    - run_end must align with the runner's fixed cadence.
+    - Ground Truth and reference_time must not be used as Fusion inputs.
+
+    Replay-time validation is delegated to TemporalReplayRunner.
+    """
     replay_result = runner.run(
         evidences,
         run_id=run_id,
