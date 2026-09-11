@@ -330,5 +330,5 @@ Human Workflow는 DecisionResult와 별도 계약이다. 사람의 확인·승�
 - [ ] Evidence.`source_event_ids` → `event_ids` 전환에 따른 상위 Provenance 계약·모델·Schema·소비자·테스트 동기화
 - [ ] Stopping·Episode 계약의 `fusion_episodes[]` 구조표를 본 Data Contract 참조로 전환
 - [ ] Pydantic 모델, JSON Schema, 소비자 모듈, 테스트 동기화
-- [ ] RunMetadata 시각 규칙(숫자형 epoch 거부, 밀리초 정밀도)을 모델과 테스트에 동기화 (`run-id.md` §11-1)
+- [ ] RunMetadata 시각 규칙(숫자형 epoch 거부, 밀리초 정밀도, 세 자리 `.SSS` 출력)을 모델과 테스트에 동기화 (`run-id.md` §11-1)
 - [ ] attack Run의 `reference_time`이 `start_time`·`end_time` 범위 안에 있어야 하는지 확정 (clock skew 정책 선행)
