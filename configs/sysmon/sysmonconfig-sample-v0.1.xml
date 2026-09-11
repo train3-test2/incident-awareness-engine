@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Sysmon Sample Configuration v0.1
+
+    Purpose:
+        Minimal config used to collect the schema-development sample in samples/raw/.
+        Event ID 1 and 3 are logged without any filter so the parser can see every field.
+
+    Scope:
+        This is NOT the configuration used for experiment runs. The experiment config is
+        fixed separately once the telemetry collection scope is frozen.
+
+    Note:
+        onmatch="exclude" with no child rule means "exclude nothing" = log everything.
+        onmatch="include" with no child rule means "include nothing" = log nothing.
+
+    This file is intentionally ASCII only so it survives copying into the VM.
+-->
+<Sysmon schemaversion="4.90">
+    <EventFiltering>
+
+        <!-- Event ID 1 : ProcessCreate - log all -->
+        <RuleGroup name="process_create" groupRelation="or">
+            <ProcessCreate onmatch="exclude" />
+        </RuleGroup>
+
+        <!-- Event ID 3 : NetworkConnect - log all -->
+        <RuleGroup name="network_connect" groupRelation="or">
+            <NetworkConnect onmatch="exclude" />
+        </RuleGroup>
+
+        <!-- Everything else is out of scope for this sample - log none -->
+        <RuleGroup name="out_of_scope" groupRelation="or">
+            <FileCreateTime onmatch="include" />
+            <ProcessTerminate onmatch="include" />
+            <DriverLoad onmatch="include" />
+            <ImageLoad onmatch="include" />
+            <CreateRemoteThread onmatch="include" />
+            <RawAccessRead onmatch="include" />
+            <ProcessAccess onmatch="include" />
+            <FileCreate onmatch="include" />
+            <RegistryEvent onmatch="include" />
+            <FileCreateStreamHash onmatch="include" />
+            <PipeEvent onmatch="include" />
+            <WmiEvent onmatch="include" />
+            <DnsQuery onmatch="include" />
+            <FileDelete onmatch="include" />
+        </RuleGroup>
+
+    </EventFiltering>
+</Sysmon>
