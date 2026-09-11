@@ -21,6 +21,22 @@ def _serialize_utc_datetime(value: datetime | None) -> str | None:
     return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _reject_numeric_datetime(value: object) -> object:
+    if isinstance(value, int | float) or (isinstance(value, str) and _is_numeric_string(value)):
+        raise ValueError("datetime에 숫자형 Unix timestamp를 사용할 수 없습니다.")
+
+    return value
+
+
+def _is_numeric_string(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+
+    return True
+
+
 def _status_time_schema(status_field: str, time_field: str) -> list[dict[str, object]]:
     return [
         {
@@ -130,6 +146,11 @@ class DetectionResult(BaseModel):
 
         return value
 
+    @field_validator("detector_time", mode="before")
+    @classmethod
+    def reject_numeric_detector_time(cls, value: object) -> object:
+        return _reject_numeric_datetime(value)
+
     @field_validator("detector_time")
     @classmethod
     def validate_detector_time(cls, value: datetime | None) -> datetime | None:
@@ -219,6 +240,11 @@ class DecisionResult(BaseModel):
             raise ValueError("run_id는 유효한 날짜이어야 합니다.") from error
 
         return value
+
+    @field_validator("fusion_time", "detector_time", "t_e", mode="before")
+    @classmethod
+    def reject_numeric_datetime(cls, value: object) -> object:
+        return _reject_numeric_datetime(value)
 
     @field_validator("fusion_time", "detector_time", "t_e")
     @classmethod

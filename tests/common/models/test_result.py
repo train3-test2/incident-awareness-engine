@@ -138,6 +138,12 @@ def test_detection_result_rejects_invalid_detector_time(detector_time: datetime)
         DetectionResult(**{**_valid_detection_payload(), "detector_time": detector_time})
 
 
+@pytest.mark.parametrize("detector_time", [1_788_224_480, 1_788_224_480.0, "1788224480"])
+def test_detection_result_rejects_numeric_detector_time(detector_time: float | str) -> None:
+    with pytest.raises(ValidationError):
+        DetectionResult(**{**_valid_detection_payload(), "detector_time": detector_time})
+
+
 def test_detection_result_rejects_undefined_field() -> None:
     with pytest.raises(ValidationError):
         DetectionResult(**{**_valid_detection_payload(), "unknown": "value"})
@@ -299,6 +305,13 @@ def test_decision_result_rejects_invalid_timestamp() -> None:
                 "fusion_time": datetime.fromisoformat("2026-09-01T01:05:00"),
             }
         )
+
+
+@pytest.mark.parametrize("value", [1_788_224_480, 1_788_224_480.0, "1788224480"])
+@pytest.mark.parametrize("field", ["fusion_time", "detector_time", "t_e"])
+def test_decision_result_rejects_numeric_timestamp(field: str, value: float | str) -> None:
+    with pytest.raises(ValidationError):
+        DecisionResult(**{**_valid_decision_payload(), field: value})
 
 
 @pytest.mark.parametrize(
