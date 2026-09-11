@@ -165,3 +165,40 @@ def test_accepts_iso_8601_string_timestamp() -> None:
 
     # then: 숫자 차단이 정상 입력을 막지 않는다
     assert row.timestamp == datetime(2026, 9, 3, 1, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    [
+        "RUN-01",
+        "RUN-20260903-01",
+        "RUN-20260230-001",
+        "run-20260903-001",
+        "RUN-20260903-１２３",
+        "S0-ATK-001_R01",
+    ],
+)
+def test_rejects_invalid_run_id(run_id: str) -> None:
+    # given: 형식이나 날짜가 RUN-YYYYMMDD-NNN 규칙에 맞지 않는 run_id
+    # when / then: RunMetadata 와 조인이 어긋나지 않도록 거부된다
+    with pytest.raises(ValidationError, match="run_id"):
+        ExecutionRecordRow(
+            run_id=run_id,
+            action_id="A01",
+            timestamp=datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
+            action_type="execution",
+            description="난독화 PowerShell 실행",
+        )
+
+
+def test_rejects_run_id_with_trailing_space() -> None:
+    # given: 뒤에 공백 하나가 붙은 run_id
+    # when / then: 공백을 제거해 받아들이지 않고 거부된다
+    with pytest.raises(ValidationError, match="공백"):
+        ExecutionRecordRow(
+            run_id="RUN-20260903-001 ",
+            action_id="A01",
+            timestamp=datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
+            action_type="execution",
+            description="난독화 PowerShell 실행",
+        )

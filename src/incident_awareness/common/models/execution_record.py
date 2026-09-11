@@ -1,6 +1,9 @@
-from datetime import UTC, datetime, timedelta
+import re
+from datetime import UTC, date, datetime, timedelta
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+_RUN_ID_PATTERN = re.compile(r"^RUN-(?P<date>[0-9]{8})-(?P<sequence>[0-9]{3})$")
 
 
 class ExecutionRecordRow(BaseModel):
@@ -31,6 +34,21 @@ class ExecutionRecordRow(BaseModel):
     def validate_identifier(cls, value: str) -> str:
         if value != value.strip():
             raise ValueError("식별자에는 앞뒤 공백을 포함할 수 없습니다.")
+
+        return value
+
+    @field_validator("run_id")
+    @classmethod
+    def validate_run_id(cls, value: str) -> str:
+        match = _RUN_ID_PATTERN.fullmatch(value)
+
+        if match is None:
+            raise ValueError("run_id는 RUN-YYYYMMDD-NNN의 형태를 가져야합니다.")
+
+        try:
+            date.fromisoformat(match.group("date"))
+        except ValueError as error:
+            raise ValueError("run_id는 유효한 날짜이어야 합니다.") from error
 
         return value
 
