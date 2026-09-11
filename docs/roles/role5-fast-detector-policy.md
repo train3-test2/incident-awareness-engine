@@ -1112,3 +1112,42 @@ Security 이벤트 0건은 특정 후보 룰을 실행한 결과 0 hit와 구분
 
 Security 0건 원인 문의는 이번 답변으로 정리한다. 정상/pilot FP 검증 완료와는
 구분하며, §16의 FP 검증 및 detector set freeze 항목은 미완료로 유지한다.
+
+
+## 20. 정상/pilot Coverage 협의 초안 — 역할 5 제공 항목
+
+§19의 후속 작업을 위한 조사표다. 아래 Rule / Channel / EventID는 조사한 로컬 룰과
+기존 context 요구에서 정리했다. 공동 Coverage Matrix의 승인본, 수집 완료 확인 또는
+qualifying 정책이 아니다. 역할 4의 시나리오 포함 여부와 역할 3의 수집·event_type 표현
+가능 여부는 아직 합의하지 않았으므로 미확정으로 남긴다.
+
+| Rule / 용도 | 원본 Channel | EventID | 시나리오 포함 여부 (4번) | 수집·event_type 표현 (3번, 4번 협의) | 현재 결과 |
+| --- | --- | --- | --- | --- | --- |
+| Encoded PowerShell / `40d8f009-02f9-7db7-6504-25193624ab0a` | `Microsoft-Windows-Sysmon/Operational` | 1 | S0 정상 Run 준비 예정, 실제 행위 구성 확인 필요 | 스키마 샘플 수집 확인. 새 Run coverage와 event_type 표현 확인 필요 | 정상/pilot 미검증 |
+| Log Cleared / `c2f690ac-53f8-4745-8cfe-7127dda28c74` | `Security` | 1102 | R1에서 정상 관리 variation 포함 여부 협의 | 대상 호스트·추출 조건·event_type 표현 미확정 | 정상/pilot 미검증 |
+| ADMIN$ Share Access / `37b219bc-37bb-1261-f179-64307c1a1829` | `Security` | 5140 | R1에서 승인된 공유 접근 구성 협의 | 파일 공유 감사 활성화·대상 호스트·event_type 표현 미확정 | Rule 호환성 처리 및 정상/pilot 검증 필요 |
+| 공유 접근 context / 별도 Rule 미선정 | `Security` | 4624 (`LogonType=3`) | R1에서 네트워크 로그온 구성 협의 | 출발/대상 호스트·추출 조건·event_type 표현 미확정 | 별도 Fast 후보 아님 |
+
+이 표는 원본 채널명을 사용한다. Hayabusa CSV의 `Sysmon`, `Sec` 표기를 원본
+채널명과 혼동하지 않는다. Encoded PowerShell의 위 룰은 Sysmon EID 1용이며,
+PowerShell 4104는 이 룰의 입력 coverage로 대신 사용할 수 없다.
+Audit Log Clear의 Sigma 비교 룰은 §4의 제외 설정 이력이 있으므로 위 실행 후보와
+별도로 다룬다. EventID가 존재한다는 사실만으로 해당 룰이 실행·매칭됐다고 판단하지 않는다.
+
+### 새 자료를 받기 전에 협의할 내용
+
+- S0 정상 Run: 승인된 배포·관리 작업의 내용, 실제 시각이 있는 execution_record,
+  run_metadata, 입력 EVTX 및 수집 메타데이터를 연결한다. 무해한 EncodedCommand도
+  정상 행위 검토 대상에 포함할 수 있으며, 의심 패턴을 모두 제거한 데이터만 요구하지 않는다.
+- R1 정상 variation: 승인된 로그 초기화, ADMIN$ 접근, 네트워크 로그온을 어떤 업무
+  맥락에서 수행할지 4번과 정한다. 평상시 정상 업무 관측과 특정 관리 행위 검증은
+  구분해 기록하고, 해당 variation의 hit 비율을 전체 정상 업무 FPR로 일반화하지 않는다.
+- 정상 행위 라벨과 승인 맥락은 룰 결과를 보기 전에 정리한다. hit가 발생했다는 이유만으로
+  정상 행위를 공격으로 재분류하거나, 샘플에 맞춰 사후 예외를 추가하지 않는다.
+- 관측 길이와 반복 횟수는 공동 실험설계에서 정한다. 이 문서에서 새 수치나 합격 기준을
+  확정하지 않으며, 단일 정상 Run의 0 hit만으로 FP 검증 완료를 선언하지 않는다.
+- ADMIN$ 원본 룰과 ShareName 수정 진단 룰 결과는 별도 기록한다. 진단 룰의 성공을
+  원본 룰의 성공으로 집계하지 않으며, 실제 비교에 사용할 룰 identity는 검증 전에 명시한다.
+
+현재는 역할 5의 요구 초안 작성까지 완료했다. 외부 전달·공동 합의·새 Run 수집·검증은
+아직 수행하지 않았으며, §16의 종료 조건을 완료로 변경하지 않는다.
