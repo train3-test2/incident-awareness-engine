@@ -88,6 +88,14 @@ CREATE TABLE decisions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (btrim(decision_id) <> ''),
     CHECK (btrim(entity_id) <> ''),
+    CHECK (
+        (fast_status = 'detected' AND detector_time IS NOT NULL)
+        OR (fast_status IN ('miss', 'not_evaluated') AND detector_time IS NULL)
+    ),
+    CHECK (
+        (fusion_status = 'detected' AND fusion_time IS NOT NULL)
+        OR (fusion_status IN ('miss', 'not_evaluated') AND fusion_time IS NULL)
+    ),
     CHECK (jsonb_typeof(payload) = 'object'),
     CHECK (payload ->> 'decision_id' IS NOT DISTINCT FROM decision_id),
     CHECK (payload ->> 'run_id' IS NOT DISTINCT FROM run_id),

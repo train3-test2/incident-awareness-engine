@@ -146,6 +146,48 @@ def test_decisions_reject_missing_or_null_payload_identifiers(
     )
 
 
+@pytest.mark.parametrize(
+    ("fast_status", "fusion_status", "detector_time", "fusion_time"),
+    [
+        ("detected", "miss", None, None),
+        ("miss", "detected", None, None),
+    ],
+)
+def test_decisions_reject_statuses_without_required_times(
+    migration_connection: psycopg.Connection[tuple[object, ...]],
+    fast_status: str,
+    fusion_status: str,
+    detector_time: datetime | None,
+    fusion_time: datetime | None,
+) -> None:
+    _assert_check_violation(
+        migration_connection,
+        """
+        INSERT INTO decisions (
+            decision_id,
+            run_id,
+            entity_id,
+            fast_status,
+            fusion_status,
+            detector_time,
+            fusion_time,
+            payload
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            "DEC-002",
+            RUN_ID,
+            "WIN-01",
+            fast_status,
+            fusion_status,
+            detector_time,
+            fusion_time,
+            Jsonb({"decision_id": "DEC-002", "run_id": RUN_ID, "entity_id": "WIN-01"}),
+        ),
+    )
+
+
 def _assert_check_violation(
     connection: psycopg.Connection[tuple[object, ...]],
     statement: str,

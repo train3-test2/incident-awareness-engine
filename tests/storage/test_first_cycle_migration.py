@@ -43,4 +43,6 @@ def test_first_cycle_migration_keeps_status_time_constraints() -> None:
         "detector_status = 'detected' AND detector_time IS NOT NULL AND detector_id IS NOT NULL"
         in migration
     )
+    assert "fast_status = 'detected' AND detector_time IS NOT NULL" in migration
+    assert "fusion_status = 'detected' AND fusion_time IS NOT NULL" in migration
     assert "end_time IS NULL OR end_time >= start_time" in migration
