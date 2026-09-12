@@ -216,7 +216,7 @@ def test_malformed_timestamp_raises(tmp_path):
 def valid_attack():
     return pd.DataFrame(
         {
-            "run_id": ["RUN-001"],
+            "run_id": ["RUN-20260902-001"],
             "class": ["attack"],
             "run_end": [pd.Timestamp("2026-09-02T00:20:00Z")],
             "reference_time": [pd.Timestamp("2026-09-02T00:00:00Z")],
@@ -242,7 +242,7 @@ def test_required_blank_value_is_rejected(valid_attack, column):
 
 def test_partially_missing_method_is_rejected(valid_attack):
     other = valid_attack.copy()
-    other["run_id"] = "RUN-002"
+    other["run_id"] = "RUN-20260902-002"
     other["method"] = None
     with pytest.raises(ValueError, match="method"):
         evaluate(pd.concat([valid_attack, other]), evaluation_horizon=HORIZON)
@@ -319,7 +319,7 @@ def test_zero_horizon_allows_only_immediate_detection(valid_attack, delay, detec
 @pytest.mark.parametrize("column", ["run_start", "run_end", "reference_time", "timestamp"])
 def test_csv_requires_timezone_before_normalization(tmp_path, column):
     row = dict.fromkeys(
-        ["run_start", "run_end", "reference_time", "timestamp"], "2026-09-02T09:00:00+09:00"
+        ["run_start", "run_end", "reference_time", "timestamp"], "2026-09-02T00:00:00+00:00"
     )
     row[column] = "2026-09-02T09:00:00"
     path = tmp_path / "naive.csv"
@@ -328,17 +328,17 @@ def test_csv_requires_timezone_before_normalization(tmp_path, column):
         load_data(path)
 
 
-def test_csv_mixed_offsets_normalize_and_preserve_miss(tmp_path):
+def test_csv_utc_spellings_preserve_miss(tmp_path):
     path = tmp_path / "offsets.csv"
     pd.DataFrame(
         {
-            "run_id": ["R1", "R2"],
+            "run_id": ["RUN-20260902-001", "RUN-20260902-002"],
             "class": ["attack", "attack"],
             "method": ["Sigma", "Sigma"],
-            "run_start": ["2026-09-02T00:00:00Z", "2026-09-02T09:00:00+09:00"],
-            "reference_time": ["2026-09-02T00:00:00Z", "2026-09-02T09:00:00+09:00"],
-            "run_end": ["2026-09-02T00:10:00Z", "2026-09-02T09:10:00+09:00"],
-            "timestamp": ["2026-09-02T09:01:00+09:00", None],
+            "run_start": ["2026-09-02T00:00:00Z", "2026-09-02T00:00:00+00:00"],
+            "reference_time": ["2026-09-02T00:00:00Z", "2026-09-02T00:00:00+00:00"],
+            "run_end": ["2026-09-02T00:10:00Z", "2026-09-02T00:10:00+00:00"],
+            "timestamp": ["2026-09-02T00:01:00+00:00", None],
         }
     ).to_csv(path, index=False)
     df = load_data(path)
@@ -388,8 +388,8 @@ def test_run_end_equal_reference_is_valid(valid_attack):
 def test_dataframe_offsets_normalize_without_mutating_input(valid_attack):
     valid_attack["timestamp"] = valid_attack["timestamp"].dt.tz_convert("Asia/Seoul")
     original = valid_attack.copy(deep=True)
-    result = evaluate(valid_attack, evaluation_horizon=HORIZON)
-    assert result["median_ttsd_sec"] == 60.0
+    with pytest.raises(ValueError, match="UTC required"):
+        evaluate(valid_attack, evaluation_horizon=HORIZON)
     pd.testing.assert_frame_equal(valid_attack, original)
 
 
@@ -404,3 +404,66 @@ def test_csv_nonempty_null_tokens_are_invalid_timestamps(tmp_path, column, value
     pd.DataFrame([row]).to_csv(path, index=False)
     with pytest.raises(ValueError, match=f"malformed timestamp in column: {column}"):
         load_data(path)
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    [
+        "RUN-01",
+        "RUN-20260230-001",
+        "RUN-20260902-001 ",
+        "RUN-20260902-001\n",
+        "run-20260902-001",
+        123,
+    ],
+)
+@pytest.mark.parametrize("csv_input", [False, True])
+def test_invalid_run_id_contract(valid_attack, tmp_path, run_id, csv_input):
+    valid_attack["run_id"] = run_id
+    with pytest.raises(ValueError, match="run_id"):
+        if csv_input:
+            valid_attack["run_start"] = valid_attack["reference_time"]
+            path = tmp_path / "run.csv"
+            valid_attack.to_csv(path, index=False)
+            load_data(path)
+        else:
+            evaluate(valid_attack, evaluation_horizon=HORIZON)
+
+
+@pytest.mark.parametrize("column", ["run_start", "run_end", "reference_time", "timestamp"])
+@pytest.mark.parametrize(
+    "value",
+    ["2026-09-02T00:00:00+09:00", "2026-09-02T00:00:00.000001Z", "2026-09-02T00:00:00.000000001Z"],
+)
+def test_dataframe_rejects_noncanonical_time(valid_attack, column, value):
+    valid_attack[column] = pd.Timestamp(value)
+    with pytest.raises(ValueError, match="UTC required|millisecond precision"):
+        evaluate(valid_attack, evaluation_horizon=HORIZON)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-09-02T00:00:00+09:00",
+        "2026-09-02T00:00:00.1230000001Z",
+        "2026-09-02T00:00:00.123456Z",
+        "0",
+        "1757376000000",
+    ],
+)
+def test_csv_rejects_noncanonical_time(tmp_path, value):
+    row = dict.fromkeys(["run_start", "run_end", "reference_time", "timestamp"], value)
+    path = tmp_path / "time.csv"
+    pd.DataFrame([row]).to_csv(path, index=False)
+    with pytest.raises(ValueError):
+        load_data(path)
+
+
+@pytest.mark.parametrize(
+    "value", ["2026-09-02T00:00:00Z", "2026-09-02T00:00:00.1Z", "2026-09-02T00:00:00.1230000+00:00"]
+)
+def test_csv_accepts_millisecond_values(tmp_path, value):
+    row = dict.fromkeys(["run_start", "run_end", "reference_time", "timestamp"], value)
+    path = tmp_path / "time.csv"
+    pd.DataFrame([row]).to_csv(path, index=False)
+    assert load_data(path).loc[0, "timestamp"] == pd.Timestamp(value)

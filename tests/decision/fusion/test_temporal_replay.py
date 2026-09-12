@@ -1,0 +1,871 @@
+from datetime import UTC, datetime, timedelta, timezone
+
+import pytest
+
+from incident_awareness.common.models.evidence import Evidence
+from incident_awareness.decision.fusion.simple_score import SimpleScorer
+from incident_awareness.decision.fusion.stopping_policy import ThresholdStoppingPolicy
+from incident_awareness.decision.fusion.temporal_replay import TemporalReplayRunner
+from incident_awareness.decision.fusion.window_engine import WindowEngine
+
+
+def make_evidence(
+    *,
+    evidence_id: str,
+    seconds: int,
+    evidence_type: str,
+) -> Evidence:
+    start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+
+    return Evidence(
+        evidence_id=evidence_id,
+        run_id="RUN-01",
+        timestamp=start + timedelta(seconds=seconds),
+        entity_id="HOST-01",
+        evidence_type=evidence_type,
+        event_ids=[f"EVENT-{evidence_id}"],
+        derived_from_source_layer="raw_telemetry",
+        feature_channel_group="fusion_feature",
+        extractor_version="test",
+    )
+
+
+def test_replays_scores_at_fixed_cadence() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=20)),
+        scorer=SimpleScorer(
+            evidence_types=[
+                "encoded_powershell_command",
+                "suspicious_process",
+            ]
+        ),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    evidences = [
+        make_evidence(
+            evidence_id="EVD-001",
+            seconds=0,
+            evidence_type="encoded_powershell_command",
+        ),
+        make_evidence(
+            evidence_id="EVD-002",
+            seconds=15,
+            evidence_type="suspicious_process",
+        ),
+    ]
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=30)
+
+    # When
+    result = runner.run(
+        evidences,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+
+    # Then
+    assert [point.timestamp for point in result.trajectory] == [
+        run_start,
+        run_start + timedelta(seconds=10),
+        run_start + timedelta(seconds=20),
+        run_start + timedelta(seconds=30),
+    ]
+    assert [point.score for point in result.trajectory] == [
+        0.5,
+        0.5,
+        1.0,
+        0.5,
+    ]
+
+    assert result.stopping_result.fusion_status == "detected"
+    assert result.stopping_result.fusion_time == run_start + timedelta(seconds=20)
+
+
+def test_future_evidence_does_not_change_past_scores() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(
+            evidence_types=[
+                "encoded_powershell_command",
+                "suspicious_process",
+            ]
+        ),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=40)
+
+    base_evidences = [
+        make_evidence(
+            evidence_id="EVD-001",
+            seconds=0,
+            evidence_type="encoded_powershell_command",
+        ),
+    ]
+    evidences_with_future = [
+        *base_evidences,
+        make_evidence(
+            evidence_id="EVD-002",
+            seconds=25,
+            evidence_type="suspicious_process",
+        ),
+    ]
+
+    # When
+    base_result = runner.run(
+        base_evidences,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+    future_result = runner.run(
+        evidences_with_future,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+
+    # Then
+    base_past = [
+        point
+        for point in base_result.trajectory
+        if point.timestamp < run_start + timedelta(seconds=25)
+    ]
+    future_past = [
+        point
+        for point in future_result.trajectory
+        if point.timestamp < run_start + timedelta(seconds=25)
+    ]
+
+    assert future_past == base_past
+
+
+def test_rejects_evidence_with_mismatched_run_id() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=0,
+        evidence_type="encoded_powershell_command",
+    ).model_copy(update={"run_id": "RUN-OTHER"})
+
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [evidence],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_start + timedelta(seconds=10),
+        )
+
+    # Then
+    assert str(exc_info.value) == "Evidence run_id must match replay run_id"
+
+
+def test_rejects_evidence_with_mismatched_entity_id() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=0,
+        evidence_type="encoded_powershell_command",
+    ).model_copy(update={"entity_id": "HOST-OTHER"})
+
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [evidence],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_start + timedelta(seconds=10),
+        )
+
+    # Then
+    assert str(exc_info.value) == "Evidence entity_id must match replay entity_id"
+
+
+def test_rejects_run_end_before_run_start() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, 10, tzinfo=UTC)
+    run_end = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "run_end must not be earlier than run_start"
+
+
+def test_rejects_non_aligned_run_end() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=25)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == ("run_end must align with step_size from run_start")
+
+
+def test_empty_evidence_produces_zero_scores_and_miss() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=20)
+
+    # When
+    result = runner.run(
+        [],
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+
+    # Then
+    assert [point.score for point in result.trajectory] == [0.0, 0.0, 0.0]
+    assert result.stopping_result.fusion_status == "miss"
+    assert result.stopping_result.fusion_time is None
+
+
+@pytest.mark.parametrize(
+    "step_size",
+    [
+        timedelta(0),
+        timedelta(seconds=-1),
+    ],
+)
+def test_rejects_non_positive_step_size(step_size: timedelta) -> None:
+    # Given
+    window_engine = WindowEngine(window_size=timedelta(seconds=60))
+    scorer = SimpleScorer(evidence_types=["encoded_powershell_command"])
+    stopping_policy = ThresholdStoppingPolicy(
+        threshold_on=0.8,
+        threshold_off=0.4,
+        persistence_k=1,
+    )
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        TemporalReplayRunner(
+            window_engine=window_engine,
+            scorer=scorer,
+            stopping_policy=stopping_policy,
+            step_size=step_size,
+        )
+
+    # Then
+    assert str(exc_info.value) == "step_size must be greater than zero"
+
+
+def test_rejects_naive_run_start() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC).replace(tzinfo=None)
+    run_end = datetime(2026, 9, 7, 1, 0, 10, tzinfo=UTC)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "run_start must include timezone information"
+
+
+def test_rejects_non_utc_run_start() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    kst = timezone(timedelta(hours=9))
+    run_start = datetime(2026, 9, 7, 10, 0, tzinfo=kst)
+    run_end = datetime(2026, 9, 7, 1, 0, 10, tzinfo=UTC)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "run_start must be UTC"
+
+
+def test_rejects_naive_run_end() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = datetime(2026, 9, 7, 1, 0, 10, tzinfo=UTC).replace(tzinfo=None)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "run_end must include timezone information"
+
+
+def test_rejects_non_utc_run_end() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    kst = timezone(timedelta(hours=9))
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = datetime(2026, 9, 7, 10, 0, 10, tzinfo=kst)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "run_end must be UTC"
+
+
+def test_rejects_out_of_order_evidence_timestamps() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(
+            evidence_types=[
+                "encoded_powershell_command",
+                "suspicious_process",
+            ]
+        ),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    evidences = [
+        make_evidence(
+            evidence_id="EVD-001",
+            seconds=20,
+            evidence_type="encoded_powershell_command",
+        ),
+        make_evidence(
+            evidence_id="EVD-002",
+            seconds=10,
+            evidence_type="suspicious_process",
+        ),
+    ]
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=30)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            evidences,
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "Evidence timestamps must be non-decreasing"
+
+
+def test_allows_evidence_with_equal_timestamps() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(
+            evidence_types=[
+                "encoded_powershell_command",
+                "suspicious_process",
+            ]
+        ),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    evidences = [
+        make_evidence(
+            evidence_id="EVD-001",
+            seconds=0,
+            evidence_type="encoded_powershell_command",
+        ),
+        make_evidence(
+            evidence_id="EVD-002",
+            seconds=0,
+            evidence_type="suspicious_process",
+        ),
+    ]
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=10)
+
+    # When
+    result = runner.run(
+        evidences,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+
+    # Then
+    assert result.trajectory[0].score == 1.0
+    assert result.stopping_result.fusion_status == "detected"
+    assert result.stopping_result.fusion_time == run_start
+
+
+def test_returns_same_result_for_same_input_and_config() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(
+            evidence_types=[
+                "encoded_powershell_command",
+                "suspicious_process",
+            ]
+        ),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    evidences = [
+        make_evidence(
+            evidence_id="EVD-001",
+            seconds=0,
+            evidence_type="encoded_powershell_command",
+        ),
+        make_evidence(
+            evidence_id="EVD-002",
+            seconds=15,
+            evidence_type="suspicious_process",
+        ),
+    ]
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=30)
+
+    # When
+    first_result = runner.run(
+        evidences,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+    second_result = runner.run(
+        evidences,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+
+    # Then
+    assert first_result == second_result
+
+
+def test_rejects_naive_evidence_timestamp() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=0,
+        evidence_type="encoded_powershell_command",
+    ).model_copy(update={"timestamp": datetime(2026, 9, 7, 1, 0, tzinfo=UTC).replace(tzinfo=None)})
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=10)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [evidence],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == ("Evidence timestamp must include timezone information")
+
+
+def test_rejects_non_utc_evidence_timestamp() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    kst = timezone(timedelta(hours=9))
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=0,
+        evidence_type="encoded_powershell_command",
+    ).model_copy(
+        update={
+            "timestamp": datetime(2026, 9, 7, 10, 0, tzinfo=kst),
+        }
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=10)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [evidence],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "Evidence timestamp must be UTC"
+
+
+def test_rejects_evidence_before_run_start() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=20)
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=-1,
+        evidence_type="encoded_powershell_command",
+    )
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [evidence],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == ("Evidence timestamp must not be earlier than run_start")
+
+
+def test_rejects_evidence_after_run_end() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=20)
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=21,
+        evidence_type="encoded_powershell_command",
+    )
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [evidence],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "Evidence timestamp must not exceed run_end"
+
+
+def test_allows_evidence_at_run_end() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=20)
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=20,
+        evidence_type="encoded_powershell_command",
+    )
+
+    # When
+    result = runner.run(
+        [evidence],
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+
+    # Then
+    assert result.trajectory[-1].timestamp == run_end
+    assert result.trajectory[-1].score == 1.0
+    assert result.stopping_result.fusion_status == "detected"
+    assert result.stopping_result.fusion_time == run_end
+
+
+def test_records_contributing_evidence_snapshot_at_each_cadence() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(
+            evidence_types=[
+                "encoded_powershell_command",
+                "suspicious_process",
+            ]
+        ),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    evidences = [
+        make_evidence(
+            evidence_id="EVD-001",
+            seconds=0,
+            evidence_type="encoded_powershell_command",
+        ),
+        make_evidence(
+            evidence_id="EVD-002",
+            seconds=15,
+            evidence_type="suspicious_process",
+        ),
+    ]
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=20)
+
+    # When
+    result = runner.run(
+        evidences,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+
+    # Then
+    assert [snapshot.timestamp for snapshot in result.evidence_snapshots] == [
+        run_start,
+        run_start + timedelta(seconds=10),
+        run_start + timedelta(seconds=20),
+    ]
+    assert [snapshot.contributing_evidence_ids for snapshot in result.evidence_snapshots] == [
+        ("EVD-001",),
+        ("EVD-001",),
+        ("EVD-001", "EVD-002"),
+    ]
+
+
+def test_future_evidence_is_not_in_past_evidence_snapshots() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=15,
+        evidence_type="encoded_powershell_command",
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=20)
+
+    # When
+    result = runner.run(
+        [evidence],
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+
+    # Then
+    assert result.evidence_snapshots[0].contributing_evidence_ids == ()
+    assert result.evidence_snapshots[1].contributing_evidence_ids == ()
+    assert result.evidence_snapshots[2].contributing_evidence_ids == ("EVD-001",)

@@ -1,12 +1,33 @@
-from datetime import datetime
+import re
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 
 
+def _validate_run_ids(values) -> None:
+    for value in values:
+        if not isinstance(value, str) or not re.fullmatch(r"RUN-[0-9]{8}-[0-9]{3}", value):
+            raise ValueError("run_id must match RUN-YYYYMMDD-NNN")
+        try:
+            date.fromisoformat(value[4:12])
+        except ValueError as exc:
+            raise ValueError("run_id must contain a valid calendar date") from exc
+
+
+def _validate_precision(value: datetime, column: str) -> None:
+    if value.utcoffset() != timedelta(0):
+        raise ValueError(f"UTC required in column: {column}")
+    if value.microsecond % 1000 or getattr(value, "nanosecond", 0):
+        raise ValueError(f"millisecond precision required in column: {column}")
+
+
 def load_data(path: str) -> pd.DataFrame:
     """Load CSV with only empty fields treated as missing values."""
     df = pd.read_csv(path, keep_default_na=False, na_values=[""])
+
+    if "run_id" in df.columns:
+        _validate_run_ids(df["run_id"])
 
     time_columns = [
         "run_start",
@@ -25,8 +46,14 @@ def load_data(path: str) -> pd.DataFrame:
                 raise ValueError(f"malformed timestamp in column: {column}") from exc
             if pd.isna(timestamp):
                 raise ValueError(f"malformed timestamp in column: {column}")
+            # Check raw fractions before a parser can discard sub-nanosecond digits.
+            if isinstance(value, str):
+                fraction = re.search(r"[.,]([0-9]+)", value)
+                if fraction and any(digit != "0" for digit in fraction[1][3:]):
+                    raise ValueError(f"millisecond precision required in column: {column}")
             if timestamp.tzinfo is None:
                 raise ValueError(f"timezone required in column: {column}")
+            _validate_precision(timestamp, column)
 
         parsed = pd.to_datetime(
             original,
@@ -56,7 +83,7 @@ def evaluate(
     integrations must obtain the complete inventory from run_metadata.
     Eligible timestamps include both reference_time and evaluation_end.
     Horizon must be a non-negative pd.Timedelta; zero permits only immediate
-    detection. Non-null times must be timezone-aware datetimes. Run metadata
+    detection. Non-null times must be UTC datetimes with millisecond precision. Run metadata
     must agree across rows, and attack run_end cannot precede reference_time.
     """
     required = {"run_id", "class", "run_end", "method", "reference_time", "timestamp"}
@@ -69,6 +96,8 @@ def evaluate(
             isinstance(value, str) and not value.strip() for value in df[column]
         ):
             raise ValueError(f"missing required value: {column}")
+
+    _validate_run_ids(df["run_id"])
 
     if not df["class"].isin(["attack", "normal"]).all():
         raise ValueError("class must be attack or normal")
@@ -97,6 +126,7 @@ def evaluate(
         for value in df[column].dropna():
             if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
                 raise ValueError(f"timezone-aware datetime required in column: {column}")
+            _validate_precision(value, column)
         df[column] = pd.to_datetime(df[column], utc=True)
 
     for column in ("class", "reference_time", "run_end", "method"):

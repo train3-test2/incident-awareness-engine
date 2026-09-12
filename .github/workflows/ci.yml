@@ -1,6 +1,10 @@
-name: CI
+name: CI and AWS smoke deploy
 
 on:
+  pull_request:
+  push:
+    branches:
+      - develop
   workflow_dispatch:
 
 permissions:
@@ -9,14 +13,96 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    env:
+      INCIDENT_AWARENESS_EVENT_TYPES_PATH: configs/event_types_v0.2.yaml
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
       - run: uv sync --all-groups
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pytest
-      - uses: gitleaks/gitleaks-action@v2
+      - name: Scan secrets with gitleaks
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/repo" \
+            --workdir /repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            detect --source . --log-opts="--all"
+
+  aws-smoke-deploy:
+    name: Build, publish, and run AWS smoke task
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SECURITY_GROUP_IDS: ${{ vars.ECS_SECURITY_GROUP_IDS }}
+      ECS_SUBNET_IDS: ${{ vars.ECS_SUBNET_IDS }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate AWS deployment configuration
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          for value in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SUBNET_IDS ECS_SECURITY_GROUP_IDS; do
+            if [ -z "${!value}" ]; then
+              echo "GitHub Actions variable $value must be configured."
+              exit 1
+            fi
+          done
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and publish image
+        id: image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          image="$ECR_REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA}"
+          docker build --platform linux/amd64 --tag "$image" .
+          docker push "$image"
+          echo "uri=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Render ECS task definition
+        id: render-task-definition
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: infra/ecs/task-definition.smoke.json
+          container-name: incident-awareness-engine-smoke
+          image: ${{ steps.image.outputs.uri }}
+
+      - name: Register and run ECS smoke task
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-task-definition.outputs.task-definition }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          run-task: true
+          run-task-launch-type: FARGATE
+          run-task-subnets: ${{ env.ECS_SUBNET_IDS }}
+          run-task-security-groups: ${{ env.ECS_SECURITY_GROUP_IDS }}
+          run-task-assign-public-IP: ENABLED
+          wait-for-task-stopped: true
+          wait-max-delay-seconds: 15

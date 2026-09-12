@@ -1,0 +1,35 @@
+{
+  "purpose": "schema-development-sample",
+  "collected_at": "2026-09-08T16:35:41.200Z",
+  "sysmon_config_version": "sysmonconfig-sample-v0.1",
+  "sysmon_config_sha256": "ee2cff646231999f3d08c1a9deb0177518c53192aa6489671e5c27629d2a90bf",
+  "sysmon_active_config_sha256": "335b3a6128147d5cb94be223decec887024b55c7a9472a4586d2914a05756a7d",
+  "sysmon_version": "15.21.0.0",
+  "os_caption": "Microsoft Windows 11 Enterprise Evaluation",
+  "os_version": "10.0.26200.0",
+  "event_counts": {
+    "id_1": 4,
+    "id_3": 3,
+    "total": 7
+  },
+  "external_connection": {
+    "requested": true,
+    "succeeded": true,
+    "port": 443
+  },
+  "evidence_condition_hits": {
+    "encoded_powershell_command": 1,
+    "script_interpreter_external_connection": 1
+  },
+  "evidence_condition_check": {
+    "conditions_from": "configs/evidence_types_v0.2.yaml",
+    "implemented_in": "tools/collect_sysmon_sample.ps1",
+    "authoritative": false,
+    "note": "collection sanity check; the Evidence extractor decides Evidence"
+  },
+  "sanitized": {
+    "computer": "WIN-01",
+    "user": "labuser",
+    "rule": "원본 호스트명과 사용자명을 문서 예시값으로 치환"
+  }
+}
