@@ -1,0 +1,2 @@
+# Sysmon config hashes are computed over file bytes, so pin the line endings (samples/raw/README.md section 4)
+configs/sysmon/*.xml text eol=lf
