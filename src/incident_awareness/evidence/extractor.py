@@ -23,7 +23,7 @@ _SCRIPT_INTERPRETER_PROCESS_NAMES = frozenset(
     }
 )
 _ENCODED_COMMAND_OPTIONS = frozenset({"-e", "-ec", "-enc", "-encodedcommand"})
-_POWERSHELL_FILE_OPTION = "-file"
+_POWERSHELL_COMMAND_BOUNDARY_OPTIONS = frozenset({"-f", "-file", "-c", "-command"})
 
 
 def extract_evidence(event: NormalizedEvent) -> list[Evidence]:
@@ -142,8 +142,9 @@ def _find_encoded_command_option(
     for token in tokens:
         normalized_token = _strip_matching_quotes(token).casefold()
 
-        # -File 뒤의 토큰은 PowerShell 호스트 옵션이 아니라 스크립트 경로와 인자다.
-        if normalized_token == _POWERSHELL_FILE_OPTION:
+        # -File/-Command 뒤의 토큰은 PowerShell 호스트 옵션이 아니라
+        # 스크립트 경로/인자 또는 실행할 명령의 일부다.
+        if normalized_token in _POWERSHELL_COMMAND_BOUNDARY_OPTIONS:
             return None
 
         if normalized_token in _ENCODED_COMMAND_OPTIONS:

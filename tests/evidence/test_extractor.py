@@ -301,6 +301,18 @@ def test_supported_encoded_powershell_options(
         ),
         (
             "pwsh.exe",
+            "pwsh.exe -f deploy.ps1 -enc AES256",
+        ),
+        (
+            "pwsh.exe",
+            "pwsh.exe -c git log -e",
+        ),
+        (
+            "powershell.exe",
+            "powershell.exe -Command docker run -e VAR=1 image",
+        ),
+        (
+            "pwsh.exe",
             "pwsh.exe /enc SQBFAFgA",
         ),
         (
@@ -319,6 +331,9 @@ def test_supported_encoded_powershell_options(
     ids=[
         "file-context",
         "file-context-case-insensitive",
+        "file-short-context",
+        "command-short-context",
+        "command-context",
         "slash-enc",
         "encoded-command-colon",
         "encoding",
