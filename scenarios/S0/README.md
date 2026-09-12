@@ -13,15 +13,35 @@ scenarios/S0/
 
 ## 1. scenario.yaml 을 JSON 으로 렌더링
 
-Windows PowerShell 5.1 에는 YAML 리더가 없다. 그래서 호스트에서 `scenario.yaml` 을 JSON 으로
-변환한 뒤, 그 JSON 과 스크립트를 VM 으로 옮긴다. `scenario.yaml` 이 정본이고 JSON 은 빌드
+Windows PowerShell 5.1 에는 YAML 리더가 없다. 그래서 **호스트 저장소 루트에서** `scenario.yaml`
+을 JSON 으로 변환한 뒤, 생성된 JSON 만 VM 으로 옮긴다. `scenario.yaml` 이 정본이고 JSON 은 빌드
 산출물이다(저장소에 커밋하지 않는다).
 
 ```bash
-python tools/scenario_to_json.py scenarios/S0/scenario.yaml --out build/S0/scenario.json
+uv run python tools/scenario_to_json.py scenarios/S0/scenario.yaml --out build/S0/scenario.json
 ```
 
 변환기는 실행기가 의존하는 키와 행위 수·`action_id` 중복을 검사하고, LF 줄바꿈의 UTF-8 로 쓴다.
+
+**VM 에는 Python, `tools/scenario_to_json.py`, `scenario.yaml` 을 복사하지 않는다.** 변환은 호스트에서
+끝내고, 생성된 `build/S0/scenario.json` 만 VM 으로 옮긴다.
+
+### VM 배치 구조
+
+스크립트를 VM 에 이 구조 그대로 둔다.
+
+```text
+C:\Tools\S0\
+    scenario.json
+    run-common.ps1
+    sysmonconfig-sample-v0.1.xml
+    attack\run.ps1
+    normal\run.ps1
+```
+
+`attack\run.ps1` 과 `normal\run.ps1` 은 부모 폴더의 `run-common.ps1` 을 상대 경로
+(`..\run-common.ps1`)로 불러온다. 따라서 위 폴더 구조를 반드시 보존해야 한다. `run.ps1` 두 개를
+`C:\Tools\S0\` 에 평탄하게(하위 폴더 없이) 복사하면 `run-common.ps1` 을 찾지 못해 실행되지 않는다.
 
 ## 2. rehearsal 은 정식 S0 수집물이 아니다
 
@@ -39,13 +59,15 @@ rehearsal     data/_rehearsal/raw/<run_id>/... data/_rehearsal/ground_truth/<run
 `data/raw/`, `data/ground_truth/`, `data/_rehearsal/` 는 모두 `.gitignore` 대상이라 저장소에
 올라가지 않는다.
 
+VM 에서 attack rehearsal 을 실행하는 명령이다. `run.ps1` 이 상대 경로로 `run-common.ps1` 을
+찾으므로 먼저 스크립트가 있는 폴더로 이동한다.
+
 ```powershell
-scenarios\S0\attack\run.ps1 -RunId RUN-20260914-002 `
-    -ScenarioJsonPath C:\Tools\S0\scenario.json `
-    -DataRoot C:\S0\data -VmSnapshot poc-clean-v1 `
-    -SysmonBinary C:\Tools\Sysmon\Sysmon64.exe `
-    -SysmonConfigPath C:\Tools\sysmonconfig-sample-v0.1.xml -Rehearsal
+Set-Location C:\Tools\S0\attack
+.\run.ps1 -RunId RUN-YYYYMMDD-NNN -ScenarioJsonPath C:\Tools\S0\scenario.json -DataRoot C:\S0\data -VmSnapshot poc-clean-v1 -SysmonBinary C:\Tools\Sysmon\Sysmon64.exe -SysmonConfigPath C:\Tools\S0\sysmonconfig-sample-v0.1.xml -WorkDir C:\S0\work -Rehearsal
 ```
+
+이 명령의 rehearsal 산출물은 `C:\S0\data\_rehearsal\` 아래에만 생성된다.
 
 ## 3. 정식 attack 실행은 지금 의도적으로 막혀 있다
 
