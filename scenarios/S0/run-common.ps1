@@ -136,8 +136,22 @@ function New-RunContext {
         throw "Sysmon config sha256 mismatch. expected=$ExpectedSysmonConfigSha256 actual=$configSha256"
     }
 
-    $telemetryDir = Join-Path $DataRoot "raw\$RunId\telemetry"
-    $groundTruthDir = Join-Path $DataRoot "ground_truth\$RunId"
+    # Rehearsal artifacts are not a valid S0 collection. Force them under a
+    # separate output root so they are never mistaken for data/raw or
+    # data/ground_truth, and drop a marker that says so. The run_id and the
+    # RunMetadata contract are unchanged.
+    $effectiveRoot = $DataRoot
+    if ($Rehearsal) {
+        $effectiveRoot = Join-Path $DataRoot "_rehearsal"
+        New-Item -ItemType Directory -Path $effectiveRoot -Force | Out-Null
+        $markerPath = Join-Path $effectiveRoot "REHEARSAL.txt"
+        $markerText = "Rehearsal output. NOT a valid S0 collection. Do not use as data/raw or data/ground_truth."
+        $utf8NoBomMarker = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($markerPath, $markerText, $utf8NoBomMarker)
+    }
+
+    $telemetryDir = Join-Path $effectiveRoot "raw\$RunId\telemetry"
+    $groundTruthDir = Join-Path $effectiveRoot "ground_truth\$RunId"
     foreach ($dir in @($telemetryDir, $groundTruthDir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }

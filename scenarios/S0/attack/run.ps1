@@ -83,10 +83,14 @@ function Initialize-AttackWorkDir {
 
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
+    # The anchor process must outlive A02: in a real run A02 is performed inside
+    # this same process (same ProcessGuid), so it cannot exit first. The rehearsal
+    # anchor therefore sleeps and is stopped by Stop-AnchorProcess at the end.
     $anchor = @'
 $ErrorActionPreference = "Stop"
 $marker = Join-Path $PSScriptRoot "s0_anchor.txt"
 Set-Content -Path $marker -Value ("anchor " + (Get-Date).ToUniversalTime().ToString("o")) -Encoding Ascii
+Start-Sleep -Seconds 3600
 '@
     [System.IO.File]::WriteAllText((Join-Path $Path "s0_anchor.ps1"), $anchor, $utf8NoBom)
 
@@ -116,10 +120,18 @@ function Start-AnchorProcess {
     <#
         A01 - the process reference_time is measured from.
 
+        The process is started and its PID is returned WITHOUT waiting for it to
+        exit. A02 must run inside this same process so their Sysmon ProcessGuid
+        matches (docs/scenarios/s0.md section 4-2); if the anchor exited here, A02
+        could only run as a separate process and the causality would be broken.
+        The caller stops the rehearsal anchor with Stop-AnchorProcess after the
+        run, never before A02.
+
         In rehearsal this starts a harmless local script so the PID and the
         reference_time path can be exercised. In a normal run the real A01
         (-EncodedCommand launch) is not implemented: the malicious shape is
-        written only after the issue #71 decision, with no substitute here.
+        written only after the issue #71 decision, with no substitute here, and
+        A02 is added as behaviour of this process, not as a new Start-Process.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$ScriptPath,
@@ -137,12 +149,27 @@ function Start-AnchorProcess {
         -ArgumentList @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
             "-File", $ScriptPath) `
         -WindowStyle Hidden -PassThru
-    $process.WaitForExit()
-    if ($process.ExitCode -ne 0) {
-        throw "anchor script failed with exit code $($process.ExitCode): $ScriptPath"
-    }
 
+    # No WaitForExit: the anchor must stay alive until the run is finished so A02
+    # can be performed inside it. Start-Process already failed if it could not
+    # launch; a non-zero exit is checked later by Stop-AnchorProcess.
     return [ordered]@{ process = $process; started_at = $startedAt }
+}
+
+function Stop-AnchorProcess {
+    <#
+        Stop the rehearsal anchor after the run. Called only at the end, never
+        before A02, so A01 never exits ahead of A02.
+    #>
+    param([object]$AnchorResult)
+
+    if ($null -eq $AnchorResult) { return }
+    $process = $AnchorResult.process
+    if ($null -ne $process -and -not $process.HasExited) {
+        $process.Kill()
+        $process.WaitForExit()
+        Write-Ok "rehearsal anchor stopped"
+    }
 }
 
 function Invoke-ExternalConnection {
@@ -181,6 +208,9 @@ Initialize-AttackWorkDir -Path $WorkDir
 
 $anchorProcessGuid = $null
 $a02StartedAt = $null
+$a01 = $null
+
+try {
 
 Write-Step "A01 anchor process"
 Wait-ForOffset -Context $context -Rehearsal:$Rehearsal `
@@ -231,7 +261,6 @@ $events = Export-SysmonRunWindow -Context $context
  # A02 causality. Matching needs the A02 start time and the expected destination
  # so an earlier connection by the anchor process is not mistaken for A02. While
  # A02 is unimplemented, $a02StartedAt is null and the result is not_verified.
-$a02Action = $context.run.actions | Where-Object { $_.action_id -eq "A02" }
 $causality = Test-ActionCausality -Events $events -AnchorProcessGuid $anchorProcessGuid `
     -ChildStartedAt $a02StartedAt `
     -ExpectedDestination $context.scenario.external_connection.target `
@@ -247,3 +276,10 @@ Write-RunManifest -Context $context | Out-Null
 
 Write-Ok ("attack run finished: " + $context.run_id + " events=" + $events.Count +
     " actions=" + $context.execution_records.Count + " causality=" + $causality.status)
+
+}
+finally {
+    # Stop the rehearsal anchor only here, after every action and the export, so
+    # A01 never exits before A02. In a real run A01 threw and $a01 is still null.
+    Stop-AnchorProcess -AnchorResult $a01
+}
