@@ -32,8 +32,10 @@ Thumbs.db
 # Runtime logs
 *.log
 
-# Runtime raw data
+# Runtime raw data and Ground Truth (never committed; see docs/scenarios/s0.md section 9)
 data/raw/
+data/ground_truth/
+data/_rehearsal/
 
 # VMware
 *.vmdk
