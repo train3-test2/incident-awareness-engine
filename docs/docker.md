@@ -85,11 +85,27 @@ docker compose ps
 추가하지 않는다.
 
 Repository 통합 테스트는 다음처럼 연결 URL을 현재 PowerShell 세션에만 설정해 실행한다.
+URL에 포함하는 사용자 이름, 비밀번호, 데이터베이스 이름은 URI 인코딩해야 한다.
 
 ```powershell
-$env:INCIDENT_AWARENESS_DATABASE_URL = "postgresql://<user>:<password>@127.0.0.1:54329/incident_awareness"
-uv run pytest tests/integration/test_postgres_repositories.py
-Remove-Item Env:INCIDENT_AWARENESS_DATABASE_URL
+$dotenv = @{}
+Get-Content .env | ForEach-Object {
+    if ($_ -match '^\s*([^#\s][^=]*)=(.*)$') {
+        $dotenv[$matches[1].Trim()] = $matches[2].Trim()
+    }
+}
+
+$user = [uri]::EscapeDataString($dotenv.POSTGRES_USER)
+$password = [uri]::EscapeDataString($dotenv.POSTGRES_PASSWORD)
+$database = [uri]::EscapeDataString($dotenv.POSTGRES_DB)
+$port = $dotenv.POSTGRES_PORT
+$env:INCIDENT_AWARENESS_DATABASE_URL = "postgresql://${user}:${password}@127.0.0.1:${port}/${database}"
+
+try {
+    uv run pytest tests/integration/test_postgres_repositories.py
+} finally {
+    Remove-Item Env:INCIDENT_AWARENESS_DATABASE_URL
+}
 ```
 
 컨테이너만 멈출 때는 다음 명령을 사용한다. named volume은 유지된다.
