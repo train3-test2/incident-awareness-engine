@@ -19,6 +19,9 @@ MIGRATION_PATH = (
     / "001_first_cycle.sql"
 )
 RUN_ID = "RUN-20260912-998"
+EVENT_ID = "evt-001"
+ENTITY_ID = "WIN-01"
+DECISION_ID = "DEC-001"
 TIMESTAMP = datetime(2026, 9, 12, 1, tzinfo=UTC)
 
 
@@ -69,10 +72,28 @@ def migration_connection(database_url: str) -> psycopg.Connection[tuple[object, 
         connection.close()
 
 
-@pytest.mark.parametrize("payload", [{}, {"event_id": None, "run_id": None}])
-def test_events_reject_missing_or_null_payload_identifiers(
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"run_id": RUN_ID},
+        {"event_id": None, "run_id": RUN_ID},
+        {"event_id": "evt-other", "run_id": RUN_ID},
+        {"event_id": EVENT_ID},
+        {"event_id": EVENT_ID, "run_id": None},
+        {"event_id": EVENT_ID, "run_id": "RUN-20260912-997"},
+    ],
+    ids=(
+        "event_id-missing",
+        "event_id-null",
+        "event_id-mismatch",
+        "run_id-missing",
+        "run_id-null",
+        "run_id-mismatch",
+    ),
+)
+def test_events_reject_invalid_payload_identifiers(
     migration_connection: psycopg.Connection[tuple[object, ...]],
-    payload: dict[str, None],
+    payload: dict[str, str | None],
 ) -> None:
     _assert_check_violation(
         migration_connection,
@@ -80,14 +101,32 @@ def test_events_reject_missing_or_null_payload_identifiers(
         INSERT INTO events (event_id, run_id, timestamp, host_id, event_type, payload)
         VALUES (%s, %s, %s, %s, %s, %s)
         """,
-        ("evt-001", RUN_ID, TIMESTAMP, "WIN-01", "process_create", Jsonb(payload)),
+        (EVENT_ID, RUN_ID, TIMESTAMP, ENTITY_ID, "process_create", Jsonb(payload)),
     )
 
 
-@pytest.mark.parametrize("payload", [{}, {"run_id": None, "entity_id": None}])
-def test_fusion_results_reject_missing_or_null_payload_identifiers(
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"entity_id": ENTITY_ID},
+        {"run_id": None, "entity_id": ENTITY_ID},
+        {"run_id": "RUN-20260912-997", "entity_id": ENTITY_ID},
+        {"run_id": RUN_ID},
+        {"run_id": RUN_ID, "entity_id": None},
+        {"run_id": RUN_ID, "entity_id": "WIN-02"},
+    ],
+    ids=(
+        "run_id-missing",
+        "run_id-null",
+        "run_id-mismatch",
+        "entity_id-missing",
+        "entity_id-null",
+        "entity_id-mismatch",
+    ),
+)
+def test_fusion_results_reject_invalid_payload_identifiers(
     migration_connection: psycopg.Connection[tuple[object, ...]],
-    payload: dict[str, None],
+    payload: dict[str, str | None],
 ) -> None:
     _assert_check_violation(
         migration_connection,
@@ -95,14 +134,32 @@ def test_fusion_results_reject_missing_or_null_payload_identifiers(
         INSERT INTO fusion_results (run_id, entity_id, fusion_status, fusion_time, payload)
         VALUES (%s, %s, %s, %s, %s)
         """,
-        (RUN_ID, "WIN-01", "miss", None, Jsonb(payload)),
+        (RUN_ID, ENTITY_ID, "miss", None, Jsonb(payload)),
     )
 
 
-@pytest.mark.parametrize("payload", [{}, {"run_id": None, "entity_id": None}])
-def test_detection_results_reject_missing_or_null_payload_identifiers(
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"entity_id": ENTITY_ID},
+        {"run_id": None, "entity_id": ENTITY_ID},
+        {"run_id": "RUN-20260912-997", "entity_id": ENTITY_ID},
+        {"run_id": RUN_ID},
+        {"run_id": RUN_ID, "entity_id": None},
+        {"run_id": RUN_ID, "entity_id": "WIN-02"},
+    ],
+    ids=(
+        "run_id-missing",
+        "run_id-null",
+        "run_id-mismatch",
+        "entity_id-missing",
+        "entity_id-null",
+        "entity_id-mismatch",
+    ),
+)
+def test_detection_results_reject_invalid_payload_identifiers(
     migration_connection: psycopg.Connection[tuple[object, ...]],
-    payload: dict[str, None],
+    payload: dict[str, str | None],
 ) -> None:
     _assert_check_violation(
         migration_connection,
@@ -117,17 +174,42 @@ def test_detection_results_reject_missing_or_null_payload_identifiers(
         )
         VALUES (%s, %s, %s, %s, %s, %s)
         """,
-        (RUN_ID, "WIN-01", "detected", TIMESTAMP, "hayabusa", Jsonb(payload)),
+        (RUN_ID, ENTITY_ID, "detected", TIMESTAMP, "hayabusa", Jsonb(payload)),
     )
 
 
 @pytest.mark.parametrize(
     "payload",
-    [{}, {"decision_id": None, "run_id": None, "entity_id": None}],
+    [
+        {"run_id": RUN_ID, "entity_id": ENTITY_ID},
+        {"decision_id": None, "run_id": RUN_ID, "entity_id": ENTITY_ID},
+        {"decision_id": "DEC-OTHER", "run_id": RUN_ID, "entity_id": ENTITY_ID},
+        {"decision_id": DECISION_ID, "entity_id": ENTITY_ID},
+        {"decision_id": DECISION_ID, "run_id": None, "entity_id": ENTITY_ID},
+        {
+            "decision_id": DECISION_ID,
+            "run_id": "RUN-20260912-997",
+            "entity_id": ENTITY_ID,
+        },
+        {"decision_id": DECISION_ID, "run_id": RUN_ID},
+        {"decision_id": DECISION_ID, "run_id": RUN_ID, "entity_id": None},
+        {"decision_id": DECISION_ID, "run_id": RUN_ID, "entity_id": "WIN-02"},
+    ],
+    ids=(
+        "decision_id-missing",
+        "decision_id-null",
+        "decision_id-mismatch",
+        "run_id-missing",
+        "run_id-null",
+        "run_id-mismatch",
+        "entity_id-missing",
+        "entity_id-null",
+        "entity_id-mismatch",
+    ),
 )
-def test_decisions_reject_missing_or_null_payload_identifiers(
+def test_decisions_reject_invalid_payload_identifiers(
     migration_connection: psycopg.Connection[tuple[object, ...]],
-    payload: dict[str, None],
+    payload: dict[str, str | None],
 ) -> None:
     _assert_check_violation(
         migration_connection,
@@ -142,7 +224,7 @@ def test_decisions_reject_missing_or_null_payload_identifiers(
         )
         VALUES (%s, %s, %s, %s, %s, %s)
         """,
-        ("DEC-001", RUN_ID, "WIN-01", "miss", "miss", Jsonb(payload)),
+        (DECISION_ID, RUN_ID, ENTITY_ID, "miss", "miss", Jsonb(payload)),
     )
 
 
