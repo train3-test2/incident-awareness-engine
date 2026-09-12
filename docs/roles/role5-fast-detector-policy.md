@@ -861,10 +861,57 @@ Rule hit
 
 - detector_time은 해당 평가 단계에서 고정한 detector set과 qualifying condition을 기준으로 계산한다 (R1 provisional / test final).
 - qualifying condition을 만족하지 않는 Rule hit는 detector_time 계산에 사용하지 않는다.
-- 동일 Run에서 qualifying hit가 여러 번 발생하면 최초 qualifying hit의 시각을 사용한다.
+- 최초 시각은 아래 집계 범위 안에서 선택하며, 서로 다른 entity 또는 comparator configuration을 섞지 않는다.
 - qualifying hit가 없으면 detector_time은 null로 처리한다.
 - 원본 Rule hit trace는 detector_time 계산과 별도로 보존한다.
 - detector set 또는 qualifying condition이 변경되면 동일 입력에서도 detector_time이 달라질 수 있으므로 version을 함께 기록한다.
+
+### detector_time 집계 범위와 hit provenance
+
+개별 qualifying hit는 `FastHitRecord.timestamp`로 모두 보존한다. 아래 최초 시각은
+동일 `run_id`, 동일 canonical `entity_id`, 동일 평가 단계의 고정 comparator set/configuration
+안에서만 선택한다. 여러 host의 hit를 Run 전체 최솟값으로 합치지 않는다.
+
+- detector/Rule별 진단 결과: 해당 detector/Rule의 qualifying hit 중 최초 시각을 기록한다.
+- Fast set 비교 결과: 같은 범위에서 채택된 set의 qualifying hit 중 최초 시각을 선택한다.
+  이때 결과의 detector/Rule metadata는 선택한 hit와 대응해야 한다.
+- 서로 다른 set/configuration의 실행은 별도 비교 결과로 유지한다.
+- 동시각 hit가 여러 개이면 최초 시각 자체는 같지만 대표 hit 선택과 출력 건수는
+  Fast Adapter 계약에서 역할 3·5가 확정한다. 이 문서에서 임의의 tie-break를 만들지 않는다.
+
+위 구분을 실제 `DetectionResult` 출력 단위 및 set 결과 집계 위치에 연결하는 규칙은
+역할 3·5의 Adapter 연동에서 확인하고 R1 provisional freeze 전에 고정한다.
+현재 후보 초안을 확정된 runtime 집계 구현으로 해석하지 않는다.
+`native_host_id`를 canonical `entity_id`로 매핑하는 책임은 Fast Adapter에 있으며,
+매핑 전 hit를 다른 host의 결과에 합치지 않는다.
+
+`hit_id`는 최초 결과만을 식별하는 키가 아니라 개별 qualifying hit의 provenance 키다.
+First Cycle의 임시 표기는 `{run_id}-hit-{source_row_index}`이며, 원본 Hayabusa 출력 행 순서를
+사용하므로 재실행 시 행 순서가 바뀌면 안정성을 보장하지 않는다. 정본은
+[공통 결과 Contract의 FastHitRecord 절](../schema/result-contracts.md)과
+[Data Contract v0.2의 FastHitRecord 절](../data-contract-v0.2.md)이다.
+행 번호 기준, 여러 trace를 같은 Run에 연결할 때의 충돌 방지 및 최종 생성 규칙은
+역할 3·5가 Adapter 구현 전에 맞춘다. 모든 유효한 hit는 최초 결과 선택 이후에도
+`source_hit_id` 등의 provenance 표현으로 추적 가능해야 한다.
+
+### detector set과 실행 configuration의 버전 연결
+
+| 필드 | 출처와 의미 |
+| --- | --- |
+| `RunMetadata.detector_set_version` | 해당 Run에 사용할 사전 고정 set의 식별자. RunMetadata가 Run 단위 참조의 정본이며, 역할 5의 동결 artifact와 연결한다. |
+| `FastHitRecord.detector_config_version` | Fast runner가 실제 적용한 실행 configuration의 버전. Rule load 설정과 qualifying filter를 포함한 실행 artifact를 식별한다. |
+| `DecisionResult.detector_set_version` | 해당 RunMetadata가 참조하는 set 버전을 전달한다. 개별 hit의 config 문자열을 set 버전으로 대신 사용하지 않는다. |
+
+set과 config 버전은 서로 같은 문자열이라고 가정하지 않는다. 동결 artifact에서
+set 버전과 허용된 Rule/config 버전의 대응을 추적할 수 있어야 한다.
+qualifying condition 또는 Rule load 설정이 바뀌면 실행 configuration 변경으로 기록하고,
+이를 포함하는 comparator set의 변경도 새 동결 artifact로 구분한다. 기존 버전의 의미를
+덮어쓰거나 R1 결과를 보고 기존 configuration에 조건을 추가하지 않는다.
+
+현재 동결 artifact의 저장 형식·발급 주체 간 전달 절차·Adapter의 버전 불일치 검증 위치는
+아직 확정하지 않았다. 역할 3·5가 R1 provisional freeze 전에 이 연결을 확정하고,
+실제 Run의 set에 속하지 않는 configuration을 같은 comparator 결과로 집계하지 않는다.
+초안 단계의 nullable set 버전을 임의로 채우지 않는다.
 
 ### Raw timestamp와 canonical 결과의 경계
 
@@ -894,11 +941,12 @@ Fast Detection에서는 동일 Run 내에서 동일 detector가 반복적으로 
 현재 PoC에서는 다음 원칙만 적용한다.
 
 - 원본 Rule hit trace는 모두 보존한다.
-- detector_time 계산에는 qualifying hit 중 최초 시각을 사용한다.
+- detector_time의 최초 시각은 §14의 Run/entity/set/configuration 범위에서 선택한다.
 - 동일 이벤트에 대해 여러 Rule이 동시에 hit할 수 있으므로
   raw Rule hit와 detector-level 결과는 구분한다.
-- episode 구분은 `run_id + entity_id + alert_key + cooldown` 기준을 사용한다.
-- cooldown 값과 episode 경계의 최종 정의는 별도 평가 설계와 맞춰 확정한다.
+- cooldown은 episode 식별자가 아니라 episode 경계 계산에 쓰일 수 있는 설정값이다.
+- episode/cooldown 세부 규칙은 후속 공통 평가 계약을 따른다. 이 문서의 후보 조사에서는
+  cooldown을 hit 식별자 또는 detector_time 계산 규칙으로 적용하지 않는다.
 - cooldown 기반 Recall/TTSD 계산 규칙은 현재 미확정이며,
   이 문서에서 임의로 정의하지 않는다.
 
@@ -925,6 +973,7 @@ episode/cooldown의 세부 평가 정의는 후속 단계에서 확정한다.
 - [ ] ADMIN$ Rule compatibility 처리 방향 확정
 - [ ] 동일 이벤트 중복 Rule hit 처리 기준 확정
 - [ ] 실제 Rule/ruleset/config identity 및 전체 재현 command/options 기록
+- [ ] 역할 3·5: DetectionResult 출력 단위·동시각 대표 hit·hit_id trace 충돌 방지 및 set/config 버전 연결 확정
 - [ ] R1 실행 전 provisional comparator set/version 고정
 - [ ] validation에서 최종 detector set 및 qualifying condition 선택
 - [ ] test 실행 전 final freeze
