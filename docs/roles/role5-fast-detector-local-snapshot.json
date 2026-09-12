@@ -1,0 +1,188 @@
+{
+  "purpose": "local-reproducibility-snapshot",
+  "captured_at_utc": "2026-09-11T02:41:21.829711+00:00",
+  "scope": "Current local binary, four candidate/reference rules, and all files under config/ and rules/config/. Not a full ruleset snapshot or detector policy freeze.",
+  "installation_directory": "hayabusa-4.0.0-mac-aarch64",
+  "artifacts": [
+    {
+      "path": "hayabusa-4.0.0-mac-aarch64",
+      "sha256": "e8b02a0908920f656e99d4968ca4a3d382942158679ab371ac2db103c27ebe83"
+    },
+    {
+      "path": "rules/hayabusa/builtin/Security/Default/Sec_1102_High_SecLogCleared.yml",
+      "sha256": "fea584e5d6aade962adcc9a96c70e3e85ead3c41ae2edd2af55fb70bcd8fe5fe"
+    },
+    {
+      "path": "rules/sigma/builtin/security/win_security_audit_log_cleared.yml",
+      "sha256": "494bc48632d11ce45a25d4788e1c8c6daabba30a965fdd18ce25dffe4d1b1684"
+    },
+    {
+      "path": "rules/sigma/sysmon/process_creation/proc_creation_win_powershell_base64_encoded_cmd.yml",
+      "sha256": "1c2784490324e20858273dc3d6ca61f3ece931e43f5aa4217f97951d1db71393"
+    },
+    {
+      "path": "rules/sigma/builtin/security/win_security_admin_share_access.yml",
+      "sha256": "dad3ed486a2021ff5e268d8f434754175f6bc0b30e6bdd1a66925eb0e675285d"
+    },
+    {
+      "path": "config/critical_systems.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "config/default_profile.yaml",
+      "sha256": "a9e9e7a57fa0ae951e7944ab6946f7fe8f3a8e30dba602b2a43a148ec92a4b32"
+    },
+    {
+      "path": "config/default_profile_name.txt",
+      "sha256": "fe6d3468cf5c74d8ec2a95b40f2e05338c37a4202f8fad692d2b64a9cf9b468a"
+    },
+    {
+      "path": "config/expand/.gitignore",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "config/html_report/background_image.jpg",
+      "sha256": "bd03c66f75aa392362b05f6f7e66416ba919c3f7e3be2edb500582b699d7990d"
+    },
+    {
+      "path": "config/html_report/favicon.png",
+      "sha256": "8e3ad22783ea81428207c5411750790d64bbf4a4688661d7443820586c584486"
+    },
+    {
+      "path": "config/html_report/hayabusa_report.css",
+      "sha256": "95a9b3b1151dacc88e4be2d0acbd01495bc778a4f33bc8573f85f2b4969e7f1f"
+    },
+    {
+      "path": "config/html_report/logo.png",
+      "sha256": "5650ad1d08caab4c4c144ec4404be77943b7dc732c8fa31df919efeea5feec2a"
+    },
+    {
+      "path": "config/level_color.txt",
+      "sha256": "6e7dea77bb83ecbacdbd48ca4d09b0ac43f47a1e5af37b0aed1d399eb50a8792"
+    },
+    {
+      "path": "config/mitre_tactics.txt",
+      "sha256": "2b502eb9d0382bd00f9a9cae662da87d73a89de248c62e2369c79869321ad45c"
+    },
+    {
+      "path": "config/profiles.yaml",
+      "sha256": "c6087e86f99f7d0b34aaafbb7423dfa6a65b92a203e170c9011c3523edf26a73"
+    },
+    {
+      "path": "rules/config/channel_abbreviations.txt",
+      "sha256": "b1681ceae2f6f45d2ed2196ac64d34a9badd894629f8f630e7d95bb4fb2a46df"
+    },
+    {
+      "path": "rules/config/channel_eid_info.txt",
+      "sha256": "c9dcf60960ba5c0cd2d95575c39c204da0b8192697cf1180da160d6f531c2a39"
+    },
+    {
+      "path": "rules/config/closing_messages.txt",
+      "sha256": "97879a3f9e0700aa86fe5a26e4a365aa30c9042a187361d1a2a2ef7d6e305ed9"
+    },
+    {
+      "path": "rules/config/data_mapping/Application_1022-1033_MSI-Install.yaml",
+      "sha256": "0263efa66f0398c25579ae30d9ad6a31760664e6a78704b85017a56ddc01f328"
+    },
+    {
+      "path": "rules/config/data_mapping/Security_4624_SuccessfulLogon.yaml",
+      "sha256": "e46fc2077d939033402616d5017c7500200982df56044931a58929ac3baf7a97"
+    },
+    {
+      "path": "rules/config/data_mapping/Security_4625_FailedLogon.yaml",
+      "sha256": "c8928b1c0d6d07a1c92403f16a9a5c4e043e3bc906d35ba7b4561f04504cc0fc"
+    },
+    {
+      "path": "rules/config/data_mapping/Security_4674_ObjectAccessAttempt.yaml",
+      "sha256": "f375e691d6dbc96e1100c17fec289de70b421c0dd8e9737c7c7796935eaccc50"
+    },
+    {
+      "path": "rules/config/data_mapping/Security_4688_ProcessCreation.yaml",
+      "sha256": "17033c1d3b762b3cc49e85936144323901b3c7e94c986a9ba0fafbf14f98dfc2"
+    },
+    {
+      "path": "rules/config/data_mapping/Security_4719_AuditPolicyChanged.yaml",
+      "sha256": "4e112e14d57f7b2af4a73913c20f3ba3487cb63a210a594a77fbe28112792dbb"
+    },
+    {
+      "path": "rules/config/data_mapping/Security_4720_UserAccountCreated.yaml",
+      "sha256": "a98c76d0edaf4e4d81922af3f7720979de3d46dd93632209eb3805ac87c972e2"
+    },
+    {
+      "path": "rules/config/data_mapping/Security_4741_ComputerAccountCreated.yaml",
+      "sha256": "2405abdd42ed4002de6b8aaf9a87ec941b89eea8400cbf6942f94923d10d3191"
+    },
+    {
+      "path": "rules/config/data_mapping/Security_5140_NetShareAccess.yaml",
+      "sha256": "6169b2191a30fd1a3e4756e4da44bb0da9748fe85549470344ab393793335c94"
+    },
+    {
+      "path": "rules/config/data_mapping/Security_5145_NetShareFileAccess.yaml",
+      "sha256": "9f04788b19749f255e9b1b48f6be71d65562e3b9a8fa536e47a298d19ca69928"
+    },
+    {
+      "path": "rules/config/data_mapping/Security_5157_NetConnBlocked.yaml",
+      "sha256": "7de9361cf5ccacdd2068dc0b45048b7c27a1f513efd3cbf51e392a59908fc967"
+    },
+    {
+      "path": "rules/config/data_mapping/System_7023_ServiceTerminated.yaml",
+      "sha256": "2bca97011a77e0c58a63c0986bfdec51f4d4a0efe1816aecd16484e5cb598f33"
+    },
+    {
+      "path": "rules/config/default_details.txt",
+      "sha256": "4498c89250ced73bef0a80eab17b335047e5ab9bbcf5943c0bd30079162b5d94"
+    },
+    {
+      "path": "rules/config/eventkey_alias.txt",
+      "sha256": "b841fd988a28df75174fbbb529b8a58309982a34b858c5f7e9f606c8697afc08"
+    },
+    {
+      "path": "rules/config/exclude_rules.txt",
+      "sha256": "22d8f73fb8ad20b31827add274feb31479b8ae80a9a462ff813e400772f42b50"
+    },
+    {
+      "path": "rules/config/generic_abbreviations.txt",
+      "sha256": "7a96aac86809df798a7f8d4ee24490418e723550f44af5cbfb6405169b538634"
+    },
+    {
+      "path": "rules/config/geoip_field_mapping.yaml",
+      "sha256": "f726b46d28eb5fa736d0e9fc38d169438031a2ce53d970f5f2cf7cdb48e3fcf6"
+    },
+    {
+      "path": "rules/config/level_tuning.txt",
+      "sha256": "267fc5bad711f2c8c7f8a4f05964f2978bb9fd0c970a2be9b643a8d1be20adaf"
+    },
+    {
+      "path": "rules/config/noisy_rules.txt",
+      "sha256": "c62f979d9acd5cc8f44ea84bcd36d78f22253290d1e24eb636a6e3343cf64c10"
+    },
+    {
+      "path": "rules/config/opening_messages.txt",
+      "sha256": "eacfdd13e1d9bc16573352d7ebeff37bd5f23e070797e24f106e9863672b6370"
+    },
+    {
+      "path": "rules/config/pivot_keywords.txt",
+      "sha256": "9d24bcbe016f0253f5e257eb72943b2a6b555dc5027d2ff64bf6652383945dbc"
+    },
+    {
+      "path": "rules/config/proven_rules.txt",
+      "sha256": "f93b4ff3522155fd9f0cc14d6985cc1045721ac1b54c3b28ecef2bd99ec68fdb"
+    },
+    {
+      "path": "rules/config/provider_abbreviations.txt",
+      "sha256": "d11369f83f74616f8b44aaf4706fec404a0b81bc6ba8fd2d33d3a55256e4f887"
+    },
+    {
+      "path": "rules/config/target_event_IDs.txt",
+      "sha256": "666c4f1d6b475066f6626449a823ba9143afef9de1f3bc4a97b82f3508ed9521"
+    },
+    {
+      "path": "rules/config/windash_characters.txt",
+      "sha256": "f4507784c9d8e99378dc985414709985659c59ed4af9d6f38d4cf10740e4535c"
+    },
+    {
+      "path": "rules/config/windows_versions.csv",
+      "sha256": "d9b3b9f12d5c511229b35fa52abca5c6289b59ef1370186441e55431ff5a8fef"
+    }
+  ]
+}
