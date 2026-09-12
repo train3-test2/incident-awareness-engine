@@ -84,7 +84,9 @@ docker compose ps
 있다. `POSTGRES_PASSWORD`와 `INCIDENT_AWARENESS_DATABASE_URL`은 저장소에
 추가하지 않는다.
 
-Repository 통합 테스트는 다음처럼 연결 URL을 현재 PowerShell 세션에만 설정해 실행한다.
+Repository 통합 테스트는 일반 개발 DB가 아닌 테스트용 연결 URL만 사용한다.
+`TEST_DATABASE_URL`의 DB 이름에는 `test`가 포함되어야 한다. 불가피하게 다른 이름의
+로컬 테스트 DB를 사용할 때만 `INCIDENT_AWARENESS_TEST_DATABASE=true`를 명시해 실행한다.
 URL에 포함하는 사용자 이름, 비밀번호, 데이터베이스 이름은 URI 인코딩해야 한다.
 
 ```powershell
@@ -99,12 +101,14 @@ $user = [uri]::EscapeDataString($dotenv.POSTGRES_USER)
 $password = [uri]::EscapeDataString($dotenv.POSTGRES_PASSWORD)
 $database = [uri]::EscapeDataString($dotenv.POSTGRES_DB)
 $port = $dotenv.POSTGRES_PORT
-$env:INCIDENT_AWARENESS_DATABASE_URL = "postgresql://${user}:${password}@127.0.0.1:${port}/${database}"
+$env:TEST_DATABASE_URL = "postgresql://${user}:${password}@127.0.0.1:${port}/${database}"
+$env:INCIDENT_AWARENESS_TEST_DATABASE = "true"
 
 try {
     uv run pytest tests/integration/test_postgres_repositories.py
 } finally {
-    Remove-Item Env:INCIDENT_AWARENESS_DATABASE_URL
+    Remove-Item Env:TEST_DATABASE_URL
+    Remove-Item Env:INCIDENT_AWARENESS_TEST_DATABASE
 }
 ```
 

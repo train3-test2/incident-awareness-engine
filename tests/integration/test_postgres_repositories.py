@@ -1,5 +1,6 @@
 import os
 from datetime import UTC, datetime
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 import psycopg
@@ -25,13 +26,27 @@ from incident_awareness.storage.repositories.result_repository import (
 )
 from incident_awareness.storage.repositories.run_repository import RunRepository
 
+TEST_DATABASE_URL_ENV = "TEST_DATABASE_URL"
+TEST_DATABASE_MARKER_ENV = "INCIDENT_AWARENESS_TEST_DATABASE"
+
 
 @pytest.fixture
 def database_url() -> str:
-    if DATABASE_URL_ENV not in os.environ:
-        pytest.skip(f"{DATABASE_URL_ENV}가 설정된 PostgreSQL에서만 실행합니다.")
+    url = os.environ.get(TEST_DATABASE_URL_ENV)
+    if not url:
+        pytest.skip(f"{TEST_DATABASE_URL_ENV}이 설정된 PostgreSQL에서만 실행합니다.")
 
-    return DatabaseConfig.from_environment().url
+    DatabaseConfig.from_environment({DATABASE_URL_ENV: url})
+
+    database_name = unquote(urlparse(url).path).strip("/").lower()
+    is_explicitly_marked = os.environ.get(TEST_DATABASE_MARKER_ENV, "").lower() == "true"
+    if "test" not in database_name and not is_explicitly_marked:
+        pytest.skip(
+            "통합 테스트는 이름에 'test'가 포함된 DB 또는 "
+            f"{TEST_DATABASE_MARKER_ENV}=true가 필요합니다."
+        )
+
+    return url
 
 
 def test_postgres_repositories_store_and_restore_first_cycle_contracts(database_url: str) -> None:
