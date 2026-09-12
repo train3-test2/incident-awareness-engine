@@ -32,8 +32,8 @@ CREATE TABLE events (
     CHECK (btrim(host_id) <> ''),
     CHECK (btrim(event_type) <> ''),
     CHECK (jsonb_typeof(payload) = 'object'),
-    CHECK (payload ->> 'event_id' = event_id),
-    CHECK (payload ->> 'run_id' = run_id)
+    CHECK (payload ->> 'event_id' IS NOT DISTINCT FROM event_id),
+    CHECK (payload ->> 'run_id' IS NOT DISTINCT FROM run_id)
 );
 
 CREATE TABLE fusion_results (
@@ -50,8 +50,8 @@ CREATE TABLE fusion_results (
         OR (fusion_status IN ('miss', 'not_evaluated') AND fusion_time IS NULL)
     ),
     CHECK (jsonb_typeof(payload) = 'object'),
-    CHECK (payload ->> 'run_id' = run_id),
-    CHECK (payload ->> 'entity_id' = entity_id)
+    CHECK (payload ->> 'run_id' IS NOT DISTINCT FROM run_id),
+    CHECK (payload ->> 'entity_id' IS NOT DISTINCT FROM entity_id)
 );
 
 CREATE TABLE detection_results (
@@ -69,8 +69,8 @@ CREATE TABLE detection_results (
         OR (detector_status IN ('miss', 'not_evaluated') AND detector_time IS NULL)
     ),
     CHECK (jsonb_typeof(payload) = 'object'),
-    CHECK (payload ->> 'run_id' = run_id),
-    CHECK (payload ->> 'entity_id' = entity_id)
+    CHECK (payload ->> 'run_id' IS NOT DISTINCT FROM run_id),
+    CHECK (payload ->> 'entity_id' IS NOT DISTINCT FROM entity_id)
 );
 
 CREATE TABLE decisions (
@@ -89,9 +89,9 @@ CREATE TABLE decisions (
     CHECK (btrim(decision_id) <> ''),
     CHECK (btrim(entity_id) <> ''),
     CHECK (jsonb_typeof(payload) = 'object'),
-    CHECK (payload ->> 'decision_id' = decision_id),
-    CHECK (payload ->> 'run_id' = run_id),
-    CHECK (payload ->> 'entity_id' = entity_id)
+    CHECK (payload ->> 'decision_id' IS NOT DISTINCT FROM decision_id),
+    CHECK (payload ->> 'run_id' IS NOT DISTINCT FROM run_id),
+    CHECK (payload ->> 'entity_id' IS NOT DISTINCT FROM entity_id)
 );
 
 CREATE INDEX events_run_id_timestamp_idx ON events (run_id, timestamp);
