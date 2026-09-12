@@ -1,4 +1,5 @@
 import json
+import logging
 import shlex
 from collections.abc import Mapping
 from ipaddress import ip_address
@@ -8,6 +9,8 @@ from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.common.models.evidence import Evidence
 
 EXTRACTOR_VERSION = "s0-v0.1"
+
+_LOGGER = logging.getLogger(__name__)
 
 _POWERSHELL_PROCESS_NAMES = frozenset({"powershell.exe", "pwsh.exe"})
 _SCRIPT_INTERPRETER_PROCESS_NAMES = frozenset(
@@ -19,7 +22,8 @@ _SCRIPT_INTERPRETER_PROCESS_NAMES = frozenset(
         "cscript.exe",
     }
 )
-_ENCODED_COMMAND_OPTIONS = frozenset({"-enc", "-encodedcommand"})
+_ENCODED_COMMAND_OPTIONS = frozenset({"-e", "-ec", "-enc", "-encodedcommand"})
+_POWERSHELL_FILE_OPTION = "-file"
 
 
 def extract_evidence(event: NormalizedEvent) -> list[Evidence]:
@@ -30,6 +34,7 @@ def extract_evidence(event: NormalizedEvent) -> list[Evidence]:
     event_data = event.model_dump()
     event_type = event_data.get("event_type")
 
+    # 현재 S0 Evidence 규칙은 서로 다른 event_type을 사용하므로 한 Event에서 복수 규칙이 동시에 매치되지 않는다.
     if event_type == "process_create":
         evidence = _extract_encoded_powershell_command(event_data)
     elif event_type == "network_connection":
@@ -55,7 +60,10 @@ def _extract_encoded_powershell_command(
     if command_line is None:
         return None
 
-    matched_option = _find_encoded_command_option(command_line)
+    matched_option = _find_encoded_command_option(
+        command_line,
+        event_id=_string_value(event, "event_id"),
+    )
     if matched_option is None:
         return None
 
@@ -88,6 +96,13 @@ def _extract_script_interpreter_external_connection(
     try:
         destination_ip = ip_address(destination.strip())
     except ValueError:
+        # DNS 해석은 상위 정규화 단계의 책임이며 Evidence Extractor에서는 수행하지 않는다.
+        _LOGGER.warning(
+            "Skipping external-connection detection for event_id=%s because dst_ip=%r "
+            "is not an IP literal; DNS resolution is unsupported.",
+            event.get("event_id"),
+            destination,
+        )
         return None
 
     if not destination_ip.is_global or destination_ip.is_multicast:
@@ -107,14 +122,30 @@ def _extract_script_interpreter_external_connection(
     )
 
 
-def _find_encoded_command_option(command_line: str) -> str | None:
+def _find_encoded_command_option(
+    command_line: str,
+    *,
+    event_id: str | None,
+) -> str | None:
     try:
         tokens = shlex.split(command_line, posix=False)
-    except ValueError:
+    except ValueError as error:
+        # 외부 Evidence 계약을 바꾸지 않고도 비정상 입력의 원인을 확인할 수 있게 남긴다.
+        _LOGGER.warning(
+            "Skipping encoded PowerShell detection for event_id=%s because command-line "
+            "parsing failed: %s",
+            event_id,
+            error,
+        )
         return None
 
     for token in tokens:
         normalized_token = _strip_matching_quotes(token).casefold()
+
+        # -File 뒤의 토큰은 PowerShell 호스트 옵션이 아니라 스크립트 경로와 인자다.
+        if normalized_token == _POWERSHELL_FILE_OPTION:
+            return None
+
         if normalized_token in _ENCODED_COMMAND_OPTIONS:
             return normalized_token
 

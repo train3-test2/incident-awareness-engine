@@ -1,5 +1,6 @@
 import copy
 import json
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -233,6 +234,142 @@ def test_extracts_encoded_powershell_from_normalized_event() -> None:
     assert event.source_event_id not in evidence.event_ids
 
 
+@pytest.mark.parametrize(
+    ("process_name", "command_line", "expected_option"),
+    [
+        (
+            "powershell.exe",
+            "powershell.exe -enc SQBFAFgA",
+            "-enc",
+        ),
+        (
+            "pwsh.exe",
+            "pwsh.exe -e SQBFAFgA",
+            "-e",
+        ),
+        (
+            "pwsh.exe",
+            "pwsh.exe -ec SQBFAFgA",
+            "-ec",
+        ),
+        (
+            "pwsh.exe",
+            "pwsh.exe -EncodedCommand SQBFAFgA",
+            "-encodedcommand",
+        ),
+        (
+            "pwsh.exe",
+            'pwsh.exe "-EncodedCommand" SQBFAFgA',
+            "-encodedcommand",
+        ),
+    ],
+    ids=["enc", "e", "ec", "encoded-command", "quoted-encoded-command"],
+)
+def test_supported_encoded_powershell_options(
+    process_name: str,
+    command_line: str,
+    expected_option: str,
+) -> None:
+    # Given
+    event = _normalized_event(
+        event_id=f"EVT-OPTION-{expected_option.removeprefix('-').upper()}",
+        event_type="process_create",
+        process=ProcessInfo(
+            name=process_name,
+            command_line=command_line,
+        ),
+    )
+
+    # When
+    (evidence,) = extract_evidence(event)
+
+    # Then
+    assert evidence.evidence_type == "encoded_powershell_command"
+    assert evidence.features["matched_option"] == expected_option
+
+
+@pytest.mark.parametrize(
+    ("process_name", "command_line"),
+    [
+        (
+            "powershell.exe",
+            "powershell.exe -File deploy.ps1 -enc AES256",
+        ),
+        (
+            "powershell.exe",
+            "powershell.exe -FILE deploy.ps1 -ec AES256",
+        ),
+        (
+            "pwsh.exe",
+            "pwsh.exe /enc SQBFAFgA",
+        ),
+        (
+            "pwsh.exe",
+            "pwsh.exe -EncodedCommand:SQBFAFgA",
+        ),
+        (
+            "powershell.exe",
+            "powershell.exe -encoding utf8",
+        ),
+        (
+            "powershell.exe",
+            "powershell.exe Write-Output value-enc-test",
+        ),
+    ],
+    ids=[
+        "file-context",
+        "file-context-case-insensitive",
+        "slash-enc",
+        "encoded-command-colon",
+        "encoding",
+        "embedded-substring",
+    ],
+)
+def test_unsupported_or_non_host_encoded_options_do_not_extract_evidence(
+    process_name: str,
+    command_line: str,
+) -> None:
+    # Given
+    event = _normalized_event(
+        event_id="EVT-UNSUPPORTED-OPTION-001",
+        event_type="process_create",
+        process=ProcessInfo(
+            name=process_name,
+            command_line=command_line,
+        ),
+    )
+
+    # When
+    evidences = extract_evidence(event)
+
+    # Then
+    assert evidences == []
+
+
+def test_malformed_command_line_logs_diagnostic(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Given
+    event = _normalized_event(
+        event_id="EVT-MALFORMED-COMMAND-001",
+        event_type="process_create",
+        process=ProcessInfo(
+            name="pwsh.exe",
+            command_line='pwsh.exe -enc "unterminated',
+        ),
+    )
+
+    # When
+    with caplog.at_level(logging.WARNING, logger="incident_awareness.evidence.extractor"):
+        evidences = extract_evidence(event)
+
+    # Then
+    assert evidences == []
+    assert "event_id=EVT-MALFORMED-COMMAND-001" in caplog.text
+    assert "command-line parsing failed" in caplog.text
+    assert "No closing quotation" in caplog.text
+
+
 def test_extracts_external_connection_from_normalized_event() -> None:
     # Given
     event = _normalized_event(
@@ -267,6 +404,37 @@ def test_extracts_external_connection_from_normalized_event() -> None:
     assert evidence.run_id == event.run_id
     assert evidence.derived_from_source_layer == event.source_layer
     assert event.source_event_id not in evidence.event_ids
+
+
+@pytest.mark.parametrize(
+    "destination",
+    ["example.com", "not-an-ip"],
+    ids=["hostname", "invalid-ip"],
+)
+def test_non_ip_destination_logs_unsupported_diagnostic(
+    caplog: pytest.LogCaptureFixture,
+    destination: str,
+) -> None:
+    # Given
+    event = _normalized_event(
+        event_id="EVT-HOSTNAME-DESTINATION-001",
+        event_type="network_connection",
+        process=ProcessInfo(name="cscript.exe"),
+        network=NetworkInfo(
+            dst_ip=destination,
+            dst_port=443,
+        ),
+    )
+
+    # When
+    with caplog.at_level(logging.WARNING, logger="incident_awareness.evidence.extractor"):
+        evidences = extract_evidence(event)
+
+    # Then
+    assert evidences == []
+    assert "event_id=EVT-HOSTNAME-DESTINATION-001" in caplog.text
+    assert f"dst_ip={destination!r} is not an IP literal" in caplog.text
+    assert "DNS resolution is unsupported" in caplog.text
 
 
 @pytest.mark.parametrize(
