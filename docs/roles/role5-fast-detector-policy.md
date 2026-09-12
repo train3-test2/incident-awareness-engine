@@ -954,7 +954,11 @@ Fast Detection에서는 동일 Run 내에서 동일 detector가 반복적으로 
 "어떤 Rule hit가 qualifying hit가 되는가"까지를 주 범위로 하고,
 episode/cooldown의 세부 평가 정의는 후속 단계에서 확정한다.
 
-## 16. Issue #44 종료 조건 체크리스트
+## 16. Issue #44 초안 완료 범위와 후속 검증
+
+PR #49는 Issue #44의 후보 조사·정책 초안만 완료한다. 아래 미완료 검증과 실제 동결은
+[Issue #87](https://github.com/train3-test2/incident-awareness-engine/issues/87)의 전용 PR로 관리하며,
+이 문서 병합으로 완료 처리하지 않는다.
 
 ### 완료
 - [x] Fast detector 후보 행위 3종 선정
@@ -967,7 +971,7 @@ episode/cooldown의 세부 평가 정의는 후속 단계에서 확정한다.
 - [x] Rule hit / qualifying hit / detector_time 관계 정의
 - [x] episode/cooldown 세부 평가 정의를 후속 범위로 분리
 
-### 미완료 / blocker
+### 후속 이슈 #87 — 미완료 검증 및 실제 동결
 - [ ] 정상/pilot EVTX 기반 false positive 검증
 - [ ] 후보별 동일-hit qualifying filter 및 decisive comparator 적합성 확인
 - [ ] ADMIN$ Rule compatibility 처리 방향 확정
