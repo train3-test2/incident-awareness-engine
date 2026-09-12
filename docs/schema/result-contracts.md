@@ -62,21 +62,7 @@ docs/schema/run-id.md
 
 ## 2-3. entity_id
 
-`entity_id`는 해당 결과가 어느 분석 대상 Entity에 대한 것인지 나타낸다. 상위 정본의 D-01 결정에 따라 PoC v0에서는 non-null인 Endpoint Host 식별자다.
-
-```text
-NormalizedEvent.host_id
-    ↓
-Evidence.entity_id
-    ↓
-Temporal Fusion (run_id, entity_id)
-    ↓
-Evaluation entity_id host-level grouping/provenance key
-```
-
-Evaluation에서 `entity_id`는 host-level grouping/provenance key다. 서로 다른 host의 Evidence와 Fusion Episode를 동일한 entity로 합치지 않는다. Recall, TTSD 등 Run-level metric의 다중 호스트 reduction 규칙은 Evaluation 계약이 소유하며 D-01에서는 정의하지 않는다.
-
-R1 다중 호스트 환경에서도 Evidence는 Source Event가 관측된 host에 우선 귀속한다. cross-host, host+user, session, incident correlation은 PoC v0 범위 밖이며, 후속 계약 없이 기존 `entity_id`의 의미를 변경하지 않는다.
+`entity_id`는 해당 결과가 어느 분석 대상 Entity에 대한 것인지 나타낸다. canonical 범위와 R1 귀속 규칙이 확정되기 전까지는 nullable이며, 구현에서 Endpoint Host로 임의 고정하지 않는다.
 
 ---
 
@@ -98,7 +84,7 @@ R1 다중 호스트 환경에서도 Evidence는 Source Event가 관측된 host�
 | `run_id`                | String       |    O |    X | 실험 실행 식별자       |
 | `timestamp`             | DateTime     |    O |    X | 연결된 `NormalizedEvent.timestamp` 중 가장 늦은 시각 |
 | `first_source_event_time` | DateTime   |    X |    O | 연결된 Event 중 가장 이른 시각; 채점·Decision 시간 계산에 사용하지 않음 |
-| `entity_id`             | String       |    O |    X | Source Event가 관측된 Endpoint Host 식별자 |
+| `entity_id`             | String       |    X |    O | 분석 대상 Entity       |
 | `evidence_type`         | String       |    O |    X | Evidence 유형          |
 | `event_ids`             | List[String] |    O |    X | 최소 1개 정규화 Event ID(`NormalizedEvent.event_id`) |
 | `feature_channel_group` | Enum         |    O |    X | Fusion 입력 여부 구분  |
@@ -176,7 +162,7 @@ Fusion 내부 score/window/stopping 알고리즘은 역할 1이 담당한다.
 | 필드                        | 타입         | 필수 | null | 설명                   |
 | --------------------------- | ------------ | ---: | ---: | ---------------------- |
 | `run_id`                    | String       |    O |    X | 실험 실행 식별자       |
-| `entity_id`                 | String       |    O |    X | PoC v0 canonical Endpoint Host 식별자 |
+| `entity_id`                 | String       |    X |    O | 분석 대상 Entity       |
 | `fusion_time`               | DateTime     |    O |    O | Fusion 판단 시각       |
 | `fusion_status`             | Enum         |    O |    X | Fusion 평가 결과       |
 | `score_at_decision`         | Float        |    O |    O | 판단 시점의 Score      |
@@ -261,7 +247,7 @@ score_at_decision = null
   "scoring_method": "temporal_fusion",
   "scorer_version": "v0.2",
   "fusion_episodes": [{
-    "episode_id": "FEP-001",
+    "episode_id": "FE-001",
     "run_id": "RUN-20260901-001",
     "entity_id": "WIN-01",
     "start_time": "2026-09-01T01:05:00.000Z",
@@ -279,9 +265,9 @@ score_at_decision = null
 
 | 필드 | 타입 | 필수 | null | 설명 |
 | --- | --- | ---: | ---: | --- |
-| `episode_id` | String | O | X | `(run_id, entity_id)` 범위에서 로컬 고유한 Episode ID |
+| `episode_id` | String | O | X | Run 안에서 불변인 Episode 식별자 |
 | `run_id` | String | O | X | 소속 실행 |
-| `entity_id` | String | O | X | PoC v0 canonical Endpoint Host 식별자 |
+| `entity_id` | String | X | O | 분석 대상 Entity |
 | `start_time` | DateTime | O | X | ACTIVE 진입 시각 |
 | `end_time` | DateTime | X | O | 종료 시각 |
 | `end_reason` | Enum | X | O | `released`, `run_end`; 종료 전에는 `null` |
@@ -290,8 +276,6 @@ score_at_decision = null
 | `contributing_evidence_ids` | List[String] | X | O | 기여 Evidence ID |
 
 Run 종료 시 ACTIVE인 Episode는 `end_time=run_end`, `end_reason=run_end`로 기록한다.
-
-서로 다른 host는 각각 `FEP-001`을 가질 수 있다. Fusion Episode의 논리적 식별자는 `(run_id, entity_id, episode_id)` 복합키다.
 
 ---
 
@@ -310,7 +294,7 @@ Run 종료 시 ACTIVE인 Episode는 `end_time=run_end`, `end_reason=run_end`로 
 | 필드              | 타입     | 필수 | null | 설명                           |
 | ----------------- | -------- | ---: | ---: | ------------------------------ |
 | `run_id`          | String   |    O |    X | 실험 실행 식별자               |
-| `entity_id`       | String   |    O |    X | PoC v0 canonical Endpoint Host 식별자 |
+| `entity_id`       | String   |    X |    O | 분석 대상 Entity               |
 | `detector_time`   | DateTime |    O |    O | qualifying detection 발생 시각 |
 | `detector_status` | Enum     |    O |    X | Detector 평가 결과             |
 | `detector_id`     | String   |    O |    O | Detector 식별자                |
@@ -417,23 +401,26 @@ Fast runner가 생산한 개별 qualifying hit는 `DetectionResult`와 별도인
 
 `FastHitRecord`에는 Comparator 관측 사실과 실행 context만 기록한다. Ground Truth, eligible 여부, episode credit, TTSD, Recall 등 평가 파생값은 포함하지 않는다. 모든 유효한 `hit_id`는 Fast Adapter 이후에도 Provenance 보존 표현으로 추적 가능해야 한다.
 
-### `hit_id` 생성 규칙
 
-`hit_id`는 개별 qualifying Fast hit를 식별하고,
-Fast Adapter 이후에도 해당 hit의 provenance를 추적하기 위한 식별자다.
+### hit_id 생성 규칙
 
-First Cycle 현재 구현에서는 최종 규칙 확정 전까지
-다음 임시 규칙을 사용한다.
+`hit_id`는 한 detector run 안에서 발생한 개별 qualifying Fast hit instance를 식별하기 위한 식별자다.
+
+First Cycle에서는 다음 규칙을 사용한다.
 
 ```text
 {run_id}-hit-{source_row_index}
 
-source_row_index는 Hayabusa 원본 출력에서의 행 순서를 의미한다.
+```
+`source_row_index`는 Hayabusa 원본 출력에서의 행 순서를 의미한다.
 
-이 규칙은 row 순서가 변경될 경우 동일한 hit라도
-hit_id가 달라질 수 있으므로 재실행 간 안정성을 보장하지 않는다.
+동일한 run_id 안에서는 각 qualifying hit가 서로 다른 `hit_id`를 가져야 한다.
 
-최종 hit_id 의미와 생성 규칙은 3번과 5번이 합의 후 확정한다
+`hit_id`는 run-local 식별자이므로, 동일 원본 데이터를 별도의 run으로 다시 실행했을 때 동일한 `hit_id`를 보장하지 않는다.
+
+Fast Adapter 이후에도 Fast Path 원본 hit의 provenance를 추적할 수 있도록 `hit_id`를 downstream에서 보존하는 방식을 사용한다.
+
+구체적인 downstream 필드명은 역할 3 Fast Adapter 구현에서 정한다.
 
 ---
 
@@ -453,7 +440,7 @@ Fusion Path와 Fast Detection Path의 결과를 결합하여 기술적 후보 �
 | ----------------- | -------- | ---: | ---: | --------------------------- |
 | `run_id`          | String   |    O |    X | 실험 실행 식별자            |
 | `decision_id`     | String   |    O |    X | 불변 Decision 식별자 |
-| `entity_id`       | String   |    O |    X | PoC v0 canonical Endpoint Host 식별자 |
+| `entity_id`       | String   |    X |    O | 분석 대상 Entity            |
 | `fast_status`     | Enum     |    O |    X | `detected`, `miss`, `not_evaluated` |
 | `fusion_status`   | Enum     |    O |    X | `detected`, `miss`, `not_evaluated` |
 | `fusion_time`     | DateTime |    O |    O | Fusion 판단 시각            |
