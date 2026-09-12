@@ -10,6 +10,7 @@ from incident_awareness.collection.collector.sysmon_jsonl import SysmonJsonlReco
 from incident_awareness.common.models.event import NormalizedEvent
 
 _SYSMON_PROCESS_CREATE_EVENT_ID = 1
+_SYSMON_NETWORK_CONNECTION_EVENT_ID = 3
 _SYSMON_NORMALIZER_ID = "sysmon-normalizer"
 _SYSMON_NORMALIZER_VERSION = "v0.2"
 
@@ -73,6 +74,61 @@ def normalize_sysmon_process_create(
     )
 
 
+def normalize_sysmon_network_connection(
+    record: SysmonJsonlRecord,
+    *,
+    context: SysmonNormalizationContext,
+) -> NormalizedEvent:
+    """Convert one Sysmon Event ID 3 record into a network_connection Event."""
+    event_id = _required_event_id(record)
+    if event_id != _SYSMON_NETWORK_CONNECTION_EVENT_ID:
+        raise ValueError("normalize_sysmon_network_connection requires Sysmon Event ID 3")
+
+    event_data = _required_mapping(record, "EventData")
+    event_time = _parse_sysmon_utc_time(_required_string(event_data, "UtcTime"))
+    record_time = _parse_iso_utc_time(_required_string(record.data, "TimeCreated"))
+    image = _optional_string(event_data, "Image")
+
+    return NormalizedEvent(
+        event_id=_normalized_event_id(record, context),
+        run_id=context.run_id,
+        timestamp=event_time,
+        timestamp_source="event_time",
+        event_time=event_time,
+        record_time=record_time,
+        ingest_time=None,
+        host_id=_required_string(record.data, "Computer"),
+        source="sysmon",
+        source_layer="raw_telemetry",
+        source_event_id=str(_required_record_id(record)),
+        event_type="network_connection",
+        user=_optional_string(event_data, "User"),
+        process={
+            "pid": _optional_integer(event_data, "ProcessId"),
+            "name": PureWindowsPath(image).name if image else None,
+            "path": image,
+            "command_line": _optional_string(event_data, "CommandLine"),
+            "parent_pid": _optional_integer(event_data, "ParentProcessId"),
+            "parent_name": _path_name(_optional_string(event_data, "ParentImage")),
+        },
+        network={
+            "protocol": _optional_string(event_data, "Protocol"),
+            "src_ip": _optional_string(event_data, "SourceIp"),
+            "src_port": _optional_integer(event_data, "SourcePort"),
+            "dst_ip": _optional_string(event_data, "DestinationIp"),
+            "dst_port": _optional_integer(event_data, "DestinationPort"),
+        },
+        raw_ref={
+            "raw_log_id": context.raw_log_id,
+            "source_record_id": str(_required_record_id(record)),
+            "segment_no": context.segment_no,
+            "record_no": record.record_no,
+            "parser_id": _SYSMON_NORMALIZER_ID,
+            "parser_version": _SYSMON_NORMALIZER_VERSION,
+        },
+    )
+
+
 def _required_event_id(record: SysmonJsonlRecord) -> int:
     value = record.data.get("EventId")
     if isinstance(value, bool) or not isinstance(value, int):
@@ -117,6 +173,10 @@ def _optional_integer(mapping: dict[str, object], key: str) -> int | None:
     if isinstance(value, bool) or not isinstance(value, str) or not value.isdecimal():
         raise ValueError(f"Sysmon {key} must be a decimal integer when present")
     return int(value)
+
+
+def _path_name(value: str | None) -> str | None:
+    return PureWindowsPath(value).name if value else None
 
 
 def _parse_sysmon_utc_time(value: str) -> datetime:
