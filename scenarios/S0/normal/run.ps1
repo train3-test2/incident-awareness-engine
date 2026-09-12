@@ -37,7 +37,7 @@
         .\run.ps1 -RunId RUN-20260914-001 -ScenarioJsonPath C:\Tools\S0\scenario.json `
             -DataRoot C:\S0\data -VmSnapshot poc-clean-v1 `
             -SysmonBinary C:\Tools\Sysmon\Sysmon64.exe `
-            -SysmonConfigPath C:\Tools\sysmonconfig-sample-v0.1.xml -Rehearsal
+            -SysmonConfigPath C:\Tools\S0\sysmonconfig-sample-v0.1.xml -Rehearsal
 #>
 
 [CmdletBinding()]
