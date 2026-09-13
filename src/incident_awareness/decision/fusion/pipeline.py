@@ -4,6 +4,7 @@ from datetime import datetime
 
 from incident_awareness.common.models.evidence import Evidence
 from incident_awareness.common.models.fusion import FusionResult
+from incident_awareness.decision.fusion.config import FusionConfig
 from incident_awareness.decision.fusion.result_builder import (
     build_fusion_result,
 )
@@ -67,4 +68,31 @@ def run_fusion_pipeline(
     return FusionPipelineResult(
         replay_result=replay_result,
         fusion_result=fusion_result,
+    )
+
+
+def run_fusion_pipeline_from_config(
+    evidences: Iterable[Evidence],
+    *,
+    config: FusionConfig,
+    run_id: str,
+    entity_id: str,
+    run_start: datetime,
+    run_end: datetime,
+) -> FusionPipelineResult:
+    """Run Temporal Fusion using one validated, versioned Fusion configuration."""
+    runner = config.build_runner()
+
+    return run_fusion_pipeline(
+        evidences,
+        runner=runner,
+        run_id=run_id,
+        entity_id=entity_id,
+        run_start=run_start,
+        run_end=run_end,
+        scoring_config_version=config.config_version,
+        scoring_profile_id=config.scoring.profile_id,
+        scoring_method=config.scoring.method,
+        scorer_version=config.scoring.scorer_version,
+        model_version=config.model_version,
     )
