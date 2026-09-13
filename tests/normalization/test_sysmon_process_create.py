@@ -74,6 +74,23 @@ def test_normalize_sysmon_process_create_is_deterministic(
     assert first.event_id == second.event_id
 
 
+def test_normalize_sysmon_process_create_uses_run_id_in_event_identity(
+    normalization_context: SysmonNormalizationContext,
+) -> None:
+    sample_path = Path(__file__).parents[2] / "samples" / "raw" / "sysmon-0001.jsonl"
+    raw_record = next(read_sysmon_jsonl(sample_path))
+    other_run_context = SysmonNormalizationContext(
+        run_id="RUN-20260913-001",
+        raw_log_id=normalization_context.raw_log_id,
+        segment_no=normalization_context.segment_no,
+    )
+
+    first = normalize_sysmon_process_create(raw_record, context=normalization_context)
+    second = normalize_sysmon_process_create(raw_record, context=other_run_context)
+
+    assert first.event_id != second.event_id
+
+
 def test_normalize_sysmon_process_create_rejects_non_event_id_1(
     normalization_context: SysmonNormalizationContext,
 ) -> None:

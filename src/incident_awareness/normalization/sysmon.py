@@ -210,6 +210,7 @@ def _normalized_event_id(
 ) -> str:
     identity = json.dumps(
         [
+            context.run_id,
             context.raw_log_id,
             context.segment_no,
             record.record_no,
