@@ -1,4 +1,5 @@
 from datetime import timedelta
+from math import isfinite
 from pathlib import Path
 from typing import Literal
 
@@ -15,16 +16,51 @@ from incident_awareness.decision.fusion.temporal_replay import (
 from incident_awareness.decision.fusion.window_engine import WindowEngine
 
 
+def _validate_positive_duration_seconds(
+    value: float,
+    *,
+    field_name: str,
+) -> float:
+    if not isfinite(value):
+        raise ValueError(f"{field_name} must be finite")
+
+    try:
+        duration = timedelta(seconds=value)
+    except OverflowError as exc:
+        raise ValueError(f"{field_name} is outside timedelta supported range") from exc
+
+    if duration <= timedelta(0):
+        raise ValueError(f"{field_name} must produce a positive timedelta")
+
+    return value
+
+
 class WindowConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     window_size_sec: float = Field(gt=0)
+
+    @field_validator("window_size_sec")
+    @classmethod
+    def validate_window_size_sec(cls, value: float) -> float:
+        return _validate_positive_duration_seconds(
+            value,
+            field_name="window_size_sec",
+        )
 
 
 class ReplayConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     step_size_sec: float = Field(gt=0)
+
+    @field_validator("step_size_sec")
+    @classmethod
+    def validate_step_size_sec(cls, value: float) -> float:
+        return _validate_positive_duration_seconds(
+            value,
+            field_name="step_size_sec",
+        )
 
 
 class ScoringConfig(BaseModel):

@@ -326,3 +326,28 @@ def test_fusion_config_rejects_unsupported_scoring_method() -> None:
     # When / Then
     with pytest.raises(ValidationError):
         FusionConfig.model_validate(config_data)
+
+
+@pytest.mark.parametrize(
+    ("section", "field_name", "invalid_value"),
+    [
+        ("window", "window_size_sec", 1e-7),
+        ("window", "window_size_sec", float("inf")),
+        ("window", "window_size_sec", 1e100),
+        ("replay", "step_size_sec", 1e-7),
+        ("replay", "step_size_sec", float("inf")),
+        ("replay", "step_size_sec", 1e100),
+    ],
+)
+def test_fusion_config_rejects_unusable_duration_values(
+    section: str,
+    field_name: str,
+    invalid_value: float,
+) -> None:
+    # Given
+    config_data = _valid_config_data()
+    config_data[section] = {field_name: invalid_value}
+
+    # When / Then
+    with pytest.raises(ValidationError):
+        FusionConfig.model_validate(config_data)
