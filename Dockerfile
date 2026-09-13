@@ -11,6 +11,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
 
 COPY src ./src
+COPY configs ./configs
 
 RUN groupadd --system app && useradd --system --gid app --create-home app
 
