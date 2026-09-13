@@ -5,6 +5,7 @@ entity_id 매핑·detector_time 계산·Hybrid 결합은 이 runner에서 수행
 
 ## 실행
 
+다음 명령은 Bash/zsh 또는 WSL용이다(PowerShell 문법이 아님).
 저장소 루트에서 출력 폴더를 먼저 만든다. 출력·trace는 기존 파일을 덮어쓰지 않는다.
 
 ```bash
@@ -40,3 +41,12 @@ origin/feature/data-pipeline/mock-hybrid-decision에는 실제 Fast Adapter 호�
 확인되지 않았다. 담당자의 로컬 구현까지 없다는 뜻은 아니다.
 실제 진입점 확보 후 동일 run_id, native 필드, 버전, hit_id provenance 보존을 확인한다.
 현재는 DetectionResult·DecisionResult/t_e 생성과 Mock E2E 완료를 주장하지 않는다.
+
+## 파일 게시와 실패 처리
+
+JSONL과 trace를 각 대상 디렉터리의 임시 파일에 모두 작성한 뒤, 기존 경로를 덮어쓰지
+않는 hard link로 JSONL, trace 순서로 게시한다. hard link를 지원하는 파일시스템이 필요하다.
+소비자는 trace가 존재하고 기록된 출력 해시가 JSONL과 일치할 때 완료된 전달로 취급한다.
+처리 중 예외가 발생하면 이번 호출이 만든 파일과 임시 파일을 정리한다. 다른 실행의
+기존 파일은 삭제하지 않는다. 두 파일의 동시 원자적 게시나 프로세스 강제 종료 후 자동
+복구는 보장하지 않으며, trace가 없는 출력은 완료된 전달로 사용하지 않는다.

@@ -85,3 +85,85 @@ def test_zero_hit_is_empty_handoff_not_detection_miss(tmp_path):
     assert run(tmp_path, csv_path=path) == 0
     assert (tmp_path / "hits.jsonl").read_text() == ""
     assert json.loads((tmp_path / "trace.json").read_text())["hit_count"] == 0
+
+
+def test_trace_write_failure_cleans_staging_and_allows_retry(tmp_path, monkeypatch):
+    original = Path.write_text
+
+    def fail_trace(path, *args, **kwargs):
+        if path.name.startswith(".trace.json."):
+            raise OSError("trace write failed")
+        return original(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "write_text", fail_trace)
+        with pytest.raises(OSError, match="trace write failed"):
+            run(tmp_path)
+    assert list(tmp_path.iterdir()) == []
+    assert run(tmp_path) == 1
+
+
+def test_trace_publish_failure_rolls_back_output(tmp_path, monkeypatch):
+    import os
+
+    original = os.link
+
+    def fail_trace(source, target):
+        if target.name == "trace.json":
+            raise OSError("trace publication failed")
+        return original(source, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "link", fail_trace)
+        with pytest.raises(OSError, match="trace publication failed"):
+            run(tmp_path)
+    assert list(tmp_path.iterdir()) == []
+    assert run(tmp_path) == 1
+
+
+def test_competing_trace_is_preserved(tmp_path, monkeypatch):
+    import os
+
+    original = os.link
+
+    def compete(source, target):
+        if target.name == "trace.json":
+            target.write_text("other execution")
+        return original(source, target)
+
+    monkeypatch.setattr(os, "link", compete)
+    with pytest.raises(FileExistsError):
+        run(tmp_path)
+    assert (tmp_path / "trace.json").read_text() == "other execution"
+    assert not (tmp_path / "hits.jsonl").exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["trace.json"]
+
+
+def test_concurrent_handoffs_have_one_winner(tmp_path, monkeypatch):
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    original = os.link
+    ready = Barrier(2)
+
+    def synchronized(source, target):
+        if target.name == "hits.jsonl":
+            ready.wait(timeout=5)
+        return original(source, target)
+
+    monkeypatch.setattr(os, "link", synchronized)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(run, tmp_path) for _ in range(2)]
+        outcomes = []
+        for future in futures:
+            try:
+                outcomes.append(future.result())
+            except FileExistsError:
+                outcomes.append("exists")
+    assert sorted(outcomes, key=str) == [1, "exists"]
+    trace = json.loads((tmp_path / "trace.json").read_text())
+    assert (
+        trace["output_sha256"] == hashlib.sha256((tmp_path / "hits.jsonl").read_bytes()).hexdigest()
+    )
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["hits.jsonl", "trace.json"]

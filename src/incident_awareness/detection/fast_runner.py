@@ -3,6 +3,8 @@
 import argparse
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Annotated
 
@@ -41,6 +43,43 @@ class FastRunnerConfig(BaseModel):
         return value
 
 
+def _publish_handoff(hits: list[dict], trace: dict, output_path: Path, trace_path: Path) -> None:
+    """Stage both files, publish without replacement, and roll back this call on failure.
+
+    The trace is published last as the completion marker. This is not a two-file
+    atomic transaction or crash recovery mechanism.
+    """
+    staged: list[Path] = []
+    published: list[tuple[Path, Path]] = []
+    try:
+        for target in (output_path, trace_path):
+            with tempfile.NamedTemporaryFile(
+                dir=target.parent, prefix=f".{target.name}.", delete=False
+            ) as temporary:
+                staged.append(Path(temporary.name))
+        write_fast_hits_jsonl(hits, staged[0])
+        trace["output_sha256"] = hashlib.sha256(staged[0].read_bytes()).hexdigest()
+        staged[1].write_text(
+            json.dumps(trace, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        for source, target in zip(staged, (output_path, trace_path), strict=True):
+            # Hard-link publication is exclusive: an existing destination is never replaced.
+            os.link(source, target)
+            published.append((source, target))
+    except BaseException:
+        for source, target in reversed(published):
+            # Only remove artifacts still referring to the file created by this call.
+            try:
+                if os.path.samestat(source.stat(), target.lstat()):
+                    target.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+    finally:
+        for source in staged:
+            source.unlink(missing_ok=True)
+
+
 def run_fast_handoff(
     *, csv_path: Path, config_path: Path, run_id: str, output_path: Path, trace_path: Path
 ) -> int:
@@ -66,6 +105,7 @@ def run_fast_handoff(
         qualifying_rule_ids=set(config.qualifying_rule_ids),
         rule_metadata=metadata,
     )
+    hits_by_id = {hit["hit_id"]: hit for hit in hits}
     trace = {
         "run_id": run_id,
         "input_csv": str(csv_path.resolve()),
@@ -76,14 +116,10 @@ def run_fast_handoff(
         "hits": [
             {"hit_id": hit["hit_id"], "source_row_index": index, "rule_id": row["RuleID"]}
             for index, row in enumerate(rows, 1)
-            if row["RuleID"] in config.qualifying_rule_ids
-            for hit in hits
-            if hit["hit_id"] == f"{run_id}-hit-{index}"
+            if (hit := hits_by_id.get(f"{run_id}-hit-{index}")) is not None
         ],
     }
-    write_fast_hits_jsonl(hits, output_path)
-    trace["output_sha256"] = hashlib.sha256(output_path.read_bytes()).hexdigest()
-    trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _publish_handoff(hits, trace, output_path, trace_path)
     return len(hits)
 
 
