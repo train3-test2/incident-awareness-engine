@@ -1,10 +1,20 @@
 from datetime import timedelta
+from decimal import Decimal
+from functools import lru_cache
 from math import isfinite
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
+from pydantic_core import PydanticCustomError
 
 from incident_awareness.decision.fusion.simple_score import SimpleScorer
 from incident_awareness.decision.fusion.stopping_policy import (
@@ -14,6 +24,43 @@ from incident_awareness.decision.fusion.temporal_replay import (
     TemporalReplayRunner,
 )
 from incident_awareness.decision.fusion.window_engine import WindowEngine
+
+EVIDENCE_TYPE_VOCABULARY_PATH = Path(__file__).parents[4] / "configs" / "evidence_types_v0.2.yaml"
+
+
+@lru_cache(maxsize=1)
+def _load_allowed_evidence_types() -> frozenset[str]:
+    vocabulary = yaml.safe_load(EVIDENCE_TYPE_VOCABULARY_PATH.read_text(encoding="utf-8"))
+
+    if not isinstance(vocabulary, dict):
+        raise TypeError("Evidence type vocabulary root must be a mapping")
+
+    evidence_types = vocabulary.get("evidence_types")
+    if not isinstance(evidence_types, list) or not evidence_types:
+        raise RuntimeError("Evidence type vocabulary must define a non-empty evidence_types list")
+
+    if any(
+        not isinstance(evidence_type, str) or not evidence_type.strip()
+        for evidence_type in evidence_types
+    ):
+        raise RuntimeError("Evidence type vocabulary must contain non-blank string values")
+
+    return frozenset(evidence_types)
+
+
+def _reject_boolean_numeric(
+    value: object,
+    *,
+    field_name: str,
+) -> object:
+    if isinstance(value, bool):
+        raise PydanticCustomError(
+            "boolean_not_allowed",
+            "{field_name} must not be boolean",
+            {"field_name": field_name},
+        )
+
+    return value
 
 
 def _validate_positive_duration_seconds(
@@ -40,6 +87,18 @@ class WindowConfig(BaseModel):
 
     window_size_sec: float = Field(gt=0)
 
+    @field_validator("window_size_sec", mode="before")
+    @classmethod
+    def reject_boolean_window_size(
+        cls,
+        value: object,
+        info: ValidationInfo,
+    ) -> object:
+        return _reject_boolean_numeric(
+            value,
+            field_name=info.field_name,
+        )
+
     @field_validator("window_size_sec")
     @classmethod
     def validate_window_size_sec(cls, value: float) -> float:
@@ -54,13 +113,31 @@ class ReplayConfig(BaseModel):
 
     step_size_sec: float = Field(gt=0)
 
+    @field_validator("step_size_sec", mode="before")
+    @classmethod
+    def reject_boolean_step_size(
+        cls,
+        value: object,
+        info: ValidationInfo,
+    ) -> object:
+        return _reject_boolean_numeric(
+            value,
+            field_name=info.field_name,
+        )
+
     @field_validator("step_size_sec")
     @classmethod
     def validate_step_size_sec(cls, value: float) -> float:
-        return _validate_positive_duration_seconds(
+        value = _validate_positive_duration_seconds(
             value,
             field_name="step_size_sec",
         )
+
+        milliseconds = Decimal(str(value)) * Decimal(1000)
+        if milliseconds != milliseconds.to_integral_value():
+            raise ValueError("step_size_sec must align to whole milliseconds")
+
+        return value
 
 
 class ScoringConfig(BaseModel):
@@ -90,8 +167,18 @@ class ScoringConfig(BaseModel):
         if any(not evidence_type.strip() for evidence_type in value):
             raise ValueError("evidence_types must not contain blank values")
 
+        if any(evidence_type != evidence_type.strip() for evidence_type in value):
+            raise ValueError("evidence_types must not contain leading or trailing whitespace")
+
         if len(set(value)) != len(value):
             raise ValueError("evidence_types must not contain duplicates")
+
+        allowed_evidence_types = _load_allowed_evidence_types()
+        unknown_evidence_types = sorted(set(value) - allowed_evidence_types)
+        if unknown_evidence_types:
+            raise ValueError(
+                "evidence_types contains unmanaged values: " + ", ".join(unknown_evidence_types)
+            )
 
         return value
 
@@ -102,6 +189,23 @@ class StoppingConfig(BaseModel):
     threshold_on: float = Field(ge=0.0, le=1.0)
     threshold_off: float = Field(ge=0.0, le=1.0)
     persistence_k: int = Field(ge=1)
+
+    @field_validator(
+        "threshold_on",
+        "threshold_off",
+        "persistence_k",
+        mode="before",
+    )
+    @classmethod
+    def reject_boolean_numeric_values(
+        cls,
+        value: object,
+        info: ValidationInfo,
+    ) -> object:
+        return _reject_boolean_numeric(
+            value,
+            field_name=info.field_name,
+        )
 
     @model_validator(mode="after")
     def validate_threshold_order(self) -> "StoppingConfig":

@@ -351,3 +351,145 @@ def test_fusion_config_rejects_unusable_duration_values(
     # When / Then
     with pytest.raises(ValidationError):
         FusionConfig.model_validate(config_data)
+
+
+@pytest.mark.parametrize(
+    "invalid_step_size_sec",
+    [0.0005, 0.0015],
+)
+def test_fusion_config_rejects_step_size_not_aligned_to_milliseconds(
+    invalid_step_size_sec: float,
+) -> None:
+    # Given
+    config_data = _valid_config_data()
+    replay = config_data["replay"]
+    assert isinstance(replay, dict)
+    replay["step_size_sec"] = invalid_step_size_sec
+
+    # When / Then
+    with pytest.raises(
+        ValidationError,
+        match="step_size_sec must align to whole milliseconds",
+    ):
+        FusionConfig.model_validate(config_data)
+
+
+def test_fusion_config_accepts_one_millisecond_step_size() -> None:
+    # Given
+    config_data = _valid_config_data()
+    replay = config_data["replay"]
+    assert isinstance(replay, dict)
+    replay["step_size_sec"] = 0.001
+
+    # When
+    config = FusionConfig.model_validate(config_data)
+
+    # Then
+    assert config.replay.step_size_sec == 0.001
+
+
+@pytest.mark.parametrize(
+    "evidence_type",
+    [
+        " encoded_powershell_command",
+        "encoded_powershell_command ",
+    ],
+)
+def test_fusion_config_rejects_evidence_type_with_outer_whitespace(
+    evidence_type: str,
+) -> None:
+    # Given
+    config_data = _valid_config_data()
+    scoring = config_data["scoring"]
+    assert isinstance(scoring, dict)
+    scoring["evidence_types"] = [evidence_type]
+
+    # When / Then
+    with pytest.raises(
+        ValidationError,
+        match="evidence_types must not contain leading or trailing whitespace",
+    ):
+        FusionConfig.model_validate(config_data)
+
+
+def test_fusion_config_rejects_unmanaged_evidence_type() -> None:
+    # Given
+    config_data = _valid_config_data()
+    scoring = config_data["scoring"]
+    assert isinstance(scoring, dict)
+    scoring["evidence_types"] = ["unmanaged_evidence_type"]
+
+    # When / Then
+    with pytest.raises(
+        ValidationError,
+        match="evidence_types contains unmanaged values",
+    ):
+        FusionConfig.model_validate(config_data)
+
+
+@pytest.mark.parametrize(
+    ("section", "field_name"),
+    [
+        ("window", "window_size_sec"),
+        ("replay", "step_size_sec"),
+        ("stopping", "threshold_on"),
+        ("stopping", "threshold_off"),
+        ("stopping", "persistence_k"),
+    ],
+)
+def test_fusion_config_rejects_boolean_numeric_values(
+    section: str,
+    field_name: str,
+) -> None:
+    # Given
+    config_data = _valid_config_data()
+    section_data = config_data[section]
+    assert isinstance(section_data, dict)
+    section_data[field_name] = True
+
+    # When / Then
+    with pytest.raises(
+        ValidationError,
+        match=f"{field_name} must not be boolean",
+    ):
+        FusionConfig.model_validate(config_data)
+
+
+def test_one_millisecond_cadence_preserves_fusion_time_in_json() -> None:
+    # Given
+    config_data = _valid_config_data()
+    replay = config_data["replay"]
+    assert isinstance(replay, dict)
+    replay["step_size_sec"] = 0.001
+    config = FusionConfig.model_validate(config_data)
+
+    run_start = datetime(2026, 9, 13, 12, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(milliseconds=2)
+    evidences = [
+        _make_evidence(
+            evidence_id="E-001",
+            timestamp=run_start,
+            evidence_type="encoded_powershell_command",
+        ),
+        _make_evidence(
+            evidence_id="E-002",
+            timestamp=run_start,
+            evidence_type="script_interpreter_external_connection",
+        ),
+    ]
+
+    # When
+    result = run_fusion_pipeline_from_config(
+        evidences,
+        config=config,
+        run_id="RUN-20260913-001",
+        entity_id="HOST-CONFIG-001",
+        run_start=run_start,
+        run_end=run_end,
+    ).fusion_result
+    result_json = result.model_dump(mode="json")
+
+    # Then
+    expected_fusion_time = run_start + timedelta(milliseconds=1)
+    assert result.fusion_time == expected_fusion_time
+    assert datetime.fromisoformat(result_json["fusion_time"]) == expected_fusion_time
