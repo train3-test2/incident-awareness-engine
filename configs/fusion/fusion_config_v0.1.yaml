@@ -1,0 +1,21 @@
+config_version: fusion-config-v0.1
+model_version: null
+
+window:
+  window_size_sec: 60
+
+replay:
+  step_size_sec: 10
+
+scoring:
+  method: simple_score
+  scorer_version: simple-score-v0.1
+  profile_id: s0-profile
+  evidence_types:
+    - encoded_powershell_command
+    - script_interpreter_external_connection
+
+stopping:
+  threshold_on: 0.8
+  threshold_off: 0.4
+  persistence_k: 2

@@ -185,6 +185,33 @@ Get-Content samples\raw\sysmon-0001.jsonl | ForEach-Object { ($_ | ConvertFrom-J
 각 값은 **같은 값끼리 Run 사이에서 비교**할 때 의미가 있다. 두 Run 의
 `sysmon_active_config_sha256` 이 다르면 그 사이에 Sysmon 설정이 바뀐 것이다.
 
+### 설정 파일 해시와 줄바꿈
+
+`sysmon_config_sha256` 은 설정 파일 **바이트**의 SHA-256 이라 줄바꿈이 바뀌면 설정 내용이 같아도 값이
+달라진다. 저장소는 `.gitattributes` 로 `configs/sysmon/*.xml` 의 줄바꿈을 LF 로 고정한다.
+
+| 기준 | 줄바꿈 | SHA-256 |
+| --- | --- | --- |
+| 저장소 파일 `configs/sysmon/sysmonconfig-sample-v0.1.xml` | LF | `1e5c2424ed807ea418a2fa685b81acb23885fc576f77718c8e283ef9b19de8ea` |
+| 실험 VM 에 적용된 설정 (09-12 `Sysmon64 -c` 의 `Config hash`) | LF | `1e5c2424ed807ea418a2fa685b81acb23885fc576f77718c8e283ef9b19de8ea` |
+| 게시 샘플 `sysmon-sample-meta.json` 의 `sysmon_config_sha256` | CRLF | `ee2cff646231999f3d08c1a9deb0177518c53192aa6489671e5c27629d2a90bf` |
+
+게시 샘플은 `.gitattributes` 가 없던 때 CRLF 로 체크아웃된 파일을 지정해 수집해서 값이 다르다. 두 파일은
+줄바꿈만 다르고 설정 내용은 같다. **줄바꿈을 고정한 뒤 다시 수집하면 `sysmon_config_sha256` 이
+`1e5c2424…` 로 기록된다.** 게시본과 값이 달라지는 것은 정상이며, 달라지는 이유는 줄바꿈뿐이다.
+
+`.gitattributes` 가 들어오기 전에 Windows(`core.autocrlf=true`)에서 clone 한 저장소는 파일이 CRLF 로 남아
+있으므로 다시 체크아웃한다.
+
+```powershell
+Remove-Item configs\sysmon\sysmonconfig-sample-v0.1.xml
+git checkout -- configs/sysmon/sysmonconfig-sample-v0.1.xml
+(Get-FileHash configs\sysmon\sysmonconfig-sample-v0.1.xml -Algorithm SHA256).Hash
+```
+
+GitHub 웹에서 Raw 로 내려받는 등 체크아웃을 거치지 않는 경로는 저장소 원본 그대로 LF 다. VM 으로 옮길
+때는 §5-0 의 바이너리 복사를 써서 줄바꿈이 바뀌지 않게 한다.
+
 ## 4-1. EVTX 는 저장소에 올리지 않는다
 
 Hayabusa 등 탐지 도구는 EVTX 를 입력으로 받으므로 수집 스크립트가 EVTX 도 만든다.
@@ -200,7 +227,8 @@ VM 의 실제 컴퓨터명과 계정명이 그대로 남는다. 공유하려면 
 쓰는 VM 에서 수집**해야 한다. 실험 VM 을 `WIN-01` / `labuser` 로 맞춰 두면 별도 처리 없이
 공유할 수 있다.
 
-무결성은 `collection-meta.json` 의 `artifacts` 항목에 기록되는 SHA-256 으로 확인한다.
+무결성은 `collection-meta.json` 의 `artifacts` 항목에 기록되는 SHA-256 으로 확인한다. 이 파일은 저장소에
+올리지 않으므로, 게시 메타데이터에 EVTX 해시를 포함하는 작업은 #80 에서 다룬다.
 
 ## 5. 재수집 절차
 
@@ -248,6 +276,38 @@ C:\Tools\Sysmon\Sysmon64.exe -accepteula -i C:\Tools\sysmonconfig-sample-v0.1.xm
 ```powershell
 C:\Tools\Sysmon\Sysmon64.exe -c C:\Tools\sysmonconfig-sample-v0.1.xml
 ```
+
+설치하거나 설정을 교체한 뒤에는 적용된 값을 확인한다.
+
+```powershell
+C:\Tools\Sysmon\Sysmon64.exe -c
+```
+
+실험 VM 의 출력 예시다. 경로와 값은 환경에 따라 다르다.
+
+```text
+ - Config file:                   C:\Tools\sysmonconfig-sample-v0.1.xml
+ - Config hash:                   SHA256=1E5C2424ED807EA418A2FA685B81ACB23885FC576F77718C8E283EF9B19DE8EA
+ - HashingAlgorithms:             SHA256
+```
+
+`Config hash` 는 **지정한 설정 파일 바이트의 SHA-256** 이다. 같은 경로라도 줄바꿈이 다른 파일을 적용하면
+값이 달라진다(§4 참조). 위 값은 LF 파일을 적용했을 때다.
+
+`HashingAlgorithms` 는 `SHA256` 이어야 한다. 게시 샘플의 Event ID 1 네 건이 모두 `"Hashes":"SHA256=…"`
+형식이기 때문이다. 수집기와 메타데이터는 이 값을 기록하지 않으므로 근거는 JSONL 의 `Hashes` 필드뿐이다.
+다른 알고리즘으로 수집하면 같은 필드의 형식이 달라진다.
+
+이 설정 XML 에는 `HashAlgorithms` 항목이 없고, Sysmon 문서는 설정 파일 없이 설치하면 SHA1, 설정 항목
+기본값은 `None` 이라고 적는다. 실험 VM 이 `SHA256` 으로 설정된 시점은 기록에 없다.
+
+`-c <설정파일>` 로 설정을 교체해도 이미 적용된 해시 알고리즘은 유지된다. 실험 VM(Sysmon 15.21)에서
+`HashAlgorithms` 항목이 없는 이 XML 로 설정을 교체한 뒤 `Sysmon64 -c` 출력을 비교해, 교체 전후 모두
+`HashingAlgorithms: SHA256` 인 것을 확인했다(09-12). 따라서 설정 교체만으로는 `SHA256` 이 풀리지 않는다.
+
+새로 만든 VM 에서 `SHA256` 이 아니면 `Sysmon64.exe -?` 의 사용법 출력에서 해시 알고리즘 지정 스위치를
+확인해 적용한다. 이 설정 XML 은 게시 샘플과 같은 설정 내용을 유지하려고 `HashAlgorithms` 항목을 넣지
+않는다.
 
 ### 5-3. 샘플 수집
 
