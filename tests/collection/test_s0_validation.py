@@ -6,7 +6,7 @@ import pytest
 
 from incident_awareness.collection.s0_validation import (
     ManifestPathError,
-    manifest_filename,
+    manifest_artifact_name,
     validate_s0_run,
 )
 
@@ -16,9 +16,18 @@ REFERENCE_TIME = "2026-09-14T15:21:46.216Z"
 CONFIG_SHA256 = "1e5c2424ed807ea418a2fa685b81acb23885fc576f77718c8e283ef9b19de8ea"
 VM_TELEMETRY_DIR = "C:\\S0\\data\\_rehearsal\\raw\\" + RUN_ID + "\\telemetry"
 
+START_TIME = "2026-09-14T15:21:45.000Z"
+# evaluation_horizon_sec is 600, so a collection run may not end before
+# reference_time (attack) or start_time (normal) plus ten minutes.
+FORMAL_END_TIME = "2026-09-14T15:32:00.000Z"
+SHORT_END_TIME = "2026-09-14T15:21:55.000Z"
+
 SCENARIO_YAML = """
 scenario_version: v1
 scenario_id: S0
+run_length:
+  evaluation_horizon_sec: 600
+  post_reference_margin_sec: 60
 shortcut_controls:
   actions_per_run: 4
 runs:
@@ -76,9 +85,9 @@ SCHEMA_VERSIONS = {
 }
 
 
-def _write_scenario(tmp_path: Path) -> Path:
+def _write_scenario(tmp_path: Path, body: str = SCENARIO_YAML) -> Path:
     scenario_path = tmp_path / "scenario.yaml"
-    scenario_path.write_text(SCENARIO_YAML, encoding="utf-8")
+    scenario_path.write_text(body, encoding="utf-8")
     return scenario_path
 
 
@@ -112,6 +121,8 @@ def build_run(
     run_type: str = "attack",
     rehearsal: bool = False,
     actions: tuple[tuple[str, str, str, str], ...] | None = None,
+    end_time: str | None = FORMAL_END_TIME,
+    scenario_id: str = "S0",
 ) -> Path:
     """Write one complete, valid S0 artifact set under `root`."""
     telemetry_dir = root / "raw" / RUN_ID / "telemetry"
@@ -139,11 +150,11 @@ def build_run(
 
     metadata = {
         "run_id": RUN_ID,
-        "scenario_id": "S0",
+        "scenario_id": scenario_id,
         "run_type": run_type,
         "target_host": "WIN-01",
-        "start_time": "2026-09-14T15:21:45.000Z",
-        "end_time": "2026-09-14T15:21:55.000Z",
+        "start_time": START_TIME,
+        "end_time": end_time,
         "family_id": "local_powershell",
         "variation_id": "v1",
         "repetition": 1,
@@ -206,12 +217,18 @@ def _csv_path(root: Path) -> Path:
     return root / "ground_truth" / RUN_ID / "execution_record.csv"
 
 
-def _validate(root: Path, tmp_path: Path, *, rehearsal: bool = False):
+def _validate(
+    root: Path,
+    tmp_path: Path,
+    *,
+    rehearsal: bool = False,
+    scenario_body: str = SCENARIO_YAML,
+):
     return validate_s0_run(
         artifact_root=root,
         run_id=RUN_ID,
         rehearsal=rehearsal,
-        scenario_path=_write_scenario(tmp_path),
+        scenario_path=_write_scenario(tmp_path, scenario_body),
     )
 
 
@@ -235,8 +252,11 @@ def test_accepts_a_complete_normal_run(tmp_path: Path) -> None:
 
 
 def test_accepts_a_rehearsal_run_without_the_external_action(tmp_path: Path) -> None:
+    # A rehearsal skips the observation wait, so a short run must still pass.
     actions = tuple(action for action in ATTACK_ACTIONS if action[0] != "A02")
-    root = build_run(tmp_path / "_rehearsal", rehearsal=True, actions=actions)
+    root = build_run(
+        tmp_path / "_rehearsal", rehearsal=True, actions=actions, end_time=SHORT_END_TIME
+    )
 
     report = _validate(root, tmp_path, rehearsal=True)
 
@@ -543,14 +563,269 @@ def test_rejects_rehearsal_mode_without_a_marker(tmp_path: Path) -> None:
         "C:\\S0\\data\\raw\\..\\sysmon-0001.evtx",
         "C:/S0/data/./sysmon-0001.evtx",
         "C:\\S0\\data\\telemetry\\",
+        "C:\\S0\\data\\raw\\" + RUN_ID + "\\telemetry\\secrets.txt",
+        "C:\\S0\\data\\raw\\RUN-20260914-003\\telemetry\\sysmon-0001.evtx",
+        "C:\\S0\\data\\" + RUN_ID + "\\telemetry\\sysmon-0001.evtx",
+        "sysmon-0001.evtx",
         "",
         "   ",
     ],
 )
-def test_manifest_filename_rejects_unsafe_paths(raw_path: str) -> None:
+def test_manifest_artifact_name_rejects_unsafe_paths(raw_path: str) -> None:
     with pytest.raises(ManifestPathError):
-        manifest_filename(raw_path)
+        manifest_artifact_name(raw_path, run_id=RUN_ID)
 
 
-def test_manifest_filename_accepts_a_known_artifact() -> None:
-    assert manifest_filename(VM_TELEMETRY_DIR + "\\sysmon-0001.jsonl") == "sysmon-0001.jsonl"
+@pytest.mark.parametrize(
+    "raw_path",
+    [
+        VM_TELEMETRY_DIR + "\\sysmon-0001.jsonl",
+        "/srv/s0/raw/" + RUN_ID + "/telemetry/sysmon-0001.jsonl",
+    ],
+    ids=["windows", "posix"],
+)
+def test_manifest_artifact_name_accepts_both_separators(raw_path: str) -> None:
+    assert manifest_artifact_name(raw_path, run_id=RUN_ID) == "sysmon-0001.jsonl"
+
+
+# --- Manifest completeness -------------------------------------------------
+
+
+def test_rejects_a_manifest_that_repeats_the_evtx_and_omits_the_jsonl(tmp_path: Path) -> None:
+    def mutate(manifest: dict) -> None:
+        manifest["items"][1] = dict(manifest["items"][0], raw_log_id="RAW-002")
+
+    root = build_run(tmp_path / "data")
+    _rewrite_manifest(root, mutate)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("repeats the artifact sysmon-0001.evtx" in error for error in report.errors)
+    assert any("does not describe this run's artifact(s)" in error for error in report.errors)
+
+
+def test_rejects_a_manifest_with_a_duplicate_path(tmp_path: Path) -> None:
+    def mutate(manifest: dict) -> None:
+        manifest["items"][1]["path"] = manifest["items"][0]["path"]
+
+    root = build_run(tmp_path / "data")
+    _rewrite_manifest(root, mutate)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("repeats the artifact" in error for error in report.errors)
+
+
+def test_rejects_a_manifest_with_a_duplicate_raw_log_id(tmp_path: Path) -> None:
+    def mutate(manifest: dict) -> None:
+        manifest["items"][1]["raw_log_id"] = manifest["items"][0]["raw_log_id"]
+
+    root = build_run(tmp_path / "data")
+    _rewrite_manifest(root, mutate)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("repeats raw_log_id" in error for error in report.errors)
+
+
+def test_rejects_a_jsonl_item_without_derived_from(tmp_path: Path) -> None:
+    def mutate(manifest: dict) -> None:
+        del manifest["items"][1]["derived_from"]
+
+    root = build_run(tmp_path / "data")
+    _rewrite_manifest(root, mutate)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("must declare derived_from" in error for error in report.errors)
+
+
+def test_rejects_a_jsonl_derived_from_that_points_at_itself(tmp_path: Path) -> None:
+    def mutate(manifest: dict) -> None:
+        manifest["items"][1]["derived_from"] = manifest["items"][1]["path"]
+
+    root = build_run(tmp_path / "data")
+    _rewrite_manifest(root, mutate)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("derived_from points at sysmon-0001.jsonl" in error for error in report.errors)
+
+
+def test_rejects_a_derived_from_target_that_is_not_a_manifest_item(tmp_path: Path) -> None:
+    def mutate(manifest: dict) -> None:
+        manifest["items"] = [manifest["items"][1]]
+
+    root = build_run(tmp_path / "data")
+    _rewrite_manifest(root, mutate)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("which is not a manifest item" in error for error in report.errors)
+
+
+def test_rejects_an_evtx_item_that_declares_derived_from(tmp_path: Path) -> None:
+    def mutate(manifest: dict) -> None:
+        manifest["items"][0]["derived_from"] = manifest["items"][1]["path"]
+
+    root = build_run(tmp_path / "data")
+    _rewrite_manifest(root, mutate)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("the EVTX is the source artifact" in error for error in report.errors)
+
+
+def test_rejects_a_manifest_path_from_another_run(tmp_path: Path) -> None:
+    def mutate(manifest: dict) -> None:
+        manifest["items"][0]["path"] = (
+            "C:\\S0\\data\\raw\\RUN-20260914-003\\telemetry\\sysmon-0001.evtx"
+        )
+
+    root = build_run(tmp_path / "data")
+    _rewrite_manifest(root, mutate)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("path must end with raw/" + RUN_ID in error for error in report.errors)
+
+
+def test_rejects_a_manifest_item_with_another_layer(tmp_path: Path) -> None:
+    def mutate(manifest: dict) -> None:
+        manifest["items"][0]["layer"] = "normalized"
+
+    root = build_run(tmp_path / "data")
+    _rewrite_manifest(root, mutate)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("layer is 'normalized'" in error for error in report.errors)
+
+
+def test_rejects_a_manifest_item_with_another_source(tmp_path: Path) -> None:
+    def mutate(manifest: dict) -> None:
+        manifest["items"][0]["source"] = "hayabusa"
+
+    root = build_run(tmp_path / "data")
+    _rewrite_manifest(root, mutate)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("source is 'hayabusa'" in error for error in report.errors)
+
+
+# --- Observation window ----------------------------------------------------
+
+
+def test_rejects_an_attack_run_that_ends_before_the_horizon(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data", end_time=SHORT_END_TIME)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("before reference_time + evaluation_horizon_sec" in error for error in report.errors)
+
+
+def test_rejects_a_normal_run_that_ends_before_the_horizon(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data", run_type="normal", end_time=SHORT_END_TIME)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("before start_time + evaluation_horizon_sec" in error for error in report.errors)
+
+
+def test_rejects_a_collection_run_without_an_end_time(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data", end_time=None)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("must record end_time" in error for error in report.errors)
+
+
+@pytest.mark.parametrize("horizon", ["0", "-1", "'600'", "null", "true"])
+def test_rejects_an_unusable_evaluation_horizon(tmp_path: Path, horizon: str) -> None:
+    root = build_run(tmp_path / "data")
+    body = SCENARIO_YAML.replace(
+        "evaluation_horizon_sec: 600", f"evaluation_horizon_sec: {horizon}"
+    )
+
+    report = _validate(root, tmp_path, scenario_body=body)
+
+    assert not report.ok
+    assert any("evaluation_horizon_sec must be a positive integer" in e for e in report.errors)
+
+
+# --- Scenario and execution record consistency -----------------------------
+
+
+def test_rejects_a_scenario_id_that_does_not_match_the_scenario_file(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data", scenario_id="R1")
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("scenario_id is 'R1'" in error for error in report.errors)
+
+
+def test_reports_a_scenario_action_that_is_not_a_mapping(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data")
+    body = SCENARIO_YAML.replace(
+        "      - action_id: A04\n        action_type: execution\n", "      - A04\n"
+    )
+
+    report = _validate(root, tmp_path, scenario_body=body)
+
+    assert not report.ok
+    assert any("must be a mapping" in error for error in report.errors)
+
+
+def test_reports_a_scenario_that_defines_an_action_twice(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data")
+    body = SCENARIO_YAML.replace("      - action_id: A04", "      - action_id: A03")
+
+    report = _validate(root, tmp_path, scenario_body=body)
+
+    assert not report.ok
+    assert any("more than once" in error for error in report.errors)
+
+
+def test_rejects_an_execution_record_with_a_repeated_action_id(tmp_path: Path) -> None:
+    actions = (*ATTACK_ACTIONS, ("A03", "2026-09-14T15:21:49.000Z", "collection", "again"))
+    root = build_run(tmp_path / "data", actions=actions)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("records action_id(s) more than once: ['A03']" in error for error in report.errors)
+
+
+def test_rejects_an_action_type_that_does_not_match_the_scenario(tmp_path: Path) -> None:
+    actions = (("A01", "2026-09-14T15:21:45.981Z", "collection", "anchor"), *ATTACK_ACTIONS[1:])
+    root = build_run(tmp_path / "data", actions=actions)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("action_type does not match the scenario" in error for error in report.errors)
+
+
+def test_rejects_a_collection_run_missing_the_external_action(tmp_path: Path) -> None:
+    actions = tuple(action for action in ATTACK_ACTIONS if action[0] != "A02")
+    root = build_run(tmp_path / "data", actions=actions)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("missing action_id(s): ['A02']" in error for error in report.errors)

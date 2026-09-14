@@ -21,8 +21,9 @@ import csv
 import hashlib
 import io
 import json
+from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import yaml
@@ -52,11 +53,21 @@ _HEX_DIGITS = frozenset("0123456789abcdef")
 _MANIFEST_TOP_LEVEL_FIELDS = ("run_id", "generated_at", "sysmon", "items")
 _MANIFEST_SYSMON_FIELDS = ("config_version", "config_sha256", "config_hash")
 _MANIFEST_ITEM_FIELDS = ("raw_log_id", "path", "sha256", "layer", "source")
+_MANIFEST_LAYER = "raw_telemetry"
+_MANIFEST_SOURCE = "sysmon"
 _SYSMON_PROCESS_CREATE_EVENT_ID = 1
 
 
 class ManifestPathError(ValueError):
     """Raised when a Manifest path cannot be mapped to a known artifact."""
+
+
+class ScenarioError(ValueError):
+    """Raised when the scenario definition cannot be used to validate a run.
+
+    Every failure mode is surfaced through the report rather than a traceback, so
+    a malformed scenario file reads like any other failed check.
+    """
 
 
 @dataclass
@@ -106,13 +117,17 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def manifest_filename(raw_path: object) -> str:
-    """Extract the file name of a Manifest path without trusting the path itself.
+def manifest_artifact_name(raw_path: object, *, run_id: str) -> str:
+    """Return the artifact file name a Manifest path refers to.
 
     The path was written inside the VM (`C:\\S0\\data\\...`), so it is never
-    opened as given. Only the file name survives, and the caller maps it into the
-    run's own telemetry directory. Anything that could escape that directory is
-    rejected rather than normalised.
+    opened as given: the drive and the directories above the run are not trusted.
+    What is checked is the tail, which must read `raw/<run_id>/telemetry/<name>`,
+    and the name, which must be one of this run's two telemetry files. The caller
+    then maps the name into the local telemetry directory.
+
+    Both Windows and POSIX separators are accepted because the runner writes
+    Windows paths while the artifacts are validated on either platform.
     """
     if not isinstance(raw_path, str) or not raw_path.strip():
         raise ManifestPathError("path must be a non-empty string")
@@ -127,6 +142,10 @@ def manifest_filename(raw_path: object) -> str:
 
     if name not in ALLOWED_TELEMETRY_FILENAMES:
         raise ManifestPathError(f"unexpected artifact file name: {name}")
+
+    expected_tail = ["raw", run_id, "telemetry", name]
+    if segments[-len(expected_tail) :] != expected_tail:
+        raise ManifestPathError(f"path must end with {'/'.join(expected_tail)}, found {raw_path}")
 
     return name
 
@@ -148,31 +167,108 @@ def _truncate_to_milliseconds(value: datetime) -> datetime:
     return value.replace(microsecond=(value.microsecond // 1000) * 1000)
 
 
-def _load_scenario_actions(scenario_path: Path, run_type: str) -> tuple[set[str], set[str]]:
-    """Return (all action ids, action ids that need an external connection)."""
-    with scenario_path.open(encoding="utf-8") as stream:
-        scenario = yaml.safe_load(stream)
+@dataclass(frozen=True)
+class ScenarioAction:
+    """One action the scenario defines for a run type."""
+
+    action_id: str
+    action_type: str
+    uses_external_connection: bool
+
+
+@dataclass(frozen=True)
+class ScenarioRun:
+    """The part of a scenario definition this validator needs."""
+
+    scenario_id: str
+    run_type: str
+    evaluation_horizon_sec: int
+    actions: dict[str, ScenarioAction]
+
+    @property
+    def external_action_ids(self) -> set[str]:
+        return {
+            action_id
+            for action_id, action in self.actions.items()
+            if action.uses_external_connection
+        }
+
+
+def _require_non_empty_str(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ScenarioError(f"{label} must be a non-empty string, found {value!r}")
+
+    return value
+
+
+def _require_horizon(value: object) -> int:
+    # bool is a subclass of int, so it is excluded explicitly.
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ScenarioError(
+            f"run_length.evaluation_horizon_sec must be a positive integer, found {value!r}"
+        )
+
+    return value
+
+
+def load_scenario_run(scenario_path: Path, run_type: str) -> ScenarioRun:
+    """Read the scenario definition for one run type.
+
+    Every problem is raised as `ScenarioError` so `validate_s0_run` can report it
+    as a failed check instead of letting a malformed file raise a traceback.
+    """
+    try:
+        with scenario_path.open(encoding="utf-8") as stream:
+            scenario = yaml.safe_load(stream)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
+        raise ScenarioError(f"scenario is not readable YAML ({scenario_path}): {error}") from error
 
     if not isinstance(scenario, dict):
-        raise TypeError(f"scenario must be a mapping: {scenario_path}")
+        raise ScenarioError(f"scenario must be a mapping: {scenario_path}")
 
-    runs = scenario.get("runs") or {}
+    scenario_id = _require_non_empty_str(scenario.get("scenario_id"), "scenario_id")
+
+    run_length = scenario.get("run_length")
+    if not isinstance(run_length, dict):
+        raise ScenarioError("scenario has no run_length mapping")
+
+    horizon = _require_horizon(run_length.get("evaluation_horizon_sec"))
+
+    runs = scenario.get("runs")
+    if not isinstance(runs, dict):
+        raise ScenarioError("scenario has no runs mapping")
+
     run = runs.get(run_type)
     if not isinstance(run, dict):
-        raise TypeError(f"scenario has no runs.{run_type}: {scenario_path}")
+        raise ScenarioError(f"scenario has no runs.{run_type} mapping")
 
-    all_ids: set[str] = set()
-    external_ids: set[str] = set()
-    for action in run.get("actions") or []:
-        action_id = action.get("action_id")
-        if not isinstance(action_id, str):
-            raise TypeError(f"runs.{run_type} has an action without action_id")
+    raw_actions = run.get("actions")
+    if not isinstance(raw_actions, list) or not raw_actions:
+        raise ScenarioError(f"runs.{run_type}.actions must be a non-empty list")
 
-        all_ids.add(action_id)
-        if action.get("uses_external_connection"):
-            external_ids.add(action_id)
+    actions: dict[str, ScenarioAction] = {}
+    for index, raw_action in enumerate(raw_actions):
+        label = f"runs.{run_type}.actions[{index}]"
+        if not isinstance(raw_action, dict):
+            raise ScenarioError(f"{label} must be a mapping, found {type(raw_action).__name__}")
 
-    return all_ids, external_ids
+        action_id = _require_non_empty_str(raw_action.get("action_id"), f"{label}.action_id")
+        if action_id in actions:
+            raise ScenarioError(f"runs.{run_type} defines action_id {action_id!r} more than once")
+
+        action_type = _require_non_empty_str(raw_action.get("action_type"), f"{label}.action_type")
+        actions[action_id] = ScenarioAction(
+            action_id=action_id,
+            action_type=action_type,
+            uses_external_connection=bool(raw_action.get("uses_external_connection")),
+        )
+
+    return ScenarioRun(
+        scenario_id=scenario_id,
+        run_type=run_type,
+        evaluation_horizon_sec=horizon,
+        actions=actions,
+    )
 
 
 def _check_rehearsal_isolation(
@@ -314,7 +410,7 @@ def _check_manifest(
         report.fail(f"manifest.json run_id is {manifest['run_id']!r}, expected {run_id!r}")
 
     _check_manifest_sysmon(manifest["sysmon"], report)
-    _check_manifest_items(manifest["items"], telemetry_dir, report)
+    _check_manifest_items(manifest["items"], telemetry_dir, run_id, report)
 
 
 def _check_manifest_sysmon(sysmon: object, report: S0ValidationReport) -> None:
@@ -363,12 +459,21 @@ def _check_manifest_sysmon(sysmon: object, report: S0ValidationReport) -> None:
     report.passed(f"Sysmon config file and applied config agree ({value.lower()})")
 
 
-def _check_manifest_items(items: object, telemetry_dir: Path, report: S0ValidationReport) -> None:
+def _check_manifest_items(
+    items: object,
+    telemetry_dir: Path,
+    run_id: str,
+    report: S0ValidationReport,
+) -> None:
+    """Check that the Manifest describes this run's two telemetry files exactly once."""
     if not isinstance(items, list) or not items:
         report.fail("manifest.json items must be a non-empty array")
         return
 
+    resolved: dict[str, dict[str, object]] = {}
+    seen_raw_log_ids: set[str] = set()
     verified = 0
+
     for index, item in enumerate(items):
         label = f"manifest.json items[{index}]"
         if not isinstance(item, dict):
@@ -380,18 +485,36 @@ def _check_manifest_items(items: object, telemetry_dir: Path, report: S0Validati
             report.fail(f"{label} is missing field(s): {sorted(missing)}")
             continue
 
+        if item["layer"] != _MANIFEST_LAYER:
+            report.fail(f"{label} layer is {item['layer']!r}, expected {_MANIFEST_LAYER!r}")
+            continue
+
+        if item["source"] != _MANIFEST_SOURCE:
+            report.fail(f"{label} source is {item['source']!r}, expected {_MANIFEST_SOURCE!r}")
+            continue
+
+        raw_log_id = item["raw_log_id"]
+        if not isinstance(raw_log_id, str) or not raw_log_id.strip():
+            report.fail(f"{label} raw_log_id must be a non-empty string, found {raw_log_id!r}")
+            continue
+
+        if raw_log_id in seen_raw_log_ids:
+            report.fail(f"{label} repeats raw_log_id {raw_log_id!r}")
+            continue
+
+        seen_raw_log_ids.add(raw_log_id)
+
         try:
-            name = manifest_filename(item["path"])
+            name = manifest_artifact_name(item["path"], run_id=run_id)
         except ManifestPathError as error:
             report.fail(f"{label} path rejected: {error}")
             continue
 
-        if "derived_from" in item:
-            try:
-                manifest_filename(item["derived_from"])
-            except ManifestPathError as error:
-                report.fail(f"{label} derived_from rejected: {error}")
-                continue
+        if name in resolved:
+            report.fail(f"{label} repeats the artifact {name}")
+            continue
+
+        resolved[name] = item
 
         recorded = item["sha256"]
         if not _is_sha256_hex(recorded):
@@ -412,8 +535,66 @@ def _check_manifest_items(items: object, telemetry_dir: Path, report: S0Validati
 
         verified += 1
 
+    absent = sorted(ALLOWED_TELEMETRY_FILENAMES - set(resolved))
+    if absent:
+        report.fail(f"manifest.json does not describe this run's artifact(s): {absent}")
+
+    if len(items) != len(ALLOWED_TELEMETRY_FILENAMES):
+        report.fail(
+            f"manifest.json must hold exactly {len(ALLOWED_TELEMETRY_FILENAMES)} items "
+            f"({sorted(ALLOWED_TELEMETRY_FILENAMES)}), found {len(items)}"
+        )
+
+    _check_manifest_derivation(resolved, run_id, report)
+
     if verified:
         report.passed(f"{verified} manifest item hash(es) match the local artifacts")
+
+
+def _check_manifest_derivation(
+    resolved: dict[str, dict[str, object]],
+    run_id: str,
+    report: S0ValidationReport,
+) -> None:
+    """The JSONL is rendered from the EVTX, so only that direction is valid."""
+    evtx_item = resolved.get(EVTX_FILENAME)
+    if evtx_item is not None and "derived_from" in evtx_item:
+        report.fail(
+            f"manifest.json {EVTX_FILENAME} declares derived_from "
+            f"({evtx_item['derived_from']!r}); the EVTX is the source artifact"
+        )
+
+    jsonl_item = resolved.get(JSONL_FILENAME)
+    if jsonl_item is None:
+        return
+
+    if "derived_from" not in jsonl_item:
+        report.fail(
+            f"manifest.json {JSONL_FILENAME} must declare derived_from pointing at {EVTX_FILENAME}"
+        )
+        return
+
+    try:
+        parent = manifest_artifact_name(jsonl_item["derived_from"], run_id=run_id)
+    except ManifestPathError as error:
+        report.fail(f"manifest.json {JSONL_FILENAME} derived_from rejected: {error}")
+        return
+
+    if parent != EVTX_FILENAME:
+        report.fail(
+            f"manifest.json {JSONL_FILENAME} derived_from points at {parent}, expected "
+            f"{EVTX_FILENAME}"
+        )
+        return
+
+    if parent not in resolved:
+        report.fail(
+            f"manifest.json {JSONL_FILENAME} derived_from points at {parent}, which is not a "
+            "manifest item"
+        )
+        return
+
+    report.passed(f"{JSONL_FILENAME} is recorded as derived from {EVTX_FILENAME}")
 
 
 def _check_reference(
@@ -533,18 +714,74 @@ def _check_times(
         report.passed("every execution_record timestamp lies inside the run window")
 
 
-def _check_actions(
+def _check_observation_window(
     metadata: RunMetadata,
-    action_ids: set[str],
-    scenario_path: Path,
+    scenario: ScenarioRun,
     rehearsal: bool,
     report: S0ValidationReport,
 ) -> None:
-    try:
-        expected, external = _load_scenario_actions(scenario_path, metadata.run_type.value)
-    except (OSError, TypeError, ValueError, yaml.YAMLError) as error:
-        report.fail(f"scenario definition is not usable ({scenario_path}): {error}")
+    """A collection run must stay open for the whole evaluation horizon.
+
+    The attack run is anchored to `reference_time` and the normal run to
+    `start_time`, which is how the runner keeps both runs observed for the same
+    span (`docs/scenarios/s0.md` sections 7 and 9). `post_reference_margin_sec` is
+    the runner's own slack, not part of the minimum contract, so it is not added.
+
+    Rehearsal skips the observation wait on purpose, so the horizon is not checked.
+    """
+    if rehearsal:
+        report.passed("observation window not checked (rehearsal skips the wait)")
         return
+
+    if metadata.end_time is None:
+        report.fail("a collection run must record end_time")
+        return
+
+    if metadata.run_type is RunType.ATTACK:
+        anchor_name, anchor = "reference_time", metadata.reference_time
+    else:
+        anchor_name, anchor = "start_time", metadata.start_time
+
+    if anchor is None:
+        # An attack run without reference_time already failed the reference check.
+        return
+
+    due = anchor + timedelta(seconds=scenario.evaluation_horizon_sec)
+    if metadata.end_time < due:
+        report.fail(
+            f"end_time {metadata.end_time.isoformat()} is before {anchor_name} + "
+            f"evaluation_horizon_sec ({scenario.evaluation_horizon_sec}s), which ends at "
+            f"{due.isoformat()}"
+        )
+        return
+
+    report.passed(
+        f"the run stayed open for the {scenario.evaluation_horizon_sec}s horizon "
+        f"after {anchor_name}"
+    )
+
+
+def _check_actions(
+    metadata: RunMetadata,
+    records: list[ExecutionRecordRow],
+    scenario: ScenarioRun,
+    rehearsal: bool,
+    report: S0ValidationReport,
+) -> None:
+    if metadata.scenario_id != scenario.scenario_id:
+        report.fail(
+            f"run_metadata.json scenario_id is {metadata.scenario_id!r}, but the scenario "
+            f"definition is {scenario.scenario_id!r}"
+        )
+
+    occurrences = Counter(record.action_id for record in records)
+    duplicates = sorted(action_id for action_id, count in occurrences.items() if count > 1)
+    if duplicates:
+        report.fail(f"execution_record records action_id(s) more than once: {duplicates}")
+
+    action_ids = {record.action_id for record in records}
+    expected = set(scenario.actions)
+    external = scenario.external_action_ids
 
     unknown = action_ids - expected
     if unknown:
@@ -557,11 +794,21 @@ def _check_actions(
     if absent:
         report.fail(f"execution_record is missing action_id(s): {sorted(absent)}")
 
-    if not unknown and not absent:
+    mismatched = [
+        f"{record.action_id} is {record.action_type!r}, scenario says "
+        f"{scenario.actions[record.action_id].action_type!r}"
+        for record in records
+        if record.action_id in scenario.actions
+        and record.action_type != scenario.actions[record.action_id].action_type
+    ]
+    for message in mismatched:
+        report.fail(f"execution_record action_type does not match the scenario: {message}")
+
+    if not duplicates and not unknown and not absent and not mismatched:
         skipped = sorted(expected - action_ids)
         note = f" (external action(s) {skipped} skipped in rehearsal)" if skipped else ""
         report.passed(
-            f"execution_record covers the scenario actions for {metadata.run_type.value}{note}"
+            f"execution_record matches the scenario actions for {metadata.run_type.value}{note}"
         )
 
 
@@ -618,7 +865,15 @@ def validate_s0_run(
     _check_manifest(manifest_path, telemetry_dir, run_id, report)
     _check_reference(metadata, jsonl_path, action_ids, report)
     _check_times(metadata, records, report)
-    _check_actions(metadata, action_ids, scenario, rehearsal, report)
+
+    try:
+        scenario_run = load_scenario_run(scenario, metadata.run_type.value)
+    except ScenarioError as error:
+        report.fail(f"scenario definition is not usable ({scenario}): {error}")
+        return report
+
+    _check_observation_window(metadata, scenario_run, rehearsal, report)
+    _check_actions(metadata, records, scenario_run, rehearsal, report)
 
     return report
 
@@ -650,8 +905,12 @@ def format_report(report: S0ValidationReport) -> str:
 __all__ = [
     "ManifestPathError",
     "S0ValidationReport",
+    "ScenarioAction",
+    "ScenarioError",
+    "ScenarioRun",
     "default_scenario_path",
     "format_report",
-    "manifest_filename",
+    "load_scenario_run",
+    "manifest_artifact_name",
     "validate_s0_run",
 ]

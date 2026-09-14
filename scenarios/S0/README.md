@@ -139,11 +139,13 @@ uv run python tools/validate_s0_run.py --artifact-root E:\KISIA\result-file\_reh
 | 계약 | `run_metadata.json` 이 `RunMetadata` 를, CSV 각 행이 `ExecutionRecordRow` 를 통과하는지 |
 | CSV | UTF-8 BOM 이 없는지, 헤더가 `run_id,action_id,timestamp,action_type,description` 순서 그대로인지, 행이 하나 이상인지 |
 | run_id | CSV 모든 행과 CLI 인자가 `RunMetadata.run_id` 와 같은지 |
-| Manifest | 최상위 필드와 `sysmon` · `items` 구조, `items[].sha256` 가 64 자리 SHA-256 인지, 실제 파일 해시와 일치하는지 |
+| Manifest 구조 | 최상위 필드와 `sysmon` · `items` 구조, `items[].sha256` 가 64 자리 SHA-256 인지, 실제 파일 해시와 일치하는지, 모든 항목의 `layer` 가 `raw_telemetry` 이고 `source` 가 `sysmon` 인지 |
+| Manifest 완전성 | 이 Run 의 EVTX 와 JSONL 을 **정확히 하나씩** 담는지, 파일명과 `raw_log_id` 가 중복되지 않는지, JSONL 의 `derived_from` 이 같은 manifest 안의 EVTX 를 가리키는지, EVTX 에는 `derived_from` 이 없는지 |
 | Sysmon 설정 | `sysmon.config_sha256` 와 `sysmon.config_hash` 가 같은 SHA-256 인지 (`SHA256=` 접두사와 대소문자 차이는 허용, 다른 알고리즘 · 빈 값 · 형식 오류는 실패) |
 | reference | 공격 Run 이면 `reference_*` 세 값이 있고, `reference_source_event_id` 가 JSONL 에 있는 Sysmon EID 1 이며 그 `TimeCreated` 가 `reference_time` 과 밀리초까지 같고, `reference_action_id` 가 execution_record 에 있는지. 정상 Run 이면 세 값이 모두 null 인지 |
 | 시각 | execution_record 의 모든 timestamp 가 `start_time` 과 `end_time` 사이인지 (`end_time >= start_time` 은 `RunMetadata` 가 이미 강제한다) |
-| 행위 | `scenario.yaml` 이 정의한 행위 집합과 맞는지 |
+| 관측 길이 | 정식 Run 은 `end_time` 이 있어야 하고, 공격 Run 은 `reference_time`, 정상 Run 은 `start_time` 에서 `run_length.evaluation_horizon_sec` 만큼 지난 뒤에 끝나야 한다 (§5-4) |
+| 행위 | `scenario_id` 가 시나리오와 같은지, execution_record 의 `action_id` 가 중복되지 않는지, 각 행의 `action_type` 이 시나리오의 같은 `action_id` 와 같은지, 알 수 없는 행위가 없는지 |
 
 ### 5-2. Manifest 경로는 그대로 쓰지 않는다
 
@@ -168,45 +170,73 @@ rehearsal 에서는 외부 연결 행위(`scenario.yaml` 의 `uses_external_conn
 허용한다. 나머지 로컬 행위가 빠지면 실패한다. 기대 행위 목록을 `scenario.yaml` 에서 읽으므로
 시나리오가 바뀌면 검증기도 따라간다.
 
+### 5-4. 관측 길이는 정식 Run 에서만 본다
+
+정식 Run 은 `run_length.evaluation_horizon_sec` 만큼 관측 창이 열려 있어야 한다.
+
+```text
+공격 Run    end_time >= reference_time + evaluation_horizon_sec
+정상 Run    end_time >= start_time     + evaluation_horizon_sec
+```
+
+공격 Run 은 `reference_time`, 정상 Run 은 `start_time` 을 기준점으로 삼아 두 Run 이 같은 길이로
+관측되게 한다(`s0.md` §7 · §9). `post_reference_margin_sec` 은 실행기의 운영 여유이지 최소 계약이
+아니므로 더하지 않는다. `end_time` 이 없으면 정식 Run 으로 인정하지 않는다.
+
+**rehearsal 에는 적용하지 않는다.** rehearsal 은 관측 대기를 의도적으로 건너뛰기 때문이다.
+
+`evaluation_horizon_sec` 이 없거나 양의 정수가 아니면 시나리오 오류로 실패한다. 시나리오 파일이
+깨져 있을 때도 traceback 이 아니라 검증 실패로 보고한다.
+
 ## 6. 검증 상태
 
-### 6-1. VM rehearsal 결과 (2026-09-14, attack)
+### 6-1. VM rehearsal 결과 (RUN-20260914-002, attack)
 
-격리 VM 에서 attack rehearsal 을 한 번 실행했다. 산출물 네 개가 모두 생성됐고 아래를 확인했다.
+수정본으로 격리 VM 에서 attack rehearsal 을 다시 실행했다. 산출물 네 개가 모두 생성됐고 아래를
+확인했다. **VM 은 검증 후 `poc-clean-v1` 스냅샷으로 복원했다.**
 
 | 확인 항목 | 결과 |
 | --- | --- |
+| `run_id` | `RUN-20260914-002` |
 | rehearsal 산출물 위치 | `data\_rehearsal\` 아래에만 생성, `REHEARSAL.txt` 존재 |
 | 정식 `data\raw` · `data\ground_truth` 오염 | 없음 |
-| `reference_time` | `2026-09-14T14:21:52.101Z` |
-| `reference_source_event_id` | `7603` — Sysmon EID 1 이고 시각이 `reference_time` 과 일치 |
-| anchor 프로세스 | `s0_anchor.ps1` 의 EID 1. A03 · A04 보다 먼저 기록되고 중간에 종료되지 않음 |
+| `reference_time` | `2026-09-14T15:21:46.216Z` |
+| `reference_source_event_id` | `7809` — Sysmon EID 1 이고 시각이 `reference_time` 과 일치 |
+| Sysmon 이벤트 | 9 건 |
 | `execution_record.csv` | A01 · A03 · A04 세 행 (A02 는 rehearsal 에서 건너뜀) |
-| `manifest.json` | 두 항목의 경로와 SHA-256 이 실제 산출물과 일치 |
+| CSV 첫 3 바이트 | `22 72 75` — UTF-8 BOM 없음 |
+| `manifest.json` | artifact 해시 2 건이 실제 산출물과 일치 |
+| Sysmon 설정 SHA-256 | `1e5c2424ed807ea418a2fa685b81acb23885fc576f77718c8e283ef9b19de8ea` |
+| 적용 설정과 파일 해시 | 일치 |
 | `run_metadata.json` | RunMetadata 계약 통과 |
 | A02 인과 검증 | `not_verified` — A02 가 미구현이므로 예상된 결과 |
 
-### 6-2. 이 실행에서 드러난 결함과 조치
+앞선 실행(RUN-20260913-001)에서 드러났던 설정 파일 CRLF 문제는 LF 원본을 다시 복사해 해소했고,
+이번 실행에서 파일 해시와 적용 설정 해시가 같은 값으로 확인됐다.
+
+### 6-2. 앞선 실행에서 드러난 결함과 조치
+
+RUN-20260913-001 rehearsal 검토로 찾아 고친 항목이다. 모두 RUN-20260914-002 에서 재검증됐다.
 
 | 결함 | 조치 |
 | --- | --- |
-| 설정 파일 해시(`ee2cff…`, CRLF)와 Sysmon 이 적용 중인 설정 해시(`1e5c2424…`, LF)가 달랐는데 실행기가 둘 다 기록만 하고 비교하지 않았다 | `Test-SysmonConfigApplied` 를 추가해 정식 모드는 중단, rehearsal 은 경고 |
+| 설정 파일 해시(CRLF)와 Sysmon 이 적용 중인 설정 해시(LF)가 달랐는데 실행기가 둘 다 기록만 하고 비교하지 않았다 | `Test-SysmonConfigApplied` 를 추가해 정식 모드는 중단, rehearsal 은 경고 |
 | `execution_record.csv` 에 UTF-8 BOM 이 붙어, 파일을 일반 UTF-8 로 여는 판독기에서 첫 열 이름이 `run_id` 로 읽히지 않았다 | BOM 없이 기록 |
 | 행 수가 시나리오 기대치보다 적어도 경고만 남기고 통과했다 | 정식 모드에서는 중단, rehearsal 에서만 경고 |
-| `Sysmon64 -c` 가 `start_time` 이후에 실행돼 실행기 자신의 프로세스가 run 구간 안에 들어갔다 (RecordId 7602) | 설정 조회를 `start_time` 이전으로 이동. 아래 선행 여유 때문에 추출에서 빠지지는 않는다 |
-
-**VM 조치가 필요하다.** `C:\Tools\S0\sysmonconfig-sample-v0.1.xml` 이 CRLF 로 복사돼 있다.
-LF 원본으로 다시 복사해야 위 검사를 통과한다.
+| `Sysmon64 -c` 가 `start_time` 이후에 실행돼 실행기 자신의 프로세스가 run 구간 안에 들어갔다 | 설정 조회를 `start_time` 이전으로 이동. 아래 선행 여유 때문에 추출에서 빠지지는 않는다 |
 
 ### 6-3. 아직 남은 것
 
-- 위 수정은 **정적 검증까지만 했다**(구문 파싱, ASCII, 함수 단위 확인). 수정본으로 VM rehearsal 을
-  다시 한 번 돌려야 한다.
-- `manifest.json` 의 `path` 는 VM 절대 경로(`C:\S0\data\...`)다. 호스트로 산출물을 옮기면 그
-  경로는 존재하지 않는다. 검증기는 §5-2 의 규칙으로 파일 이름만 매핑해 이 문제를 피한다.
-  manifest 자체를 상대 경로로 바꿀지는 Manifest 결정 항목(`s0.md` §10)과 함께 정한다.
+- **§5 검증기는 Python 3.13 CI 를 아직 통과하지 않았다.** 저장소가 요구하는 3.13 환경이 작업 PC 에
+  없어 `uv run pytest` · `uv run ruff` 를 실행하지 못했다. PR 을 올려 GitHub Actions 의 `quality`
+  잡에서 처음 확인한다.
+- 정식 A01 · A02 는 미구현이다. 정식 모드에서 미구현 예외로 중단되는지도 아직 확인하지 않았다.
+- issue #71 의 제한된 NAT 예외 **세부 승인값(허용 목적지 · 포트 · 시간 · 복구 절차)** 을 기다린다.
+  방식은 A 로 정해졌지만 값이 없어 `external_connection.target` 은 `null` 이다.
+- cadence(`run_length.run_end_alignment.step_size_sec`)가 미정이다.
+- `manifest.json` 의 `path` 는 VM 절대 경로(`C:\S0\data\...`)다. 검증기는 §5-2 의 규칙으로 파일
+  이름만 매핑해 이 문제를 피한다. manifest 자체를 상대 경로로 바꿀지는 Manifest 결정 항목
+  (`s0.md` §10)과 함께 정한다.
 - 추출 창은 `start_time` 보다 10초 앞에서 시작한다(`EVTX_WINDOW_MARGIN_MS`). 그래서 run 직전의
-  이벤트가 함께 수집된다. 위 설정 조회와 RecordId 7601 의 NetBIOS 연결이 그 경우다. 여유 폭을
-  줄일지는 정식 수집 전에 정한다.
-- 정식 모드에서 A01 · A02 가 미구현 예외로 중단되는지는 아직 확인하지 않았다.
-- 정식 수집은 issue #71 네트워크 격리 결정과 cadence(`step_size`) 확정 이후에 한다.
+  이벤트가 함께 수집된다. 여유 폭을 줄일지는 정식 수집 전에 정한다.
+- 정식 S0 Pair 수집은 위 결정들이 끝난 뒤에 한다.
