@@ -127,7 +127,7 @@ Sysmon 설정 파일은 **적용된 설정과 바이트가 같아야 한다.** �
 | 설정 파일 해시(`ee2cff…`, CRLF)와 Sysmon 이 적용 중인 설정 해시(`1e5c2424…`, LF)가 달랐는데 실행기가 둘 다 기록만 하고 비교하지 않았다 | `Test-SysmonConfigApplied` 를 추가해 정식 모드는 중단, rehearsal 은 경고 |
 | `execution_record.csv` 에 UTF-8 BOM 이 붙어, 파일을 일반 UTF-8 로 여는 판독기에서 첫 열 이름이 `run_id` 로 읽히지 않았다 | BOM 없이 기록 |
 | 행 수가 시나리오 기대치보다 적어도 경고만 남기고 통과했다 | 정식 모드에서는 중단, rehearsal 에서만 경고 |
-| `Sysmon64 -c` 가 `start_time` 이후에 실행돼 실행기 자신의 프로세스가 수집 창 안에 남았다 (RecordId 7602) | 설정 조회를 `start_time` 이전으로 이동 |
+| `Sysmon64 -c` 가 `start_time` 이후에 실행돼 실행기 자신의 프로세스가 run 구간 안에 들어갔다 (RecordId 7602) | 설정 조회를 `start_time` 이전으로 이동. 아래 선행 여유 때문에 추출에서 빠지지는 않는다 |
 
 **VM 조치가 필요하다.** `C:\Tools\S0\sysmonconfig-sample-v0.1.xml` 이 CRLF 로 복사돼 있다.
 LF 원본으로 다시 복사해야 위 검사를 통과한다.
@@ -138,5 +138,8 @@ LF 원본으로 다시 복사해야 위 검사를 통과한다.
   다시 한 번 돌려야 한다.
 - `manifest.json` 의 `path` 는 VM 절대 경로(`C:\S0\data\...`)다. 호스트로 산출물을 옮기면 그
   경로는 존재하지 않는다. 상대 경로로 바꿀지는 Manifest 결정 항목(`s0.md` §10)과 함께 정한다.
+- 추출 창은 `start_time` 보다 10초 앞에서 시작한다(`EVTX_WINDOW_MARGIN_MS`). 그래서 run 직전의
+  이벤트가 함께 수집된다. 위 설정 조회와 RecordId 7601 의 NetBIOS 연결이 그 경우다. 여유 폭을
+  줄일지는 정식 수집 전에 정한다.
 - 정식 모드에서 A01 · A02 가 미구현 예외로 중단되는지는 아직 확인하지 않았다.
 - 정식 수집은 issue #71 네트워크 격리 결정과 cadence(`step_size`) 확정 이후에 한다.
