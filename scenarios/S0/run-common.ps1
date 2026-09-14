@@ -97,6 +97,11 @@ function Test-SysmonConfigApplied {
         different line endings after it was applied. The run would then record a
         sysmon_config_version that does not describe what was monitoring
         (samples/raw/README.md section 4).
+
+        A collection run also stops when the two cannot be compared at all - no
+        hash reported, or an algorithm other than SHA-256 - because an applied
+        config that cannot be verified is not a valid collection. Rehearsal warns
+        and continues in every one of these cases.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$ConfigSha256,
@@ -106,7 +111,9 @@ function Test-SysmonConfigApplied {
 
     $reported = [string]$ConfigState.config_hash
     if ([string]::IsNullOrWhiteSpace($reported)) {
-        Write-Fail "Sysmon reported no config hash; the applied config cannot be compared."
+        $message = "Sysmon reported no config hash; the applied config cannot be compared."
+        if (-not $Rehearsal) { throw $message }
+        Write-Fail $message
         return
     }
 
@@ -118,8 +125,10 @@ function Test-SysmonConfigApplied {
     }
 
     if ($algorithm -ne "SHA256") {
-        Write-Fail ("Sysmon reports the config hash as " + $algorithm +
+        $message = ("Sysmon reports the config hash as " + $algorithm +
             "; it cannot be compared with the SHA-256 of the file.")
+        if (-not $Rehearsal) { throw $message }
+        Write-Fail $message
         return
     }
 

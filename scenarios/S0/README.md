@@ -99,8 +99,9 @@ Set-Location C:\Tools\S0\attack
 Sysmon 설정 파일의 줄바꿈 규칙은 `samples/raw/README.md` §4 를 따른다.
 
 Sysmon 설정 파일은 **적용된 설정과 바이트가 같아야 한다.** 줄바꿈만 달라져도 해시가 바뀐다.
-실행기는 파일의 SHA-256 과 `Sysmon64 -c` 가 보고한 `Config hash` 를 비교해서, 다르면 정식 모드는
-중단하고 rehearsal 은 경고만 남기고 진행한다.
+실행기는 파일의 SHA-256 과 `Sysmon64 -c` 가 보고한 `Config hash` 를 비교한다. 두 값이 다르거나,
+해시가 보고되지 않거나 SHA-256 이 아닌 알고리즘이어서 **비교 자체가 불가능하면** 정식 모드는
+중단한다. rehearsal 은 세 경우 모두 경고만 남기고 진행한다.
 
 ## 5. 검증 상태
 
