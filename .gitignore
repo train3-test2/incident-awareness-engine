@@ -37,6 +37,9 @@ data/raw/
 data/ground_truth/
 data/_rehearsal/
 
+# VM delivery build artifacts (see scenarios/S0/README.md section 1)
+/build/
+
 # VMware
 *.vmdk
 *.vmem
