@@ -103,9 +103,74 @@ Sysmon 설정 파일은 **적용된 설정과 바이트가 같아야 한다.** �
 해시가 보고되지 않거나 SHA-256 이 아닌 알고리즘이어서 **비교 자체가 불가능하면** 정식 모드는
 중단한다. rehearsal 은 세 경우 모두 경고만 남기고 진행한다.
 
-## 5. 검증 상태
+## 5. 산출물 검증기
 
-### 5-1. VM rehearsal 결과 (2026-09-14, attack)
+수집이 끝난 Run 의 산출물이 계약을 지키는지 **호스트에서** 확인한다. 검증 규칙은
+`src/incident_awareness/collection/s0_validation.py` 가 소유하고 `tools/validate_s0_run.py` 는
+얇은 CLI 다. VM 은 필요 없다.
+
+정식 수집물:
+
+```bash
+uv run python tools/validate_s0_run.py --artifact-root <data-root> --run-id <run_id>
+```
+
+rehearsal 산출물:
+
+```bash
+uv run python tools/validate_s0_run.py --artifact-root <rehearsal-root> --run-id <run_id> --rehearsal
+```
+
+예시:
+
+```bash
+uv run python tools/validate_s0_run.py --artifact-root E:\KISIA\result-file\_rehearsal --run-id RUN-20260914-002 --rehearsal
+```
+
+통과하면 종료 코드 `0`, 실패하면 `0` 이 아닌 값을 돌려주고 **실패한 검사를 모두** 출력한다.
+`--scenario` 로 기대 행위 목록을 읽을 시나리오 파일을 바꿀 수 있다(기본값
+`scenarios/S0/scenario.yaml`).
+
+### 5-1. 검사 항목
+
+| 구분 | 검사 |
+| --- | --- |
+| 파일 | 산출물 다섯 개(`sysmon-0001.evtx` · `sysmon-0001.jsonl` · `manifest.json` · `execution_record.csv` · `run_metadata.json`)가 모두 있는지 |
+| 계약 | `run_metadata.json` 이 `RunMetadata` 를, CSV 각 행이 `ExecutionRecordRow` 를 통과하는지 |
+| CSV | UTF-8 BOM 이 없는지, 헤더가 `run_id,action_id,timestamp,action_type,description` 순서 그대로인지, 행이 하나 이상인지 |
+| run_id | CSV 모든 행과 CLI 인자가 `RunMetadata.run_id` 와 같은지 |
+| Manifest | 최상위 필드와 `sysmon` · `items` 구조, `items[].sha256` 가 64 자리 SHA-256 인지, 실제 파일 해시와 일치하는지 |
+| Sysmon 설정 | `sysmon.config_sha256` 와 `sysmon.config_hash` 가 같은 SHA-256 인지 (`SHA256=` 접두사와 대소문자 차이는 허용, 다른 알고리즘 · 빈 값 · 형식 오류는 실패) |
+| reference | 공격 Run 이면 `reference_*` 세 값이 있고, `reference_source_event_id` 가 JSONL 에 있는 Sysmon EID 1 이며 그 `TimeCreated` 가 `reference_time` 과 밀리초까지 같고, `reference_action_id` 가 execution_record 에 있는지. 정상 Run 이면 세 값이 모두 null 인지 |
+| 시각 | execution_record 의 모든 timestamp 가 `start_time` 과 `end_time` 사이인지 (`end_time >= start_time` 은 `RunMetadata` 가 이미 강제한다) |
+| 행위 | `scenario.yaml` 이 정의한 행위 집합과 맞는지 |
+
+### 5-2. Manifest 경로는 그대로 쓰지 않는다
+
+`manifest.json` 의 `path` 는 VM 안에서 기록한 절대 경로(`C:\S0\data\...`)라 호스트에는 존재하지
+않는다. 검증기는 **이 경로를 열지 않는다.** 파일 이름만 꺼내
+`<artifact-root>/raw/<run_id>/telemetry/` 아래로 다시 매핑한 다음, 그 파일만 해시를 다시 계산한다.
+
+- 경로에 `.` 이나 `..` 세그먼트가 있으면 거부한다
+- 파일 이름이 `sysmon-0001.evtx` · `sysmon-0001.jsonl` 이 아니면 거부한다
+- `derived_from` 도 같은 규칙으로 검사한다
+
+그래서 산출물을 호스트 어디로 복사해 두든 검증이 되고, manifest 가 가리키는 임의 경로의 파일을
+읽는 일은 일어나지 않는다.
+
+### 5-3. rehearsal 격리
+
+`REHEARSAL.txt` 가 있거나 경로에 `_rehearsal` 이 있으면 `--rehearsal` 없이 검증하는 것을 **거부한다.**
+반대로 `--rehearsal` 인데 marker 나 경로 격리가 없어도 거부한다. rehearsal 이 통과해도 결과에
+`REHEARSAL` 을 붙여 정식 S0 Pair 로 오인하지 않게 한다.
+
+rehearsal 에서는 외부 연결 행위(`scenario.yaml` 의 `uses_external_connection: true`)가 빠진 것만
+허용한다. 나머지 로컬 행위가 빠지면 실패한다. 기대 행위 목록을 `scenario.yaml` 에서 읽으므로
+시나리오가 바뀌면 검증기도 따라간다.
+
+## 6. 검증 상태
+
+### 6-1. VM rehearsal 결과 (2026-09-14, attack)
 
 격리 VM 에서 attack rehearsal 을 한 번 실행했다. 산출물 네 개가 모두 생성됐고 아래를 확인했다.
 
@@ -121,7 +186,7 @@ Sysmon 설정 파일은 **적용된 설정과 바이트가 같아야 한다.** �
 | `run_metadata.json` | RunMetadata 계약 통과 |
 | A02 인과 검증 | `not_verified` — A02 가 미구현이므로 예상된 결과 |
 
-### 5-2. 이 실행에서 드러난 결함과 조치
+### 6-2. 이 실행에서 드러난 결함과 조치
 
 | 결함 | 조치 |
 | --- | --- |
@@ -133,12 +198,13 @@ Sysmon 설정 파일은 **적용된 설정과 바이트가 같아야 한다.** �
 **VM 조치가 필요하다.** `C:\Tools\S0\sysmonconfig-sample-v0.1.xml` 이 CRLF 로 복사돼 있다.
 LF 원본으로 다시 복사해야 위 검사를 통과한다.
 
-### 5-3. 아직 남은 것
+### 6-3. 아직 남은 것
 
 - 위 수정은 **정적 검증까지만 했다**(구문 파싱, ASCII, 함수 단위 확인). 수정본으로 VM rehearsal 을
   다시 한 번 돌려야 한다.
 - `manifest.json` 의 `path` 는 VM 절대 경로(`C:\S0\data\...`)다. 호스트로 산출물을 옮기면 그
-  경로는 존재하지 않는다. 상대 경로로 바꿀지는 Manifest 결정 항목(`s0.md` §10)과 함께 정한다.
+  경로는 존재하지 않는다. 검증기는 §5-2 의 규칙으로 파일 이름만 매핑해 이 문제를 피한다.
+  manifest 자체를 상대 경로로 바꿀지는 Manifest 결정 항목(`s0.md` §10)과 함께 정한다.
 - 추출 창은 `start_time` 보다 10초 앞에서 시작한다(`EVTX_WINDOW_MARGIN_MS`). 그래서 run 직전의
   이벤트가 함께 수집된다. 위 설정 조회와 RecordId 7601 의 NetBIOS 연결이 그 경우다. 여유 폭을
   줄일지는 정식 수집 전에 정한다.
