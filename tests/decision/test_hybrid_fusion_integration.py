@@ -80,7 +80,7 @@ def test_real_fusion_runner_combines_with_mock_fast(
     result = combine_results(
         fast,
         fusion,
-        decision_id="DEC-SYNTHETIC-1",
+        decision_id="D-SYNTHETIC-1",
         config_version="synthetic-parallel-v1",
         parallel_required=True,
     )

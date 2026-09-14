@@ -462,6 +462,11 @@ Fusion Path와 Fast Detection Path의 결과를 결합하여 기술적 후보 �
 
 `fast_status`는 `DetectionResult.detector_status`를 복사한 값이며, `fusion_status`는 FusionResult 상태를 보존한다. 상태를 먼저 판정하고, 유효한 경우에만 시각을 사용한다.
 
+판단 시점 결합기가 전달하는 `DecisionResult.contributing_evidence_ids`는 입력
+`FusionResult.contributing_evidence_ids`의 복사본으로, Fusion 판단 근거의 provenance다.
+Fast가 더 빠르더라도 보존하며 최종 `t_e`의 직접 기여 Evidence 또는 Fusion 전체
+episode의 Evidence 합집합을 뜻하지 않는다.
+
 `parallel_required=true`인 Run에서 한 경로라도 `not_evaluated`이면 `t_e`, `decision_path`, `winning_path`는 모두 `null`이며 병렬 검증 실패로 처리한다.
 
 | `fast_status` | `fusion_status` | `t_e` | `winning_path` | `decision_path` |

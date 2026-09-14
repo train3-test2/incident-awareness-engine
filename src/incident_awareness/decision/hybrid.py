@@ -70,6 +70,7 @@ def combine_results(
         decision_path=decision_path,
         winning_path=winning_path,
         decision_reason=reason,
+        # Preserve the input Fusion decision provenance, not direct attribution to t_e.
         contributing_evidence_ids=list(fusion.contributing_evidence_ids),
         model_version=fusion.model_version,
         rule_version=detection.rule_version,

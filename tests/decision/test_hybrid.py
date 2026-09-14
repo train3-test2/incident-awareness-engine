@@ -52,7 +52,7 @@ def inputs(fast_status, fusion_status, fast_seconds=10, fusion_seconds=20):
 
 def combine(detection, fusion, **overrides):
     kwargs = {
-        "decision_id": "DEC-001",
+        "decision_id": "D-001",
         "config_version": "mock-parallel-v1",
         "parallel_required": True,
     }
