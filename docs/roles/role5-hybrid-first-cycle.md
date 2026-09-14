@@ -21,3 +21,15 @@ parallel_required=True)`가 기존 DetectionResult와 FusionResult를 받아 Dec
 
 실제 Fast Adapter 수신 및 두 실제 경로의 E2E 검증은 아직 미완료다.
 검증: `uv run pytest tests/decision/test_hybrid.py -q`.
+
+
+## Fusion 실행 경로 연결 검증
+
+`tests/decision/test_hybrid_fusion_integration.py`는 인공 Evidence를 실제
+TemporalReplayRunner와 build_fusion_result에 통과시킨 뒤 Mock DetectionResult와 결합한다.
+Evidence 시각 5초, cadence 10초, persistence=2에서 Fusion 판단이 20초에 성립하는지와
+그 시각을 기준으로 Fast 우선·Fusion 우선·동률·한쪽 탐지·양쪽 miss·Fast 미실행을 검증한다.
+입력 FusionResult가 변경되지 않는지와 Evidence ID·Rule 버전 보존도 확인한다.
+
+이는 실제 Fusion 코드와의 연결 테스트다. 실제 EVTX/Evidence Extractor, 역할 3 Fast Adapter,
+Pipeline CLI를 통과한 전체 E2E 또는 성능 검증은 아니다. 테스트 설정은 실험용 최종 설정이 아니다.
