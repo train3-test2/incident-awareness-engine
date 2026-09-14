@@ -467,6 +467,11 @@ Fusion Path와 Fast Detection Path의 결과를 결합하여 기술적 후보 �
 Fast가 더 빠르더라도 보존하며 최종 `t_e`의 직접 기여 Evidence 또는 Fusion 전체
 episode의 Evidence 합집합을 뜻하지 않는다.
 
+현재 구현의 `DecisionResult` 모델과 JSON Schema는 역할 1·5가 정한 필수 병렬 실행의
+미실행 정책을 적용한다. 한 경로라도 `not_evaluated`이면 `t_e`, `decision_path`,
+`winning_path`의 non-null 값을 거부한다. Optional-path 결과 정책은 현재 미지원이며,
+지원 시 실행 Config와 모델 검증을 함께 확장한다.
+
 `parallel_required=true`인 Run에서 한 경로라도 `not_evaluated`이면 `t_e`, `decision_path`, `winning_path`는 모두 `null`이며 병렬 검증 실패로 처리한다.
 
 | `fast_status` | `fusion_status` | `t_e` | `winning_path` | `decision_path` |

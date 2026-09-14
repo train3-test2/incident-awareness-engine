@@ -41,8 +41,11 @@ Pipeline CLI를 통과한 전체 E2E 또는 성능 검증은 아니다. 테스�
 Fusion의 모든 episode·전체 Evidence 목록을 뜻하지 않는다. Fast가 먼저 탐지하거나 병렬
 실행이 미완료여도 입력 Fusion 판단 근거를 보존한다.
 
-이 결합기는 `parallel_required=true`만 지원하므로 한 경로 이상이 `not_evaluated`이면
-`t_e`, `decision_path`, `winning_path`를 모두 null로 생성한다. 공통 `DecisionResult` 모델은
-`parallel_required`를 직접 보유하지 않으므로 optional-path까지 포함한 모델 검증 강화는
-실행 Config 전달 방식과 함께 역할 3과 정합화해야 한다. 이 PR은 공통 모델의 조기 return을
-전역 null 강제로 바꾸지 않으며, 직접 모델 생성 경로의 정책 검증까지 완료했다고 주장하지 않는다.
+역할 1·5의 현재 결정에 따라 결합기와 공통 `DecisionResult` 모델은 필수 병렬 실행의
+미실행 정책을 적용한다. 한 경로 이상이 `not_evaluated`이면 `t_e`, `decision_path`,
+`winning_path`는 모두 null이어야 하며, 직접 모델 생성과 JSON Schema 검증에서도
+위반 입력을 거부한다. 원본 경로별 상태·시각은 보존한다.
+
+`parallel_required=false`의 optional-path 결과 정책은 현재 지원 범위 밖이다.
+이를 지원할 때 실행 Config와 모델 검증을 함께 확장한다. 현재 정책은 역할 1·5가
+결정하고 문서에 반영하며, 역할 3의 사전 합의를 구현 차단 조건으로 두지 않는다.

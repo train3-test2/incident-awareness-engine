@@ -228,6 +228,24 @@ class DecisionResult(BaseModel):
                 _nullable_utc_datetime_schema("t_e"),
                 *_status_time_schema("fast_status", "detector_time"),
                 *_status_time_schema("fusion_status", "fusion_time"),
+                {
+                    "if": {
+                        "anyOf": [
+                            {
+                                "properties": {field: {"const": "not_evaluated"}},
+                                "required": [field],
+                            }
+                            for field in ("fast_status", "fusion_status")
+                        ]
+                    },
+                    "then": {
+                        "properties": {
+                            field: {"type": "null"}
+                            for field in ("t_e", "decision_path", "winning_path")
+                        },
+                        "required": ["t_e", "decision_path", "winning_path"],
+                    },
+                },
             ]
         },
     )
@@ -328,6 +346,10 @@ class DecisionResult(BaseModel):
     @model_validator(mode="after")
     def validate_decision_paths(self) -> "DecisionResult":
         if DetectorStatus.NOT_EVALUATED in {self.fast_status, self.fusion_status}:
+            if any(
+                value is not None for value in (self.t_e, self.decision_path, self.winning_path)
+            ):
+                raise ValueError("not_evaluated requires null t_e, decision_path and winning_path")
             return self
 
         if (
