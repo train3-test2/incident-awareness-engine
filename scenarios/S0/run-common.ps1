@@ -88,6 +88,56 @@ function Get-SysmonConfigState {
     return $state
 }
 
+function Test-SysmonConfigApplied {
+    <#
+        Compare the config file on disk with the config Sysmon reports as applied.
+
+        "Config hash" from Sysmon64 -c is the hash of the configuration actually in
+        force, so a difference means the file was edited, re-encoded or copied with
+        different line endings after it was applied. The run would then record a
+        sysmon_config_version that does not describe what was monitoring
+        (samples/raw/README.md section 4).
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$ConfigSha256,
+        [Parameter(Mandatory = $true)]$ConfigState,
+        [switch]$Rehearsal
+    )
+
+    $reported = [string]$ConfigState.config_hash
+    if ([string]::IsNullOrWhiteSpace($reported)) {
+        Write-Fail "Sysmon reported no config hash; the applied config cannot be compared."
+        return
+    }
+
+    $algorithm = "SHA256"
+    $value = $reported.Trim()
+    if ($value -match '^(?<algorithm>[A-Za-z0-9]+)=(?<value>[0-9A-Fa-f]+)$') {
+        $algorithm = $Matches["algorithm"].ToUpper()
+        $value = $Matches["value"]
+    }
+
+    if ($algorithm -ne "SHA256") {
+        Write-Fail ("Sysmon reports the config hash as " + $algorithm +
+            "; it cannot be compared with the SHA-256 of the file.")
+        return
+    }
+
+    if ($value.ToLower() -eq $ConfigSha256.ToLower()) {
+        Write-Ok "applied Sysmon config matches the config file"
+        return
+    }
+
+    $message = ("Sysmon applied config differs from the config file. file=" + $ConfigSha256.ToLower() +
+        " applied=" + $value.ToLower() + ". Copy the file again without changing its line endings, " +
+        "or re-apply it with -c.")
+    if ($Rehearsal) {
+        Write-Fail $message
+        return
+    }
+    throw $message
+}
+
 function New-RunContext {
     <#
         Validate the inputs and lay out the run directories.
@@ -110,6 +160,16 @@ function New-RunContext {
 
     if (-not (Test-RunId -RunId $RunId)) {
         throw "run_id must match RUN-YYYYMMDD-NNN with a real date: $RunId"
+    }
+
+     # The date part is the UTC date the run_id was issued for (docs/schema/run-id.md
+     # section 3). Contract validation stops at the calendar check, so a stale run_id
+     # only shows up here.
+    $runIdDate = [regex]::Match($RunId, $RUN_ID_PATTERN).Groups["date"].Value
+    $todayUtc = (Get-Date).ToUniversalTime().ToString("yyyyMMdd")
+    if ($runIdDate -ne $todayUtc) {
+        Write-Fail ("run_id date " + $runIdDate + " is not the current UTC date " + $todayUtc +
+            "; check that the run_id was issued for this run.")
     }
     foreach ($path in @($ScenarioJsonPath, $SysmonConfigPath, $SysmonBinary)) {
         if (-not (Test-Path $path)) { throw "File not found: $path" }
@@ -135,6 +195,12 @@ function New-RunContext {
     if ($ExpectedSysmonConfigSha256 -and $configSha256 -ne $ExpectedSysmonConfigSha256.ToLower()) {
         throw "Sysmon config sha256 mismatch. expected=$ExpectedSysmonConfigSha256 actual=$configSha256"
     }
+
+     # Query Sysmon before start_time is stamped: "Sysmon64 -c" starts a process of its
+     # own, and the export window is measured from start_time, so leaving this call in
+     # the context literal below put the runner's own probe inside the collected window.
+    $configState = Get-SysmonConfigState -SysmonBinary $SysmonBinary
+    Test-SysmonConfigApplied -ConfigSha256 $configSha256 -ConfigState $configState -Rehearsal:$Rehearsal
 
     # Rehearsal artifacts are not a valid S0 collection. Force them under a
     # separate output root so they are never mistaken for data/raw or
@@ -173,7 +239,7 @@ function New-RunContext {
         sysmon_binary        = $SysmonBinary
         sysmon_config_path   = $SysmonConfigPath
         sysmon_config_sha256 = $configSha256
-        sysmon_config_state  = (Get-SysmonConfigState -SysmonBinary $SysmonBinary)
+        sysmon_config_state  = $configState
         execution_records    = New-Object System.Collections.Generic.List[object]
         artifacts            = New-Object System.Collections.Generic.List[object]
     }
@@ -577,15 +643,22 @@ function Write-ExecutionRecord {
 
     $expected = $Context.scenario.shortcut_controls.actions_per_run
     if ($Context.execution_records.Count -ne $expected) {
-        Write-Fail ("execution_record has " + $Context.execution_records.Count +
+        $message = ("execution_record has " + $Context.execution_records.Count +
             " rows, the scenario expects " + $expected)
+        if (-not $Context.rehearsal) { throw $message }
+        Write-Fail ($message + " (rehearsal: the skipped action is not recorded)")
     }
 
+     # Export-Csv -Encoding UTF8 writes a BOM in Windows PowerShell 5.1, and a reader
+     # that opens the file as plain UTF-8 then sees the BOM inside the first column
+     # name. The rows are rendered first and written without one.
     $path = Join-Path $Context.ground_truth_dir "execution_record.csv"
-    $Context.execution_records |
+    $lines = @($Context.execution_records |
         ForEach-Object { New-Object psobject -Property $_ } |
         Select-Object run_id, action_id, timestamp, action_type, description |
-        Export-Csv -Path $path -NoTypeInformation -Encoding UTF8
+        ConvertTo-Csv -NoTypeInformation)
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllLines($path, $lines, $utf8NoBom)
     Write-Ok "execution_record written: $path"
     return $path
 }

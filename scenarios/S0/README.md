@@ -98,17 +98,45 @@ Set-Location C:\Tools\S0\attack
 파일은 **바이너리 복사**로 옮긴다. 메모장에 붙여넣어 저장하면 줄바꿈과 인코딩이 바뀔 수 있다.
 Sysmon 설정 파일의 줄바꿈 규칙은 `samples/raw/README.md` §4 를 따른다.
 
-## 5. 현재 검증 상태와 남은 확인
+Sysmon 설정 파일은 **적용된 설정과 바이트가 같아야 한다.** 줄바꿈만 달라져도 해시가 바뀐다.
+실행기는 파일의 SHA-256 과 `Sysmon64 -c` 가 보고한 `Config hash` 를 비교해서, 다르면 정식 모드는
+중단하고 rehearsal 은 경고만 남기고 진행한다.
 
-지금까지의 검증은 **정적 검증**이다(구문 파싱, ASCII, 호출 구조, 경로 조립). 실제 Sysmon VM
-에서 돌려 본 결과가 아니다. 정식 수집 전에 격리 VM 에서 rehearsal 로 아래를 확인해야 한다.
+## 5. 검증 상태
 
-- [ ] rehearsal 이 `data/_rehearsal/` 아래에만 산출물을 만들고 `REHEARSAL.txt` 가 생기는지
-- [ ] A01 anchor 프로세스의 Sysmon EID 1 이 기록되는지
-- [ ] 그 EID 1 에서 reference_time 과 reference_source_event_id(RecordId)가 산출되는지
-- [ ] 네 산출물(`sysmon.evtx`/`jsonl`, `manifest.json`, `execution_record.csv`, `run_metadata.json`)이
-      경로대로 생성되고 계약(RunMetadata · ExecutionRecordRow)을 통과하는지
-- [ ] anchor 프로세스가 A02 단계 전에 종료되지 않는지
-- [ ] 정식 모드에서 A01 · A02 가 미구현 예외로 중단되는지
+### 5-1. VM rehearsal 결과 (2026-09-14, attack)
 
-정식 수집은 issue #71 네트워크 격리 결정과 cadence(`step_size`) 확정 이후에 한다.
+격리 VM 에서 attack rehearsal 을 한 번 실행했다. 산출물 네 개가 모두 생성됐고 아래를 확인했다.
+
+| 확인 항목 | 결과 |
+| --- | --- |
+| rehearsal 산출물 위치 | `data\_rehearsal\` 아래에만 생성, `REHEARSAL.txt` 존재 |
+| 정식 `data\raw` · `data\ground_truth` 오염 | 없음 |
+| `reference_time` | `2026-09-14T14:21:52.101Z` |
+| `reference_source_event_id` | `7603` — Sysmon EID 1 이고 시각이 `reference_time` 과 일치 |
+| anchor 프로세스 | `s0_anchor.ps1` 의 EID 1. A03 · A04 보다 먼저 기록되고 중간에 종료되지 않음 |
+| `execution_record.csv` | A01 · A03 · A04 세 행 (A02 는 rehearsal 에서 건너뜀) |
+| `manifest.json` | 두 항목의 경로와 SHA-256 이 실제 산출물과 일치 |
+| `run_metadata.json` | RunMetadata 계약 통과 |
+| A02 인과 검증 | `not_verified` — A02 가 미구현이므로 예상된 결과 |
+
+### 5-2. 이 실행에서 드러난 결함과 조치
+
+| 결함 | 조치 |
+| --- | --- |
+| 설정 파일 해시(`ee2cff…`, CRLF)와 Sysmon 이 적용 중인 설정 해시(`1e5c2424…`, LF)가 달랐는데 실행기가 둘 다 기록만 하고 비교하지 않았다 | `Test-SysmonConfigApplied` 를 추가해 정식 모드는 중단, rehearsal 은 경고 |
+| `execution_record.csv` 에 UTF-8 BOM 이 붙어, 파일을 일반 UTF-8 로 여는 판독기에서 첫 열 이름이 `run_id` 로 읽히지 않았다 | BOM 없이 기록 |
+| 행 수가 시나리오 기대치보다 적어도 경고만 남기고 통과했다 | 정식 모드에서는 중단, rehearsal 에서만 경고 |
+| `Sysmon64 -c` 가 `start_time` 이후에 실행돼 실행기 자신의 프로세스가 수집 창 안에 남았다 (RecordId 7602) | 설정 조회를 `start_time` 이전으로 이동 |
+
+**VM 조치가 필요하다.** `C:\Tools\S0\sysmonconfig-sample-v0.1.xml` 이 CRLF 로 복사돼 있다.
+LF 원본으로 다시 복사해야 위 검사를 통과한다.
+
+### 5-3. 아직 남은 것
+
+- 위 수정은 **정적 검증까지만 했다**(구문 파싱, ASCII, 함수 단위 확인). 수정본으로 VM rehearsal 을
+  다시 한 번 돌려야 한다.
+- `manifest.json` 의 `path` 는 VM 절대 경로(`C:\S0\data\...`)다. 호스트로 산출물을 옮기면 그
+  경로는 존재하지 않는다. 상대 경로로 바꿀지는 Manifest 결정 항목(`s0.md` §10)과 함께 정한다.
+- 정식 모드에서 A01 · A02 가 미구현 예외로 중단되는지는 아직 확인하지 않았다.
+- 정식 수집은 issue #71 네트워크 격리 결정과 cadence(`step_size`) 확정 이후에 한다.
