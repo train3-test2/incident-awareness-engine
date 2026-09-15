@@ -20,7 +20,7 @@
 | `EvidenceResult`  | 역할 2    |
 | `FusionResult`    | 역할 1    |
 | `DetectionResult` | 역할 3 Fast Adapter |
-| `DecisionResult`  | 역할 3    |
+| `DecisionResult`  | 역할 1·5 Hybrid 결합기 |
 
 ---
 
@@ -151,7 +151,7 @@ diagnostic_only
 
 `FusionResult`는 역할 1 Temporal Fusion 모듈의 출력이다.
 
-역할 3은 해당 결과를 수신하여 Hybrid Decision에 사용한다.
+역할 3은 해당 결과를 수신·검증하고 역할 1·5의 Hybrid 결합기에 전달한다.
 
 Fusion 내부 score/window/stopping 알고리즘은 역할 1이 담당한다.
 
@@ -428,7 +428,7 @@ Fast Adapter 이후에도 Fast Path 원본 hit의 provenance를 추적할 수 �
 
 ## 6-1. 목적
 
-`DecisionResult`는 역할 3의 Hybrid Decision 결과다.
+`DecisionResult`는 역할 1·5가 구현하는 Hybrid 결합 로직의 결과다.
 
 Fusion Path와 Fast Detection Path의 결과를 결합하여 기술적 후보 판단 시점 `t_e`를 기록한다.
 
@@ -550,7 +550,7 @@ DetectionResult
 → 역할 3 Fast Adapter가 생성
 
 DecisionResult
-→ 역할 3이 생성
+→ 역할 1·5의 Hybrid 결합기가 생성
 ```
 
 역할 3이 구현할 수 있는 범위:
@@ -559,8 +559,9 @@ DecisionResult
 Pydantic Contract
 Validation
 Interface
-Result 수신
-Hybrid Decision
+Fast Adapter
+Result 수신·검증
+Pipeline orchestration
 ```
 
 역할 3이 구현하면 안 되는 범위:

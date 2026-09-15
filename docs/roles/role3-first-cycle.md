@@ -127,8 +127,8 @@ FusionResult
 - Fusion Result 수신
 - Detection Result 수신
 - 결과 Contract 검증
-- Hybrid Decision
-- `t_e` 생성
+- 역할 1·5 Hybrid 결합기 호출
+- DecisionResult 수신·검증
 - 전체 Pipeline orchestration
 
 ### Storage
@@ -165,7 +165,8 @@ FusionResult
 | Semantic Evidence / Context                       | 2번  |
 | Temporal Window / Temporal Model Feature / Fusion | 1번  |
 | Fast Comparator Policy / Runner / FastHitRecord   | 5번  |
-| Fast Adapter / DetectionResult / Hybrid Decision  | 3번  |
+| Fast Adapter / DetectionResult / 결과 수신·검증 / Pipeline orchestration | 3번 |
+| Hybrid 결합 로직 / DecisionResult 생성 | 1·5번 |
 | Evidence → Fusion                                 | 1번  |
 | Fusion Score                                      | 1번  |
 | `fusion_time`                                     | 1번  |
@@ -491,9 +492,9 @@ detector_time 판정
 
 # 12. DecisionResult
 
-이 부분은 3번이 구현한다.
+Hybrid 결합 로직과 DecisionResult 생성은 역할 1·5가 담당한다. 역할 3은 결합기 호출과 결과 수신·검증을 담당한다.
 
-Hybrid 상태 판정 및 `decision_path`·`winning_path` 규칙은 `docs/schema/result-contracts.md`의 DecisionResult 절을 따른다. 역할 3은 역할 5의 Fast runner 출력(FastHitRecord)을 Fast Adapter로 받아 DetectionResult로 정규화한 뒤 Hybrid Decision을 생성한다.
+Hybrid 상태 판정 및 `decision_path`·`winning_path` 규칙은 `docs/schema/result-contracts.md`의 DecisionResult 절을 따른다. 역할 3은 역할 5의 Fast runner 출력(FastHitRecord)을 Fast Adapter로 받아 DetectionResult로 정규화한 뒤 역할 1·5의 Hybrid 결합기를 호출한다.
 
 `t_e`는 시스템이 계산한 기술적 후보 판단 시점이며, 상태·`parallel_required`·null 규칙을 포함한 전체 계산은 `result-contracts.md`의 DecisionResult 절을 따른다.
 
@@ -645,11 +646,10 @@ src/incident_awareness/mocks/
 
 ---
 
-# 17. Phase 4 - Hybrid Decision
+# 17. Phase 4 - Hybrid 결합기 연결
 
-3번 Production Logic이다.
-
-별도 모듈로 구현한다.
+Hybrid 결합 로직과 `t_e`를 포함한 DecisionResult 생성은 역할 1·5가 구현한다.
+3번은 해당 모듈을 Pipeline에서 호출하고 결과를 수신·검증한다.
 
 예:
 
@@ -942,7 +942,7 @@ ECS Deploy
 
 4. Mock 구현
 
-5. Hybrid Decision
+5. 역할 1·5 Hybrid 결합기 연결
 
 6. Mock 기반 E2E Pipeline
 
@@ -1252,7 +1252,7 @@ MockFastHitRecordAdapter
 ## Issue 5
 
 ```text
-[판단 통합] Hybrid Decision 구현
+[판단 통합] 역할 1·5 Hybrid 결합기 연결
 ```
 
 ---
@@ -1335,8 +1335,8 @@ Fusion + Detection
 - [ ] Event를 Detection Interface로 전달할 수 있다.
 - [ ] `FusionResult`를 받을 수 있다.
 - [ ] `DetectionResult`를 받을 수 있다.
-- [ ] Hybrid Decision을 생성할 수 있다.
-- [ ] `DecisionResult`를 생성할 수 있다.
+- [ ] 역할 1·5 Hybrid 결합기를 호출할 수 있다.
+- [ ] `DecisionResult`를 수신·검증할 수 있다.
 - [ ] 주요 데이터를 PostgreSQL에 저장할 수 있다.
 - [ ] Mock 기반 전체 E2E가 성공한다.
 - [ ] 실제 팀원 모듈을 Interface 기준으로 교체할 수 있다.
@@ -1351,7 +1351,7 @@ Fusion + Detection
 
 First Cycle 성공 기준:
 
-> 정상 또는 공격 시나리오에서 발생한 Raw Log가 3번의 수집·정규화를 거쳐 `event_v0`가 되고, 2번 Evidence, 1번 Fusion, 5번 Detection 결과를 인터페이스를 통해 받아 3번이 Hybrid Decision을 생성하며, 이 전체 흐름이 Docker와 AWS 환경에서 한 번 끝까지 실행된다.
+> 정상 또는 공격 시나리오에서 발생한 Raw Log가 3번의 수집·정규화를 거쳐 `event_v0`가 되고, 2번 Evidence, 1번 Fusion, 5번 Detection 결과를 인터페이스를 통해 받아 3번이 역할 1·5의 Hybrid 결합기를 호출하여 DecisionResult를 수신·검증하며, 이 전체 흐름이 Docker와 AWS 환경에서 한 번 끝까지 실행된다.
 
 3번은 다른 역할의 알고리즘을 대신 구현하지 않는다.
 
@@ -1360,6 +1360,6 @@ First Cycle 성공 기준:
 ```text
 Data
 Integration
-Hybrid
+Storage
 Deployment
 ```
