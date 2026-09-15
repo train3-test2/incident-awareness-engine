@@ -4,8 +4,10 @@ from pathlib import Path
 
 import pytest
 
+from incident_awareness.collection import s0_validation
 from incident_awareness.collection.s0_validation import (
     ManifestPathError,
+    check_run_id,
     manifest_artifact_name,
     validate_s0_run,
 )
@@ -754,11 +756,13 @@ def test_rejects_a_collection_run_without_an_end_time(tmp_path: Path) -> None:
     assert any("must record end_time" in error for error in report.errors)
 
 
-@pytest.mark.parametrize("horizon", ["0", "-1", "'600'", "null", "true"])
-def test_rejects_an_unusable_evaluation_horizon(tmp_path: Path, horizon: str) -> None:
+# The parameter is the YAML source that replaces the horizon, not the parsed
+# value, so it is a string even where it stands for 0, null or a boolean.
+@pytest.mark.parametrize("horizon_literal", ["0", "-1", "'600'", "null", "true"])
+def test_rejects_an_unusable_evaluation_horizon(tmp_path: Path, horizon_literal: str) -> None:
     root = build_run(tmp_path / "data")
     body = SCENARIO_YAML.replace(
-        "evaluation_horizon_sec: 600", f"evaluation_horizon_sec: {horizon}"
+        "evaluation_horizon_sec: 600", f"evaluation_horizon_sec: {horizon_literal}"
     )
 
     report = _validate(root, tmp_path, scenario_body=body)
@@ -829,3 +833,176 @@ def test_rejects_a_collection_run_missing_the_external_action(tmp_path: Path) ->
 
     assert not report.ok
     assert any("missing action_id(s): ['A02']" in error for error in report.errors)
+
+
+# --- run_id is a path segment ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("bad_run_id", "reason"),
+    [
+        ("../" + RUN_ID, "path separator"),
+        ("..\\" + RUN_ID, "path separator"),
+        ("raw/" + RUN_ID, "path separator"),
+        ("..", "relative path segment"),
+        ("RUN-20260230-001", "real calendar date"),
+        ("RUN-20260914-01", "RUN-YYYYMMDD-NNN"),
+        (" " + RUN_ID, "whitespace"),
+        (RUN_ID + " ", "whitespace"),
+    ],
+)
+def test_rejects_an_unusable_run_id_before_any_other_check(
+    tmp_path: Path, bad_run_id: str, reason: str
+) -> None:
+    root = build_run(tmp_path / "data")
+
+    report = validate_s0_run(
+        artifact_root=root,
+        run_id=bad_run_id,
+        scenario_path=_write_scenario(tmp_path),
+    )
+
+    assert not report.ok
+    # Nothing else ran: no artifact was opened and no check was recorded.
+    assert report.checks == []
+    assert len(report.errors) == 1
+    assert reason in report.errors[0]
+
+
+def test_a_path_escaping_run_id_never_reaches_the_file_system(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_on_access(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the validator touched the file system")
+
+    monkeypatch.setattr(Path, "is_file", fail_on_access)
+    monkeypatch.setattr(Path, "read_bytes", fail_on_access)
+    monkeypatch.setattr(Path, "read_text", fail_on_access)
+    monkeypatch.setattr(Path, "open", fail_on_access)
+
+    report = validate_s0_run(
+        artifact_root=tmp_path / "data",
+        run_id="../" + RUN_ID,
+        scenario_path=tmp_path / "scenario.yaml",
+    )
+
+    assert not report.ok
+    assert "path separator" in report.errors[0]
+
+
+def test_check_run_id_accepts_a_well_formed_value() -> None:
+    assert check_run_id(RUN_ID) is None
+
+
+# --- end_time is required in both modes ------------------------------------
+
+
+def test_rejects_a_rehearsal_run_without_an_end_time(tmp_path: Path) -> None:
+    actions = tuple(action for action in ATTACK_ACTIONS if action[0] != "A02")
+    root = build_run(tmp_path / "_rehearsal", rehearsal=True, actions=actions, end_time=None)
+
+    report = _validate(root, tmp_path, rehearsal=True)
+
+    assert not report.ok
+    assert any("must record end_time" in error for error in report.errors)
+
+
+# --- scenario run_type and boolean flags -----------------------------------
+
+
+def test_reports_a_run_type_that_disagrees_with_its_key(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data")
+    body = SCENARIO_YAML.replace(
+        "  attack:\n    run_type: attack", "  attack:\n    run_type: normal"
+    )
+
+    report = _validate(root, tmp_path, scenario_body=body)
+
+    assert not report.ok
+    assert any("the key and the field must agree" in error for error in report.errors)
+
+
+def test_reports_a_scenario_run_without_a_run_type(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data")
+    body = SCENARIO_YAML.replace("    run_type: attack\n", "")
+
+    report = _validate(root, tmp_path, scenario_body=body)
+
+    assert not report.ok
+    assert any("run_type must be a non-empty string" in error for error in report.errors)
+
+
+@pytest.mark.parametrize("flag_literal", ['"false"', '"true"', "1", "0", "null"])
+def test_reports_a_non_boolean_external_connection_flag(tmp_path: Path, flag_literal: str) -> None:
+    root = build_run(tmp_path / "data")
+    body = SCENARIO_YAML.replace(
+        "uses_external_connection: true", f"uses_external_connection: {flag_literal}"
+    )
+
+    report = _validate(root, tmp_path, scenario_body=body)
+
+    assert not report.ok
+    assert any("must be a YAML boolean" in error for error in report.errors)
+
+
+def test_treats_a_missing_external_connection_flag_as_a_local_action(tmp_path: Path) -> None:
+    # Without the flag A02 is an ordinary local action, so a rehearsal may not skip it.
+    actions = tuple(action for action in ATTACK_ACTIONS if action[0] != "A02")
+    root = build_run(
+        tmp_path / "_rehearsal", rehearsal=True, actions=actions, end_time=SHORT_END_TIME
+    )
+    body = SCENARIO_YAML.replace("        uses_external_connection: true\n", "")
+
+    report = _validate(root, tmp_path, rehearsal=True, scenario_body=body)
+
+    assert not report.ok
+    assert any("missing action_id(s): ['A02']" in error for error in report.errors)
+
+
+# --- damaged input is a failed check, never a traceback --------------------
+
+
+def test_rejects_a_csv_with_an_unclosed_quote(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data")
+    _csv_path(root).write_text(
+        'run_id,action_id,timestamp,action_type,"description\n'
+        f'"{RUN_ID}","A01","2026-09-14T15:21:45.981Z","execution","anchor"\n',
+        encoding="utf-8",
+    )
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+
+
+def test_rejects_a_csv_with_broken_quoting(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data")
+    _csv_path(root).write_text(
+        "run_id,action_id,timestamp,action_type,description\n"
+        f'"{RUN_ID}"x,"A01","2026-09-14T15:21:45.981Z","execution","anchor"\n',
+        encoding="utf-8",
+    )
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("not parsable CSV" in error for error in report.errors)
+
+
+def test_reports_an_artifact_hash_that_cannot_be_recomputed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = build_run(tmp_path / "data")
+
+    def unreadable(_path: Path) -> str:
+        raise OSError("the artifact could not be read")
+
+    monkeypatch.setattr(s0_validation, "_file_sha256", unreadable)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("could not read sysmon-0001.evtx" in error for error in report.errors)
+    assert any("could not read sysmon-0001.jsonl" in error for error in report.errors)
+    # The rest of the run was still checked.
+    assert any("satisfies RunMetadata" in check for check in report.checks)

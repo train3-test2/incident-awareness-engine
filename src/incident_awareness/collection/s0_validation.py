@@ -21,9 +21,10 @@ import csv
 import hashlib
 import io
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import yaml
@@ -56,6 +57,16 @@ _MANIFEST_ITEM_FIELDS = ("raw_log_id", "path", "sha256", "layer", "source")
 _MANIFEST_LAYER = "raw_telemetry"
 _MANIFEST_SOURCE = "sysmon"
 _SYSMON_PROCESS_CREATE_EVENT_ID = 1
+
+# The same shape RunMetadata and ExecutionRecordRow require of run_id
+# (docs/schema/run-id.md section 3): RUN-YYYYMMDD-NNN with a real calendar date.
+# The rule is restated here instead of importing the models' private pattern,
+# because the value arrives from the command line and has to be rejected before
+# it is ever joined onto an artifact path.
+_RUN_ID_PATTERN = re.compile(r"^RUN-(?P<date>[0-9]{8})-(?P<sequence>[0-9]{3})$")
+
+# Distinguishes "the key is absent" from "the key is present and null".
+_MISSING = object()
 
 
 class ManifestPathError(ValueError):
@@ -98,6 +109,38 @@ class S0ValidationReport:
 def default_scenario_path() -> Path:
     """`scenarios/S0/scenario.yaml` inside this repository."""
     return Path(__file__).resolve().parents[3] / "scenarios" / "S0" / "scenario.yaml"
+
+
+def check_run_id(run_id: object) -> str | None:
+    """Return why `run_id` cannot be used, or None when it is safe.
+
+    This runs before any artifact path is built. The value becomes a directory
+    name under `raw/` and `ground_truth/`, so a separator or a relative segment
+    would reach outside the artifact root; those are refused by name rather than
+    normalised away.
+    """
+    if not isinstance(run_id, str):
+        return f"run_id must be a string, found {type(run_id).__name__}"
+
+    if run_id != run_id.strip():
+        return f"run_id must not carry leading or trailing whitespace: {run_id!r}"
+
+    if "/" in run_id or "\\" in run_id:
+        return f"run_id must not contain a path separator: {run_id!r}"
+
+    if run_id in {".", ".."} or ".." in run_id:
+        return f"run_id must not contain a relative path segment: {run_id!r}"
+
+    match = _RUN_ID_PATTERN.fullmatch(run_id)
+    if match is None:
+        return f"run_id must match RUN-YYYYMMDD-NNN with a three digit sequence: {run_id!r}"
+
+    try:
+        date.fromisoformat(match.group("date"))
+    except ValueError:
+        return f"run_id must carry a real calendar date: {run_id!r}"
+
+    return None
 
 
 def _is_sha256_hex(value: object) -> bool:
@@ -201,6 +244,25 @@ def _require_non_empty_str(value: object, label: str) -> str:
     return value
 
 
+def _require_optional_flag(raw_action: dict, key: str, label: str) -> bool:
+    """Read a YAML boolean flag, refusing anything that only looks like one.
+
+    A missing key is false. A present key must be a real boolean: `"false"` is a
+    non-empty string and `0`/`1` are integers, so a truthiness test would read
+    them backwards or by accident.
+    """
+    value = raw_action.get(key, _MISSING)
+    if value is _MISSING:
+        return False
+
+    if not isinstance(value, bool):
+        raise ScenarioError(
+            f"{label}.{key} must be a YAML boolean (true or false), found {value!r}"
+        )
+
+    return value
+
+
 def _require_horizon(value: object) -> int:
     # bool is a subclass of int, so it is excluded explicitly.
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -242,6 +304,12 @@ def load_scenario_run(scenario_path: Path, run_type: str) -> ScenarioRun:
     if not isinstance(run, dict):
         raise ScenarioError(f"scenario has no runs.{run_type} mapping")
 
+    declared = _require_non_empty_str(run.get("run_type"), f"runs.{run_type}.run_type")
+    if declared != run_type:
+        raise ScenarioError(
+            f"runs.{run_type}.run_type is {declared!r}; the key and the field must agree"
+        )
+
     raw_actions = run.get("actions")
     if not isinstance(raw_actions, list) or not raw_actions:
         raise ScenarioError(f"runs.{run_type}.actions must be a non-empty list")
@@ -260,7 +328,9 @@ def load_scenario_run(scenario_path: Path, run_type: str) -> ScenarioRun:
         actions[action_id] = ScenarioAction(
             action_id=action_id,
             action_type=action_type,
-            uses_external_connection=bool(raw_action.get("uses_external_connection")),
+            uses_external_connection=_require_optional_flag(
+                raw_action, "uses_external_connection", label
+            ),
         )
 
     return ScenarioRun(
@@ -340,7 +410,14 @@ def _read_execution_records(
         report.fail(f"execution_record.csv is not valid UTF-8: {error}")
         return None
 
-    rows = list(csv.reader(io.StringIO(text, newline="")))
+    # strict=True turns malformed quoting into csv.Error instead of silently
+    # reinterpreting the row, and the error is reported like any other failure.
+    try:
+        rows = list(csv.reader(io.StringIO(text, newline=""), strict=True))
+    except csv.Error as error:
+        report.fail(f"execution_record.csv is not parsable CSV: {error}")
+        return None
+
     if not rows:
         report.fail("execution_record.csv is empty")
         return None
@@ -526,7 +603,12 @@ def _check_manifest_items(
             report.fail(f"{label} maps to {local_path}, which does not exist")
             continue
 
-        actual = _file_sha256(local_path)
+        try:
+            actual = _file_sha256(local_path)
+        except OSError as error:
+            report.fail(f"{label} could not read {name} to recompute its SHA-256: {error}")
+            continue
+
         if actual != recorded.lower():
             report.fail(
                 f"{label} sha256 mismatch for {name}. recorded={recorded.lower()} actual={actual}"
@@ -727,14 +809,17 @@ def _check_observation_window(
     span (`docs/scenarios/s0.md` sections 7 and 9). `post_reference_margin_sec` is
     the runner's own slack, not part of the minimum contract, so it is not added.
 
-    Rehearsal skips the observation wait on purpose, so the horizon is not checked.
+    A rehearsal skips the observation wait on purpose, so only the horizon length
+    is exempt. `end_time` is still required: a run that produced all four
+    artifacts has finished, and an artifact set without an end has no window at
+    all.
     """
-    if rehearsal:
-        report.passed("observation window not checked (rehearsal skips the wait)")
+    if metadata.end_time is None:
+        report.fail("a finished run must record end_time")
         return
 
-    if metadata.end_time is None:
-        report.fail("a collection run must record end_time")
+    if rehearsal:
+        report.passed("end_time recorded; horizon length not checked (rehearsal skips the wait)")
         return
 
     if metadata.run_type is RunType.ATTACK:
@@ -821,6 +906,14 @@ def validate_s0_run(
 ) -> S0ValidationReport:
     """Validate one S0 run under `artifact_root` and report everything found."""
     report = S0ValidationReport(run_id=run_id, rehearsal=rehearsal)
+
+    # run_id becomes a path segment, so it is checked before anything touches the
+    # file system. Nothing below this point runs for a rejected value.
+    run_id_problem = check_run_id(run_id)
+    if run_id_problem is not None:
+        report.fail(run_id_problem)
+        return report
+
     scenario = scenario_path or default_scenario_path()
 
     _check_rehearsal_isolation(artifact_root, rehearsal, report)
@@ -908,6 +1001,7 @@ __all__ = [
     "ScenarioAction",
     "ScenarioError",
     "ScenarioRun",
+    "check_run_id",
     "default_scenario_path",
     "format_report",
     "load_scenario_run",

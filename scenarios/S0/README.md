@@ -138,14 +138,20 @@ uv run python tools/validate_s0_run.py --artifact-root E:\KISIA\result-file\_reh
 | 파일 | 산출물 다섯 개(`sysmon-0001.evtx` · `sysmon-0001.jsonl` · `manifest.json` · `execution_record.csv` · `run_metadata.json`)가 모두 있는지 |
 | 계약 | `run_metadata.json` 이 `RunMetadata` 를, CSV 각 행이 `ExecutionRecordRow` 를 통과하는지 |
 | CSV | UTF-8 BOM 이 없는지, 헤더가 `run_id,action_id,timestamp,action_type,description` 순서 그대로인지, 행이 하나 이상인지 |
-| run_id | CSV 모든 행과 CLI 인자가 `RunMetadata.run_id` 와 같은지 |
+| run_id 경계 | CLI 로 받은 `run_id` 가 `RUN-YYYYMMDD-NNN` 이고 달력상 유효한지. 경로 구분자(`/`, `\`)와 `.`·`..`, 앞뒤 공백은 거부한다. **이 검사는 artifact 경로를 만들기 전에** 하므로 잘못된 값은 파일을 하나도 건드리지 않고 끝난다 |
+| run_id 일치 | CSV 모든 행과 CLI 인자가 `RunMetadata.run_id` 와 같은지 |
 | Manifest 구조 | 최상위 필드와 `sysmon` · `items` 구조, `items[].sha256` 가 64 자리 SHA-256 인지, 실제 파일 해시와 일치하는지, 모든 항목의 `layer` 가 `raw_telemetry` 이고 `source` 가 `sysmon` 인지 |
 | Manifest 완전성 | 이 Run 의 EVTX 와 JSONL 을 **정확히 하나씩** 담는지, 파일명과 `raw_log_id` 가 중복되지 않는지, JSONL 의 `derived_from` 이 같은 manifest 안의 EVTX 를 가리키는지, EVTX 에는 `derived_from` 이 없는지 |
 | Sysmon 설정 | `sysmon.config_sha256` 와 `sysmon.config_hash` 가 같은 SHA-256 인지 (`SHA256=` 접두사와 대소문자 차이는 허용, 다른 알고리즘 · 빈 값 · 형식 오류는 실패) |
 | reference | 공격 Run 이면 `reference_*` 세 값이 있고, `reference_source_event_id` 가 JSONL 에 있는 Sysmon EID 1 이며 그 `TimeCreated` 가 `reference_time` 과 밀리초까지 같고, `reference_action_id` 가 execution_record 에 있는지. 정상 Run 이면 세 값이 모두 null 인지 |
 | 시각 | execution_record 의 모든 timestamp 가 `start_time` 과 `end_time` 사이인지 (`end_time >= start_time` 은 `RunMetadata` 가 이미 강제한다) |
-| 관측 길이 | 정식 Run 은 `end_time` 이 있어야 하고, 공격 Run 은 `reference_time`, 정상 Run 은 `start_time` 에서 `run_length.evaluation_horizon_sec` 만큼 지난 뒤에 끝나야 한다 (§5-4) |
+| 관측 길이 | `end_time` 은 rehearsal 을 포함해 항상 있어야 하고, 정식 Run 은 공격이면 `reference_time`, 정상이면 `start_time` 에서 `run_length.evaluation_horizon_sec` 만큼 지난 뒤에 끝나야 한다 (§5-4) |
 | 행위 | `scenario_id` 가 시나리오와 같은지, execution_record 의 `action_id` 가 중복되지 않는지, 각 행의 `action_type` 이 시나리오의 같은 `action_id` 와 같은지, 알 수 없는 행위가 없는지 |
+| 시나리오 파일 | `runs.<run_type>.run_type` 이 키와 일치하는지, `uses_external_connection` 이 진짜 boolean 인지 (`"false"` · `0` · `1` · null 거부) |
+
+손상된 입력은 **예외가 아니라 검증 실패**로 끝난다. 따옴표가 깨진 CSV(`csv.Error`), 읽을 수 없는
+artifact(`OSError`), 구조가 깨진 시나리오 파일 모두 traceback 없이 리포트에 오류로 남고, 해시를
+다시 계산하지 못한 항목이 있어도 나머지 검사는 계속한다.
 
 ### 5-2. Manifest 경로는 그대로 쓰지 않는다
 
@@ -181,9 +187,13 @@ rehearsal 에서는 외부 연결 행위(`scenario.yaml` 의 `uses_external_conn
 
 공격 Run 은 `reference_time`, 정상 Run 은 `start_time` 을 기준점으로 삼아 두 Run 이 같은 길이로
 관측되게 한다(`s0.md` §7 · §9). `post_reference_margin_sec` 은 실행기의 운영 여유이지 최소 계약이
-아니므로 더하지 않는다. `end_time` 이 없으면 정식 Run 으로 인정하지 않는다.
+아니므로 더하지 않는다.
 
-**rehearsal 에는 적용하지 않는다.** rehearsal 은 관측 대기를 의도적으로 건너뛰기 때문이다.
+**`end_time` 은 rehearsal 을 포함해 모든 완성 산출물에 있어야 한다.** 산출물 네 종이 다 나왔다는
+것은 Run 이 끝났다는 뜻이고, 끝 시각이 없으면 관측 창 자체가 성립하지 않는다.
+
+**rehearsal 이 면제받는 것은 horizon 길이뿐이다.** rehearsal 은 관측 대기를 의도적으로 건너뛰므로
+`end_time` 이 기준점 + horizon 보다 이르더라도 통과시킨다. 다만 `end_time` 이 없으면 실패한다.
 
 `evaluation_horizon_sec` 이 없거나 양의 정수가 아니면 시나리오 오류로 실패한다. 시나리오 파일이
 깨져 있을 때도 traceback 이 아니라 검증 실패로 보고한다.
