@@ -1,0 +1,3 @@
+Timestamp,RuleTitle,Level,Computer,Channel,EventID,RecordID,RuleID
+2026-09-13T00:00:00.000Z,Mock ignored,low,WIN-01,Sysmon,1,10,mock-ignored
+2026-09-13 09:00:01.1234567 +09:00,Mock qualifying,high,WIN-01,Sysmon,1,11,mock-rule
