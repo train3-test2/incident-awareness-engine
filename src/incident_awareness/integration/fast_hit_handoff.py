@@ -172,6 +172,7 @@ def adapt_fast_hit_handoff(
     from Role 5's selected hit. A miss is valid only after a completed handoff.
     """
     _validate_entity_id(entity_id)
+    _validate_adapter_handoff(handoff)
     if selection.detector_status is DetectorStatus.NOT_EVALUATED:
         raise ValueError("not_evaluated must be created without a completed Fast Runner handoff")
 
@@ -196,6 +197,7 @@ def adapt_fast_hit_handoff(
     selected_record = records_by_id.get(selection.selected_hit_id)
     if selected_record is None:
         raise ValueError("selected_hit_id is not present in the validated FastHitRecord handoff")
+    _validate_selected_entity(selected_record, entity_id=entity_id)
 
     detection_result = DetectionResult(
         run_id=handoff.trace.run_id,
@@ -207,6 +209,7 @@ def adapt_fast_hit_handoff(
         rule_version=selected_record.rule_version,
         severity=selection.severity or Severity.UNKNOWN,
     )
+    _validate_detected_result_consistency(detection_result, selected_record)
     return FastDetectionAdapterResult(
         detection_result=detection_result,
         source_hit_ids=source_hit_ids,
@@ -251,6 +254,58 @@ def _validate_run_id(run_id: str) -> None:
 def _validate_entity_id(entity_id: str) -> None:
     if not isinstance(entity_id, str) or not entity_id.strip() or entity_id != entity_id.strip():
         raise ValueError("entity_id must be a non-blank identifier without surrounding whitespace")
+
+
+def _validate_adapter_handoff(handoff: FastHitHandoff) -> None:
+    """Recheck cross-artifact invariants at the Adapter boundary.
+
+    FastHitHandoff is a public dataclass, so callers could construct one without
+    read_fast_hit_handoff(). The Adapter must not silently accept mismatched
+    run_id or provenance in that case.
+    """
+    _validate_run_id(handoff.trace.run_id)
+    if handoff.trace.hit_count != len(handoff.records) or len(handoff.trace.hits) != len(
+        handoff.records
+    ):
+        raise ValueError("FastHit trace hit_count does not match the handoff records")
+
+    records_by_id = {record.hit_id: record for record in handoff.records}
+    if len(records_by_id) != len(handoff.records):
+        raise ValueError("FastHit handoff contains duplicate hit_id values")
+    if any(record.run_id != handoff.trace.run_id for record in handoff.records):
+        raise ValueError("FastHitRecord run_id does not match the trace run_id")
+
+    trace_by_id = {entry.hit_id: entry for entry in handoff.trace.hits}
+    if len(trace_by_id) != len(handoff.trace.hits):
+        raise ValueError("FastHit trace contains duplicate hit_id values")
+    if set(records_by_id) != set(trace_by_id):
+        raise ValueError("FastHit trace hit_id values do not match the handoff records")
+    for hit_id, record in records_by_id.items():
+        if trace_by_id[hit_id].rule_id != record.rule_id:
+            raise ValueError(f"FastHit trace rule_id does not match record {hit_id}")
+
+
+def _validate_selected_entity(record: FastHitRecord, *, entity_id: str) -> None:
+    if record.native_host_id is None:
+        raise ValueError("selected FastHitRecord has no native_host_id for entity_id mapping")
+    if record.native_host_id != entity_id:
+        raise ValueError("selected FastHitRecord native_host_id does not match entity_id")
+
+
+def _validate_detected_result_consistency(
+    result: DetectionResult,
+    record: FastHitRecord,
+) -> None:
+    if result.run_id != record.run_id:
+        raise ValueError("DetectionResult run_id does not match the selected FastHitRecord")
+    if result.detector_time != record.timestamp:
+        raise ValueError("DetectionResult detector_time does not match the selected FastHitRecord")
+    if result.detector_id != record.detector_engine:
+        raise ValueError("DetectionResult detector_id does not match the selected FastHitRecord")
+    if result.rule_id != record.rule_id or result.rule_version != record.rule_version:
+        raise ValueError(
+            "DetectionResult Rule information does not match the selected FastHitRecord"
+        )
 
 
 def _read_records(jsonl_path: Path) -> list[FastHitRecord]:

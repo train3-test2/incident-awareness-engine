@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -5,6 +6,7 @@ import pytest
 from incident_awareness.detection.fast_runner import run_fast_handoff
 from incident_awareness.integration.fast_hit_handoff import (
     FastDetectionSelection,
+    FastHitHandoff,
     adapt_fast_hit_handoff,
     build_not_evaluated_detection_result,
     read_fast_hit_handoff,
@@ -67,6 +69,52 @@ def test_rejects_selection_that_is_not_in_the_handoff(tmp_path: Path) -> None:
             selection=FastDetectionSelection(
                 detector_status="detected",
                 selected_hit_id=f"{RUN_ID}-hit-999",
+            ),
+        )
+
+
+def test_rejects_selected_hit_from_a_different_entity(tmp_path: Path) -> None:
+    handoff = _read_handoff(tmp_path)
+
+    with pytest.raises(ValueError, match="native_host_id"):
+        adapt_fast_hit_handoff(
+            handoff,
+            entity_id="WIN-02",
+            selection=FastDetectionSelection(
+                detector_status="detected",
+                selected_hit_id=f"{RUN_ID}-hit-2",
+            ),
+        )
+
+
+def test_rejects_handoff_with_record_run_id_mismatch(tmp_path: Path) -> None:
+    handoff = _read_handoff(tmp_path)
+    mismatched_record = handoff.records[0].model_copy(update={"run_id": "RUN-20260914-001"})
+    mismatched_handoff = replace(handoff, records=(mismatched_record,))
+
+    with pytest.raises(ValueError, match="run_id"):
+        adapt_fast_hit_handoff(
+            mismatched_handoff,
+            entity_id="WIN-01",
+            selection=FastDetectionSelection(
+                detector_status="detected",
+                selected_hit_id=f"{RUN_ID}-hit-2",
+            ),
+        )
+
+
+def test_rejects_handoff_with_rule_provenance_mismatch(tmp_path: Path) -> None:
+    handoff = _read_handoff(tmp_path)
+    mismatched_record = handoff.records[0].model_copy(update={"rule_id": "different-rule"})
+    mismatched_handoff = FastHitHandoff(records=(mismatched_record,), trace=handoff.trace)
+
+    with pytest.raises(ValueError, match="rule_id"):
+        adapt_fast_hit_handoff(
+            mismatched_handoff,
+            entity_id="WIN-01",
+            selection=FastDetectionSelection(
+                detector_status="detected",
+                selected_hit_id=f"{RUN_ID}-hit-2",
             ),
         )
 
