@@ -420,7 +420,17 @@ First Cycle에서는 다음 규칙을 사용한다.
 
 Fast Adapter 이후에도 Fast Path 원본 hit의 provenance를 추적할 수 있도록 `hit_id`를 downstream에서 보존하는 방식을 사용한다.
 
-구체적인 downstream 필드명은 역할 3 Fast Adapter 구현에서 정한다.
+### 5-6-1. Fast Adapter provenance envelope
+
+`DetectionResult` Contract에는 FastHitRecord provenance 필드가 없다. 따라서 역할 3 Fast Adapter는 Python 전달 객체 `FastDetectionAdapterResult`로 다음 값을 함께 보존한다.
+
+| 필드 | 타입 | 규칙 |
+| --- | --- | --- |
+| `detection_result` | `DetectionResult` | 공통 결과 Contract |
+| `source_hit_ids` | `tuple[str, ...]` | Adapter 입력으로 검증된 모든 FastHitRecord의 `hit_id`를 JSONL 순서대로 보존. 중복은 허용하지 않음. |
+| `selected_source_hit_id` | `str \| None` | `detected` 결과를 만들기 위해 역할 5가 선택한 `hit_id`. `detected`에서는 `source_hit_ids`에 반드시 포함되며, `miss`와 `not_evaluated`에서는 `null`. |
+
+Pipeline은 Hybrid 호출 및 후속 저장 경계까지 이 envelope를 유지해야 한다. `DetectionResult`만 전달하여 `source_hit_ids`를 조용히 폐기하면 provenance 검증 실패로 처리한다.
 
 ---
 

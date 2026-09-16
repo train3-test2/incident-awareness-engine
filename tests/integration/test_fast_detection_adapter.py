@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -33,6 +34,35 @@ def _read_handoff(tmp_path: Path, *, empty: bool = False):
     return read_fast_hit_handoff(jsonl_path, trace_path, run_id=RUN_ID)
 
 
+def _read_multi_hit_handoff(tmp_path: Path):
+    csv_path = tmp_path / "multi.csv"
+    csv_path.write_text(
+        "Timestamp,RuleID,Computer,RecordID\n"
+        "2026-09-13T00:00:00.000Z,mock-ignored,WIN-01,10\n"
+        "2026-09-13T00:00:01.123Z,mock-rule,WIN-01,11\n"
+        "2026-09-13T00:00:02.123Z,mock-rule-2,WIN-01,12\n",
+        encoding="utf-8",
+    )
+    config = json.loads((FIXTURES / "handoff_config.json").read_text(encoding="utf-8"))
+    config["qualifying_rule_ids"].append("mock-rule-2")
+    config["rule_metadata"]["mock-rule-2"] = {
+        "rule_version": "mock-v2",
+        "alert_key": "mock-alert-2",
+    }
+    config_path = tmp_path / "multi_config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    jsonl_path = tmp_path / "hits.jsonl"
+    trace_path = tmp_path / "trace.json"
+    run_fast_handoff(
+        csv_path=csv_path,
+        config_path=config_path,
+        run_id=RUN_ID,
+        output_path=jsonl_path,
+        trace_path=trace_path,
+    )
+    return read_fast_hit_handoff(jsonl_path, trace_path, run_id=RUN_ID)
+
+
 def test_maps_detected_selection_to_detection_result(tmp_path: Path) -> None:
     handoff = _read_handoff(tmp_path)
 
@@ -57,6 +87,24 @@ def test_maps_detected_selection_to_detection_result(tmp_path: Path) -> None:
         "severity": "high",
     }
     assert result.source_hit_ids == (f"{RUN_ID}-hit-2",)
+    assert result.selected_source_hit_id == f"{RUN_ID}-hit-2"
+
+
+def test_retains_all_input_hit_ids_and_selected_hit_provenance(tmp_path: Path) -> None:
+    handoff = _read_multi_hit_handoff(tmp_path)
+
+    result = adapt_fast_hit_handoff(
+        handoff,
+        entity_id="WIN-01",
+        selection=FastDetectionSelection(
+            detector_status="detected",
+            selected_hit_id=f"{RUN_ID}-hit-3",
+        ),
+    )
+
+    assert result.source_hit_ids == (f"{RUN_ID}-hit-2", f"{RUN_ID}-hit-3")
+    assert result.selected_source_hit_id == f"{RUN_ID}-hit-3"
+    assert result.detection_result.rule_id == "mock-rule-2"
 
 
 def test_rejects_selection_that_is_not_in_the_handoff(tmp_path: Path) -> None:
@@ -154,6 +202,7 @@ def test_maps_completed_empty_handoff_to_explicit_miss(tmp_path: Path) -> None:
         "severity": None,
     }
     assert result.source_hit_ids == ()
+    assert result.selected_source_hit_id is None
 
 
 def test_builds_not_evaluated_without_a_handoff() -> None:
@@ -170,6 +219,7 @@ def test_builds_not_evaluated_without_a_handoff() -> None:
         "severity": None,
     }
     assert result.source_hit_ids == ()
+    assert result.selected_source_hit_id is None
 
 
 @pytest.mark.parametrize(

@@ -130,10 +130,27 @@ class FastDetectionSelection(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class FastDetectionAdapterResult:
-    """A DetectionResult together with retained FastHitRecord provenance."""
+    """DetectionResult plus the FastHitRecord provenance required downstream.
+
+    source_hit_ids contains every validated input hit in JSONL order. For a
+    detected result, selected_source_hit_id identifies the specific hit selected
+    by Role 5 and must be one of those source identifiers.
+    """
 
     detection_result: DetectionResult
     source_hit_ids: tuple[str, ...]
+    selected_source_hit_id: str | None
+
+    def __post_init__(self) -> None:
+        if len(self.source_hit_ids) != len(set(self.source_hit_ids)):
+            raise ValueError("source_hit_ids must not contain duplicates")
+        if self.detection_result.detector_status is DetectorStatus.DETECTED:
+            if self.selected_source_hit_id is None:
+                raise ValueError("detected result requires selected_source_hit_id")
+            if self.selected_source_hit_id not in self.source_hit_ids:
+                raise ValueError("selected_source_hit_id must be retained in source_hit_ids")
+        elif self.selected_source_hit_id is not None:
+            raise ValueError("only detected result may include selected_source_hit_id")
 
 
 def read_fast_hit_handoff(
@@ -190,6 +207,7 @@ def adapt_fast_hit_handoff(
                 severity=None,
             ),
             source_hit_ids=source_hit_ids,
+            selected_source_hit_id=None,
         )
 
     records_by_id = {record.hit_id: record for record in handoff.records}
@@ -213,6 +231,7 @@ def adapt_fast_hit_handoff(
     return FastDetectionAdapterResult(
         detection_result=detection_result,
         source_hit_ids=source_hit_ids,
+        selected_source_hit_id=selection.selected_hit_id,
     )
 
 
@@ -240,6 +259,7 @@ def build_not_evaluated_detection_result(
             severity=None,
         ),
         source_hit_ids=(),
+        selected_source_hit_id=None,
     )
 
 
