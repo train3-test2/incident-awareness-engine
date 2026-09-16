@@ -24,7 +24,7 @@ def run(tmp_path, **overrides):
 def test_handoff_fields_and_provenance(tmp_path):
     # Given / When: a mock raw row precedes the qualifying row.
     assert run(tmp_path) == 1
-    hit = json.loads((tmp_path / "hits.jsonl").read_text())
+    hit = json.loads((tmp_path / "hits.jsonl").read_text(encoding="utf-8"))
     # Then: original row position and every handoff field are preserved.
     assert hit == {
         "hit_id": "RUN-20260913-001-hit-2",
@@ -39,7 +39,7 @@ def test_handoff_fields_and_provenance(tmp_path):
         "native_record_ref": "11",
         "detector_config_version": "mock-handoff-v1",
     }
-    trace = json.loads((tmp_path / "trace.json").read_text())
+    trace = json.loads((tmp_path / "trace.json").read_text(encoding="utf-8"))
     assert trace["hits"][0]["source_row_index"] == 2
     assert (
         trace["input_sha256"] == hashlib.sha256((FIXTURES / "handoff.csv").read_bytes()).hexdigest()
@@ -58,10 +58,10 @@ def test_rejects_invalid_run_id(tmp_path, run_id):
 
 def test_missing_metadata_fails_before_output(tmp_path):
     # Given
-    config = json.loads((FIXTURES / "handoff_config.json").read_text())
+    config = json.loads((FIXTURES / "handoff_config.json").read_text(encoding="utf-8"))
     config["rule_metadata"] = {}
     path = tmp_path / "config.json"
-    path.write_text(json.dumps(config))
+    path.write_text(json.dumps(config), encoding="utf-8")
     # When / Then
     with pytest.raises(KeyError):
         run(tmp_path, config_path=path)
@@ -70,21 +70,21 @@ def test_missing_metadata_fails_before_output(tmp_path):
 
 def test_preserves_existing_output(tmp_path):
     # Given
-    (tmp_path / "hits.jsonl").write_text("keep")
+    (tmp_path / "hits.jsonl").write_text("keep", encoding="utf-8")
     # When / Then
     with pytest.raises(FileExistsError):
         run(tmp_path)
-    assert (tmp_path / "hits.jsonl").read_text() == "keep"
+    assert (tmp_path / "hits.jsonl").read_text(encoding="utf-8") == "keep"
 
 
 def test_zero_hit_is_empty_handoff_not_detection_miss(tmp_path):
     # Given
     path = tmp_path / "empty.csv"
-    path.write_text("Timestamp,RuleID\n")
+    path.write_text("Timestamp,RuleID\n", encoding="utf-8")
     # When / Then
     assert run(tmp_path, csv_path=path) == 0
-    assert (tmp_path / "hits.jsonl").read_text() == ""
-    assert json.loads((tmp_path / "trace.json").read_text())["hit_count"] == 0
+    assert (tmp_path / "hits.jsonl").read_text(encoding="utf-8") == ""
+    assert json.loads((tmp_path / "trace.json").read_text(encoding="utf-8"))["hit_count"] == 0
 
 
 def test_trace_write_failure_cleans_staging_and_allows_retry(tmp_path, monkeypatch):
@@ -128,13 +128,13 @@ def test_competing_trace_is_preserved(tmp_path, monkeypatch):
 
     def compete(source, target):
         if target.name == "trace.json":
-            target.write_text("other execution")
+            target.write_text("other execution", encoding="utf-8")
         return original(source, target)
 
     monkeypatch.setattr(os, "link", compete)
     with pytest.raises(FileExistsError):
         run(tmp_path)
-    assert (tmp_path / "trace.json").read_text() == "other execution"
+    assert (tmp_path / "trace.json").read_text(encoding="utf-8") == "other execution"
     assert not (tmp_path / "hits.jsonl").exists()
     assert sorted(p.name for p in tmp_path.iterdir()) == ["trace.json"]
 
@@ -162,7 +162,7 @@ def test_concurrent_handoffs_have_one_winner(tmp_path, monkeypatch):
             except FileExistsError:
                 outcomes.append("exists")
     assert sorted(outcomes, key=str) == [1, "exists"]
-    trace = json.loads((tmp_path / "trace.json").read_text())
+    trace = json.loads((tmp_path / "trace.json").read_text(encoding="utf-8"))
     assert (
         trace["output_sha256"] == hashlib.sha256((tmp_path / "hits.jsonl").read_bytes()).hexdigest()
     )
