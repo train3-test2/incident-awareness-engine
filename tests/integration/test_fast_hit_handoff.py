@@ -108,3 +108,32 @@ def test_rejects_trace_record_provenance_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="rule_id"):
         read_fast_hit_handoff(jsonl_path, trace_path, run_id=RUN_ID)
+
+
+def test_rejects_hit_id_with_mismatched_source_row_index(tmp_path: Path) -> None:
+    jsonl_path, trace_path = _create_handoff(tmp_path)
+    record = json.loads(jsonl_path.read_text(encoding="utf-8"))
+    record["hit_id"] = f"{RUN_ID}-hit-1"
+    jsonl_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    trace["hits"][0]["hit_id"] = record["hit_id"]
+    trace["output_sha256"] = hashlib.sha256(jsonl_path.read_bytes()).hexdigest()
+    _rewrite_trace(trace_path, trace)
+
+    with pytest.raises(ValueError, match="source_row_index"):
+        read_fast_hit_handoff(jsonl_path, trace_path, run_id=RUN_ID)
+
+
+def test_rejects_hit_id_with_source_row_outside_input_range(tmp_path: Path) -> None:
+    jsonl_path, trace_path = _create_handoff(tmp_path)
+    record = json.loads(jsonl_path.read_text(encoding="utf-8"))
+    record["hit_id"] = f"{RUN_ID}-hit-3"
+    jsonl_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    trace["hits"][0]["hit_id"] = record["hit_id"]
+    trace["hits"][0]["source_row_index"] = 3
+    trace["output_sha256"] = hashlib.sha256(jsonl_path.read_bytes()).hexdigest()
+    _rewrite_trace(trace_path, trace)
+
+    with pytest.raises(ValueError, match="input_row_count"):
+        read_fast_hit_handoff(jsonl_path, trace_path, run_id=RUN_ID)

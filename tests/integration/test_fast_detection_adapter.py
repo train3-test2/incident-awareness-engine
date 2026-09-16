@@ -167,6 +167,26 @@ def test_rejects_handoff_with_rule_provenance_mismatch(tmp_path: Path) -> None:
         )
 
 
+def test_adapter_rejects_hit_id_with_source_row_outside_input_range(tmp_path: Path) -> None:
+    handoff = _read_handoff(tmp_path)
+    mismatched_record = handoff.records[0].model_copy(update={"hit_id": f"{RUN_ID}-hit-3"})
+    mismatched_trace_entry = handoff.trace.hits[0].model_copy(
+        update={"hit_id": mismatched_record.hit_id, "source_row_index": 3}
+    )
+    mismatched_trace = handoff.trace.model_copy(update={"hits": [mismatched_trace_entry]})
+    mismatched_handoff = FastHitHandoff(records=(mismatched_record,), trace=mismatched_trace)
+
+    with pytest.raises(ValueError, match="input_row_count"):
+        adapt_fast_hit_handoff(
+            mismatched_handoff,
+            entity_id="WIN-01",
+            selection=FastDetectionSelection(
+                detector_status="detected",
+                selected_hit_id=mismatched_record.hit_id,
+            ),
+        )
+
+
 @pytest.mark.parametrize("entity_id", ["", "   ", " WIN-01", "WIN-01 "])
 def test_rejects_invalid_entity_id(tmp_path: Path, entity_id: str) -> None:
     handoff = _read_handoff(tmp_path)

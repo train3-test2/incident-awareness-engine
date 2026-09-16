@@ -300,9 +300,16 @@ def _validate_adapter_handoff(handoff: FastHitHandoff) -> None:
         raise ValueError("FastHit trace contains duplicate hit_id values")
     if set(records_by_id) != set(trace_by_id):
         raise ValueError("FastHit trace hit_id values do not match the handoff records")
+    if len({entry.source_row_index for entry in handoff.trace.hits}) != len(handoff.trace.hits):
+        raise ValueError("FastHit trace contains duplicate source_row_index values")
     for hit_id, record in records_by_id.items():
         if trace_by_id[hit_id].rule_id != record.rule_id:
             raise ValueError(f"FastHit trace rule_id does not match record {hit_id}")
+    _validate_hit_provenance(
+        trace_by_id,
+        run_id=handoff.trace.run_id,
+        input_row_count=handoff.trace.input_row_count,
+    )
 
 
 def _validate_selected_entity(record: FastHitRecord, *, entity_id: str) -> None:
@@ -399,3 +406,25 @@ def _validate_handoff(
     for hit_id, record in records_by_id.items():
         if trace_by_id[hit_id].rule_id != record.rule_id:
             raise ValueError(f"FastHit trace rule_id does not match record {hit_id}")
+    _validate_hit_provenance(
+        trace_by_id,
+        run_id=trace.run_id,
+        input_row_count=trace.input_row_count,
+    )
+
+
+def _validate_hit_provenance(
+    trace_by_id: dict[str, FastHitTraceEntry],
+    *,
+    run_id: str,
+    input_row_count: int,
+) -> None:
+    hit_id_pattern = re.compile(rf"^{re.escape(run_id)}-hit-([1-9][0-9]*)$")
+    for hit_id, trace_entry in trace_by_id.items():
+        match = hit_id_pattern.fullmatch(hit_id)
+        if match is None:
+            raise ValueError("FastHitRecord hit_id must follow {run_id}-hit-{source_row_index}")
+        if int(match.group(1)) != trace_entry.source_row_index:
+            raise ValueError("FastHitRecord hit_id does not match trace source_row_index")
+        if trace_entry.source_row_index > input_row_count:
+            raise ValueError("FastHit trace source_row_index exceeds input_row_count")
