@@ -17,6 +17,7 @@ from pydantic import (
     StringConstraints,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from incident_awareness.common.models.result import (
@@ -102,18 +103,29 @@ class FastHitHandoff:
     trace: FastHitTrace
 
 
-class DetectedFastHitSelection(BaseModel):
-    """Role 5's already-decided qualifying hit for one detected result.
+class FastDetectionSelection(BaseModel):
+    """Role 5's already-decided Fast Detection outcome for one entity.
 
-    Selecting a hit and assigning severity are Fast Detection policy decisions.
-    The adapter only validates and carries those decisions across the Contract
-    boundary.
+    Selecting a hit, assigning severity, and deciding the status are Fast
+    Detection policy decisions. The adapter only validates and carries them
+    across the Contract boundary.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    selected_hit_id: Identifier
-    severity: Severity = Severity.UNKNOWN
+    detector_status: DetectorStatus
+    selected_hit_id: Identifier | None = None
+    severity: Severity | None = None
+
+    @model_validator(mode="after")
+    def validate_status_metadata(self) -> FastDetectionSelection:
+        if self.detector_status is DetectorStatus.DETECTED and self.selected_hit_id is None:
+            raise ValueError("detected selection requires selected_hit_id")
+        if self.detector_status is not DetectorStatus.DETECTED and self.selected_hit_id is not None:
+            raise ValueError("only detected selection may include selected_hit_id")
+        if self.detector_status is not DetectorStatus.DETECTED and self.severity is not None:
+            raise ValueError("only detected selection may include severity")
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,21 +159,40 @@ def read_fast_hit_handoff(
     return FastHitHandoff(records=tuple(records), trace=trace)
 
 
-def adapt_detected_fast_hit(
+def adapt_fast_hit_handoff(
     handoff: FastHitHandoff,
     *,
     entity_id: str,
-    selection: DetectedFastHitSelection,
+    selection: FastDetectionSelection,
 ) -> FastDetectionAdapterResult:
-    """Convert a Role 5-selected FastHitRecord into a detected result.
+    """Convert a completed Fast Runner handoff into a DetectionResult.
 
     This does not select a qualifying hit, calculate detector_time, map entities,
-    or invoke Hybrid. It only transfers an externally selected Fast hit into the
-    shared DetectionResult Contract and retains every input hit identifier for
-    downstream provenance.
+    or invoke Hybrid. A detected outcome copies the timestamp and Rule metadata
+    from Role 5's selected hit. A miss is valid only after a completed handoff.
     """
     _validate_entity_id(entity_id)
+    if selection.detector_status is DetectorStatus.NOT_EVALUATED:
+        raise ValueError("not_evaluated must be created without a completed Fast Runner handoff")
+
+    source_hit_ids = tuple(record.hit_id for record in handoff.records)
+    if selection.detector_status is DetectorStatus.MISS:
+        return FastDetectionAdapterResult(
+            detection_result=DetectionResult(
+                run_id=handoff.trace.run_id,
+                entity_id=entity_id,
+                detector_time=None,
+                detector_status=DetectorStatus.MISS,
+                detector_id=None,
+                rule_id=None,
+                rule_version=None,
+                severity=None,
+            ),
+            source_hit_ids=source_hit_ids,
+        )
+
     records_by_id = {record.hit_id: record for record in handoff.records}
+    assert selection.selected_hit_id is not None
     selected_record = records_by_id.get(selection.selected_hit_id)
     if selected_record is None:
         raise ValueError("selected_hit_id is not present in the validated FastHitRecord handoff")
@@ -174,11 +205,38 @@ def adapt_detected_fast_hit(
         detector_id=selected_record.detector_engine,
         rule_id=selected_record.rule_id,
         rule_version=selected_record.rule_version,
-        severity=selection.severity,
+        severity=selection.severity or Severity.UNKNOWN,
     )
     return FastDetectionAdapterResult(
         detection_result=detection_result,
-        source_hit_ids=tuple(record.hit_id for record in handoff.records),
+        source_hit_ids=source_hit_ids,
+    )
+
+
+def build_not_evaluated_detection_result(
+    *,
+    run_id: str,
+    entity_id: str,
+) -> FastDetectionAdapterResult:
+    """Represent an explicitly unexecuted Fast evaluator without a handoff.
+
+    Invalid or unreadable artifacts must still fail validation; they must not be
+    converted into not_evaluated because Fast Runner execution did occur.
+    """
+    _validate_run_id(run_id)
+    _validate_entity_id(entity_id)
+    return FastDetectionAdapterResult(
+        detection_result=DetectionResult(
+            run_id=run_id,
+            entity_id=entity_id,
+            detector_time=None,
+            detector_status=DetectorStatus.NOT_EVALUATED,
+            detector_id=None,
+            rule_id=None,
+            rule_version=None,
+            severity=None,
+        ),
+        source_hit_ids=(),
     )
 
 
