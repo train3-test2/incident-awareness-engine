@@ -19,6 +19,11 @@ from pydantic import (
     field_validator,
 )
 
+from incident_awareness.common.models.result import (
+    DetectionResult,
+    DetectorStatus,
+    Severity,
+)
 from incident_awareness.common.models.run import RunMetadata
 
 Identifier = Annotated[str, StringConstraints(strict=True, min_length=1, pattern=r"^\S+$")]
@@ -97,6 +102,28 @@ class FastHitHandoff:
     trace: FastHitTrace
 
 
+class DetectedFastHitSelection(BaseModel):
+    """Role 5's already-decided qualifying hit for one detected result.
+
+    Selecting a hit and assigning severity are Fast Detection policy decisions.
+    The adapter only validates and carries those decisions across the Contract
+    boundary.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    selected_hit_id: Identifier
+    severity: Severity = Severity.UNKNOWN
+
+
+@dataclass(frozen=True, slots=True)
+class FastDetectionAdapterResult:
+    """A DetectionResult together with retained FastHitRecord provenance."""
+
+    detection_result: DetectionResult
+    source_hit_ids: tuple[str, ...]
+
+
 def read_fast_hit_handoff(
     jsonl_path: str | Path,
     trace_path: str | Path,
@@ -120,12 +147,52 @@ def read_fast_hit_handoff(
     return FastHitHandoff(records=tuple(records), trace=trace)
 
 
+def adapt_detected_fast_hit(
+    handoff: FastHitHandoff,
+    *,
+    entity_id: str,
+    selection: DetectedFastHitSelection,
+) -> FastDetectionAdapterResult:
+    """Convert a Role 5-selected FastHitRecord into a detected result.
+
+    This does not select a qualifying hit, calculate detector_time, map entities,
+    or invoke Hybrid. It only transfers an externally selected Fast hit into the
+    shared DetectionResult Contract and retains every input hit identifier for
+    downstream provenance.
+    """
+    _validate_entity_id(entity_id)
+    records_by_id = {record.hit_id: record for record in handoff.records}
+    selected_record = records_by_id.get(selection.selected_hit_id)
+    if selected_record is None:
+        raise ValueError("selected_hit_id is not present in the validated FastHitRecord handoff")
+
+    detection_result = DetectionResult(
+        run_id=handoff.trace.run_id,
+        entity_id=entity_id,
+        detector_time=selected_record.timestamp,
+        detector_status=DetectorStatus.DETECTED,
+        detector_id=selected_record.detector_engine,
+        rule_id=selected_record.rule_id,
+        rule_version=selected_record.rule_version,
+        severity=selection.severity,
+    )
+    return FastDetectionAdapterResult(
+        detection_result=detection_result,
+        source_hit_ids=tuple(record.hit_id for record in handoff.records),
+    )
+
+
 def _validate_run_id(run_id: str) -> None:
     try:
         RunMetadata.validate_required_identifier(run_id)
         RunMetadata.validate_run_id(run_id)
     except (TypeError, ValueError) as error:
         raise ValueError(f"invalid expected run_id: {run_id!r}") from error
+
+
+def _validate_entity_id(entity_id: str) -> None:
+    if not isinstance(entity_id, str) or not entity_id.strip() or entity_id != entity_id.strip():
+        raise ValueError("entity_id must be a non-blank identifier without surrounding whitespace")
 
 
 def _read_records(jsonl_path: Path) -> list[FastHitRecord]:
