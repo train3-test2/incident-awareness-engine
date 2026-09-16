@@ -2,17 +2,40 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from incident_awareness.common.models.fusion import FusionEpisodeResult, FusionResult
-from incident_awareness.decision.hybrid import combine_results
 from incident_awareness.detection.fast_runner import run_fast_handoff
 from incident_awareness.integration.fast_hit_handoff import (
     FastDetectionSelection,
     adapt_fast_hit_handoff,
+    combine_fast_adapter_result,
     read_fast_hit_handoff,
 )
+from incident_awareness.storage.repositories.result_repository import DecisionRepository
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "detection"
 RUN_ID = "RUN-20260913-001"
 ENTITY_ID = "WIN-01"
+
+
+class _Cursor:
+    def __init__(self, row: tuple[object, ...] | None = None) -> None:
+        self._row = row
+
+    def fetchone(self) -> tuple[object, ...] | None:
+        return self._row
+
+
+class _PersistingDecisionConnection:
+    def __init__(self) -> None:
+        self.payload: dict[str, object] | None = None
+
+    def execute(self, query: str, params: tuple[object, ...]) -> _Cursor:
+        if query.lstrip().startswith("INSERT INTO decisions"):
+            self.payload = params[-1].obj
+            return _Cursor()
+        return _Cursor((self.payload,))
+
+    def commit(self) -> None:
+        pass
 
 
 def _read_handoff(tmp_path: Path, *, empty: bool = False):
@@ -71,8 +94,8 @@ def test_fast_handoff_adapter_output_flows_into_hybrid_decision(tmp_path: Path) 
         ),
     )
 
-    decision = combine_results(
-        fast.detection_result,
+    decision = combine_fast_adapter_result(
+        fast,
         _detected_fusion_result(),
         decision_id="D-FAST-HYBRID-001",
         config_version="parallel-integration-v1",
@@ -89,6 +112,16 @@ def test_fast_handoff_adapter_output_flows_into_hybrid_decision(tmp_path: Path) 
     assert decision.decision_path == "fast_and_fusion"
     assert decision.winning_path == "fast"
     assert decision.rule_version == "mock-v1"
+    assert decision.source_hit_ids == [f"{RUN_ID}-hit-2"]
+    assert decision.selected_source_hit_id == f"{RUN_ID}-hit-2"
+
+    repository = DecisionRepository(_PersistingDecisionConnection())
+    repository.save(decision)
+    loaded = repository.get(decision.decision_id)
+
+    assert loaded is not None
+    assert loaded.source_hit_ids == [f"{RUN_ID}-hit-2"]
+    assert loaded.selected_source_hit_id == f"{RUN_ID}-hit-2"
 
 
 def test_fast_miss_from_completed_handoff_flows_into_hybrid_decision(tmp_path: Path) -> None:
@@ -99,8 +132,8 @@ def test_fast_miss_from_completed_handoff_flows_into_hybrid_decision(tmp_path: P
         selection=FastDetectionSelection(detector_status="miss"),
     )
 
-    decision = combine_results(
-        fast.detection_result,
+    decision = combine_fast_adapter_result(
+        fast,
         _detected_fusion_result(),
         decision_id="D-FAST-HYBRID-002",
         config_version="parallel-integration-v1",
@@ -112,3 +145,5 @@ def test_fast_miss_from_completed_handoff_flows_into_hybrid_decision(tmp_path: P
     assert decision.t_e == decision.fusion_time
     assert decision.decision_path == "fusion"
     assert decision.winning_path == "fusion"
+    assert decision.source_hit_ids == []
+    assert decision.selected_source_hit_id is None

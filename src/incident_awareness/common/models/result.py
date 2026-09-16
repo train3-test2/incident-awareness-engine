@@ -265,6 +265,8 @@ class DecisionResult(BaseModel):
     contributing_evidence_ids: list[str] | None = None
     model_version: str | None = None
     rule_version: str | None = None
+    source_hit_ids: list[str] | None = None
+    selected_source_hit_id: str | None = None
     detector_set_version: str | None = None
     supersedes_decision_id: str | None = None
 
@@ -408,5 +410,30 @@ class DecisionResult(BaseModel):
             or self.winning_path is not WinningPath.NONE
         ):
             raise ValueError("두 경로가 miss이면 t_e는 null이고 경로는 none이어야 합니다.")
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_fast_hit_provenance(self) -> "DecisionResult":
+        if self.source_hit_ids is not None:
+            if any(not hit_id.strip() for hit_id in self.source_hit_ids):
+                raise ValueError("source_hit_ids must not contain blank values")
+            if len(self.source_hit_ids) != len(set(self.source_hit_ids)):
+                raise ValueError("source_hit_ids must not contain duplicates")
+
+        if self.selected_source_hit_id is not None:
+            if not self.selected_source_hit_id.strip():
+                raise ValueError("selected_source_hit_id must not be blank")
+            if (
+                self.source_hit_ids is None
+                or self.selected_source_hit_id not in self.source_hit_ids
+            ):
+                raise ValueError("selected_source_hit_id must be included in source_hit_ids")
+
+        if (
+            self.fast_status is not DetectorStatus.DETECTED
+            and self.selected_source_hit_id is not None
+        ):
+            raise ValueError("only detected fast_status may include selected_source_hit_id")
 
         return self

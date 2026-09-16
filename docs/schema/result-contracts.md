@@ -463,6 +463,8 @@ Fusion Path와 Fast Detection Path의 결과를 결합하여 기술적 후보 �
 | `contributing_evidence_ids` | List[String] | X | O | 기여 Evidence ID |
 | `model_version` | String | X | O | Fusion 모델 버전 |
 | `rule_version` | String | X | O | Fast Rule 버전 |
+| `source_hit_ids` | List[String] | X | O | Fast Adapter가 보존한 입력 FastHitRecord ID 목록 |
+| `selected_source_hit_id` | String | X | O | detected Fast 결과를 만든 선택 FastHitRecord ID |
 | `detector_set_version` | String | X | O | 동결 Detector Set 버전 |
 | `supersedes_decision_id` | String | X | O | 재계산으로 대체한 이전 Decision ID |
 
@@ -476,6 +478,8 @@ Fusion Path와 Fast Detection Path의 결과를 결합하여 기술적 후보 �
 `FusionResult.contributing_evidence_ids`의 복사본으로, Fusion 판단 근거의 provenance다.
 Fast가 더 빠르더라도 보존하며 최종 `t_e`의 직접 기여 Evidence 또는 Fusion 전체
 episode의 Evidence 합집합을 뜻하지 않는다.
+
+`DecisionResult.source_hit_ids`와 `selected_source_hit_id`는 Fast Adapter envelope의 provenance를 저장 경계까지 전달하기 위한 선택 필드다. `source_hit_ids`는 중복·빈 값을 허용하지 않으며, `selected_source_hit_id`가 있으면 반드시 해당 목록에 포함된다. Fast 상태가 `detected`가 아닌 경우 `selected_source_hit_id`는 `null`이다.
 
 현재 구현의 `DecisionResult` 모델과 JSON Schema는 역할 1·5가 정한 필수 병렬 실행의
 미실행 정책을 적용한다. 한 경로라도 `not_evaluated`이면 `t_e`, `decision_path`,

@@ -20,12 +20,15 @@ from pydantic import (
     model_validator,
 )
 
+from incident_awareness.common.models.fusion import FusionResult
 from incident_awareness.common.models.result import (
+    DecisionResult,
     DetectionResult,
     DetectorStatus,
     Severity,
 )
 from incident_awareness.common.models.run import RunMetadata
+from incident_awareness.decision.hybrid import combine_results
 
 Identifier = Annotated[str, StringConstraints(strict=True, min_length=1, pattern=r"^\S+$")]
 Sha256 = Annotated[str, StringConstraints(strict=True, pattern=r"^[0-9a-f]{64}$")]
@@ -260,6 +263,26 @@ def build_not_evaluated_detection_result(
         ),
         source_hit_ids=(),
         selected_source_hit_id=None,
+    )
+
+
+def combine_fast_adapter_result(
+    fast: FastDetectionAdapterResult,
+    fusion: FusionResult,
+    *,
+    decision_id: str,
+    config_version: str,
+    parallel_required: bool,
+) -> DecisionResult:
+    """Call Hybrid while carrying validated FastHitRecord provenance forward."""
+    return combine_results(
+        fast.detection_result,
+        fusion,
+        decision_id=decision_id,
+        config_version=config_version,
+        parallel_required=parallel_required,
+        source_hit_ids=fast.source_hit_ids,
+        selected_source_hit_id=fast.selected_source_hit_id,
     )
 
 
