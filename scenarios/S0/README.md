@@ -66,10 +66,13 @@ VM 에서 attack rehearsal 을 실행하는 명령이다. `run.ps1` 이 상대 �
 
 ```powershell
 Set-Location C:\Tools\S0\attack
-.\run.ps1 -RunId RUN-YYYYMMDD-NNN -ScenarioJsonPath C:\Tools\S0\scenario.json -DataRoot C:\S0\data -VmSnapshot poc-clean-v1 -SysmonBinary C:\Tools\Sysmon\Sysmon64.exe -SysmonConfigPath C:\Tools\S0\sysmonconfig-sample-v0.1.xml -WorkDir C:\S0\work -Rehearsal
+.\run.ps1 -RunId RUN-YYYYMMDD-NNN -ScenarioJsonPath C:\Tools\S0\scenario.json -DataRoot C:\S0\data -VmSnapshot poc-s0-ready-c62656b -SysmonBinary C:\Tools\Sysmon\Sysmon64.exe -SysmonConfigPath C:\Tools\S0\sysmonconfig-sample-v0.1.xml -WorkDir C:\S0\work -Rehearsal
 ```
 
 이 명령의 rehearsal 산출물은 `C:\S0\data\_rehearsal\` 아래에만 생성된다.
+
+`run_id` 는 매번 새로 발급한다. 이미 산출물이 있는 `run_id` 로 다시 실행하면 §5-3 의 재사용
+차단에 걸려 아무것도 쓰지 않고 중단된다.
 
 ## 3. 정식 attack 실행은 지금 의도적으로 막혀 있다
 
@@ -107,8 +110,9 @@ Sysmon 설정 파일은 **적용된 설정과 바이트가 같아야 한다.** �
 
 ## 5. 검증 상태
 
-**검증 대상이 둘로 나뉜다.** 아래 5-1 은 커밋 `c2bae89` 의 실행기를 VM 에서 돌린 결과이고,
-5-3 은 그 뒤에 들어온 리뷰 수정의 상태다. 두 절은 **같은 코드를 가리키지 않는다.**
+**검증 대상이 둘로 나뉜다.** 5-1 은 커밋 `c2bae89` 의 실행기를 VM 에서 돌린 RUN-20260914-002 이고,
+5-3 은 리뷰 수정본 `c62656b` 를 돌린 RUN-20260917-001 이다. 두 절은 **같은 코드를 가리키지 않으며**,
+어느 쪽도 정식 S0 Pair 수집물이 아니다.
 
 ### 5-1. VM rehearsal 결과 — RUN-20260914-002 (커밋 `c2bae89` 기준)
 
@@ -145,7 +149,7 @@ RUN-20260913-001 rehearsal 검토로 찾아 고친 항목이다. 모두 RUN-2026
 VM 의 설정 파일을 LF 원본으로 다시 복사해 CRLF 문제는 해소했고, RUN-20260914-002 에서 파일
 해시와 적용 설정 해시가 같은 값으로 확인됐다.
 
-### 5-3. 리뷰 수정의 검증 상태 — **VM 미검증**
+### 5-3. 리뷰 수정의 검증 결과 — RUN-20260917-001 (커밋 `c62656b` 기준)
 
 `c2bae89` 이후 리뷰 반영으로 두 가지가 바뀌었다.
 
@@ -154,18 +158,57 @@ VM 의 설정 파일을 LF 원본으로 다시 복사해 CRLF 문제는 해소�
 | anchor 검색 경계 | `Get-AnchorTelemetry` 가 `$Since` 이전을 조회하지 않고, 후보의 `TimeCreated` 도 UTC 로 다시 확인한다 |
 | run_id 재사용 차단 | `New-RunContext` 가 `raw/<run_id>` · `ground_truth/<run_id>` 중 하나라도 있으면 부수 효과 없이 중단한다 |
 
-지금까지의 검증은 **호스트 검증까지다.**
+**호스트 검증**
 
 - 구문 파싱(AST) · ASCII 전용 · BOM 없음 · LF
 - `scenarios/S0/tests/Test-RunCommonGuards.ps1` — Windows PowerShell 5.1 에서 **27 건 통과**
   (중복 거부, 거부 후 기존 산출물 SHA-256 보존, rehearsal·정식 namespace 분리, anchor 경계)
+- `tests/normalization/test_runner_jsonl_contract.py` — macOS / Python 3.13.15 에서 **4 건 통과**.
+  실행기가 쓰는 JSONL 을 `read_sysmon_jsonl` 로 읽어 EID 1 은 `normalize_sysmon_process_create`,
+  EID 3 은 `normalize_sysmon_network_connection` 으로 `event_v0` 까지 연결한다. 관련 Sysmon
+  테스트 13 건, 저장소 전체 `pytest` 627 passed · 30 skipped · 0 failed, `ruff check` 와
+  `ruff format --check` 통과. 30 건 skip 은 PostgreSQL 환경변수 미설정에 따른 정상 skip 이다.
 
-> **⚠ 이 두 변경은 아직 VM 에서 실행하지 않았다.** 5-1 의 RUN-20260914-002 는 변경 **이전**
-> 코드의 결과이므로 이번 수정의 검증이 아니다. 새 `run_id` 로 VM rehearsal 을 한 번 더 돌린 뒤
-> **이 절에 그 결과를 적는다.** 그 전까지 이번 수정은 VM 검증 완료가 아니다.
->
-> 기록할 값: `run_id`, `reference_time`, `reference_source_event_id`, Sysmon 이벤트 수,
-> `execution_record` 행, 같은 `run_id` 재실행이 거부되는지, 거부 전후 산출물 SHA-256 동일 여부.
+**VM rehearsal — 이 절의 값은 전부 커밋 `c62656b` 의 실행기로 얻은 것이다.**
+
+| 확인 항목 | 결과 |
+| --- | --- |
+| `run_id` | `RUN-20260917-001` |
+| `run_type` | `attack` |
+| 대상 커밋 | **`c62656b`** (리뷰 수정본) |
+| `vm_snapshot` | **`poc-s0-ready-c62656b`** — 기준이자 실행 후 복원한 스냅샷 |
+| `start_time` · `end_time` | `2026-09-17T10:01:52.231Z` · `2026-09-17T10:02:05.574Z` |
+| `reference_time` | `2026-09-17T10:01:52.503Z` |
+| `reference_source_event_id` | `6022` — Sysmon **EID 1**, `TimeCreated` 가 `reference_time` 과 일치 |
+| anchor `ProcessId` | `10132` — 이 PID 의 EID 1 은 RecordId 6022 하나뿐 |
+| `reference_action_id` | `A01` |
+| Sysmon export | **33 건** (EID 1 17 건, EID 3 16 건) |
+| `execution_record.csv` | A01 · A03 · A04 **3 행** |
+| CSV 첫 3 바이트 | `22 72 75` — UTF-8 BOM 없음 |
+| Sysmon 설정 해시 | `1e5c2424ed807ea418a2fa685b81acb23885fc576f77718c8e283ef9b19de8ea`, 적용 설정과 일치 |
+| EVTX SHA-256 | `e8d60c06e6eafd24df709c32946f96f5d33eafa47a082ffc63da3deb1742e72f` |
+| JSONL SHA-256 | `05452ff455fc7da89ad38f0a4047eb2e2fc96fb937829c12a55656e520dd2890` |
+| A02 | rehearsal 에서 실행하지 않음 |
+| A02 인과 검증 | `not_verified` |
+
+**A02 미실행 · 3 행 · `not_verified` 는 rehearsal 에서 기대된 결과다.** A02 는 외부 연결이라
+rehearsal 이 건너뛰고, 그래서 인과를 확인할 대상이 없다.
+
+**동일 `run_id` 재실행 차단도 실제 VM 에서 확인했다.**
+
+```text
+run_id RUN-20260917-001 already has output at C:\S0\data\_rehearsal\raw\RUN-20260917-001 and
+C:\S0\data\_rehearsal\ground_truth\RUN-20260917-001. Issue a new run_id: this run would
+overwrite the existing artifacts.
+```
+
+차단 전후 파일 수 **6 / 6**, `Path` 와 `Hash` 차이 **0 건**. 기존 산출물이 그대로 보존됐다.
+
+> **이 산출물은 정식 S0 Pair 수집물이 아니다.** rehearsal 이고 A02 가 빠져 있다. 정식 A01 · A02
+> 와 외부 연결은 issue #71 의 제한된 NAT 예외 **세부 승인값**이 확정되기 전까지 계속 막혀 있다.
+
+산출물과 검증 transcript(`before` · `after` 해시, 실행 기록)는 저장소 밖
+`E:\KISIA\result-file\_rehearsal\` 에 보관하며 **저장소에 커밋하지 않는다.**
 
 ### 5-4. 아직 남은 것
 
