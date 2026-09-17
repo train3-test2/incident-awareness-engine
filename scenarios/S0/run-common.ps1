@@ -147,6 +147,90 @@ function Test-SysmonConfigApplied {
     throw $message
 }
 
+function Get-EffectiveDataRoot {
+    <#
+        The directory a run actually writes under.
+
+        A rehearsal is pushed one level down so its artifacts can never be read as
+        data/raw or data/ground_truth. The same run_id therefore lives in two
+        separate namespaces, and a rehearsal never collides with a collection run.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$DataRoot,
+        [switch]$Rehearsal
+    )
+
+    if ($Rehearsal) { return (Join-Path $DataRoot "_rehearsal") }
+    return $DataRoot
+}
+
+function Get-ExistingRunDirectory {
+    <#
+        Return the run directories that already exist under a root.
+
+        The run_id directory itself is checked, not the telemetry subfolder: a
+        half finished run leaves ground_truth behind without any telemetry, and
+        that is exactly the state a rerun must not write into.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$EffectiveRoot,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+
+    $existing = New-Object System.Collections.Generic.List[string]
+    foreach ($layer in @("raw", "ground_truth")) {
+        $candidate = Join-Path (Join-Path $EffectiveRoot $layer) $RunId
+        if (Test-Path -LiteralPath $candidate) { $existing.Add($candidate) }
+    }
+
+    return $existing.ToArray()
+}
+
+function Assert-RunDirectoryAvailable {
+    <#
+        Refuse to start when this run_id already produced output.
+
+        Reusing a run_id would overwrite the EVTX, the execution_record and the
+        metadata of the earlier run, and a failure part way through would leave the
+        old manifest beside new telemetry. The check runs before anything is
+        created or written, so a refused run leaves the earlier artifacts byte for
+        byte as they were.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$EffectiveRoot,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+
+    $existing = @(Get-ExistingRunDirectory -EffectiveRoot $EffectiveRoot -RunId $RunId)
+    if ($existing.Count -eq 0) { return }
+
+    throw ("run_id " + $RunId + " already has output at " + ($existing -join " and ") +
+        ". Issue a new run_id: this run would overwrite the existing artifacts.")
+}
+
+function Test-AnchorEventBoundary {
+    <#
+        True when a Sysmon EID 1 record may stand for the anchor action.
+
+        Both conditions are required: the record belongs to the process that was
+        started, and it was created at or after the moment the action started.
+        Get-WinEvent's StartTime is only a query hint, so the boundary is checked
+        again here in UTC. Without it a reused ProcessId would let the previous
+        owner's EID 1 become reference_time, and reference_time together with
+        reference_source_event_id would no longer describe A01.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()][object]$RecordedProcessId,
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [Parameter(Mandatory = $true)][datetime]$TimeCreated,
+        [Parameter(Mandatory = $true)][datetime]$Since
+    )
+
+    if ([string]$RecordedProcessId -ne [string]$ProcessId) { return $false }
+
+    return ($TimeCreated.ToUniversalTime() -ge $Since.ToUniversalTime())
+}
+
 function New-RunContext {
     <#
         Validate the inputs and lay out the run directories.
@@ -154,6 +238,9 @@ function New-RunContext {
         A run that performs an external connection requires a non-null
         external_connection.target in the scenario file. Collection runs stay
         blocked until the network isolation decision is recorded.
+
+        A run_id that already produced output is refused before any side effect,
+        so a rerun cannot overwrite an earlier run's artifacts.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$RunId,
@@ -200,6 +287,12 @@ function New-RunContext {
             "Rehearsal artifacts are not a valid S0 run.")
     }
 
+     # Refuse a reused run_id before anything happens: no Sysmon probe, no marker,
+     # no directory, no artifact. A rejected run must leave the earlier run
+     # untouched, so this is the last check that can still be free of side effects.
+    $effectiveRoot = Get-EffectiveDataRoot -DataRoot $DataRoot -Rehearsal:$Rehearsal
+    Assert-RunDirectoryAvailable -EffectiveRoot $effectiveRoot -RunId $RunId
+
     $configSha256 = Get-Sha256 -Path $SysmonConfigPath
     if ($ExpectedSysmonConfigSha256 -and $configSha256 -ne $ExpectedSysmonConfigSha256.ToLower()) {
         throw "Sysmon config sha256 mismatch. expected=$ExpectedSysmonConfigSha256 actual=$configSha256"
@@ -211,13 +304,11 @@ function New-RunContext {
     $configState = Get-SysmonConfigState -SysmonBinary $SysmonBinary
     Test-SysmonConfigApplied -ConfigSha256 $configSha256 -ConfigState $configState -Rehearsal:$Rehearsal
 
-    # Rehearsal artifacts are not a valid S0 collection. Force them under a
-    # separate output root so they are never mistaken for data/raw or
-    # data/ground_truth, and drop a marker that says so. The run_id and the
+    # Rehearsal artifacts are not a valid S0 collection. The output root above
+    # already points one level down so they are never mistaken for data/raw or
+    # data/ground_truth; this drops a marker that says so. The run_id and the
     # RunMetadata contract are unchanged.
-    $effectiveRoot = $DataRoot
     if ($Rehearsal) {
-        $effectiveRoot = Join-Path $DataRoot "_rehearsal"
         New-Item -ItemType Directory -Path $effectiveRoot -Force | Out-Null
         $markerPath = Join-Path $effectiveRoot "REHEARSAL.txt"
         $markerText = "Rehearsal output. NOT a valid S0 collection. Do not use as data/raw or data/ground_truth."
@@ -445,6 +536,11 @@ function Get-AnchorTelemetry {
         observation window, and the window end is computed from reference_time
         (docs/scenarios/s0.md sections 6 and 9). So this reads the live channel
         instead, and the export later carries the same record.
+
+        The search never looks before $Since. Windows reuses ProcessIds, so an
+        earlier process could hold the same id; an EID 1 from before the action
+        started must never become reference_time. Sysmon may write the record late,
+        which only delays the poll, but the record's own TimeCreated decides.
     #>
     param(
         [Parameter(Mandatory = $true)][int]$ProcessId,
@@ -454,7 +550,7 @@ function Get-AnchorTelemetry {
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    $filter = @{ LogName = $SYSMON_LOG; Id = 1; StartTime = $Since.AddSeconds(-5) }
+    $filter = @{ LogName = $SYSMON_LOG; Id = 1; StartTime = $Since }
 
     while ($true) {
         $events = @(Get-WinEvent -FilterHashtable $filter -ErrorAction SilentlyContinue |
@@ -463,7 +559,10 @@ function Get-AnchorTelemetry {
             $xml = [xml]$event.ToXml()
             $recordedPid = ($xml.Event.EventData.Data |
                 Where-Object { $_.Name -eq "ProcessId" })."#text"
-            if ($recordedPid -ne [string]$ProcessId) { continue }
+            if (-not (Test-AnchorEventBoundary -RecordedProcessId $recordedPid -ProcessId $ProcessId `
+                -TimeCreated $event.TimeCreated -Since $Since)) {
+                continue
+            }
 
             return [ordered]@{
                 reference_time            = (Get-UtcStamp $event.TimeCreated)

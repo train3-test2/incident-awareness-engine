@@ -1,14 +1,16 @@
 # S0 시나리오 실행기
 
 `docs/scenarios/s0.md` 의 S0 Pair 를 기계가 실행하게 만드는 스크립트다. 시나리오의 정의와
-근거는 `docs/scenarios/s0.md`(PR #58) 가 소유하며, 이 폴더는 그 문서가 정한 값을 실행한다.
+근거는 `docs/scenarios/s0.md` 가 소유하며, 이 폴더는 그 문서가 정한 값을 실행한다. 두 문서의
+행위 목록(A01 ~ A04 · N01 ~ N04)과 offset, 관측 길이는 서로 같아야 한다.
 
 ```text
 scenarios/S0/
 ├── scenario.yaml     실행기가 읽는 값 (행위 목록·shortcut 통제·산출물 경로·관측 길이)
 ├── run-common.ps1    run_id 발급·산출물 생성·Sysmon 추출 등 공통 함수
 ├── normal/run.ps1    정상 Run (N01 ~ N04)
-└── attack/run.ps1    공격 Run (A01 ~ A04)
+├── attack/run.ps1    공격 Run (A01 ~ A04)
+└── tests/            호스트에서 도는 guard 회귀 검사 (VM·Sysmon 불필요)
 ```
 
 ## 1. scenario.yaml 을 JSON 으로 렌더링
@@ -105,42 +107,71 @@ Sysmon 설정 파일은 **적용된 설정과 바이트가 같아야 한다.** �
 
 ## 5. 검증 상태
 
-### 5-1. VM rehearsal 결과 (2026-09-14, attack)
+**검증 대상이 둘로 나뉜다.** 아래 5-1 은 커밋 `c2bae89` 의 실행기를 VM 에서 돌린 결과이고,
+5-3 은 그 뒤에 들어온 리뷰 수정의 상태다. 두 절은 **같은 코드를 가리키지 않는다.**
 
-격리 VM 에서 attack rehearsal 을 한 번 실행했다. 산출물 네 개가 모두 생성됐고 아래를 확인했다.
+### 5-1. VM rehearsal 결과 — RUN-20260914-002 (커밋 `c2bae89` 기준)
+
+격리 VM 에서 attack rehearsal 을 실행했다. 산출물 네 개가 모두 생성됐고 아래를 확인했다.
+**VM 은 검증 후 `poc-clean-v1` 스냅샷으로 복원했다.**
 
 | 확인 항목 | 결과 |
 | --- | --- |
+| `run_id` | `RUN-20260914-002` |
+| 대상 커밋 | **`c2bae89`** — 이 절의 결과는 전부 이 커밋의 실행기로 얻은 것이다 |
 | rehearsal 산출물 위치 | `data\_rehearsal\` 아래에만 생성, `REHEARSAL.txt` 존재 |
 | 정식 `data\raw` · `data\ground_truth` 오염 | 없음 |
-| `reference_time` | `2026-09-14T14:21:52.101Z` |
-| `reference_source_event_id` | `7603` — Sysmon EID 1 이고 시각이 `reference_time` 과 일치 |
-| anchor 프로세스 | `s0_anchor.ps1` 의 EID 1. A03 · A04 보다 먼저 기록되고 중간에 종료되지 않음 |
+| `reference_time` | `2026-09-14T15:21:46.216Z` |
+| `reference_source_event_id` | `7809` — Sysmon EID 1 이고 시각이 `reference_time` 과 일치 |
+| Sysmon 이벤트 | 9 건 |
 | `execution_record.csv` | A01 · A03 · A04 세 행 (A02 는 rehearsal 에서 건너뜀) |
-| `manifest.json` | 두 항목의 경로와 SHA-256 이 실제 산출물과 일치 |
+| CSV 첫 3 바이트 | `22 72 75` — UTF-8 BOM 없음 |
+| `manifest.json` | artifact 해시 2 건이 실제 산출물과 일치 |
+| Sysmon 설정 SHA-256 | `1e5c2424ed807ea418a2fa685b81acb23885fc576f77718c8e283ef9b19de8ea`, 적용 설정과 파일 해시 일치 |
 | `run_metadata.json` | RunMetadata 계약 통과 |
 | A02 인과 검증 | `not_verified` — A02 가 미구현이므로 예상된 결과 |
 
-### 5-2. 이 실행에서 드러난 결함과 조치
+### 5-2. 그 전 실행에서 드러난 결함과 조치 (`c2bae89` 까지 반영)
+
+RUN-20260913-001 rehearsal 검토로 찾아 고친 항목이다. 모두 RUN-20260914-002 에서 재검증됐다.
 
 | 결함 | 조치 |
 | --- | --- |
-| 설정 파일 해시(`ee2cff…`, CRLF)와 Sysmon 이 적용 중인 설정 해시(`1e5c2424…`, LF)가 달랐는데 실행기가 둘 다 기록만 하고 비교하지 않았다 | `Test-SysmonConfigApplied` 를 추가해 정식 모드는 중단, rehearsal 은 경고 |
+| 설정 파일 해시(CRLF)와 Sysmon 이 적용 중인 설정 해시(LF)가 달랐는데 실행기가 둘 다 기록만 하고 비교하지 않았다 | `Test-SysmonConfigApplied` 를 추가해 정식 모드는 중단, rehearsal 은 경고 |
 | `execution_record.csv` 에 UTF-8 BOM 이 붙어, 파일을 일반 UTF-8 로 여는 판독기에서 첫 열 이름이 `run_id` 로 읽히지 않았다 | BOM 없이 기록 |
 | 행 수가 시나리오 기대치보다 적어도 경고만 남기고 통과했다 | 정식 모드에서는 중단, rehearsal 에서만 경고 |
-| `Sysmon64 -c` 가 `start_time` 이후에 실행돼 실행기 자신의 프로세스가 run 구간 안에 들어갔다 (RecordId 7602) | 설정 조회를 `start_time` 이전으로 이동. 아래 선행 여유 때문에 추출에서 빠지지는 않는다 |
+| `Sysmon64 -c` 가 `start_time` 이후에 실행돼 실행기 자신의 프로세스가 run 구간 안에 들어갔다 | 설정 조회를 `start_time` 이전으로 이동. 아래 선행 여유 때문에 추출에서 빠지지는 않는다 |
 
-**VM 조치가 필요하다.** `C:\Tools\S0\sysmonconfig-sample-v0.1.xml` 이 CRLF 로 복사돼 있다.
-LF 원본으로 다시 복사해야 위 검사를 통과한다.
+VM 의 설정 파일을 LF 원본으로 다시 복사해 CRLF 문제는 해소했고, RUN-20260914-002 에서 파일
+해시와 적용 설정 해시가 같은 값으로 확인됐다.
 
-### 5-3. 아직 남은 것
+### 5-3. 리뷰 수정의 검증 상태 — **VM 미검증**
 
-- 위 수정은 **정적 검증까지만 했다**(구문 파싱, ASCII, 함수 단위 확인). 수정본으로 VM rehearsal 을
-  다시 한 번 돌려야 한다.
+`c2bae89` 이후 리뷰 반영으로 두 가지가 바뀌었다.
+
+| 변경 | 내용 |
+| --- | --- |
+| anchor 검색 경계 | `Get-AnchorTelemetry` 가 `$Since` 이전을 조회하지 않고, 후보의 `TimeCreated` 도 UTC 로 다시 확인한다 |
+| run_id 재사용 차단 | `New-RunContext` 가 `raw/<run_id>` · `ground_truth/<run_id>` 중 하나라도 있으면 부수 효과 없이 중단한다 |
+
+지금까지의 검증은 **호스트 검증까지다.**
+
+- 구문 파싱(AST) · ASCII 전용 · BOM 없음 · LF
+- `scenarios/S0/tests/Test-RunCommonGuards.ps1` — Windows PowerShell 5.1 에서 **27 건 통과**
+  (중복 거부, 거부 후 기존 산출물 SHA-256 보존, rehearsal·정식 namespace 분리, anchor 경계)
+
+> **⚠ 이 두 변경은 아직 VM 에서 실행하지 않았다.** 5-1 의 RUN-20260914-002 는 변경 **이전**
+> 코드의 결과이므로 이번 수정의 검증이 아니다. 새 `run_id` 로 VM rehearsal 을 한 번 더 돌린 뒤
+> **이 절에 그 결과를 적는다.** 그 전까지 이번 수정은 VM 검증 완료가 아니다.
+>
+> 기록할 값: `run_id`, `reference_time`, `reference_source_event_id`, Sysmon 이벤트 수,
+> `execution_record` 행, 같은 `run_id` 재실행이 거부되는지, 거부 전후 산출물 SHA-256 동일 여부.
+
+### 5-4. 아직 남은 것
+
 - `manifest.json` 의 `path` 는 VM 절대 경로(`C:\S0\data\...`)다. 호스트로 산출물을 옮기면 그
   경로는 존재하지 않는다. 상대 경로로 바꿀지는 Manifest 결정 항목(`s0.md` §10)과 함께 정한다.
 - 추출 창은 `start_time` 보다 10초 앞에서 시작한다(`EVTX_WINDOW_MARGIN_MS`). 그래서 run 직전의
-  이벤트가 함께 수집된다. 위 설정 조회와 RecordId 7601 의 NetBIOS 연결이 그 경우다. 여유 폭을
-  줄일지는 정식 수집 전에 정한다.
+  이벤트가 함께 수집된다. 여유 폭을 줄일지는 정식 수집 전에 정한다.
 - 정식 모드에서 A01 · A02 가 미구현 예외로 중단되는지는 아직 확인하지 않았다.
-- 정식 수집은 issue #71 네트워크 격리 결정과 cadence(`step_size`) 확정 이후에 한다.
+- 정식 수집은 issue #71 의 제한된 NAT 예외 **세부 승인값**과 cadence(`step_size`) 확정 이후에 한다.
