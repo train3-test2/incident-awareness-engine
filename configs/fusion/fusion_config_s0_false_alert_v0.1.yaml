@@ -1,0 +1,26 @@
+# S0 false-alert path check only: exercises Fusion episode creation and release
+# on the Normal run. Separate from Sigma/Hayabusa false-positive evaluation and
+# not a performance baseline (docs/scenarios/s0.md section 11).
+# Differs from fusion_config_s0_pair_v0.1.yaml only in config_version and
+# stopping.threshold_on.
+config_version: fusion-config-s0-false-alert-v0.1
+model_version: null
+
+window:
+  window_size_sec: 300
+
+replay:
+  step_size_sec: 10
+
+scoring:
+  method: simple_score
+  scorer_version: simple-score-v0.1
+  profile_id: s0-profile
+  evidence_types:
+    - encoded_powershell_command
+    - script_interpreter_external_connection
+
+stopping:
+  threshold_on: 0.5
+  threshold_off: 0.4
+  persistence_k: 2
