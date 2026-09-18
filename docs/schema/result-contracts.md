@@ -20,7 +20,7 @@
 | `EvidenceResult`  | 역할 2    |
 | `FusionResult`    | 역할 1    |
 | `DetectionResult` | 역할 3 Fast Adapter |
-| `DecisionResult`  | 역할 3    |
+| `DecisionResult`  | 역할 1·5 Hybrid 결합기 |
 
 ---
 
@@ -151,7 +151,7 @@ diagnostic_only
 
 `FusionResult`는 역할 1 Temporal Fusion 모듈의 출력이다.
 
-역할 3은 해당 결과를 수신하여 Hybrid Decision에 사용한다.
+역할 3은 해당 결과를 수신·검증하고 역할 1·5의 Hybrid 결합기에 전달한다.
 
 Fusion 내부 score/window/stopping 알고리즘은 역할 1이 담당한다.
 
@@ -428,7 +428,7 @@ Fast Adapter 이후에도 Fast Path 원본 hit의 provenance를 추적할 수 �
 
 ## 6-1. 목적
 
-`DecisionResult`는 역할 3의 Hybrid Decision 결과다.
+`DecisionResult`는 역할 1·5가 구현하는 Hybrid 결합 로직의 결과다.
 
 Fusion Path와 Fast Detection Path의 결과를 결합하여 기술적 후보 판단 시점 `t_e`를 기록한다.
 
@@ -461,6 +461,16 @@ Fusion Path와 Fast Detection Path의 결과를 결합하여 기술적 후보 �
 # 6-3. Hybrid 상태 및 시간 규칙
 
 `fast_status`는 `DetectionResult.detector_status`를 복사한 값이며, `fusion_status`는 FusionResult 상태를 보존한다. 상태를 먼저 판정하고, 유효한 경우에만 시각을 사용한다.
+
+판단 시점 결합기가 전달하는 `DecisionResult.contributing_evidence_ids`는 입력
+`FusionResult.contributing_evidence_ids`의 복사본으로, Fusion 판단 근거의 provenance다.
+Fast가 더 빠르더라도 보존하며 최종 `t_e`의 직접 기여 Evidence 또는 Fusion 전체
+episode의 Evidence 합집합을 뜻하지 않는다.
+
+현재 구현의 `DecisionResult` 모델과 JSON Schema는 역할 1·5가 정한 필수 병렬 실행의
+미실행 정책을 적용한다. 한 경로라도 `not_evaluated`이면 `t_e`, `decision_path`,
+`winning_path`의 non-null 값을 거부한다. Optional-path 결과 정책은 현재 미지원이며,
+지원 시 실행 Config와 모델 검증을 함께 확장한다.
 
 `parallel_required=true`인 Run에서 한 경로라도 `not_evaluated`이면 `t_e`, `decision_path`, `winning_path`는 모두 `null`이며 병렬 검증 실패로 처리한다.
 
@@ -540,7 +550,7 @@ DetectionResult
 → 역할 3 Fast Adapter가 생성
 
 DecisionResult
-→ 역할 3이 생성
+→ 역할 1·5의 Hybrid 결합기가 생성
 ```
 
 역할 3이 구현할 수 있는 범위:
@@ -549,8 +559,9 @@ DecisionResult
 Pydantic Contract
 Validation
 Interface
-Result 수신
-Hybrid Decision
+Fast Adapter
+Result 수신·검증
+Pipeline orchestration
 ```
 
 역할 3이 구현하면 안 되는 범위:

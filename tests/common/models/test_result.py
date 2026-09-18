@@ -462,3 +462,28 @@ def test_decision_result_json_schema_rejects_non_utc_or_excess_precision_timesta
 
     with pytest.raises(JsonSchemaValidationError):
         validator.validate({**result.model_dump(mode="json"), field: value})
+
+
+@pytest.mark.parametrize("missing_path", ["fast", "fusion", "both"])
+@pytest.mark.parametrize("field", ["t_e", "decision_path", "winning_path"])
+def test_not_evaluated_rejects_each_non_null_decision_field(missing_path, field):
+    payload = _valid_decision_payload()
+    if missing_path in {"fast", "both"}:
+        payload.update(fast_status="not_evaluated", detector_time=None)
+    if missing_path in {"fusion", "both"}:
+        payload.update(fusion_status="not_evaluated", fusion_time=None)
+    original = payload[field]
+    payload.update(t_e=None, decision_path=None, winning_path=None)
+    valid = DecisionResult.model_validate(payload)
+    schema = DecisionResult.model_json_schema()
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    wire = valid.model_dump(mode="json")
+    validator.validate(wire)
+    payload[field] = original
+    with pytest.raises(ValidationError, match="not_evaluated requires null"):
+        DecisionResult.model_validate(payload)
+    wire[field] = original.isoformat() if isinstance(original, datetime) else original
+    with pytest.raises(ValidationError):
+        DecisionResult.model_validate_json(json.dumps(wire))
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(wire)

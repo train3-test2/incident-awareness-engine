@@ -1,0 +1,6 @@
+{
+  "detector_engine_version": "4.0.0",
+  "detector_config_version": "mock-handoff-v1",
+  "qualifying_rule_ids": ["mock-rule"],
+  "rule_metadata": {"mock-rule": {"rule_version": "mock-v1", "alert_key": "mock-alert"}}
+}

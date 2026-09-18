@@ -1,14 +1,16 @@
 # S0 시나리오 실행기
 
 `docs/scenarios/s0.md` 의 S0 Pair 를 기계가 실행하게 만드는 스크립트다. 시나리오의 정의와
-근거는 `docs/scenarios/s0.md`(PR #58) 가 소유하며, 이 폴더는 그 문서가 정한 값을 실행한다.
+근거는 `docs/scenarios/s0.md` 가 소유하며, 이 폴더는 그 문서가 정한 값을 실행한다. 두 문서의
+행위 목록(A01 ~ A04 · N01 ~ N04)과 offset, 관측 길이는 서로 같아야 한다.
 
 ```text
 scenarios/S0/
 ├── scenario.yaml     실행기가 읽는 값 (행위 목록·shortcut 통제·산출물 경로·관측 길이)
 ├── run-common.ps1    run_id 발급·산출물 생성·Sysmon 추출 등 공통 함수
 ├── normal/run.ps1    정상 Run (N01 ~ N04)
-└── attack/run.ps1    공격 Run (A01 ~ A04)
+├── attack/run.ps1    공격 Run (A01 ~ A04)
+└── tests/            호스트에서 도는 guard 회귀 검사 (VM·Sysmon 불필요)
 ```
 
 ## 1. scenario.yaml 을 JSON 으로 렌더링
@@ -64,10 +66,13 @@ VM 에서 attack rehearsal 을 실행하는 명령이다. `run.ps1` 이 상대 �
 
 ```powershell
 Set-Location C:\Tools\S0\attack
-.\run.ps1 -RunId RUN-YYYYMMDD-NNN -ScenarioJsonPath C:\Tools\S0\scenario.json -DataRoot C:\S0\data -VmSnapshot poc-clean-v1 -SysmonBinary C:\Tools\Sysmon\Sysmon64.exe -SysmonConfigPath C:\Tools\S0\sysmonconfig-sample-v0.1.xml -WorkDir C:\S0\work -Rehearsal
+.\run.ps1 -RunId RUN-YYYYMMDD-NNN -ScenarioJsonPath C:\Tools\S0\scenario.json -DataRoot C:\S0\data -VmSnapshot poc-s0-ready-c62656b -SysmonBinary C:\Tools\Sysmon\Sysmon64.exe -SysmonConfigPath C:\Tools\S0\sysmonconfig-sample-v0.1.xml -WorkDir C:\S0\work -Rehearsal
 ```
 
 이 명령의 rehearsal 산출물은 `C:\S0\data\_rehearsal\` 아래에만 생성된다.
+
+`run_id` 는 매번 새로 발급한다. 이미 산출물이 있는 `run_id` 로 다시 실행하면 §5-3 의 재사용
+차단에 걸려 아무것도 쓰지 않고 중단된다.
 
 ## 3. 정식 attack 실행은 지금 의도적으로 막혀 있다
 
@@ -103,7 +108,119 @@ Sysmon 설정 파일은 **적용된 설정과 바이트가 같아야 한다.** �
 해시가 보고되지 않거나 SHA-256 이 아닌 알고리즘이어서 **비교 자체가 불가능하면** 정식 모드는
 중단한다. rehearsal 은 세 경우 모두 경고만 남기고 진행한다.
 
-## 5. 산출물 검증기
+## 5. 검증 상태
+
+**검증 대상이 둘로 나뉜다.** 5-1 은 커밋 `c2bae89` 의 실행기를 VM 에서 돌린 RUN-20260914-002 이고,
+5-3 은 리뷰 수정본 `c62656b` 를 돌린 RUN-20260917-001 이다. 두 절은 **같은 코드를 가리키지 않으며**,
+어느 쪽도 정식 S0 Pair 수집물이 아니다.
+
+### 5-1. VM rehearsal 결과 — RUN-20260914-002 (커밋 `c2bae89` 기준)
+
+격리 VM 에서 attack rehearsal 을 실행했다. 산출물 네 개가 모두 생성됐고 아래를 확인했다.
+**VM 은 검증 후 `poc-clean-v1` 스냅샷으로 복원했다.**
+
+| 확인 항목 | 결과 |
+| --- | --- |
+| `run_id` | `RUN-20260914-002` |
+| 대상 커밋 | **`c2bae89`** — 이 절의 결과는 전부 이 커밋의 실행기로 얻은 것이다 |
+| rehearsal 산출물 위치 | `data\_rehearsal\` 아래에만 생성, `REHEARSAL.txt` 존재 |
+| 정식 `data\raw` · `data\ground_truth` 오염 | 없음 |
+| `reference_time` | `2026-09-14T15:21:46.216Z` |
+| `reference_source_event_id` | `7809` — Sysmon EID 1 이고 시각이 `reference_time` 과 일치 |
+| Sysmon 이벤트 | 9 건 |
+| `execution_record.csv` | A01 · A03 · A04 세 행 (A02 는 rehearsal 에서 건너뜀) |
+| CSV 첫 3 바이트 | `22 72 75` — UTF-8 BOM 없음 |
+| `manifest.json` | artifact 해시 2 건이 실제 산출물과 일치 |
+| Sysmon 설정 SHA-256 | `1e5c2424ed807ea418a2fa685b81acb23885fc576f77718c8e283ef9b19de8ea`, 적용 설정과 파일 해시 일치 |
+| `run_metadata.json` | RunMetadata 계약 통과 |
+| A02 인과 검증 | `not_verified` — A02 가 미구현이므로 예상된 결과 |
+
+### 5-2. 그 전 실행에서 드러난 결함과 조치 (`c2bae89` 까지 반영)
+
+RUN-20260913-001 rehearsal 검토로 찾아 고친 항목이다. 모두 RUN-20260914-002 에서 재검증됐다.
+
+| 결함 | 조치 |
+| --- | --- |
+| 설정 파일 해시(CRLF)와 Sysmon 이 적용 중인 설정 해시(LF)가 달랐는데 실행기가 둘 다 기록만 하고 비교하지 않았다 | `Test-SysmonConfigApplied` 를 추가해 정식 모드는 중단, rehearsal 은 경고 |
+| `execution_record.csv` 에 UTF-8 BOM 이 붙어, 파일을 일반 UTF-8 로 여는 판독기에서 첫 열 이름이 `run_id` 로 읽히지 않았다 | BOM 없이 기록 |
+| 행 수가 시나리오 기대치보다 적어도 경고만 남기고 통과했다 | 정식 모드에서는 중단, rehearsal 에서만 경고 |
+| `Sysmon64 -c` 가 `start_time` 이후에 실행돼 실행기 자신의 프로세스가 run 구간 안에 들어갔다 | 설정 조회를 `start_time` 이전으로 이동. 아래 선행 여유 때문에 추출에서 빠지지는 않는다 |
+
+VM 의 설정 파일을 LF 원본으로 다시 복사해 CRLF 문제는 해소했고, RUN-20260914-002 에서 파일
+해시와 적용 설정 해시가 같은 값으로 확인됐다.
+
+### 5-3. 리뷰 수정의 검증 결과 — RUN-20260917-001 (커밋 `c62656b` 기준)
+
+`c2bae89` 이후 리뷰 반영으로 두 가지가 바뀌었다.
+
+| 변경 | 내용 |
+| --- | --- |
+| anchor 검색 경계 | `Get-AnchorTelemetry` 가 `$Since` 이전을 조회하지 않고, 후보의 `TimeCreated` 도 UTC 로 다시 확인한다 |
+| run_id 재사용 차단 | `New-RunContext` 가 `raw/<run_id>` · `ground_truth/<run_id>` 중 하나라도 있으면 부수 효과 없이 중단한다 |
+
+**호스트 검증**
+
+- 구문 파싱(AST) · ASCII 전용 · BOM 없음 · LF
+- `scenarios/S0/tests/Test-RunCommonGuards.ps1` — Windows PowerShell 5.1 에서 **27 건 통과**
+  (중복 거부, 거부 후 기존 산출물 SHA-256 보존, rehearsal·정식 namespace 분리, anchor 경계)
+- `tests/normalization/test_runner_jsonl_contract.py` — macOS / Python 3.13.15 에서 **4 건 통과**.
+  실행기가 쓰는 JSONL 을 `read_sysmon_jsonl` 로 읽어 EID 1 은 `normalize_sysmon_process_create`,
+  EID 3 은 `normalize_sysmon_network_connection` 으로 `event_v0` 까지 연결한다. 관련 Sysmon
+  테스트 13 건, 저장소 전체 `pytest` 627 passed · 30 skipped · 0 failed, `ruff check` 와
+  `ruff format --check` 통과. 30 건 skip 은 PostgreSQL 환경변수 미설정에 따른 정상 skip 이다.
+
+**VM rehearsal — 이 절의 값은 전부 커밋 `c62656b` 의 실행기로 얻은 것이다.**
+
+| 확인 항목 | 결과 |
+| --- | --- |
+| `run_id` | `RUN-20260917-001` |
+| `run_type` | `attack` |
+| 대상 커밋 | **`c62656b`** (리뷰 수정본) |
+| `vm_snapshot` | **`poc-s0-ready-c62656b`** — 기준이자 실행 후 복원한 스냅샷 |
+| `start_time` · `end_time` | `2026-09-17T10:01:52.231Z` · `2026-09-17T10:02:05.574Z` |
+| `reference_time` | `2026-09-17T10:01:52.503Z` |
+| `reference_source_event_id` | `6022` — Sysmon **EID 1**, `TimeCreated` 가 `reference_time` 과 일치 |
+| anchor `ProcessId` | `10132` — 이 PID 의 EID 1 은 RecordId 6022 하나뿐 |
+| `reference_action_id` | `A01` |
+| Sysmon export | **33 건** (EID 1 17 건, EID 3 16 건) |
+| `execution_record.csv` | A01 · A03 · A04 **3 행** |
+| CSV 첫 3 바이트 | `22 72 75` — UTF-8 BOM 없음 |
+| Sysmon 설정 해시 | `1e5c2424ed807ea418a2fa685b81acb23885fc576f77718c8e283ef9b19de8ea`, 적용 설정과 일치 |
+| EVTX SHA-256 | `e8d60c06e6eafd24df709c32946f96f5d33eafa47a082ffc63da3deb1742e72f` |
+| JSONL SHA-256 | `05452ff455fc7da89ad38f0a4047eb2e2fc96fb937829c12a55656e520dd2890` |
+| A02 | rehearsal 에서 실행하지 않음 |
+| A02 인과 검증 | `not_verified` |
+
+**A02 미실행 · 3 행 · `not_verified` 는 rehearsal 에서 기대된 결과다.** A02 는 외부 연결이라
+rehearsal 이 건너뛰고, 그래서 인과를 확인할 대상이 없다.
+
+**동일 `run_id` 재실행 차단도 실제 VM 에서 확인했다.**
+
+```text
+run_id RUN-20260917-001 already has output at C:\S0\data\_rehearsal\raw\RUN-20260917-001 and
+C:\S0\data\_rehearsal\ground_truth\RUN-20260917-001. Issue a new run_id: this run would
+overwrite the existing artifacts.
+```
+
+차단 전후 파일 수 **6 / 6**, `Path` 와 `Hash` 차이 **0 건**. 기존 산출물이 그대로 보존됐다.
+
+> **이 산출물은 정식 S0 Pair 수집물이 아니다.** rehearsal 이고 A02 가 빠져 있다. 정식 A01 · A02
+> 와 외부 연결은 issue #71 의 제한된 NAT 예외 **세부 승인값**이 확정되기 전까지 계속 막혀 있다.
+
+산출물과 검증 transcript(`before` · `after` 해시, 실행 기록)는 저장소 밖
+`E:\KISIA\result-file\_rehearsal\` 에 보관하며 **저장소에 커밋하지 않는다.**
+
+### 5-4. 아직 남은 것
+
+- `manifest.json` 의 `path` 는 VM 절대 경로(`C:\S0\data\...`)다. 호스트로 산출물을 옮기면 그
+  경로는 존재하지 않는다. 검증기는 §6-2 의 규칙으로 파일 이름만 매핑해 이 문제를 피한다.
+  manifest 자체를 상대 경로로 바꿀지는 Manifest 결정 항목(`s0.md` §10)과 함께 정한다.
+- 추출 창은 `start_time` 보다 10초 앞에서 시작한다(`EVTX_WINDOW_MARGIN_MS`). 그래서 run 직전의
+  이벤트가 함께 수집된다. 여유 폭을 줄일지는 정식 수집 전에 정한다.
+- 정식 모드에서 A01 · A02 가 미구현 예외로 중단되는지는 아직 확인하지 않았다.
+- 정식 수집은 issue #71 의 제한된 NAT 예외 **세부 승인값**과 cadence(`step_size`) 확정 이후에 한다.
+
+## 6. 산출물 검증기
 
 수집이 끝난 Run 의 산출물이 계약을 지키는지 **호스트에서** 확인한다. 검증 규칙은
 `src/incident_awareness/collection/s0_validation.py` 가 소유하고 `tools/validate_s0_run.py` 는
@@ -131,7 +248,7 @@ uv run python tools/validate_s0_run.py --artifact-root E:\KISIA\result-file\_reh
 `--scenario` 로 기대 행위 목록을 읽을 시나리오 파일을 바꿀 수 있다(기본값
 `scenarios/S0/scenario.yaml`).
 
-### 5-1. 검사 항목
+### 6-1. 검사 항목
 
 | 구분 | 검사 |
 | --- | --- |
@@ -145,7 +262,7 @@ uv run python tools/validate_s0_run.py --artifact-root E:\KISIA\result-file\_reh
 | Sysmon 설정 | `sysmon.config_sha256` 와 `sysmon.config_hash` 가 같은 SHA-256 인지 (`SHA256=` 접두사와 대소문자 차이는 허용, 다른 알고리즘 · 빈 값 · 형식 오류는 실패) |
 | reference | 공격 Run 이면 `reference_*` 세 값이 있고, `reference_source_event_id` 가 JSONL 에 있는 Sysmon EID 1 이며 그 `TimeCreated` 가 `reference_time` 과 밀리초까지 같고, `reference_action_id` 가 execution_record 에 있는지. 정상 Run 이면 세 값이 모두 null 인지 |
 | 시각 | execution_record 의 모든 timestamp 가 `start_time` 과 `end_time` 사이인지 (`end_time >= start_time` 은 `RunMetadata` 가 이미 강제한다) |
-| 관측 길이 | `end_time` 은 rehearsal 을 포함해 항상 있어야 하고, 정식 Run 은 공격이면 `reference_time`, 정상이면 `start_time` 에서 `run_length.evaluation_horizon_sec` 만큼 지난 뒤에 끝나야 한다 (§5-4) |
+| 관측 길이 | `end_time` 은 rehearsal 을 포함해 항상 있어야 하고, 정식 Run 은 공격이면 `reference_time`, 정상이면 `start_time` 에서 `run_length.evaluation_horizon_sec` 만큼 지난 뒤에 끝나야 한다 (§6-4) |
 | 행위 | `scenario_id` 가 시나리오와 같은지, execution_record 의 `action_id` 가 중복되지 않는지, 각 행의 `action_type` 이 시나리오의 같은 `action_id` 와 같은지, 알 수 없는 행위가 없는지 |
 | 시나리오 파일 | `runs.<run_type>.run_type` 이 키와 일치하는지, `uses_external_connection` 이 진짜 boolean 인지 (`"false"` · `0` · `1` · null 거부) |
 
@@ -153,7 +270,7 @@ uv run python tools/validate_s0_run.py --artifact-root E:\KISIA\result-file\_reh
 artifact(`OSError`), 구조가 깨진 시나리오 파일 모두 traceback 없이 리포트에 오류로 남고, 해시를
 다시 계산하지 못한 항목이 있어도 나머지 검사는 계속한다.
 
-### 5-2. Manifest 경로는 그대로 쓰지 않는다
+### 6-2. Manifest 경로는 그대로 쓰지 않는다
 
 `manifest.json` 의 `path` 는 VM 안에서 기록한 절대 경로(`C:\S0\data\...`)라 호스트에는 존재하지
 않는다. 검증기는 **이 경로를 열지 않는다.** 파일 이름만 꺼내
@@ -166,7 +283,7 @@ artifact(`OSError`), 구조가 깨진 시나리오 파일 모두 traceback 없�
 그래서 산출물을 호스트 어디로 복사해 두든 검증이 되고, manifest 가 가리키는 임의 경로의 파일을
 읽는 일은 일어나지 않는다.
 
-### 5-3. rehearsal 격리
+### 6-3. rehearsal 격리
 
 `REHEARSAL.txt` 가 있거나 경로에 `_rehearsal` 이 있으면 `--rehearsal` 없이 검증하는 것을 **거부한다.**
 반대로 `--rehearsal` 인데 marker 나 경로 격리가 없어도 거부한다. rehearsal 이 통과해도 결과에
@@ -176,7 +293,7 @@ rehearsal 에서는 외부 연결 행위(`scenario.yaml` 의 `uses_external_conn
 허용한다. 나머지 로컬 행위가 빠지면 실패한다. 기대 행위 목록을 `scenario.yaml` 에서 읽으므로
 시나리오가 바뀌면 검증기도 따라간다.
 
-### 5-4. 관측 길이는 정식 Run 에서만 본다
+### 6-4. 관측 길이는 정식 Run 에서만 본다
 
 정식 Run 은 `run_length.evaluation_horizon_sec` 만큼 관측 창이 열려 있어야 한다.
 
@@ -198,55 +315,10 @@ rehearsal 에서는 외부 연결 행위(`scenario.yaml` 의 `uses_external_conn
 `evaluation_horizon_sec` 이 없거나 양의 정수가 아니면 시나리오 오류로 실패한다. 시나리오 파일이
 깨져 있을 때도 traceback 이 아니라 검증 실패로 보고한다.
 
-## 6. 검증 상태
+이 검사는 수집 산출물의 관측 길이 계약(`s0.md` §9)이다. Fusion replay 구간을 채웠는지 보는
+Runtime 판정과, 평가 단계의 horizon 판정은 이 검증기가 하지 않는다.
 
-### 6-1. VM rehearsal 결과 (RUN-20260914-002, attack)
+### 6-5. 검증 상태
 
-수정본으로 격리 VM 에서 attack rehearsal 을 다시 실행했다. 산출물 네 개가 모두 생성됐고 아래를
-확인했다. **VM 은 검증 후 `poc-clean-v1` 스냅샷으로 복원했다.**
-
-| 확인 항목 | 결과 |
-| --- | --- |
-| `run_id` | `RUN-20260914-002` |
-| rehearsal 산출물 위치 | `data\_rehearsal\` 아래에만 생성, `REHEARSAL.txt` 존재 |
-| 정식 `data\raw` · `data\ground_truth` 오염 | 없음 |
-| `reference_time` | `2026-09-14T15:21:46.216Z` |
-| `reference_source_event_id` | `7809` — Sysmon EID 1 이고 시각이 `reference_time` 과 일치 |
-| Sysmon 이벤트 | 9 건 |
-| `execution_record.csv` | A01 · A03 · A04 세 행 (A02 는 rehearsal 에서 건너뜀) |
-| CSV 첫 3 바이트 | `22 72 75` — UTF-8 BOM 없음 |
-| `manifest.json` | artifact 해시 2 건이 실제 산출물과 일치 |
-| Sysmon 설정 SHA-256 | `1e5c2424ed807ea418a2fa685b81acb23885fc576f77718c8e283ef9b19de8ea` |
-| 적용 설정과 파일 해시 | 일치 |
-| `run_metadata.json` | RunMetadata 계약 통과 |
-| A02 인과 검증 | `not_verified` — A02 가 미구현이므로 예상된 결과 |
-
-앞선 실행(RUN-20260913-001)에서 드러났던 설정 파일 CRLF 문제는 LF 원본을 다시 복사해 해소했고,
-이번 실행에서 파일 해시와 적용 설정 해시가 같은 값으로 확인됐다.
-
-### 6-2. 앞선 실행에서 드러난 결함과 조치
-
-RUN-20260913-001 rehearsal 검토로 찾아 고친 항목이다. 모두 RUN-20260914-002 에서 재검증됐다.
-
-| 결함 | 조치 |
-| --- | --- |
-| 설정 파일 해시(CRLF)와 Sysmon 이 적용 중인 설정 해시(LF)가 달랐는데 실행기가 둘 다 기록만 하고 비교하지 않았다 | `Test-SysmonConfigApplied` 를 추가해 정식 모드는 중단, rehearsal 은 경고 |
-| `execution_record.csv` 에 UTF-8 BOM 이 붙어, 파일을 일반 UTF-8 로 여는 판독기에서 첫 열 이름이 `run_id` 로 읽히지 않았다 | BOM 없이 기록 |
-| 행 수가 시나리오 기대치보다 적어도 경고만 남기고 통과했다 | 정식 모드에서는 중단, rehearsal 에서만 경고 |
-| `Sysmon64 -c` 가 `start_time` 이후에 실행돼 실행기 자신의 프로세스가 run 구간 안에 들어갔다 | 설정 조회를 `start_time` 이전으로 이동. 아래 선행 여유 때문에 추출에서 빠지지는 않는다 |
-
-### 6-3. 아직 남은 것
-
-- **§5 검증기는 Python 3.13 CI 를 아직 통과하지 않았다.** 저장소가 요구하는 3.13 환경이 작업 PC 에
-  없어 `uv run pytest` · `uv run ruff` 를 실행하지 못했다. PR 을 올려 GitHub Actions 의 `quality`
-  잡에서 처음 확인한다.
-- 정식 A01 · A02 는 미구현이다. 정식 모드에서 미구현 예외로 중단되는지도 아직 확인하지 않았다.
-- issue #71 의 제한된 NAT 예외 **세부 승인값(허용 목적지 · 포트 · 시간 · 복구 절차)** 을 기다린다.
-  방식은 A 로 정해졌지만 값이 없어 `external_connection.target` 은 `null` 이다.
-- cadence(`run_length.run_end_alignment.step_size_sec`)가 미정이다.
-- `manifest.json` 의 `path` 는 VM 절대 경로(`C:\S0\data\...`)다. 검증기는 §5-2 의 규칙으로 파일
-  이름만 매핑해 이 문제를 피한다. manifest 자체를 상대 경로로 바꿀지는 Manifest 결정 항목
-  (`s0.md` §10)과 함께 정한다.
-- 추출 창은 `start_time` 보다 10초 앞에서 시작한다(`EVTX_WINDOW_MARGIN_MS`). 그래서 run 직전의
-  이벤트가 함께 수집된다. 여유 폭을 줄일지는 정식 수집 전에 정한다.
-- 정식 S0 Pair 수집은 위 결정들이 끝난 뒤에 한다.
+- macOS · Python 3.13 에서 rehearsal 산출물 RUN-20260914-002 를 `--rehearsal` 로 검증해 통과했다.
+- 정식 S0 Pair 산출물로는 아직 검증하지 않았다. 정식 수집 뒤 `--rehearsal` 없이 실행한다.
