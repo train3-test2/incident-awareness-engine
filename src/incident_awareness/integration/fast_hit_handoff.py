@@ -333,6 +333,16 @@ def _validate_adapter_handoff(handoff: FastHitHandoff) -> None:
     run_id or provenance in that case.
     """
     _validate_run_id(handoff.trace.run_id)
+    _validate_trace_artifact_sha256(
+        handoff.trace.input_csv,
+        expected_sha256=handoff.trace.input_sha256,
+        artifact_name="FastHit input CSV",
+    )
+    _validate_trace_artifact_sha256(
+        handoff.trace.config_path,
+        expected_sha256=handoff.trace.config_sha256,
+        artifact_name="FastHit config",
+    )
     if handoff.trace.hit_count != len(handoff.records) or len(handoff.trace.hits) != len(
         handoff.records
     ):

@@ -203,6 +203,33 @@ def test_adapter_rejects_hit_id_with_source_row_outside_input_range(tmp_path: Pa
         )
 
 
+@pytest.mark.parametrize(
+    ("trace_field", "error_message"),
+    [
+        ("input_sha256", "input CSV SHA-256"),
+        ("config_sha256", "config SHA-256"),
+    ],
+)
+def test_adapter_rechecks_input_and_config_provenance(
+    tmp_path: Path,
+    trace_field: str,
+    error_message: str,
+) -> None:
+    handoff = _read_handoff(tmp_path)
+    tampered_trace = handoff.trace.model_copy(update={trace_field: "0" * 64})
+    tampered_handoff = replace(handoff, trace=tampered_trace)
+
+    with pytest.raises(ValueError, match=error_message):
+        adapt_fast_hit_handoff(
+            tampered_handoff,
+            entity_id="WIN-01",
+            selection=FastDetectionSelection(
+                detector_status="detected",
+                selected_hit_id=f"{RUN_ID}-hit-2",
+            ),
+        )
+
+
 @pytest.mark.parametrize("entity_id", ["", "   ", " WIN-01", "WIN-01 "])
 def test_rejects_invalid_entity_id(tmp_path: Path, entity_id: str) -> None:
     handoff = _read_handoff(tmp_path)
