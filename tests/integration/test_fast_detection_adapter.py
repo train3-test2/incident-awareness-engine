@@ -90,6 +90,22 @@ def test_maps_detected_selection_to_detection_result(tmp_path: Path) -> None:
     assert result.selected_source_hit_id == f"{RUN_ID}-hit-2"
 
 
+def test_maps_native_host_to_distinct_canonical_entity_id(tmp_path: Path) -> None:
+    handoff = _read_handoff(tmp_path)
+
+    result = adapt_fast_hit_handoff(
+        handoff,
+        entity_id="endpoint-01",
+        selection=FastDetectionSelection(
+            detector_status="detected",
+            selected_hit_id=f"{RUN_ID}-hit-2",
+        ),
+        entity_mapper=lambda native_host_id: {"WIN-01": "endpoint-01"}.get(native_host_id),
+    )
+
+    assert result.detection_result.entity_id == "endpoint-01"
+
+
 def test_retains_all_input_hit_ids_and_selected_hit_provenance(tmp_path: Path) -> None:
     handoff = _read_multi_hit_handoff(tmp_path)
 
@@ -246,6 +262,18 @@ def test_allows_miss_when_handoff_hits_belong_to_other_entities(tmp_path: Path) 
     )
 
     assert result.detection_result.detector_status == "miss"
+
+
+def test_rejects_miss_when_mapper_resolves_hit_to_entity(tmp_path: Path) -> None:
+    handoff = _read_handoff(tmp_path)
+
+    with pytest.raises(ValueError, match="miss selection contradicts"):
+        adapt_fast_hit_handoff(
+            handoff,
+            entity_id="endpoint-01",
+            selection=FastDetectionSelection(detector_status="miss"),
+            entity_mapper=lambda native_host_id: {"WIN-01": "endpoint-01"}.get(native_host_id),
+        )
 
 
 def test_builds_not_evaluated_without_a_handoff() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -33,6 +34,18 @@ from incident_awareness.decision.hybrid import combine_results
 Identifier = Annotated[str, StringConstraints(strict=True, min_length=1, pattern=r"^\S+$")]
 Sha256 = Annotated[str, StringConstraints(strict=True, pattern=r"^[0-9a-f]{64}$")]
 _UTC_MILLIS_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
+EntityIdMapper = Callable[[str], str | None]
+
+
+def direct_host_entity_mapper(native_host_id: str) -> str:
+    """Use the source-native host string as the PoC v0 canonical entity ID.
+
+    This is the First Cycle default, not a requirement that every source-native
+    identifier equal its canonical entity ID. Callers with a host mapping pass
+    an explicit ``entity_mapper`` to :func:`adapt_fast_hit_handoff`.
+    """
+    return native_host_id
 
 
 class FastHitRecord(BaseModel):
@@ -184,12 +197,15 @@ def adapt_fast_hit_handoff(
     *,
     entity_id: str,
     selection: FastDetectionSelection,
+    entity_mapper: EntityIdMapper = direct_host_entity_mapper,
 ) -> FastDetectionAdapterResult:
     """Convert a completed Fast Runner handoff into a DetectionResult.
 
-    This does not select a qualifying hit, calculate detector_time, map entities,
-    or invoke Hybrid. A detected outcome copies the timestamp and Rule metadata
-    from Role 5's selected hit. A miss is valid only after a completed handoff.
+    This does not select a qualifying hit, calculate detector_time, or invoke
+    Hybrid. ``entity_mapper`` owns source-native host to canonical entity
+    mapping; its default is the PoC v0 direct host mapping. A detected outcome
+    copies the timestamp and Rule metadata from Role 5's selected hit. A miss is
+    valid only after a completed handoff.
     """
     _validate_entity_id(entity_id)
     _validate_adapter_handoff(handoff)
@@ -198,7 +214,11 @@ def adapt_fast_hit_handoff(
 
     source_hit_ids = tuple(record.hit_id for record in handoff.records)
     if selection.detector_status is DetectorStatus.MISS:
-        _validate_miss_selection(handoff.records, entity_id=entity_id)
+        _validate_miss_selection(
+            handoff.records,
+            entity_id=entity_id,
+            entity_mapper=entity_mapper,
+        )
         return FastDetectionAdapterResult(
             detection_result=DetectionResult(
                 run_id=handoff.trace.run_id,
@@ -219,7 +239,11 @@ def adapt_fast_hit_handoff(
     selected_record = records_by_id.get(selection.selected_hit_id)
     if selected_record is None:
         raise ValueError("selected_hit_id is not present in the validated FastHitRecord handoff")
-    _validate_selected_entity(selected_record, entity_id=entity_id)
+    _validate_selected_entity(
+        selected_record,
+        entity_id=entity_id,
+        entity_mapper=entity_mapper,
+    )
 
     detection_result = DetectionResult(
         run_id=handoff.trace.run_id,
@@ -336,22 +360,51 @@ def _validate_adapter_handoff(handoff: FastHitHandoff) -> None:
     )
 
 
-def _validate_selected_entity(record: FastHitRecord, *, entity_id: str) -> None:
-    if record.native_host_id is None:
-        raise ValueError("selected FastHitRecord has no native_host_id for entity_id mapping")
-    if record.native_host_id != entity_id:
-        raise ValueError("selected FastHitRecord native_host_id does not match entity_id")
+def _validate_selected_entity(
+    record: FastHitRecord,
+    *,
+    entity_id: str,
+    entity_mapper: EntityIdMapper,
+) -> None:
+    resolved_entity_id = _resolve_record_entity_id(record, entity_mapper=entity_mapper)
+    if resolved_entity_id is None:
+        raise ValueError("selected FastHitRecord native_host_id has no canonical entity_id mapping")
+    if resolved_entity_id != entity_id:
+        raise ValueError("selected FastHitRecord native_host_id does not map to entity_id")
 
 
-def _validate_miss_selection(records: tuple[FastHitRecord, ...], *, entity_id: str) -> None:
+def _validate_miss_selection(
+    records: tuple[FastHitRecord, ...],
+    *,
+    entity_id: str,
+    entity_mapper: EntityIdMapper,
+) -> None:
     """Reject a miss when the completed handoff contains a hit for this entity.
 
-    Fast Runner writes qualifying hits only. Under the current PoC v0 direct host
-    mapping, a matching native host therefore contradicts a miss for that entity.
-    Hits belonging to other entities do not affect the result.
+    Fast Runner writes qualifying hits only. A hit that the configured mapper
+    resolves to this entity therefore contradicts a miss. Hits that resolve to
+    other entities, or cannot be mapped, do not affect the result.
     """
-    if any(record.native_host_id == entity_id for record in records):
+    if any(
+        _resolve_record_entity_id(record, entity_mapper=entity_mapper) == entity_id
+        for record in records
+    ):
         raise ValueError("miss selection contradicts a qualifying FastHitRecord for entity_id")
+
+
+def _resolve_record_entity_id(
+    record: FastHitRecord,
+    *,
+    entity_mapper: EntityIdMapper,
+) -> str | None:
+    if record.native_host_id is None:
+        return None
+
+    resolved_entity_id = entity_mapper(record.native_host_id)
+    if resolved_entity_id is None:
+        return None
+    _validate_entity_id(resolved_entity_id)
+    return resolved_entity_id
 
 
 def _validate_detected_result_consistency(

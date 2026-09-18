@@ -401,6 +401,18 @@ Fast runner가 생산한 개별 qualifying hit는 `DetectionResult`와 별도인
 
 `FastHitRecord`에는 Comparator 관측 사실과 실행 context만 기록한다. Ground Truth, eligible 여부, episode credit, TTSD, Recall 등 평가 파생값은 포함하지 않는다. 모든 유효한 `hit_id`는 Fast Adapter 이후에도 Provenance 보존 표현으로 추적 가능해야 한다.
 
+### 5-6-1. Fast Adapter entity mapping
+
+D-01에 따라 PoC v0의 `DetectionResult.entity_id`는 non-null canonical Endpoint Host다. 반면 `FastHitRecord.native_host_id`는 source-native 식별자이므로, Fast Adapter는 두 값을 문자열 동일성으로 계약하지 않고 다음 매핑 정책으로 분리한다.
+
+```text
+FastHitRecord.native_host_id
+    ↓ entity_mapper
+DetectionResult.entity_id (canonical Endpoint Host)
+```
+
+First Cycle 기본 정책은 `direct_host_entity_mapper`이며, source-native host 문자열을 그대로 canonical `entity_id`로 사용한다. 별도 canonical ID가 필요한 입력은 명시적인 `entity_mapper`를 제공해야 한다. 선택된 hit가 mapping되지 않거나 요청한 `entity_id`와 다르면 `detected` 결과를 만들 수 없다. `miss`는 해당 mapper가 같은 canonical entity로 해석하는 qualifying hit가 하나라도 있으면 허용하지 않는다. 다른 entity로 해석되거나 mapping되지 않은 hit는 해당 entity의 `miss`를 막지 않는다.
+
 
 ### hit_id 생성 규칙
 
