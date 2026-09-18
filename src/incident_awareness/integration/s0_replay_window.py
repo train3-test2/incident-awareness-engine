@@ -6,10 +6,13 @@ sides. Those records stay in raw and normalized storage. They are left out here,
 right before Evidence extraction, so every Evidence handed to Temporal Fusion
 falls inside the fixed replay window.
 
-Only neutral run fields cross this boundary: run_id, start_time and end_time.
-Ground Truth such as run_type and reference_time is never accepted
-(docs/data-contract-v0.2.md section 5-3). Whether the attack evaluation horizon
-is covered is a separate check that belongs to the evaluation stage.
+Only neutral run fields cross this boundary: run_id, start_time, end_time and the
+hosts the run is expected to cover. An S0 caller takes those values out of
+RunMetadata (expected_entity_ids is (RunMetadata.target_host,) because S0 observes
+one host) and never hands the whole RunMetadata over. Ground Truth such as
+run_type and reference_time is never accepted (docs/data-contract-v0.2.md
+section 5-3). Whether the attack evaluation horizon is covered is a separate
+check that belongs to the evaluation stage.
 """
 
 from collections.abc import Iterable
@@ -51,6 +54,30 @@ def _validate_run_id(value: object) -> str:
         raise ValueError("run_id must be a non-blank string without surrounding whitespace")
 
     return value
+
+
+def _validate_expected_entity_ids(value: object) -> tuple[str, ...]:
+    if isinstance(value, str) or not isinstance(value, Iterable):
+        raise TypeError("expected_entity_ids must be a collection of host identifiers")
+
+    entity_ids = list(value)
+    if not entity_ids:
+        raise ValueError("expected_entity_ids must not be empty")
+
+    for entity_id in entity_ids:
+        if (
+            not isinstance(entity_id, str)
+            or not entity_id.strip()
+            or entity_id != entity_id.strip()
+        ):
+            raise ValueError(
+                "expected_entity_ids must hold non-blank strings without surrounding whitespace"
+            )
+
+    if len(set(entity_ids)) != len(entity_ids):
+        raise ValueError("expected_entity_ids must not contain duplicates")
+
+    return tuple(sorted(entity_ids))
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,18 +198,42 @@ def run_s0_runtime_fusion(
     run_id: str,
     start_time: datetime,
     end_time: datetime,
+    expected_entity_ids: Iterable[str],
     config: FusionConfig,
 ) -> S0RuntimeFusionResult:
     """Filter one run's NormalizedEvents, extract Evidence and run Temporal Fusion.
 
-    One FusionResult is produced per host (entity_id) seen inside the window, and
-    each host is replayed separately over the same window. When end_time is
-    earlier than replay_end, Fusion is not run and every host gets a
-    not_evaluated FusionResult with reason replay_window_not_covered.
+    Exactly one FusionResult is produced per expected host, in sorted host order,
+    whether or not that host has events inside the window. Each host is replayed
+    separately over the same window.
+
+    - Window covered, no Evidence for a host (no events, or every event was a
+      margin record): Fusion runs on an empty input and the host is a miss, that
+      is, observed without Evidence.
+    - Window not covered (end_time earlier than replay_end): Fusion is not run
+      and every expected host gets a not_evaluated FusionResult with reason
+      replay_window_not_covered.
+    - An event from a host outside expected_entity_ids, inside or outside the
+      window, is an error. It is neither added nor dropped.
+
+    Precondition: events must come from a collection and normalization step that
+    has already been validated. A missing collection or a normalization failure
+    must stop the run before this call; it must not arrive here as an empty
+    event list, because an empty list is read as "observed, nothing happened"
+    and becomes a miss. No shared collection status contract exists yet; the S0
+    artifact validator is the planned gate in front of this call.
     """
     window = derive_s0_replay_window(start_time=start_time, end_time=end_time)
-    selection = select_s0_replay_events(events, run_id=run_id, window=window)
-    entity_ids = sorted({event.host_id for event in selection.included_events})
+    entity_ids = _validate_expected_entity_ids(expected_entity_ids)
+
+    event_list = list(events)
+    selection = select_s0_replay_events(event_list, run_id=run_id, window=window)
+
+    unexpected_hosts = sorted({event.host_id for event in event_list} - set(entity_ids))
+    if unexpected_hosts:
+        raise ValueError(
+            "NormalizedEvent host_id is not in expected_entity_ids: " + ", ".join(unexpected_hosts)
+        )
 
     if not window.is_covered:
         return S0RuntimeFusionResult(
@@ -204,9 +255,12 @@ def run_s0_runtime_fusion(
             ),
         )
 
-    # Temporal replay requires non-decreasing Evidence timestamps; sorted() is
-    # stable, so events sharing a timestamp keep their input order.
-    ordered_events = sorted(selection.included_events, key=lambda event: event.timestamp)
+    # Temporal replay requires non-decreasing Evidence timestamps. event_id breaks
+    # ties so the result does not depend on the input order.
+    ordered_events = sorted(
+        selection.included_events,
+        key=lambda event: (event.timestamp, event.event_id),
+    )
     evidences = [evidence for event in ordered_events for evidence in extract_evidence(event)]
 
     fusion_results = tuple(
