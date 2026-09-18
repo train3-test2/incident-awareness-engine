@@ -198,6 +198,7 @@ def adapt_fast_hit_handoff(
 
     source_hit_ids = tuple(record.hit_id for record in handoff.records)
     if selection.detector_status is DetectorStatus.MISS:
+        _validate_miss_selection(handoff.records, entity_id=entity_id)
         return FastDetectionAdapterResult(
             detection_result=DetectionResult(
                 run_id=handoff.trace.run_id,
@@ -340,6 +341,17 @@ def _validate_selected_entity(record: FastHitRecord, *, entity_id: str) -> None:
         raise ValueError("selected FastHitRecord has no native_host_id for entity_id mapping")
     if record.native_host_id != entity_id:
         raise ValueError("selected FastHitRecord native_host_id does not match entity_id")
+
+
+def _validate_miss_selection(records: tuple[FastHitRecord, ...], *, entity_id: str) -> None:
+    """Reject a miss when the completed handoff contains a hit for this entity.
+
+    Fast Runner writes qualifying hits only. Under the current PoC v0 direct host
+    mapping, a matching native host therefore contradicts a miss for that entity.
+    Hits belonging to other entities do not affect the result.
+    """
+    if any(record.native_host_id == entity_id for record in records):
+        raise ValueError("miss selection contradicts a qualifying FastHitRecord for entity_id")
 
 
 def _validate_detected_result_consistency(

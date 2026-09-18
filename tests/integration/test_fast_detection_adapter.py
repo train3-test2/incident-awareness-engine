@@ -225,6 +225,29 @@ def test_maps_completed_empty_handoff_to_explicit_miss(tmp_path: Path) -> None:
     assert result.selected_source_hit_id is None
 
 
+def test_rejects_miss_when_handoff_has_qualifying_hit_for_entity(tmp_path: Path) -> None:
+    handoff = _read_handoff(tmp_path)
+
+    with pytest.raises(ValueError, match="miss selection contradicts"):
+        adapt_fast_hit_handoff(
+            handoff,
+            entity_id="WIN-01",
+            selection=FastDetectionSelection(detector_status="miss"),
+        )
+
+
+def test_allows_miss_when_handoff_hits_belong_to_other_entities(tmp_path: Path) -> None:
+    handoff = _read_handoff(tmp_path)
+
+    result = adapt_fast_hit_handoff(
+        handoff,
+        entity_id="WIN-02",
+        selection=FastDetectionSelection(detector_status="miss"),
+    )
+
+    assert result.detection_result.detector_status == "miss"
+
+
 def test_builds_not_evaluated_without_a_handoff() -> None:
     result = build_not_evaluated_detection_result(run_id=RUN_ID, entity_id="WIN-01")
 
