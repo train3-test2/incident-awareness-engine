@@ -432,7 +432,7 @@ First Cycle에서는 다음 규칙을 사용한다.
 
 Fast Adapter 이후에도 Fast Path 원본 hit의 provenance를 추적할 수 있도록 `hit_id`를 downstream에서 보존하는 방식을 사용한다.
 
-### 5-6-1. Fast Adapter provenance envelope
+### 5-6-2. Fast Adapter provenance envelope
 
 `DetectionResult` Contract에는 FastHitRecord provenance 필드가 없다. 따라서 역할 3 Fast Adapter는 Python 전달 객체 `FastDetectionAdapterResult`로 다음 값을 함께 보존한다.
 
