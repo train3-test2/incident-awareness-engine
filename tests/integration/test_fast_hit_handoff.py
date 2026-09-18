@@ -39,6 +39,7 @@ def test_reads_valid_fast_hit_handoff(tmp_path: Path) -> None:
     assert handoff.records[0].timestamp == datetime(2026, 9, 13, 0, 0, 1, 123000, tzinfo=UTC)
     assert handoff.records[0].native_host_id == "WIN-01"
     assert handoff.trace.run_id == RUN_ID
+    assert handoff.trace.config_path == str((FIXTURES / "handoff_config.json").resolve())
 
 
 def test_reads_valid_empty_handoff(tmp_path: Path) -> None:
@@ -74,6 +75,38 @@ def test_rejects_tampered_jsonl_bytes(tmp_path: Path) -> None:
     jsonl_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="SHA-256"):
+        read_fast_hit_handoff(jsonl_path, trace_path, run_id=RUN_ID)
+
+
+def test_rejects_missing_input_csv_referenced_by_trace(tmp_path: Path) -> None:
+    jsonl_path, trace_path = _create_handoff(tmp_path)
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    trace["input_csv"] = str(tmp_path / "missing.csv")
+    trace["input_sha256"] = "0" * 64
+    trace["config_sha256"] = "1" * 64
+    _rewrite_trace(trace_path, trace)
+
+    with pytest.raises(ValueError, match="cannot read FastHit input CSV"):
+        read_fast_hit_handoff(jsonl_path, trace_path, run_id=RUN_ID)
+
+
+def test_rejects_input_csv_sha256_mismatch(tmp_path: Path) -> None:
+    jsonl_path, trace_path = _create_handoff(tmp_path)
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    trace["input_sha256"] = "0" * 64
+    _rewrite_trace(trace_path, trace)
+
+    with pytest.raises(ValueError, match="input CSV SHA-256"):
+        read_fast_hit_handoff(jsonl_path, trace_path, run_id=RUN_ID)
+
+
+def test_rejects_config_sha256_mismatch(tmp_path: Path) -> None:
+    jsonl_path, trace_path = _create_handoff(tmp_path)
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    trace["config_sha256"] = "0" * 64
+    _rewrite_trace(trace_path, trace)
+
+    with pytest.raises(ValueError, match="config SHA-256"):
         read_fast_hit_handoff(jsonl_path, trace_path, run_id=RUN_ID)
 
 

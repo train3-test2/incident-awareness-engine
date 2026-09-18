@@ -104,6 +104,7 @@ class FastHitTrace(BaseModel):
     run_id: Identifier
     input_csv: str = Field(min_length=1)
     input_sha256: Sha256
+    config_path: str = Field(min_length=1)
     config_sha256: Sha256
     output_sha256: Sha256
     input_row_count: int = Field(strict=True, ge=0)
@@ -472,6 +473,16 @@ def _validate_handoff(
     actual_sha256 = hashlib.sha256(jsonl_path.read_bytes()).hexdigest()
     if trace.output_sha256 != actual_sha256:
         raise ValueError("FastHitRecord JSONL SHA-256 does not match the trace")
+    _validate_trace_artifact_sha256(
+        trace.input_csv,
+        expected_sha256=trace.input_sha256,
+        artifact_name="FastHit input CSV",
+    )
+    _validate_trace_artifact_sha256(
+        trace.config_path,
+        expected_sha256=trace.config_sha256,
+        artifact_name="FastHit config",
+    )
     if trace.run_id != expected_run_id:
         raise ValueError("FastHit trace run_id does not match the expected run_id")
     if trace.hit_count != len(records) or len(trace.hits) != len(records):
@@ -499,6 +510,20 @@ def _validate_handoff(
         run_id=trace.run_id,
         input_row_count=trace.input_row_count,
     )
+
+
+def _validate_trace_artifact_sha256(
+    artifact_path: str,
+    *,
+    expected_sha256: str,
+    artifact_name: str,
+) -> None:
+    try:
+        actual_sha256 = hashlib.sha256(Path(artifact_path).read_bytes()).hexdigest()
+    except OSError as error:
+        raise ValueError(f"cannot read {artifact_name} referenced by the trace") from error
+    if actual_sha256 != expected_sha256:
+        raise ValueError(f"{artifact_name} SHA-256 does not match the trace")
 
 
 def _validate_hit_provenance(
