@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -439,7 +440,7 @@ def test_removes_its_staging_directory_when_verification_fails(
     # Given
     inputs = _make_inputs(tmp_path)
 
-    def fail(run_dir: Path) -> int:
+    def fail(run_dir: Path, **_: object) -> int:
         raise PreservationError("verification failed")
 
     monkeypatch.setattr(preservation, "verify_preserved_run", fail)
@@ -550,4 +551,265 @@ def test_command_line_preserves_and_verifies(
 
     # Then
     assert (preserved, verified, repeated) == (0, 0, 1)
-    assert "already exists" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert f"{len(_expected_copied_files()) + 1} files match SHA256SUMS.csv" in output
+    assert "already exists" in output
+
+
+def test_command_line_verify_fails_for_an_empty_bundle(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Given
+    run_dir = tmp_path / "formal" / RUN_ID
+    _write(run_dir / "SHA256SUMS.csv", b"path,sha256\n")
+
+    # When
+    status = main(["verify", "--preserved-dir", str(run_dir)])
+
+    # Then
+    assert status != 0
+    assert "[!]" in capsys.readouterr().out
+
+
+# --- verify checks the bundle, not only the hashes -------------------------
+
+
+def _reseal(run_dir: Path) -> None:
+    """Rewrite SHA256SUMS.csv so a deliberate edit is not caught as a hash mismatch."""
+    rows = sorted(
+        (path.relative_to(run_dir).as_posix(), _sha256(path))
+        for path in run_dir.rglob("*")
+        if path.is_file() and path.relative_to(run_dir).as_posix() != "SHA256SUMS.csv"
+    )
+    body = "path,sha256\n" + "".join(f"{path},{digest}\n" for path, digest in rows)
+    (run_dir / "SHA256SUMS.csv").write_text(body, encoding="utf-8", newline="\n")
+
+
+def _edit_record(run_dir: Path, mutate: Callable[[dict], None]) -> None:
+    record_path = run_dir / "preservation_record.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    mutate(record)
+    record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    _reseal(run_dir)
+
+
+def _shift_record_files(record: dict, *, remove: str = "", add: str = "") -> None:
+    files = [path for path in record["files"] if path != remove]
+    if add:
+        files.append(add)
+    record["files"] = sorted(files)
+    record["file_count"] = len(files)
+    record["hash_verification"]["compared_files"] = len(files)
+
+
+def _drop_file(run_dir: Path, relative: str) -> None:
+    (run_dir / relative).unlink()
+    _edit_record(run_dir, lambda record: _shift_record_files(record, remove=relative))
+
+
+def _add_file(run_dir: Path, relative: str) -> None:
+    _write(run_dir / relative, b"extra\n")
+    _edit_record(run_dir, lambda record: _shift_record_files(record, add=relative))
+
+
+def _preserved(tmp_path: Path) -> Path:
+    return preserve_s0_run(_make_inputs(tmp_path), now=PRESERVED_AT).run_dir
+
+
+def test_verify_accepts_an_untouched_bundle_after_resealing(tmp_path: Path) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    _reseal(run_dir)
+
+    # When / Then
+    assert verify_preserved_run(run_dir) == len(_expected_copied_files()) + 1
+
+
+def test_verify_rejects_an_empty_folder_with_a_header_only_list(tmp_path: Path) -> None:
+    # Given
+    run_dir = tmp_path / "formal" / RUN_ID
+    _write(run_dir / "SHA256SUMS.csv", b"path,sha256\n")
+
+    # When / Then
+    with pytest.raises(PreservationError, match="lists no files"):
+        verify_preserved_run(run_dir)
+
+
+def test_verify_rejects_a_header_only_list_over_a_full_bundle(tmp_path: Path) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    (run_dir / "SHA256SUMS.csv").write_bytes(b"path,sha256\n")
+
+    # When / Then
+    with pytest.raises(PreservationError, match="lists no files"):
+        verify_preserved_run(run_dir)
+
+
+def test_verify_rejects_a_missing_record(tmp_path: Path) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    (run_dir / "preservation_record.json").unlink()
+
+    # When / Then
+    with pytest.raises(PreservationError, match="preservation_record.json is missing"):
+        verify_preserved_run(run_dir)
+
+
+def test_verify_rejects_a_record_left_out_of_the_list(tmp_path: Path) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    sums_path = run_dir / "SHA256SUMS.csv"
+    lines = sums_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    sums_path.write_text(
+        "".join(line for line in lines if not line.startswith("preservation_record.json,")),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    # When / Then
+    with pytest.raises(PreservationError, match="is not listed in SHA256SUMS.csv"):
+        verify_preserved_run(run_dir)
+
+
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [("not-json", "is not readable JSON"), ("[]", "must be a JSON object")],
+    ids=["invalid-json", "not-an-object"],
+)
+def test_verify_rejects_an_unreadable_record(tmp_path: Path, content: str, reason: str) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    (run_dir / "preservation_record.json").write_text(content, encoding="utf-8")
+    _reseal(run_dir)
+
+    # When / Then
+    with pytest.raises(PreservationError, match=reason):
+        verify_preserved_run(run_dir)
+
+
+@pytest.mark.parametrize(
+    ("run_id", "reason"),
+    [
+        ("RUN-2026-001", "run_id must match RUN-YYYYMMDD-NNN"),
+        (OTHER_RUN_ID, "does not match the preserved directory"),
+    ],
+    ids=["malformed", "other-run"],
+)
+def test_verify_rejects_a_record_for_another_run_id(
+    tmp_path: Path, run_id: str, reason: str
+) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    _edit_record(run_dir, lambda record: record.update(run_id=run_id))
+
+    # When / Then
+    with pytest.raises(PreservationError, match=reason):
+        verify_preserved_run(run_dir)
+
+
+def test_verify_rejects_record_files_that_differ_from_the_list(tmp_path: Path) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    _edit_record(
+        run_dir,
+        lambda record: record.update(
+            files=[path for path in record["files"] if path != "support/run.ps1"]
+        ),
+    )
+
+    # When / Then
+    with pytest.raises(PreservationError, match="files does not match SHA256SUMS.csv"):
+        verify_preserved_run(run_dir)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        f"raw/{RUN_ID}/manifest.json",
+        f"raw/{RUN_ID}/telemetry/sysmon-0001.evtx",
+        f"raw/{RUN_ID}/telemetry/sysmon-0001.jsonl",
+        f"ground_truth/{RUN_ID}/execution_record.csv",
+        f"ground_truth/{RUN_ID}/run_metadata.json",
+        "support/scenario.json",
+        "support/run-common.ps1",
+        "support/run.ps1",
+        "verification/execution-log.txt",
+        "verification/validator-output.txt",
+        "verification/firewall-removal.txt",
+        "verification/approval-record.txt",
+    ],
+)
+def test_verify_rejects_a_bundle_missing_a_required_file(tmp_path: Path, relative: str) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    _drop_file(run_dir, relative)
+
+    # When / Then
+    with pytest.raises(PreservationError, match="missing required file"):
+        verify_preserved_run(run_dir)
+
+
+def test_verify_rejects_a_bundle_without_a_sysmon_config(tmp_path: Path) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    _drop_file(run_dir, "support/sysmonconfig-sample-v0.1.xml")
+
+    # When / Then
+    with pytest.raises(PreservationError, match="exactly one Sysmon XML config"):
+        verify_preserved_run(run_dir)
+
+
+def test_verify_rejects_a_bundle_with_two_sysmon_configs(tmp_path: Path) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    _add_file(run_dir, "support/second-config.xml")
+
+    # When / Then
+    with pytest.raises(PreservationError, match="exactly one Sysmon XML config"):
+        verify_preserved_run(run_dir)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("validator_output", "verification/other.txt"),
+        ("approval_record", "approval.txt"),
+        ("validator_output_interpreted", True),
+    ],
+)
+def test_verify_rejects_tampered_evidence_paths(tmp_path: Path, key: str, value: object) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    _edit_record(run_dir, lambda record: record["evidence"].update({key: value}))
+
+    # When / Then
+    with pytest.raises(PreservationError, match="evidence must point at"):
+        verify_preserved_run(run_dir)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "reason"),
+    [
+        (lambda record: record.update(file_count=record["file_count"] + 1), "file_count is"),
+        (lambda record: record.update(file_count=True), "file_count is"),
+        (
+            lambda record: record["hash_verification"].update(compared_files=1),
+            "hash_verification must be",
+        ),
+        (
+            lambda record: record["hash_verification"].update(all_match=False),
+            "hash_verification must be",
+        ),
+    ],
+    ids=["file-count", "file-count-bool", "compared-files", "all-match"],
+)
+def test_verify_rejects_tampered_record_counts(
+    tmp_path: Path, mutate: Callable[[dict], None], reason: str
+) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    _edit_record(run_dir, mutate)
+
+    # When / Then
+    with pytest.raises(PreservationError, match=reason):
+        verify_preserved_run(run_dir)

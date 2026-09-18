@@ -71,8 +71,21 @@ SHA256SUMS.csv
 - `preservation_record.json` 은 **목록에 포함**한다
 - `SHA256SUMS.csv` 자신은 **목록에서 제외**한다. 자기 해시를 자기 안에 적을 수 없기 때문이다
 
-`verify` 는 SHA256SUMS.csv 를 제외한 모든 파일이 목록과 정확히 같고 해시가 일치하는지 본다.
-목록에 없는 파일이 생기거나 목록의 파일이 사라져도 실패한다.
+`verify` 는 해시 비교만 하지 않는다. 다음을 모두 만족해야 성공한다.
+
+- SHA256SUMS.csv 에 파일이 하나 이상 있고, SHA256SUMS.csv 를 뺀 모든 파일이 목록과 정확히 같으며
+  해시가 일치한다. 목록에 없는 파일이 생기거나 목록의 파일이 사라져도 실패한다
+- `preservation_record.json` 이 폴더와 목록에 모두 있고 JSON 객체다
+- record 의 `run_id` 가 `RUN-YYYYMMDD-NNN` 형식이고 보존 폴더 이름과 같다
+- record 의 `files` 가 목록에서 record 를 뺀 것과 같고, `file_count` · `compared_files` 가 그 수와
+  같다
+- §2 의 raw · ground_truth · support · verification 필수 파일과 record 가 모두 있고, `support`
+  아래 Sysmon XML 설정이 정확히 하나다
+- record 의 `evidence` 경로가 `verification` 의 네 파일을 가리킨다
+
+그래서 헤더만 있는 SHA256SUMS.csv 나 빈 폴더는 실패한다. `verify` 는 보존 묶음의 구조 · 완전성 ·
+해시만 본다. Manifest · RunMetadata · execution_record 내용이 계약을 지키는지는 S0 산출물
+validator 가 확인한다.
 
 **preservation_record.json** 의 주요 필드:
 

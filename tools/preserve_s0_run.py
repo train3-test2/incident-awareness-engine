@@ -57,6 +57,27 @@ REQUIRED_GROUND_TRUTH_FILES = (
     "run_metadata.json",
 )
 
+# Where the operator evidence is filed inside a preserved run.
+EVIDENCE_PATHS = {
+    "execution_log": "verification/execution-log.txt",
+    "validator_output": "verification/validator-output.txt",
+    "firewall_removal": "verification/firewall-removal.txt",
+    "approval_record": "verification/approval-record.txt",
+}
+
+# Every file a complete preserved run must hold, besides one Sysmon XML config
+# under support/ that keeps its own file name. SHA256SUMS.csv is not listed: it
+# does not list itself.
+REQUIRED_BUNDLE_FILES = (
+    *(f"raw/{{run_id}}/{name}" for name in REQUIRED_RAW_FILES),
+    *(f"ground_truth/{{run_id}}/{name}" for name in REQUIRED_GROUND_TRUTH_FILES),
+    "support/scenario.json",
+    "support/run-common.ps1",
+    "support/run.ps1",
+    *EVIDENCE_PATHS.values(),
+    RECORD_FILENAME,
+)
+
 # Same shape RunMetadata requires (docs/schema/run-id.md section 3). It is
 # restated here because the value arrives from the command line and must be
 # rejected before it is joined onto any path.
@@ -363,13 +384,7 @@ def preserve_s0_run(
                 "all_match": True,
             },
             "files": sorted(copied_hashes),
-            "evidence": {
-                "execution_log": "verification/execution-log.txt",
-                "validator_output": "verification/validator-output.txt",
-                "validator_output_interpreted": False,
-                "firewall_removal": "verification/firewall-removal.txt",
-                "approval_record": "verification/approval-record.txt",
-            },
+            "evidence": {**EVIDENCE_PATHS, "validator_output_interpreted": False},
             "sha256sums": {
                 "path": SHA256SUMS_FILENAME,
                 "format": "UTF-8 CSV without BOM, LF, header path,sha256, rows sorted by path",
@@ -391,7 +406,7 @@ def preserve_s0_run(
         (staging / SHA256SUMS_FILENAME).write_text(
             _render_sha256sums(hashes), encoding="utf-8", newline="\n"
         )
-        file_count = verify_preserved_run(staging)
+        file_count = verify_preserved_run(staging, expected_run_id=run_id)
 
         if os.path.lexists(final_dir):
             raise PreservationError(
@@ -405,12 +420,52 @@ def preserve_s0_run(
     return PreservationResult(run_dir=final_dir, file_count=file_count)
 
 
-def verify_preserved_run(run_dir: Path) -> int:
-    """Re-hash a preserved run against its SHA256SUMS.csv; return the listed file count.
+def verify_preserved_run(run_dir: Path, *, expected_run_id: str | None = None) -> int:
+    """Check that a preserved run is complete and intact; return the listed file count.
 
-    Every file except SHA256SUMS.csv must be listed, every listed file must exist
-    and every hash must match.
+    Beyond re-hashing every file against SHA256SUMS.csv (every file except
+    SHA256SUMS.csv itself must be listed, exist and match), this reads
+    preservation_record.json and checks that the bundle is the run it claims to
+    be: a valid run_id equal to the directory name, the record's file list equal
+    to the SHA256SUMS.csv list minus the record, every required file present and
+    the record's counts consistent. An empty or header-only bundle fails.
+
+    It checks the bundle only. Whether the collected artifacts themselves satisfy
+    their contracts (Manifest, RunMetadata, execution_record) is the S0
+    validator's job.
+
+    expected_run_id is for a staging directory, whose name is not the run_id.
     """
+    listed = _read_sha256sums(run_dir)
+    if not listed:
+        raise PreservationError(f"{SHA256SUMS_FILENAME} lists no files")
+
+    if RECORD_FILENAME not in listed:
+        raise PreservationError(f"{RECORD_FILENAME} is not listed in {SHA256SUMS_FILENAME}")
+
+    record_path = _require_regular_file(run_dir / RECORD_FILENAME, label=RECORD_FILENAME)
+
+    actual = _hash_tree(run_dir)
+    if set(actual) != set(listed):
+        raise PreservationError(
+            f"{SHA256SUMS_FILENAME} does not list exactly the preserved files; "
+            f"unlisted={sorted(set(actual) - set(listed))} "
+            f"missing={sorted(set(listed) - set(actual))}"
+        )
+
+    mismatched = sorted(path for path in listed if listed[path] != actual[path])
+    if mismatched:
+        raise PreservationError(f"SHA-256 mismatch: {mismatched}")
+
+    _check_record(
+        _read_record(record_path),
+        listed_paths=set(listed),
+        directory_run_id=expected_run_id if expected_run_id is not None else run_dir.name,
+    )
+    return len(listed)
+
+
+def _read_sha256sums(run_dir: Path) -> dict[str, str]:
     sums_path = _require_regular_file(run_dir / SHA256SUMS_FILENAME, label=SHA256SUMS_FILENAME)
     rows = list(csv.reader(sums_path.read_text(encoding="utf-8").splitlines()))
 
@@ -432,19 +487,116 @@ def verify_preserved_run(run_dir: Path) -> int:
     if paths != sorted(paths):
         raise PreservationError(f"{SHA256SUMS_FILENAME} rows are not sorted by path")
 
-    actual = _hash_tree(run_dir)
-    if set(actual) != set(listed):
+    return listed
+
+
+def _read_record(record_path: Path) -> dict[str, object]:
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise PreservationError(f"{RECORD_FILENAME} is not readable JSON: {error}") from error
+
+    if not isinstance(record, dict):
+        raise PreservationError(f"{RECORD_FILENAME} must be a JSON object")
+
+    return record
+
+
+def _is_count(value: object) -> bool:
+    # bool is a subclass of int, so it is excluded explicitly.
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _check_record(
+    record: dict[str, object],
+    *,
+    listed_paths: set[str],
+    directory_run_id: str,
+) -> None:
+    """Cross-check preservation_record.json against the files the bundle holds."""
+    if record.get("record_version") != RECORD_VERSION:
         raise PreservationError(
-            f"{SHA256SUMS_FILENAME} does not list exactly the preserved files; "
-            f"unlisted={sorted(set(actual) - set(listed))} "
-            f"missing={sorted(set(listed) - set(actual))}"
+            f"{RECORD_FILENAME} record_version is {record.get('record_version')!r}, "
+            f"expected {RECORD_VERSION!r}"
         )
 
-    mismatched = sorted(path for path in listed if listed[path] != actual[path])
-    if mismatched:
-        raise PreservationError(f"SHA-256 mismatch: {mismatched}")
+    run_id = validate_run_id(record.get("run_id"))
+    if run_id != directory_run_id:
+        raise PreservationError(
+            f"{RECORD_FILENAME} run_id {run_id} does not match the preserved directory "
+            f"{directory_run_id}"
+        )
 
-    return len(listed)
+    files = record.get("files")
+    if not isinstance(files, list) or not all(isinstance(path, str) for path in files):
+        raise PreservationError(f"{RECORD_FILENAME} files must be a list of paths")
+
+    expected_files = sorted(listed_paths - {RECORD_FILENAME})
+    if files != expected_files:
+        raise PreservationError(
+            f"{RECORD_FILENAME} files does not match {SHA256SUMS_FILENAME}; "
+            f"only_in_record={sorted(set(files) - set(expected_files))} "
+            f"only_in_sums={sorted(set(expected_files) - set(files))}"
+        )
+
+    required = [path.format(run_id=run_id) for path in REQUIRED_BUNDLE_FILES]
+    missing = [path for path in required if path not in listed_paths]
+    if missing:
+        raise PreservationError(f"preserved run is missing required file(s): {missing}")
+
+    sysmon_configs = sorted(
+        path
+        for path in listed_paths
+        if PurePosixPath(path).parent == PurePosixPath("support")
+        and PurePosixPath(path).suffix.lower() == ".xml"
+    )
+    if len(sysmon_configs) != 1:
+        raise PreservationError(
+            f"preserved run must hold exactly one Sysmon XML config under support/, "
+            f"found {sysmon_configs}"
+        )
+
+    evidence = record.get("evidence")
+    if (
+        not isinstance(evidence, dict)
+        or {key: evidence.get(key) for key in EVIDENCE_PATHS} != EVIDENCE_PATHS
+        or evidence.get("validator_output_interpreted") is not False
+    ):
+        raise PreservationError(
+            f"{RECORD_FILENAME} evidence must point at {EVIDENCE_PATHS} with "
+            "validator_output_interpreted false"
+        )
+
+    file_count = record.get("file_count")
+    if not _is_count(file_count) or file_count != len(files):
+        raise PreservationError(
+            f"{RECORD_FILENAME} file_count is {file_count!r}, expected {len(files)}"
+        )
+
+    verification = record.get("hash_verification")
+    if (
+        not isinstance(verification, dict)
+        or verification.get("method") != "sha256"
+        or verification.get("all_match") is not True
+        or not _is_count(verification.get("compared_files"))
+        or verification.get("compared_files") != len(files)
+    ):
+        raise PreservationError(
+            f"{RECORD_FILENAME} hash_verification must be sha256, all_match true and "
+            f"compared_files {len(files)}, found {verification!r}"
+        )
+
+    sums = record.get("sha256sums")
+    if (
+        not isinstance(sums, dict)
+        or sums.get("path") != SHA256SUMS_FILENAME
+        or sums.get("excludes_itself") is not True
+        or sums.get("includes_record") is not True
+    ):
+        raise PreservationError(
+            f"{RECORD_FILENAME} sha256sums must name {SHA256SUMS_FILENAME}, exclude itself "
+            "and include the record"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
