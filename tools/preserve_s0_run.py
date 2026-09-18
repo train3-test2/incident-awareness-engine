@@ -338,9 +338,7 @@ def preserve_s0_run(
 
     final_dir = formal_root / run_id
     if os.path.lexists(final_dir):
-        raise PreservationError(
-            f"preserved run already exists, refusing to overwrite: {final_dir}"
-        )
+        raise PreservationError(f"preserved run already exists, refusing to overwrite: {final_dir}")
 
     plan = _plan_copies(inputs)
 
