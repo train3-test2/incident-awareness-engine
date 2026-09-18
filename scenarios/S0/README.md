@@ -1,0 +1,220 @@
+# S0 시나리오 실행기
+
+`docs/scenarios/s0.md` 의 S0 Pair 를 기계가 실행하게 만드는 스크립트다. 시나리오의 정의와
+근거는 `docs/scenarios/s0.md` 가 소유하며, 이 폴더는 그 문서가 정한 값을 실행한다. 두 문서의
+행위 목록(A01 ~ A04 · N01 ~ N04)과 offset, 관측 길이는 서로 같아야 한다.
+
+```text
+scenarios/S0/
+├── scenario.yaml     실행기가 읽는 값 (행위 목록·shortcut 통제·산출물 경로·관측 길이)
+├── run-common.ps1    run_id 발급·산출물 생성·Sysmon 추출 등 공통 함수
+├── normal/run.ps1    정상 Run (N01 ~ N04)
+├── attack/run.ps1    공격 Run (A01 ~ A04)
+└── tests/            호스트에서 도는 guard 회귀 검사 (VM·Sysmon 불필요)
+```
+
+## 1. scenario.yaml 을 JSON 으로 렌더링
+
+Windows PowerShell 5.1 에는 YAML 리더가 없다. 그래서 **호스트 저장소 루트에서** `scenario.yaml`
+을 JSON 으로 변환한 뒤, 생성된 JSON 만 VM 으로 옮긴다. `scenario.yaml` 이 정본이고 JSON 은 빌드
+산출물이다(저장소에 커밋하지 않는다).
+
+```bash
+uv run python tools/scenario_to_json.py scenarios/S0/scenario.yaml --out build/S0/scenario.json
+```
+
+변환기는 실행기가 의존하는 키와 행위 수·`action_id` 중복을 검사하고, LF 줄바꿈의 UTF-8 로 쓴다.
+
+**VM 에는 Python, `tools/scenario_to_json.py`, `scenario.yaml` 을 복사하지 않는다.** 변환은 호스트에서
+끝내고, 생성된 `build/S0/scenario.json` 만 VM 으로 옮긴다.
+
+### VM 배치 구조
+
+스크립트를 VM 에 이 구조 그대로 둔다.
+
+```text
+C:\Tools\S0\
+    scenario.json
+    run-common.ps1
+    sysmonconfig-sample-v0.1.xml
+    attack\run.ps1
+    normal\run.ps1
+```
+
+`attack\run.ps1` 과 `normal\run.ps1` 은 부모 폴더의 `run-common.ps1` 을 상대 경로
+(`..\run-common.ps1`)로 불러온다. 따라서 위 폴더 구조를 반드시 보존해야 한다. `run.ps1` 두 개를
+`C:\Tools\S0\` 에 평탄하게(하위 폴더 없이) 복사하면 `run-common.ps1` 을 찾지 못해 실행되지 않는다.
+
+## 2. rehearsal 은 정식 S0 수집물이 아니다
+
+`-Rehearsal` 로 실행하면 대기(offset)와 외부 연결, 관측 창을 건너뛴다. **이 산출물은 정식 S0
+수집 결과가 아니다.** 스크립트 흐름과 reference_time 경로를 점검하는 용도로만 쓴다.
+
+rehearsal 산출물은 정식 수집물과 섞이지 않도록 **`data/_rehearsal/` 아래에만** 만들어진다.
+
+```text
+정식 모드     data/raw/<run_id>/...            data/ground_truth/<run_id>/...
+rehearsal     data/_rehearsal/raw/<run_id>/... data/_rehearsal/ground_truth/<run_id>/...
+              data/_rehearsal/REHEARSAL.txt    (정식 수집물이 아님을 알리는 마커)
+```
+
+`data/raw/`, `data/ground_truth/`, `data/_rehearsal/` 는 모두 `.gitignore` 대상이라 저장소에
+올라가지 않는다.
+
+VM 에서 attack rehearsal 을 실행하는 명령이다. `run.ps1` 이 상대 경로로 `run-common.ps1` 을
+찾으므로 먼저 스크립트가 있는 폴더로 이동한다.
+
+```powershell
+Set-Location C:\Tools\S0\attack
+.\run.ps1 -RunId RUN-YYYYMMDD-NNN -ScenarioJsonPath C:\Tools\S0\scenario.json -DataRoot C:\S0\data -VmSnapshot poc-s0-ready-c62656b -SysmonBinary C:\Tools\Sysmon\Sysmon64.exe -SysmonConfigPath C:\Tools\S0\sysmonconfig-sample-v0.1.xml -WorkDir C:\S0\work -Rehearsal
+```
+
+이 명령의 rehearsal 산출물은 `C:\S0\data\_rehearsal\` 아래에만 생성된다.
+
+`run_id` 는 매번 새로 발급한다. 이미 산출물이 있는 `run_id` 로 다시 실행하면 §5-3 의 재사용
+차단에 걸려 아무것도 쓰지 않고 중단된다.
+
+## 3. 정식 attack 실행은 지금 의도적으로 막혀 있다
+
+공격 Run 의 A01 · A02 는 네트워크 격리 결정(issue #71) 전까지 **미구현 예외로 중단된다.**
+
+| 행위 | rehearsal | 정식 모드 |
+| --- | --- | --- |
+| A01 난독화 PowerShell 실행 | 무해한 로컬 anchor 프로세스 | **미구현 예외.** `-EncodedCommand` 나 대체 행위를 만들지 않는다 |
+| A02 외부 TCP 연결 | 건너뜀 | **미구현 예외.** issue #71 결정 후 A01 프로세스 내부 동작으로 추가한다 |
+| A03 로컬 수집·압축 | 로컬 스크립트 | 로컬 스크립트 |
+| A04 후속 프로세스 | 로컬 스크립트 | 로컬 스크립트 |
+
+- A02 는 반드시 A01 프로세스 내부에서 수행해야 한다(같은 Sysmon `ProcessGuid`, `s0.md` §4-2).
+  별도 프로세스로 연결하면 인과가 끊긴다. `Start-AnchorProcess` 는 anchor 를 종료하지 않고
+  PID 만 돌려주며, rehearsal anchor 는 run 이 끝난 뒤 `Stop-AnchorProcess` 로만 정리한다.
+- 외부 연결 목적지(`scenario.yaml` 의 `external_connection.target`)가 비어 있으면, 정식 모드는
+  컨텍스트 생성 단계에서 차단되고 rehearsal 만 경고 후 진행한다.
+
+**이 저장소는 public 이다.** 실제 공격 명령·난독화·외부 통신·자격증명 접근·로그 삭제·보안
+우회 코드를 이 폴더에 넣지 않는다.
+
+## 4. VM 으로 스크립트를 옮길 때
+
+`*.ps1` 은 **ASCII 전용**이다. Windows PowerShell 5.1 은 BOM 없는 UTF-8 원본을 시스템
+코드페이지로 읽어, 한글이 들어가면 복사 과정에서 BOM 이 사라졌을 때 문자열 리터럴이 깨지고
+구문 오류가 난다. 스크립트에 한글을 넣지 않는다.
+
+파일은 **바이너리 복사**로 옮긴다. 메모장에 붙여넣어 저장하면 줄바꿈과 인코딩이 바뀔 수 있다.
+Sysmon 설정 파일의 줄바꿈 규칙은 `samples/raw/README.md` §4 를 따른다.
+
+Sysmon 설정 파일은 **적용된 설정과 바이트가 같아야 한다.** 줄바꿈만 달라져도 해시가 바뀐다.
+실행기는 파일의 SHA-256 과 `Sysmon64 -c` 가 보고한 `Config hash` 를 비교한다. 두 값이 다르거나,
+해시가 보고되지 않거나 SHA-256 이 아닌 알고리즘이어서 **비교 자체가 불가능하면** 정식 모드는
+중단한다. rehearsal 은 세 경우 모두 경고만 남기고 진행한다.
+
+## 5. 검증 상태
+
+**검증 대상이 둘로 나뉜다.** 5-1 은 커밋 `c2bae89` 의 실행기를 VM 에서 돌린 RUN-20260914-002 이고,
+5-3 은 리뷰 수정본 `c62656b` 를 돌린 RUN-20260917-001 이다. 두 절은 **같은 코드를 가리키지 않으며**,
+어느 쪽도 정식 S0 Pair 수집물이 아니다.
+
+### 5-1. VM rehearsal 결과 — RUN-20260914-002 (커밋 `c2bae89` 기준)
+
+격리 VM 에서 attack rehearsal 을 실행했다. 산출물 네 개가 모두 생성됐고 아래를 확인했다.
+**VM 은 검증 후 `poc-clean-v1` 스냅샷으로 복원했다.**
+
+| 확인 항목 | 결과 |
+| --- | --- |
+| `run_id` | `RUN-20260914-002` |
+| 대상 커밋 | **`c2bae89`** — 이 절의 결과는 전부 이 커밋의 실행기로 얻은 것이다 |
+| rehearsal 산출물 위치 | `data\_rehearsal\` 아래에만 생성, `REHEARSAL.txt` 존재 |
+| 정식 `data\raw` · `data\ground_truth` 오염 | 없음 |
+| `reference_time` | `2026-09-14T15:21:46.216Z` |
+| `reference_source_event_id` | `7809` — Sysmon EID 1 이고 시각이 `reference_time` 과 일치 |
+| Sysmon 이벤트 | 9 건 |
+| `execution_record.csv` | A01 · A03 · A04 세 행 (A02 는 rehearsal 에서 건너뜀) |
+| CSV 첫 3 바이트 | `22 72 75` — UTF-8 BOM 없음 |
+| `manifest.json` | artifact 해시 2 건이 실제 산출물과 일치 |
+| Sysmon 설정 SHA-256 | `1e5c2424ed807ea418a2fa685b81acb23885fc576f77718c8e283ef9b19de8ea`, 적용 설정과 파일 해시 일치 |
+| `run_metadata.json` | RunMetadata 계약 통과 |
+| A02 인과 검증 | `not_verified` — A02 가 미구현이므로 예상된 결과 |
+
+### 5-2. 그 전 실행에서 드러난 결함과 조치 (`c2bae89` 까지 반영)
+
+RUN-20260913-001 rehearsal 검토로 찾아 고친 항목이다. 모두 RUN-20260914-002 에서 재검증됐다.
+
+| 결함 | 조치 |
+| --- | --- |
+| 설정 파일 해시(CRLF)와 Sysmon 이 적용 중인 설정 해시(LF)가 달랐는데 실행기가 둘 다 기록만 하고 비교하지 않았다 | `Test-SysmonConfigApplied` 를 추가해 정식 모드는 중단, rehearsal 은 경고 |
+| `execution_record.csv` 에 UTF-8 BOM 이 붙어, 파일을 일반 UTF-8 로 여는 판독기에서 첫 열 이름이 `run_id` 로 읽히지 않았다 | BOM 없이 기록 |
+| 행 수가 시나리오 기대치보다 적어도 경고만 남기고 통과했다 | 정식 모드에서는 중단, rehearsal 에서만 경고 |
+| `Sysmon64 -c` 가 `start_time` 이후에 실행돼 실행기 자신의 프로세스가 run 구간 안에 들어갔다 | 설정 조회를 `start_time` 이전으로 이동. 아래 선행 여유 때문에 추출에서 빠지지는 않는다 |
+
+VM 의 설정 파일을 LF 원본으로 다시 복사해 CRLF 문제는 해소했고, RUN-20260914-002 에서 파일
+해시와 적용 설정 해시가 같은 값으로 확인됐다.
+
+### 5-3. 리뷰 수정의 검증 결과 — RUN-20260917-001 (커밋 `c62656b` 기준)
+
+`c2bae89` 이후 리뷰 반영으로 두 가지가 바뀌었다.
+
+| 변경 | 내용 |
+| --- | --- |
+| anchor 검색 경계 | `Get-AnchorTelemetry` 가 `$Since` 이전을 조회하지 않고, 후보의 `TimeCreated` 도 UTC 로 다시 확인한다 |
+| run_id 재사용 차단 | `New-RunContext` 가 `raw/<run_id>` · `ground_truth/<run_id>` 중 하나라도 있으면 부수 효과 없이 중단한다 |
+
+**호스트 검증**
+
+- 구문 파싱(AST) · ASCII 전용 · BOM 없음 · LF
+- `scenarios/S0/tests/Test-RunCommonGuards.ps1` — Windows PowerShell 5.1 에서 **27 건 통과**
+  (중복 거부, 거부 후 기존 산출물 SHA-256 보존, rehearsal·정식 namespace 분리, anchor 경계)
+- `tests/normalization/test_runner_jsonl_contract.py` — macOS / Python 3.13.15 에서 **4 건 통과**.
+  실행기가 쓰는 JSONL 을 `read_sysmon_jsonl` 로 읽어 EID 1 은 `normalize_sysmon_process_create`,
+  EID 3 은 `normalize_sysmon_network_connection` 으로 `event_v0` 까지 연결한다. 관련 Sysmon
+  테스트 13 건, 저장소 전체 `pytest` 627 passed · 30 skipped · 0 failed, `ruff check` 와
+  `ruff format --check` 통과. 30 건 skip 은 PostgreSQL 환경변수 미설정에 따른 정상 skip 이다.
+
+**VM rehearsal — 이 절의 값은 전부 커밋 `c62656b` 의 실행기로 얻은 것이다.**
+
+| 확인 항목 | 결과 |
+| --- | --- |
+| `run_id` | `RUN-20260917-001` |
+| `run_type` | `attack` |
+| 대상 커밋 | **`c62656b`** (리뷰 수정본) |
+| `vm_snapshot` | **`poc-s0-ready-c62656b`** — 기준이자 실행 후 복원한 스냅샷 |
+| `start_time` · `end_time` | `2026-09-17T10:01:52.231Z` · `2026-09-17T10:02:05.574Z` |
+| `reference_time` | `2026-09-17T10:01:52.503Z` |
+| `reference_source_event_id` | `6022` — Sysmon **EID 1**, `TimeCreated` 가 `reference_time` 과 일치 |
+| anchor `ProcessId` | `10132` — 이 PID 의 EID 1 은 RecordId 6022 하나뿐 |
+| `reference_action_id` | `A01` |
+| Sysmon export | **33 건** (EID 1 17 건, EID 3 16 건) |
+| `execution_record.csv` | A01 · A03 · A04 **3 행** |
+| CSV 첫 3 바이트 | `22 72 75` — UTF-8 BOM 없음 |
+| Sysmon 설정 해시 | `1e5c2424ed807ea418a2fa685b81acb23885fc576f77718c8e283ef9b19de8ea`, 적용 설정과 일치 |
+| EVTX SHA-256 | `e8d60c06e6eafd24df709c32946f96f5d33eafa47a082ffc63da3deb1742e72f` |
+| JSONL SHA-256 | `05452ff455fc7da89ad38f0a4047eb2e2fc96fb937829c12a55656e520dd2890` |
+| A02 | rehearsal 에서 실행하지 않음 |
+| A02 인과 검증 | `not_verified` |
+
+**A02 미실행 · 3 행 · `not_verified` 는 rehearsal 에서 기대된 결과다.** A02 는 외부 연결이라
+rehearsal 이 건너뛰고, 그래서 인과를 확인할 대상이 없다.
+
+**동일 `run_id` 재실행 차단도 실제 VM 에서 확인했다.**
+
+```text
+run_id RUN-20260917-001 already has output at C:\S0\data\_rehearsal\raw\RUN-20260917-001 and
+C:\S0\data\_rehearsal\ground_truth\RUN-20260917-001. Issue a new run_id: this run would
+overwrite the existing artifacts.
+```
+
+차단 전후 파일 수 **6 / 6**, `Path` 와 `Hash` 차이 **0 건**. 기존 산출물이 그대로 보존됐다.
+
+> **이 산출물은 정식 S0 Pair 수집물이 아니다.** rehearsal 이고 A02 가 빠져 있다. 정식 A01 · A02
+> 와 외부 연결은 issue #71 의 제한된 NAT 예외 **세부 승인값**이 확정되기 전까지 계속 막혀 있다.
+
+산출물과 검증 transcript(`before` · `after` 해시, 실행 기록)는 저장소 밖
+`E:\KISIA\result-file\_rehearsal\` 에 보관하며 **저장소에 커밋하지 않는다.**
+
+### 5-4. 아직 남은 것
+
+- `manifest.json` 의 `path` 는 VM 절대 경로(`C:\S0\data\...`)다. 호스트로 산출물을 옮기면 그
+  경로는 존재하지 않는다. 상대 경로로 바꿀지는 Manifest 결정 항목(`s0.md` §10)과 함께 정한다.
+- 추출 창은 `start_time` 보다 10초 앞에서 시작한다(`EVTX_WINDOW_MARGIN_MS`). 그래서 run 직전의
+  이벤트가 함께 수집된다. 여유 폭을 줄일지는 정식 수집 전에 정한다.
+- 정식 모드에서 A01 · A02 가 미구현 예외로 중단되는지는 아직 확인하지 않았다.
+- 정식 수집은 issue #71 의 제한된 NAT 예외 **세부 승인값**과 cadence(`step_size`) 확정 이후에 한다.
