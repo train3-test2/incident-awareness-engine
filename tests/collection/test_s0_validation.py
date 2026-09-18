@@ -1006,3 +1006,200 @@ def test_reports_an_artifact_hash_that_cannot_be_recomputed(
     assert any("could not read sysmon-0001.jsonl" in error for error in report.errors)
     # The rest of the run was still checked.
     assert any("satisfies RunMetadata" in check for check in report.checks)
+
+
+# --- the Sysmon JSONL is read for both run types ---------------------------
+
+
+def _jsonl_path(root: Path) -> Path:
+    return root / "raw" / RUN_ID / "telemetry" / "sysmon-0001.jsonl"
+
+
+def _rewrite_jsonl(root: Path, body: str) -> None:
+    """Replace the JSONL and keep the Manifest hash in step with it."""
+    jsonl_path = _jsonl_path(root)
+    jsonl_path.write_text(body, encoding="utf-8")
+    digest = hashlib.sha256(jsonl_path.read_bytes()).hexdigest()
+
+    def update(manifest: dict) -> None:
+        for item in manifest["items"]:
+            if item["path"].endswith("sysmon-0001.jsonl"):
+                item["sha256"] = digest
+
+    _rewrite_manifest(root, update)
+
+
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    [
+        ("not-json\n", "invalid JSON"),
+        ('{"RecordId": 1, "EventId": 1}\n\n{"RecordId": 2, "EventId": 1}\n', "blank lines"),
+        ("[1, 2]\n", "must be a JSON object"),
+        ("", "holds no records"),
+    ],
+    ids=["invalid-json", "blank-line", "not-an-object", "empty"],
+)
+def test_rejects_a_normal_run_with_an_unusable_jsonl(
+    tmp_path: Path, body: str, reason: str
+) -> None:
+    root = build_run(tmp_path / "data", run_type="normal")
+    _rewrite_jsonl(root, body)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any(reason in error for error in report.errors)
+    # The Manifest still matches: file identity and file content are separate checks.
+    assert any("manifest item hash(es) match" in check for check in report.checks)
+
+
+def test_rejects_an_attack_run_with_an_unparsable_jsonl(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data")
+    _rewrite_jsonl(root, "not-json\n")
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("invalid JSON" in error for error in report.errors)
+
+
+def test_reads_the_jsonl_once_for_an_attack_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = build_run(tmp_path / "data")
+    calls: list[Path] = []
+    original = s0_validation.read_sysmon_jsonl
+
+    def counting_reader(path: Path):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(s0_validation, "read_sysmon_jsonl", counting_reader)
+
+    report = _validate(root, tmp_path)
+
+    assert report.ok, report.errors
+    assert calls == [_jsonl_path(root)]
+
+
+# --- the reference action and time are bound together ----------------------
+
+
+def _metadata_path(root: Path) -> Path:
+    return root / "ground_truth" / RUN_ID / "run_metadata.json"
+
+
+def _set_metadata(root: Path, **values: object) -> None:
+    metadata_path = _metadata_path(root)
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata.update(values)
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+
+def _move_reference(root: Path, timestamp: str) -> None:
+    """Move reference_time and its Sysmon EID 1 record together."""
+    records = [json.loads(line) for line in _jsonl_body().splitlines()]
+    for record in records:
+        if record["RecordId"] == REFERENCE_RECORD_ID:
+            record["TimeCreated"] = timestamp
+    _rewrite_jsonl(root, "".join(json.dumps(record) + "\n" for record in records))
+    _set_metadata(root, reference_time=timestamp)
+
+
+def test_accepts_a_reference_bound_to_the_scenario_action(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data")
+
+    report = _validate(root, tmp_path)
+
+    assert report.ok, report.errors
+    assert any("not before A01 ran" in check for check in report.checks)
+
+
+def test_rejects_a_reference_action_the_scenario_does_not_name(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data")
+    _set_metadata(root, reference_action_id="A04")
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("scenario anchors the attack run to 'A01'" in error for error in report.errors)
+
+
+def test_rejects_a_reference_before_the_run_starts(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data")
+    _move_reference(root, "2026-09-14T15:21:44.500Z")
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any(
+        error.startswith("reference_time") and "is before start_time" in error
+        for error in report.errors
+    )
+    assert not any("does not match the TimeCreated" in error for error in report.errors)
+
+
+def test_rejects_a_reference_earlier_than_the_reference_action(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data")
+    _move_reference(root, "2026-09-14T15:21:45.500Z")
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("is earlier than A01 ran" in error for error in report.errors)
+    assert not any("is before start_time" in error for error in report.errors)
+
+
+def test_rejects_a_reference_after_the_run_ends(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data")
+    _move_reference(root, "2026-09-14T15:32:30.000Z")
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any(
+        error.startswith("reference_time") and "is after end_time" in error
+        for error in report.errors
+    )
+
+
+def test_rejects_a_reference_action_recorded_twice(tmp_path: Path) -> None:
+    actions = (*ATTACK_ACTIONS, ("A01", "2026-09-14T15:21:49.000Z", "execution", "again"))
+    root = build_run(tmp_path / "data", actions=actions)
+
+    report = _validate(root, tmp_path)
+
+    assert not report.ok
+    assert any("must appear exactly once in execution_record, found 2" in e for e in report.errors)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "reason"),
+    [
+        ("    reference_action_id: A01\n", "", "reference_action_id is missing"),
+        ("reference_action_id: A01", "reference_action_id: A09", "is not one of its actions"),
+    ],
+    ids=["missing", "unknown-action"],
+)
+def test_reports_an_unusable_scenario_reference_action(
+    tmp_path: Path, old: str, new: str, reason: str
+) -> None:
+    root = build_run(tmp_path / "data")
+
+    report = _validate(root, tmp_path, scenario_body=SCENARIO_YAML.replace(old, new))
+
+    assert not report.ok
+    assert any(reason in error for error in report.errors)
+
+
+def test_reports_a_normal_scenario_that_names_a_reference_action(tmp_path: Path) -> None:
+    root = build_run(tmp_path / "data", run_type="normal")
+    body = SCENARIO_YAML.replace(
+        "    run_type: normal\n    reference_action_id: null",
+        "    run_type: normal\n    reference_action_id: N01",
+    )
+
+    report = _validate(root, tmp_path, scenario_body=body)
+
+    assert not report.ok
+    assert any("reference_action_id must be null" in error for error in report.errors)

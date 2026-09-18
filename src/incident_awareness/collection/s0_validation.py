@@ -32,6 +32,7 @@ from pydantic import ValidationError
 
 from incident_awareness.collection.collector.sysmon_jsonl import (
     SysmonJsonlReadError,
+    SysmonJsonlRecord,
     read_sysmon_jsonl,
 )
 from incident_awareness.common.models.execution_record import ExecutionRecordRow
@@ -227,6 +228,7 @@ class ScenarioRun:
     run_type: str
     evaluation_horizon_sec: int
     actions: dict[str, ScenarioAction]
+    reference_action_id: str | None
 
     @property
     def external_action_ids(self) -> set[str]:
@@ -338,7 +340,37 @@ def load_scenario_run(scenario_path: Path, run_type: str) -> ScenarioRun:
         run_type=run_type,
         evaluation_horizon_sec=horizon,
         actions=actions,
+        reference_action_id=_require_reference_action_id(run, run_type, actions),
     )
+
+
+def _require_reference_action_id(
+    run: dict, run_type: str, actions: dict[str, ScenarioAction]
+) -> str | None:
+    """Read the action the run's reference_time is anchored to.
+
+    The key must be present for both run types. An attack run names one of its
+    own actions; a normal run has no reference and must say null.
+    """
+    value = run.get("reference_action_id", _MISSING)
+    if value is _MISSING:
+        raise ScenarioError(f"runs.{run_type}.reference_action_id is missing")
+
+    if run_type != RunType.ATTACK.value:
+        if value is not None:
+            raise ScenarioError(
+                f"runs.{run_type}.reference_action_id must be null, found {value!r}"
+            )
+        return None
+
+    action_id = _require_non_empty_str(value, f"runs.{run_type}.reference_action_id")
+    if action_id not in actions:
+        raise ScenarioError(
+            f"runs.{run_type}.reference_action_id {action_id!r} is not one of its actions "
+            f"({sorted(actions)})"
+        )
+
+    return action_id
 
 
 def _check_rehearsal_isolation(
@@ -679,12 +711,44 @@ def _check_manifest_derivation(
     report.passed(f"{JSONL_FILENAME} is recorded as derived from {EVTX_FILENAME}")
 
 
+def _read_sysmon_records(
+    jsonl_path: Path, report: S0ValidationReport
+) -> list[SysmonJsonlRecord] | None:
+    """Read the Sysmon JSONL once for both run types.
+
+    The Manifest check only proves the file is the one the runner hashed; it says
+    nothing about its content. This check is the one that requires every line to
+    be a JSON object with no blank lines, and at least one record.
+    """
+    try:
+        records = list(read_sysmon_jsonl(jsonl_path))
+    except (OSError, UnicodeDecodeError, SysmonJsonlReadError) as error:
+        report.fail(f"{JSONL_FILENAME} is not readable: {error}")
+        return None
+
+    if not records:
+        report.fail(f"{JSONL_FILENAME} holds no records; an empty capture is not a collection")
+        return None
+
+    report.passed(f"{JSONL_FILENAME} holds {len(records)} record(s), each a JSON object")
+    return records
+
+
 def _check_reference(
     metadata: RunMetadata,
-    jsonl_path: Path,
-    action_ids: set[str],
+    sysmon_records: list[SysmonJsonlRecord] | None,
+    execution_records: list[ExecutionRecordRow],
+    scenario: ScenarioRun | None,
     report: S0ValidationReport,
 ) -> None:
+    """Check that reference_time is anchored to the scenario's reference action.
+
+    For an attack run this ties together the scenario's reference_action_id, the
+    one execution_record row of that action, the run window, and the Sysmon EID 1
+    record whose TimeCreated is reference_time. It checks that the reference
+    action and time are consistent; it does not prove the ProcessGuid causality
+    between that record and the action.
+    """
     if metadata.run_type is RunType.NORMAL:
         unexpected = [
             name
@@ -714,22 +778,55 @@ def _check_reference(
         report.fail(f"an attack run must set {sorted(missing)}")
         return
 
-    if metadata.reference_action_id not in action_ids:
+    reference_action_id = metadata.reference_action_id
+    reference_time = metadata.reference_time
+    consistent = True
+
+    if scenario is not None and reference_action_id != scenario.reference_action_id:
+        consistent = False
         report.fail(
-            f"reference_action_id {metadata.reference_action_id!r} is not in execution_record "
-            f"({sorted(action_ids)})"
+            f"reference_action_id is {reference_action_id!r}, but the scenario anchors the "
+            f"attack run to {scenario.reference_action_id!r}"
         )
 
-    try:
-        records = list(read_sysmon_jsonl(jsonl_path))
-    except (OSError, SysmonJsonlReadError) as error:
-        report.fail(f"{JSONL_FILENAME} is not readable: {error}")
+    reference_rows = [row for row in execution_records if row.action_id == reference_action_id]
+    if len(reference_rows) != 1:
+        consistent = False
+        recorded = sorted({row.action_id for row in execution_records})
+        report.fail(
+            f"reference_action_id {reference_action_id!r} must appear exactly once in "
+            f"execution_record, found {len(reference_rows)} ({recorded})"
+        )
+
+    if reference_time < metadata.start_time:
+        consistent = False
+        report.fail(
+            f"reference_time {reference_time.isoformat()} is before start_time "
+            f"{metadata.start_time.isoformat()}"
+        )
+
+    if metadata.end_time is not None and reference_time > metadata.end_time:
+        consistent = False
+        report.fail(
+            f"reference_time {reference_time.isoformat()} is after end_time "
+            f"{metadata.end_time.isoformat()}"
+        )
+
+    if len(reference_rows) == 1 and reference_time < reference_rows[0].timestamp:
+        consistent = False
+        report.fail(
+            f"reference_time {reference_time.isoformat()} is earlier than {reference_action_id} "
+            f"ran ({reference_rows[0].timestamp.isoformat()})"
+        )
+
+    if sysmon_records is None:
+        # The JSONL itself already failed; there is no record to trace.
         return
 
     anchor = next(
         (
             record.data
-            for record in records
+            for record in sysmon_records
             if str(record.data.get("RecordId")) == metadata.reference_source_event_id
         ),
         None,
@@ -756,18 +853,20 @@ def _check_reference(
         )
         return
 
-    expected = _truncate_to_milliseconds(metadata.reference_time)
+    expected = _truncate_to_milliseconds(reference_time)
     if _truncate_to_milliseconds(observed) != expected:
         report.fail(
-            f"reference_time {metadata.reference_time.isoformat()} does not match the TimeCreated of "
+            f"reference_time {reference_time.isoformat()} does not match the TimeCreated of "
             f"RecordId {metadata.reference_source_event_id} ({observed.isoformat()})"
         )
         return
 
-    report.passed(
-        f"reference_time is the Sysmon EID {_SYSMON_PROCESS_CREATE_EVENT_ID} of RecordId "
-        f"{metadata.reference_source_event_id}"
-    )
+    if consistent:
+        report.passed(
+            f"reference_time is the Sysmon EID {_SYSMON_PROCESS_CREATE_EVENT_ID} of RecordId "
+            f"{metadata.reference_source_event_id}, inside the run and not before "
+            f"{reference_action_id} ran"
+        )
 
 
 def _check_times(
@@ -953,16 +1052,24 @@ def validate_s0_run(
     else:
         report.passed(f"every execution_record row carries run_id {metadata.run_id}")
 
-    action_ids = {record.action_id for record in records}
-
     _check_manifest(manifest_path, telemetry_dir, run_id, report)
-    _check_reference(metadata, jsonl_path, action_ids, report)
-    _check_times(metadata, records, report)
+    sysmon_records = _read_sysmon_records(jsonl_path, report)
 
+    # The scenario is read before the reference check, which needs its
+    # reference_action_id. A broken scenario is still reported at the same point
+    # as before, and only the checks that depend on it are skipped.
+    scenario_run: ScenarioRun | None = None
+    scenario_error: ScenarioError | None = None
     try:
         scenario_run = load_scenario_run(scenario, metadata.run_type.value)
     except ScenarioError as error:
-        report.fail(f"scenario definition is not usable ({scenario}): {error}")
+        scenario_error = error
+
+    _check_reference(metadata, sysmon_records, records, scenario_run, report)
+    _check_times(metadata, records, report)
+
+    if scenario_run is None:
+        report.fail(f"scenario definition is not usable ({scenario}): {scenario_error}")
         return report
 
     _check_observation_window(metadata, scenario_run, rehearsal, report)
