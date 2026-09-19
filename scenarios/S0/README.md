@@ -261,7 +261,7 @@ uv run python tools/validate_s0_run.py --artifact-root E:\KISIA\result-file\_reh
 | Manifest 완전성 | 이 Run 의 EVTX 와 JSONL 을 **정확히 하나씩** 담는지, 파일명과 `raw_log_id` 가 중복되지 않는지, JSONL 의 `derived_from` 이 같은 manifest 안의 EVTX 를 가리키는지, EVTX 에는 `derived_from` 이 없는지 |
 | Sysmon 설정 | `sysmon.config_sha256` 와 `sysmon.config_hash` 가 같은 SHA-256 인지 (`SHA256=` 접두사와 대소문자 차이는 허용, 다른 알고리즘 · 빈 값 · 형식 오류는 실패) |
 | JSONL | Run 종류와 관계없이 `sysmon-0001.jsonl` 의 모든 행이 JSON 객체이고 빈 줄이 없으며 레코드가 하나 이상인지. Manifest 해시 일치(파일 동일성)와는 별개 검사다 |
-| reference | 공격 Run 이면 `reference_*` 세 값이 있고, `reference_action_id` 가 시나리오의 `reference_action_id` 와 같고 execution_record 에 정확히 한 번 있는지, `reference_time` 이 `start_time` ~ `end_time` 안이고 그 행위의 실행 시각보다 이르지 않은지, `reference_source_event_id` 가 JSONL 의 Sysmon EID 1 이며 그 `TimeCreated` 가 `reference_time` 과 밀리초까지 같은지. 기준 행위와 시각의 정합성만 보며 ProcessGuid 인과 전체를 입증하지 않는다. 정상 Run 이면 세 값이 모두 null 인지 |
+| reference | 공격 Run 이면 `reference_*` 세 값이 있고, `reference_action_id` 가 시나리오의 `reference_action_id` 와 같고 execution_record 에 정확히 한 번 있는지, `reference_time` 이 `start_time` ~ `end_time` 안이고 그 행위의 실행 시각보다 이르지 않은지, `reference_source_event_id` 가 JSONL 에서 **정확히 한 레코드**와 일치하고 그 레코드가 Sysmon EID 1 이며 그 `TimeCreated` 가 `reference_time` 과 밀리초까지 같은지. 기준 행위와 시각의 정합성만 보며 ProcessGuid 인과 전체를 입증하지 않는다. 정상 Run 이면 세 값이 모두 null 인지 |
 | 시각 | execution_record 의 모든 timestamp 가 `start_time` 과 `end_time` 사이인지 (`end_time >= start_time` 은 `RunMetadata` 가 이미 강제한다) |
 | 관측 길이 | `end_time` 은 rehearsal 을 포함해 항상 있어야 하고, 정식 Run 은 공격이면 `reference_time`, 정상이면 `start_time` 에서 `run_length.evaluation_horizon_sec` 만큼 지난 뒤에 끝나야 한다 (§6-4) |
 | 행위 | `scenario_id` 가 시나리오와 같은지, execution_record 의 `action_id` 가 중복되지 않는지, 각 행의 `action_type` 이 시나리오의 같은 `action_id` 와 같은지, 알 수 없는 행위가 없는지 |

@@ -823,20 +823,29 @@ def _check_reference(
         # The JSONL itself already failed; there is no record to trace.
         return
 
-    anchor = next(
-        (
-            record.data
-            for record in sysmon_records
-            if str(record.data.get("RecordId")) == metadata.reference_source_event_id
-        ),
-        None,
-    )
-    if anchor is None:
+    # Every matching record is collected, not just the first one. A Sysmon
+    # RecordId is unique inside its log, so a duplicate leaves the reference
+    # ambiguous even when the first match would satisfy every check below.
+    anchors = [
+        record.data
+        for record in sysmon_records
+        if str(record.data.get("RecordId")) == metadata.reference_source_event_id
+    ]
+    if not anchors:
         report.fail(
             f"no {JSONL_FILENAME} record has RecordId {metadata.reference_source_event_id}; "
             "reference_source_event_id is not traceable"
         )
         return
+
+    if len(anchors) > 1:
+        report.fail(
+            f"reference_source_event_id {metadata.reference_source_event_id} matches "
+            f"{len(anchors)} {JSONL_FILENAME} records; expected exactly one"
+        )
+        return
+
+    anchor = anchors[0]
 
     if anchor.get("EventId") != _SYSMON_PROCESS_CREATE_EVENT_ID:
         report.fail(

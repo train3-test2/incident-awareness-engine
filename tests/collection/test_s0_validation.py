@@ -1203,3 +1203,123 @@ def test_reports_a_normal_scenario_that_names_a_reference_action(tmp_path: Path)
 
     assert not report.ok
     assert any("reference_action_id must be null" in error for error in report.errors)
+
+
+# --- reference_source_event_id must match exactly one JSONL record ----------
+
+
+def _duplicate_reference_record(root: Path, **overrides: object) -> None:
+    """Append a second record carrying the reference RecordId.
+
+    _rewrite_jsonl updates the Manifest SHA-256, so a run built this way fails on
+    the uniqueness check rather than on a stale hash.
+    """
+    records = [json.loads(line) for line in _jsonl_body().splitlines()]
+    original = next(record for record in records if record["RecordId"] == REFERENCE_RECORD_ID)
+    duplicate = json.loads(json.dumps(original))
+    duplicate.update(overrides)
+    records.append(duplicate)
+    _rewrite_jsonl(root, "".join(json.dumps(record) + "\n" for record in records))
+
+
+def test_accepts_a_reference_record_id_that_matches_exactly_one_record(tmp_path: Path) -> None:
+    # Given: the untouched attack fixture holds one record with that RecordId
+    root = build_run(tmp_path / "data")
+    matches = [
+        record
+        for record in (json.loads(line) for line in _jsonl_body().splitlines())
+        if str(record["RecordId"]) == str(REFERENCE_RECORD_ID)
+    ]
+
+    # When
+    report = _validate(root, tmp_path)
+
+    # Then
+    assert len(matches) == 1
+    assert report.ok, report.errors
+
+
+def test_rejects_a_duplicated_reference_record(tmp_path: Path) -> None:
+    # Given: the same EID 1 record written twice, byte for byte
+    root = build_run(tmp_path / "data")
+    _duplicate_reference_record(root)
+
+    # When
+    report = _validate(root, tmp_path)
+
+    # Then: the first match would have passed every later check on its own
+    assert not report.ok
+    assert any(
+        f"reference_source_event_id {REFERENCE_RECORD_ID} matches 2" in error
+        and "expected exactly one" in error
+        for error in report.errors
+    )
+    assert not any("sha256 mismatch" in error for error in report.errors)
+
+
+def test_rejects_a_duplicated_reference_record_with_another_timestamp(tmp_path: Path) -> None:
+    # Given: same RecordId and EventId, different TimeCreated
+    root = build_run(tmp_path / "data")
+    _duplicate_reference_record(root, TimeCreated="2026-09-14T15:21:47.000Z")
+
+    # When
+    report = _validate(root, tmp_path)
+
+    # Then
+    assert not report.ok
+    assert any("expected exactly one" in error for error in report.errors)
+    assert not any("sha256 mismatch" in error for error in report.errors)
+
+
+def test_rejects_a_reference_record_id_shared_with_another_event_id(tmp_path: Path) -> None:
+    # Given: the same RecordId on an EID 1 and on an EID 3
+    root = build_run(tmp_path / "data")
+    _duplicate_reference_record(
+        root,
+        EventId=3,
+        EventData={"DestinationIp": "192.168.9.2"},
+    )
+
+    # When
+    report = _validate(root, tmp_path)
+
+    # Then: the ambiguity is reported, not the EventId of whichever match came first
+    assert not report.ok
+    assert any("expected exactly one" in error for error in report.errors)
+    assert not any("expected 1" in error for error in report.errors)
+
+
+def test_duplicate_reference_records_fail_even_when_the_first_one_is_valid(
+    tmp_path: Path,
+) -> None:
+    # Given: the valid record stays first, an unusable copy follows it
+    root = build_run(tmp_path / "data")
+    _duplicate_reference_record(root, TimeCreated="not-a-timestamp")
+    body = _jsonl_path(root).read_text(encoding="utf-8").splitlines()
+    first_match = next(
+        json.loads(line)
+        for line in body
+        if str(json.loads(line)["RecordId"]) == str(REFERENCE_RECORD_ID)
+    )
+
+    # When
+    report = _validate(root, tmp_path)
+
+    # Then
+    assert first_match["TimeCreated"] == REFERENCE_TIME
+    assert first_match["EventId"] == 1
+    assert not report.ok
+    assert any("expected exactly one" in error for error in report.errors)
+
+
+def test_a_normal_run_ignores_duplicate_record_ids(tmp_path: Path) -> None:
+    # Given: a normal run has no reference to trace, so uniqueness is not checked
+    root = build_run(tmp_path / "data", run_type="normal")
+    _duplicate_reference_record(root)
+
+    # When
+    report = _validate(root, tmp_path)
+
+    # Then
+    assert report.ok, report.errors
+    assert any("normal run carries no Ground Truth reference" in check for check in report.checks)
