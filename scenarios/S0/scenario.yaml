@@ -1,0 +1,151 @@
+# S0 scenario definition - values the runner reads.
+#
+# The scenario itself (why the pair is built this way, expected score trajectory,
+# open items) is defined in docs/scenarios/s0.md. Do not restate reasoning here:
+# docs/data-contract-v0.2.md section 10 forbids redefining the same content in
+# two documents. Field formats follow docs/schema/run-id.md.
+
+scenario_version: v1
+scenario_id: S0
+family_id: local_powershell
+variation_id: v1
+
+# Gate character - integrated standard 3.0 section 7-2, s0.md section 1.
+gate_type: pipeline_validation
+ambiguity_required: false
+performance_claim_allowed: false
+decisive_comparator:
+  required: false
+
+# Values written into RunMetadata for both runs (s0.md section 5).
+run_metadata:
+  target_host: WIN-01
+  sysmon_config_version: sysmonconfig-sample-v0.1
+  detector_set_version: null
+  reference_policy_version: ref-v0.1
+  schema_versions:
+    run_metadata: v0.2
+    event: v0.2
+    evidence: v0.2
+    fast_hit: v0.2
+    detection_result: v0.2
+    fusion_result: v0.2
+    decision_result: v0.2
+    execution_record: v0.1
+    evaluation_input: v0.1
+
+telemetry:
+  channels:
+    - sysmon
+  sysmon_event_ids:
+    - 1
+    - 3
+
+# Observation length - s0.md section 9. The runner anchors the end of the run to
+# reference_time, not to start_time, because the evaluator cuts the window at
+# min(reference_time + evaluation_horizon_sec, run_end).
+run_length:
+  evaluation_horizon_sec: 600          # provisional; owned by role 5 (s0.md section 11, item 5)
+  post_reference_margin_sec: 60        # absorbs the gap between run start and reference_time
+  run_end_alignment:
+    step_size_sec: null                # cadence undecided (s0.md section 11, item 8)
+    policy: undecided                  # who rounds run_end onto the cadence grid - PR #70 precondition
+
+# Destination for the external connection actions (N02, A02). The Evidence
+# condition script_interpreter_external_connection requires a globally routable
+# destination, so the value is supplied at run time once the network isolation
+# decision on issue #71 is made. The runner refuses to start a collection run
+# while target is null.
+external_connection:
+  required: true
+  target: null
+  port: 443
+  decision_reference: "issue #71"
+
+# Shortcut controls - s0.md section 7. The runner records these in the audit note.
+shortcut_controls:
+  same_account: true
+  same_host: true
+  same_working_directory: true
+  filename_prefix: s0_                 # no attack_ / normal_ prefixes
+  actions_per_run: 4
+  same_vm_snapshot: true
+  same_sysmon_config: true
+
+# Artifact layout - s0.md section 9, docs/data-contract-v0.2.md section 5-2.
+outputs:
+  raw_dir: data/raw/{run_id}/telemetry
+  manifest: data/raw/{run_id}/manifest.json
+  ground_truth_dir: data/ground_truth/{run_id}
+  time_format: utc_iso8601_milliseconds
+
+# Action lists - s0.md sections 4-1 and 4-2. offset_sec mirrors offset_min there.
+# The recorded execution_record timestamps are the authoritative times; these
+# offsets are the design values only.
+runs:
+  normal:
+    run_type: normal
+    reference_action_id: null
+    actions:
+      - action_id: N01
+        offset_sec: 0
+        action_type: admin_action
+        description: 관리 스크립트 실행 (평문 PowerShell)
+        expected_sysmon_event_id: 1
+      - action_id: N02
+        offset_sec: 120
+        action_type: admin_action
+        description: PowerShell 로 외부 HTTPS 조회
+        expected_sysmon_event_id: 3
+        uses_external_connection: true
+      - action_id: N03
+        offset_sec: 300
+        action_type: file_operation
+        description: 업무 파일 복사·압축
+        expected_sysmon_event_id: 1
+      - action_id: N04
+        offset_sec: 480
+        action_type: admin_action
+        description: 로컬 백업·정리 작업
+        expected_sysmon_event_id: 1
+
+  attack:
+    run_type: attack
+    reference_action_id: A01             # reference_time comes from A01 telemetry (s0.md section 6)
+    actions:
+      - action_id: A01
+        offset_sec: 0
+        action_type: execution
+        description: 난독화 PowerShell 실행 (-EncodedCommand)
+        expected_sysmon_event_id: 1
+      - action_id: A02
+        offset_sec: 120
+        action_type: command_and_control
+        description: A01 이 만든 PowerShell 프로세스가 외부로 TCP 연결
+        expected_sysmon_event_id: 3
+        uses_external_connection: true
+        causality:
+          derived_from: A01
+          verify_by: same_process_guid
+      - action_id: A03
+        offset_sec: 300
+        action_type: collection
+        description: 로컬 디렉터리 수집·압축
+        expected_sysmon_event_id: 1
+      - action_id: A04
+        offset_sec: 480
+        action_type: execution
+        description: 후속 프로세스 실행
+        expected_sysmon_event_id: 1
+
+# Evidence conditions the runner checks as a collection sanity check. The
+# Evidence extractor (role 2) owns the actual decision; see
+# samples/raw/README.md section 1-1 for the same caveat.
+evidence_expectations:
+  authoritative: false
+  conditions_from: configs/evidence_types_v0.2.yaml
+  normal:
+    - script_interpreter_external_connection
+  attack:
+    - encoded_powershell_command
+    - script_interpreter_external_connection

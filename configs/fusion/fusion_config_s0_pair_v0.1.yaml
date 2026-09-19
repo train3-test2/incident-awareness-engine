@@ -1,0 +1,34 @@
+# S0 Pair validation only. Applied identically to the Normal and Attack runs.
+# Not an R1 setting and not a performance baseline (docs/scenarios/s0.md section 11).
+# Differs from fusion_config_s0_false_alert_v0.1.yaml only in config_version and
+# stopping.threshold_on.
+config_version: fusion-config-s0-pair-v0.1
+model_version: null
+
+window:
+  window_size_sec: 300
+
+replay:
+  step_size_sec: 10
+
+scoring:
+  method: simple_score
+  scorer_version: simple-score-v0.1
+  profile_id: s0-profile
+  evidence_types:
+    - encoded_powershell_command
+    - script_interpreter_external_connection
+
+# simple_score counts the distinct profile types active in the window over the
+# two S0 types, so each type adds 0.5 and the reachable scores are 0, 0.5 and
+# 1.0. This reading holds only for this two-type profile.
+# threshold_on 0.8: one Evidence type alone (0.5) never reaches it; both types
+#   must be active in the same window.
+# persistence_k 2: that state must hold at two consecutive 10 second replay
+#   points before an episode starts.
+# threshold_off 0.4: an active episode is released only when the score drops
+#   below it, which here means both types have left the window (score 0).
+stopping:
+  threshold_on: 0.8
+  threshold_off: 0.4
+  persistence_k: 2
