@@ -5,9 +5,11 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from incident_awareness.integration.fast_hit_handoff import (
+    EntityIdMapper,
     FastDetectionAdapterResult,
     FastDetectionSelection,
     adapt_fast_hit_handoff,
+    direct_host_entity_mapper,
     read_fast_hit_handoff,
 )
 from incident_awareness.pipeline.cli import PipelineInputs
@@ -17,11 +19,14 @@ from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
 def load_s0_fast_detection(
     inputs: PipelineInputs,
     artifacts: S0PipelineArtifacts,
+    *,
+    entity_mapper: EntityIdMapper = direct_host_entity_mapper,
 ) -> FastDetectionAdapterResult:
     """Read the Fast Handoff and adapt Role 5's selected outcome.
 
-    The existing Fast Adapter owns handoff integrity checks, status validation,
-    and construction of the resulting DetectionResult.
+    The First Cycle default maps a native host directly to the canonical
+    endpoint-host entity. Callers with an explicit mapping can supply it
+    without discarding the Adapter's complete FastHit provenance.
     """
     selection = _read_fast_detection_selection(inputs.fast_selection_path)
     handoff = read_fast_hit_handoff(
@@ -33,6 +38,7 @@ def load_s0_fast_detection(
         handoff,
         entity_id=inputs.entity_id,
         selection=selection,
+        entity_mapper=entity_mapper,
     )
 
 

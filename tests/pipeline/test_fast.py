@@ -41,6 +41,33 @@ def test_reads_fast_handoff_and_adapts_detection_result(tmp_path: Path) -> None:
         "rule_version": "mock-v1",
         "severity": "high",
     }
+    assert result.source_hit_ids == (f"{RUN_ID}-hit-2",)
+    assert result.selected_source_hit_id == f"{RUN_ID}-hit-2"
+
+
+def test_maps_fast_native_host_to_canonical_entity_without_losing_provenance(
+    tmp_path: Path,
+) -> None:
+    inputs = _inputs_with_handoff(tmp_path, entity_id="endpoint-01")
+    inputs.fast_selection_path.write_text(
+        json.dumps(
+            {
+                "detector_status": "detected",
+                "selected_hit_id": f"{RUN_ID}-hit-2",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = load_s0_fast_detection(
+        inputs,
+        _artifacts(),
+        entity_mapper=lambda native_host_id: {"WIN-01": "endpoint-01"}.get(native_host_id),
+    )
+
+    assert result.detection_result.entity_id == "endpoint-01"
+    assert result.source_hit_ids == (f"{RUN_ID}-hit-2",)
+    assert result.selected_source_hit_id == f"{RUN_ID}-hit-2"
 
 
 def test_rejects_invalid_fast_detection_selection(tmp_path: Path) -> None:
@@ -51,7 +78,7 @@ def test_rejects_invalid_fast_detection_selection(tmp_path: Path) -> None:
         load_s0_fast_detection(inputs, _artifacts())
 
 
-def _inputs_with_handoff(tmp_path: Path) -> PipelineInputs:
+def _inputs_with_handoff(tmp_path: Path, *, entity_id: str = ENTITY_ID) -> PipelineInputs:
     fast_hits_path = tmp_path / "fast-hits.jsonl"
     fast_trace_path = tmp_path / "fast-trace.json"
     run_fast_handoff(
@@ -71,7 +98,7 @@ def _inputs_with_handoff(tmp_path: Path) -> PipelineInputs:
         fast_trace_path=fast_trace_path,
         fast_selection_path=fast_selection_path,
         fusion_config_path=unused_path,
-        entity_id=ENTITY_ID,
+        entity_id=entity_id,
         decision_id="D-001",
         decision_config_version="parallel-v0.2",
     )
