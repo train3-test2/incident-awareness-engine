@@ -393,14 +393,20 @@ def _validate_miss_selection(
     """Reject a miss when the completed handoff contains a hit for this entity.
 
     Fast Runner writes qualifying hits only. A hit that the configured mapper
-    resolves to this entity therefore contradicts a miss. Hits that resolve to
-    other entities, or cannot be mapped, do not affect the result.
+    resolves to this entity therefore contradicts a miss. A qualifying hit that
+    cannot be mapped is also an error: the Adapter cannot conclude that this
+    entity had no detection while a source hit has unknown ownership. Only hits
+    that resolve to other entities leave a miss valid.
     """
-    if any(
-        _resolve_record_entity_id(record, entity_mapper=entity_mapper) == entity_id
-        for record in records
-    ):
-        raise ValueError("miss selection contradicts a qualifying FastHitRecord for entity_id")
+    for record in records:
+        resolved_entity_id = _resolve_record_entity_id(record, entity_mapper=entity_mapper)
+        if resolved_entity_id is None:
+            raise ValueError(
+                "miss selection cannot be established because a qualifying "
+                "FastHitRecord has no canonical entity_id mapping"
+            )
+        if resolved_entity_id == entity_id:
+            raise ValueError("miss selection contradicts a qualifying FastHitRecord for entity_id")
 
 
 def _resolve_record_entity_id(

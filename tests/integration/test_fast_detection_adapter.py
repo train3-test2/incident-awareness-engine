@@ -291,6 +291,20 @@ def test_allows_miss_when_handoff_hits_belong_to_other_entities(tmp_path: Path) 
     assert result.detection_result.detector_status == "miss"
 
 
+def test_rejects_miss_when_a_qualifying_hit_cannot_be_mapped_to_an_entity(
+    tmp_path: Path,
+) -> None:
+    handoff = _read_handoff(tmp_path)
+
+    with pytest.raises(ValueError, match="has no canonical entity_id mapping"):
+        adapt_fast_hit_handoff(
+            handoff,
+            entity_id="WIN-02",
+            selection=FastDetectionSelection(detector_status="miss"),
+            entity_mapper=lambda _: None,
+        )
+
+
 def test_rejects_miss_when_mapper_resolves_hit_to_entity(tmp_path: Path) -> None:
     handoff = _read_handoff(tmp_path)
 
