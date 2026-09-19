@@ -48,6 +48,29 @@ def test_accepts_detected_fusion_result() -> None:
     assert len(result.fusion_episodes) == 1
 
 
+def test_accepts_replay_end_episode_reason() -> None:
+    # Given
+    start_time = datetime(2026, 9, 9, 1, 0, 20, tzinfo=UTC)
+    replay_end = datetime(2026, 9, 9, 1, 0, 40, tzinfo=UTC)
+
+    # When
+    episode = FusionEpisodeResult(
+        episode_id="FEP-001",
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        start_time=start_time,
+        end_time=replay_end,
+        end_reason="replay_end",
+        score_at_start=0.8,
+        peak_score=0.9,
+        contributing_evidence_ids=["EVD-001"],
+    )
+
+    # Then
+    assert episode.end_time == replay_end
+    assert episode.end_reason == "replay_end"
+
+
 def test_accepts_miss_fusion_result() -> None:
     # Given
     expected_status = "miss"

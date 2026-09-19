@@ -28,6 +28,7 @@ def run_fusion_pipeline(
     entity_id: str,
     run_start: datetime,
     run_end: datetime,
+    replay_end: datetime | None = None,
     scoring_config_version: str,
     scoring_profile_id: str,
     scoring_method: str,
@@ -39,9 +40,10 @@ def run_fusion_pipeline(
     Preconditions:
     - All Evidence items must match the given run_id and entity_id.
     - Evidence timestamps must be UTC and non-decreasing.
-    - Evidence timestamps must fall within [run_start, run_end].
-    - run_start and run_end must be UTC.
-    - run_end must align with the runner's fixed cadence.
+    - Evidence timestamps must fall within the effective replay interval.
+    - run_start, run_end, and replay_end when provided must be UTC.
+    - The effective replay end must align with the runner's fixed cadence.
+    - replay_end, when provided, must not be later than run_end.
     - Ground Truth and reference_time must not be used as Fusion inputs.
 
     Replay-time validation is delegated to TemporalReplayRunner.
@@ -52,6 +54,7 @@ def run_fusion_pipeline(
         entity_id=entity_id,
         run_start=run_start,
         run_end=run_end,
+        replay_end=replay_end,
     )
 
     fusion_result = build_fusion_result(
@@ -79,6 +82,7 @@ def run_fusion_pipeline_from_config(
     entity_id: str,
     run_start: datetime,
     run_end: datetime,
+    replay_end: datetime | None = None,
 ) -> FusionPipelineResult:
     """Run Temporal Fusion using one validated, versioned Fusion configuration."""
     runner = config.build_runner()
@@ -90,6 +94,7 @@ def run_fusion_pipeline_from_config(
         entity_id=entity_id,
         run_start=run_start,
         run_end=run_end,
+        replay_end=replay_end,
         scoring_config_version=config.config_version,
         scoring_profile_id=config.scoring.profile_id,
         scoring_method=config.scoring.method,

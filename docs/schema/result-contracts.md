@@ -172,7 +172,7 @@ Fusion 내부 score/window/stopping 알고리즘은 역할 1이 담당한다.
 | `model_version`             | String       |    X |    O | 모델 버전              |
 | `scoring_method`            | String       |    O |    X | 점수 산출 방식         |
 | `scorer_version`            | String       |    O |    X | 점수 산출 구현 버전    |
-| `fusion_episodes`           | List[Object] |    O |    X | Run 전체 Fusion Episode 이력 |
+| `fusion_episodes`           | List[Object] |    O |    X | Fusion 실행 구간의 Episode 이력 |
 
 ---
 
@@ -261,7 +261,7 @@ score_at_decision = null
 
 ## 4-6. fusion_episodes
 
-`fusion_episodes`는 `run_end`까지의 전체 상태기계 이력이다. `fusion_time`은 최초 ACTIVE 진입 시각으로 latch하며 이후 release·re-entry가 발생해도 변경하지 않는다.
+`fusion_episodes`는 실제 Run 종료 또는 명시된 Replay 경계까지의 전체 상태기계 이력이다. `fusion_time`은 최초 ACTIVE 진입 시각으로 latch하며 이후 release·re-entry가 발생해도 변경하지 않는다.
 
 | 필드 | 타입 | 필수 | null | 설명 |
 | --- | --- | ---: | ---: | --- |
@@ -270,12 +270,12 @@ score_at_decision = null
 | `entity_id` | String | X | O | 분석 대상 Entity |
 | `start_time` | DateTime | O | X | ACTIVE 진입 시각 |
 | `end_time` | DateTime | X | O | 종료 시각 |
-| `end_reason` | Enum | X | O | `released`, `run_end`; 종료 전에는 `null` |
+| `end_reason` | Enum | X | O | `released`, `run_end`, `replay_end`; 종료 전에는 `null` |
 | `score_at_start` | Float | O | X | ACTIVE 진입 시점 점수 |
 | `peak_score` | Float | O | X | Episode 최고 점수 |
 | `contributing_evidence_ids` | List[String] | X | O | 기여 Evidence ID |
 
-Run 종료 시 ACTIVE인 Episode는 `end_time=run_end`, `end_reason=run_end`로 기록한다.
+실제 Run 종료 시 ACTIVE인 Episode는 `end_time=run_end`, `end_reason=run_end`로 기록한다. 실제 Run은 계속되지만 명시된 Replay 경계에서 처리를 종료한 경우에는 `end_time=replay_end`, `end_reason=replay_end`로 기록한다.
 
 ---
 
