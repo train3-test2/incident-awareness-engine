@@ -85,13 +85,12 @@ def validate_external_target(value: str) -> str:
     if ":" in value:
         raise ValueError("external target must be IPv4; IPv6 is not allowed in this version")
 
+    # A value with a colon was already rejected above, so ip_address here only
+    # ever yields an IPv4 address.
     try:
         address = ipaddress.ip_address(value)
     except ValueError as error:
         raise ValueError(f"external target is not an IP literal: {value!r}") from error
-
-    if not isinstance(address, ipaddress.IPv4Address):
-        raise ValueError("external target must be IPv4; IPv6 is not allowed in this version")
 
     # ip_address already rejects leading zeros, so a value that round-trips is
     # the canonical dotted-decimal form.
