@@ -181,15 +181,15 @@ def test_rejects_naive_run_times(start_time: datetime, end_time: datetime) -> No
 def test_keeps_events_on_both_boundaries() -> None:
     # Given
     events = [
-        _process_event("EVT-START", START_TIME),
-        _process_event("EVT-END", REPLAY_END),
+        _process_event("evt-start", START_TIME),
+        _process_event("evt-end", REPLAY_END),
     ]
 
     # When
     selection = select_s0_replay_events(events, run_id=RUN_ID, window=_window())
 
     # Then
-    assert [event.event_id for event in selection.included_events] == ["EVT-START", "EVT-END"]
+    assert [event.event_id for event in selection.included_events] == ["evt-start", "evt-end"]
     assert selection.included_count == 2
     assert selection.excluded_count == 0
     assert selection.excluded_min_timestamp is None
@@ -200,15 +200,15 @@ def test_excludes_event_one_millisecond_before_the_window() -> None:
     # Given
     early = START_TIME - ONE_MILLISECOND
     events = [
-        _process_event("EVT-EARLY", early),
-        _process_event("EVT-START", START_TIME),
+        _process_event("evt-early", early),
+        _process_event("evt-start", START_TIME),
     ]
 
     # When
     selection = select_s0_replay_events(events, run_id=RUN_ID, window=_window())
 
     # Then
-    assert [event.event_id for event in selection.included_events] == ["EVT-START"]
+    assert [event.event_id for event in selection.included_events] == ["evt-start"]
     assert selection.excluded_before_count == 1
     assert selection.excluded_after_count == 0
     assert selection.excluded_min_timestamp == early
@@ -219,15 +219,15 @@ def test_excludes_event_one_millisecond_after_the_window() -> None:
     # Given
     late = REPLAY_END + ONE_MILLISECOND
     events = [
-        _process_event("EVT-END", REPLAY_END),
-        _process_event("EVT-LATE", late),
+        _process_event("evt-end", REPLAY_END),
+        _process_event("evt-late", late),
     ]
 
     # When
     selection = select_s0_replay_events(events, run_id=RUN_ID, window=_window())
 
     # Then
-    assert [event.event_id for event in selection.included_events] == ["EVT-END"]
+    assert [event.event_id for event in selection.included_events] == ["evt-end"]
     assert selection.excluded_before_count == 0
     assert selection.excluded_after_count == 1
     assert selection.excluded_min_timestamp == late
@@ -240,10 +240,10 @@ def test_records_margins_on_both_sides() -> None:
     second_early = START_TIME - timedelta(seconds=4)
     late = REPLAY_END + timedelta(seconds=2)
     events = [
-        _process_event("EVT-EARLY-1", first_early),
-        _process_event("EVT-EARLY-2", second_early),
-        _process_event("EVT-INSIDE", START_TIME + timedelta(seconds=120)),
-        _process_event("EVT-LATE", late),
+        _process_event("evt-early-1", first_early),
+        _process_event("evt-early-2", second_early),
+        _process_event("evt-inside", START_TIME + timedelta(seconds=120)),
+        _process_event("evt-late", late),
     ]
 
     # When
@@ -273,8 +273,8 @@ def test_accepts_empty_event_input() -> None:
 def test_rejects_events_from_another_run() -> None:
     # Given
     events = [
-        _process_event("EVT-OWN", START_TIME),
-        _process_event("EVT-OTHER", START_TIME, run_id="RUN-20260921-002"),
+        _process_event("evt-own", START_TIME),
+        _process_event("evt-other", START_TIME, run_id="RUN-20260921-002"),
     ]
 
     # When / Then
@@ -285,8 +285,8 @@ def test_rejects_events_from_another_run() -> None:
 def test_leaves_the_input_events_untouched() -> None:
     # Given
     events = [
-        _process_event("EVT-EARLY", START_TIME - ONE_MILLISECOND),
-        _process_event("EVT-INSIDE", START_TIME),
+        _process_event("evt-early", START_TIME - ONE_MILLISECOND),
+        _process_event("evt-inside", START_TIME),
     ]
     snapshot = [event.model_dump() for event in events]
 
@@ -334,12 +334,12 @@ def _run_runtime_fusion(
 def _detected_events(*, host_id: str = HOST_ID) -> list[NormalizedEvent]:
     return [
         _encoded_command_event(
-            f"EVT-ENCODED-{host_id}",
+            f"evt-encoded-{host_id.lower()}",
             START_TIME + timedelta(seconds=30),
             host_id=host_id,
         ),
         _network_event(
-            f"EVT-NETWORK-{host_id}",
+            f"evt-network-{host_id.lower()}",
             START_TIME + timedelta(seconds=40),
             host_id=host_id,
         ),
@@ -383,9 +383,9 @@ def test_runtime_fusion_rejects_ground_truth_keyword_arguments() -> None:
 def test_runtime_fusion_replays_the_filtered_events() -> None:
     # Given
     events = [
-        _process_event("EVT-EARLY", START_TIME - timedelta(seconds=5)),
+        _process_event("evt-early", START_TIME - timedelta(seconds=5)),
         *_detected_events(),
-        _process_event("EVT-LATE", REPLAY_END + timedelta(seconds=5)),
+        _process_event("evt-late", REPLAY_END + timedelta(seconds=5)),
     ]
 
     # When
@@ -439,8 +439,8 @@ def test_empty_input_in_a_covered_window_is_a_miss_for_the_expected_host() -> No
 def test_input_made_only_of_margin_records_is_a_miss_for_the_expected_host() -> None:
     # Given
     events = [
-        _encoded_command_event("EVT-EARLY", START_TIME - timedelta(seconds=5)),
-        _network_event("EVT-LATE", REPLAY_END + timedelta(seconds=5)),
+        _encoded_command_event("evt-early", START_TIME - timedelta(seconds=5)),
+        _network_event("evt-late", REPLAY_END + timedelta(seconds=5)),
     ]
 
     # When
@@ -472,7 +472,7 @@ def test_runtime_fusion_keeps_hosts_separate() -> None:
     events = [
         *_detected_events(),
         _encoded_command_event(
-            "EVT-ENCODED-OTHER",
+            "evt-encoded-other",
             START_TIME + timedelta(seconds=30),
             host_id=second_host,
         ),
@@ -513,7 +513,7 @@ def test_expected_host_without_events_still_gets_a_result() -> None:
 )
 def test_rejects_events_from_an_unexpected_host(timestamp: datetime) -> None:
     # Given
-    events = [_process_event("EVT-STRAY", timestamp, host_id="HOST-UNEXPECTED")]
+    events = [_process_event("evt-stray", timestamp, host_id="HOST-UNEXPECTED")]
 
     # When / Then
     with pytest.raises(ValueError, match="host_id is not in expected_entity_ids: HOST-UNEXPECTED"):
