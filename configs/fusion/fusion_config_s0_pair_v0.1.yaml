@@ -19,6 +19,15 @@ scoring:
     - encoded_powershell_command
     - script_interpreter_external_connection
 
+# simple_score counts the distinct profile types active in the window over the
+# two S0 types, so each type adds 0.5 and the reachable scores are 0, 0.5 and
+# 1.0. This reading holds only for this two-type profile.
+# threshold_on 0.8: one Evidence type alone (0.5) never reaches it; both types
+#   must be active in the same window.
+# persistence_k 2: that state must hold at two consecutive 10 second replay
+#   points before an episode starts.
+# threshold_off 0.4: an active episode is released only when the score drops
+#   below it, which here means both types have left the window (score 0).
 stopping:
   threshold_on: 0.8
   threshold_off: 0.4

@@ -20,6 +20,14 @@ scoring:
     - encoded_powershell_command
     - script_interpreter_external_connection
 
+# simple_score over the two S0 types reaches only 0, 0.5 and 1.0, and this
+# reading holds only for this two-type profile.
+# threshold_on 0.5: a single Evidence type is enough to start an episode. This is
+#   an S0-only setting for exercising episode creation and release; it is not a
+#   false-alert performance criterion and not an R1 setting.
+# threshold_off 0.4: the episode is released when the score falls to 0.
+# No reachable score lies in [0.4, 0.5), so this setting does not exercise the
+# hysteresis band; the Pair setting does.
 stopping:
   threshold_on: 0.5
   threshold_off: 0.4
