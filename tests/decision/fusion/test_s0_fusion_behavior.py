@@ -148,8 +148,9 @@ def test_s0_fusion_setting_behavior_on_the_s0_pair(
 def test_direct_fusion_call_rejects_a_replay_span_off_the_cadence() -> None:
     """A direct Fusion call only replays spans that are whole 10 second steps.
 
-    Fitting a measured end_time to the fixed 660 second replay span is the job of
-    the Runtime replay window layer (PR #101), not of the Fusion engine.
+    Aligning measured Run boundaries to a replay span is handled by the Runtime
+    replay layer and tracked in PR #101. This test covers only the engine's
+    aligned-span precondition.
     """
     # Given
     config = load_fusion_config(S0_PAIR_CONFIG_PATH)
