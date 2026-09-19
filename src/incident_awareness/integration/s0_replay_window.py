@@ -13,6 +13,12 @@ one host) and never hands the whole RunMetadata over. Ground Truth such as
 run_type and reference_time is never accepted (docs/data-contract-v0.2.md
 section 5-3). Whether the attack evaluation horizon is covered is a separate
 check that belongs to the evaluation stage.
+
+The replay window follows the S0 replay policy s0-replay-v0.1
+(docs/scenarios/s0.md section 11). An episode still ACTIVE at replay_end closes
+with the engine's current end reason until the FusionResult contract gains a
+replay end reason, so this module is not ready to merge before that contract
+change lands.
 """
 
 from collections.abc import Iterable
@@ -29,11 +35,12 @@ from incident_awareness.decision.fusion.result_builder import (
 )
 from incident_awareness.evidence import extract_evidence
 
-# evaluation_horizon_sec 600 plus post_reference_margin_sec 60, anchored to
-# start_time for both run types (S0 replay window approved by role 1).
+# Fixed replay duration of the S0 replay policy, anchored to start_time for both
+# run types. It is a policy value and is not derived from reference_time.
+S0_REPLAY_POLICY_VERSION = "s0-replay-v0.1"
 S0_REPLAY_DURATION = timedelta(seconds=660)
 
-RuntimeNotEvaluatedReason = Literal["replay_window_not_covered"]
+RuntimeNotEvaluatedReason = Literal["insufficient_observation"]
 
 
 def _validate_utc_datetime(value: object, *, field_name: str) -> datetime:
@@ -78,6 +85,18 @@ def _validate_expected_entity_ids(value: object) -> tuple[str, ...]:
         raise ValueError("expected_entity_ids must not contain duplicates")
 
     return tuple(sorted(entity_ids))
+
+
+def _validate_replay_step(config: FusionConfig) -> None:
+    # A positive step is already enforced by ReplayConfig. This check stops a step
+    # that the S0 replay duration cannot be divided into before the engine sees it.
+    step_size = timedelta(seconds=config.replay.step_size_sec)
+    if S0_REPLAY_DURATION <= timedelta(0) or S0_REPLAY_DURATION % step_size != timedelta(0):
+        raise ValueError(
+            f"S0 replay policy {S0_REPLAY_POLICY_VERSION} requires "
+            f"replay_duration_sec={S0_REPLAY_DURATION.total_seconds():g} to be divisible by "
+            f"step_size_sec={config.replay.step_size_sec:g}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,9 +231,19 @@ def run_s0_runtime_fusion(
       is, observed without Evidence.
     - Window not covered (end_time earlier than replay_end): Fusion is not run
       and every expected host gets a not_evaluated FusionResult with reason
-      replay_window_not_covered.
+      insufficient_observation. This is not a miss.
     - An event from a host outside expected_entity_ids, inside or outside the
       window, is an error. It is neither added nor dropped.
+    - A config whose step_size_sec does not divide the replay duration is an
+      error raised here, before any Fusion call.
+
+    Replay stops at replay_end. No tick is added after it and no event timestamp
+    is moved, so a threshold first met on the last tick cannot satisfy
+    persistence_k and is not detected.
+
+    The window and the event selection are returned in S0RuntimeFusionResult
+    only; nothing here stores them. A caller that needs them as a Runtime trace
+    must persist them itself.
 
     Precondition: events must come from a collection and normalization step that
     has already been validated. A missing collection or a normalization failure
@@ -223,6 +252,7 @@ def run_s0_runtime_fusion(
     and becomes a miss. No shared collection status contract exists yet; the S0
     artifact validator is the planned gate in front of this call.
     """
+    _validate_replay_step(config)
     window = derive_s0_replay_window(start_time=start_time, end_time=end_time)
     entity_ids = _validate_expected_entity_ids(expected_entity_ids)
 
@@ -240,7 +270,7 @@ def run_s0_runtime_fusion(
             run_id=selection.run_id,
             window=window,
             selection=selection,
-            not_evaluated_reason="replay_window_not_covered",
+            not_evaluated_reason="insufficient_observation",
             fusion_results=tuple(
                 build_not_evaluated_fusion_result(
                     run_id=selection.run_id,

@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from incident_awareness.common.models.event import (
     NetworkInfo,
@@ -11,7 +12,9 @@ from incident_awareness.common.models.event import (
     RawLogReference,
 )
 from incident_awareness.common.models.fusion import FusionResult
-from incident_awareness.decision.fusion.config import load_fusion_config
+from incident_awareness.decision.fusion.config import ReplayConfig, load_fusion_config
+from incident_awareness.evidence import extract_evidence
+from incident_awareness.integration import s0_replay_window
 from incident_awareness.integration.s0_replay_window import (
     S0_REPLAY_DURATION,
     S0ReplayWindow,
@@ -22,6 +25,7 @@ from incident_awareness.integration.s0_replay_window import (
 )
 
 FUSION_CONFIG_PATH = Path("configs/fusion/fusion_config_v0.1.yaml")
+S0_PAIR_CONFIG_PATH = Path("configs/fusion/fusion_config_s0_pair_v0.1.yaml")
 
 RUN_ID = "RUN-20260921-001"
 HOST_ID = "HOST-S0-001"
@@ -415,7 +419,7 @@ def test_runtime_fusion_reports_not_evaluated_when_the_window_is_not_covered() -
     result = _run_runtime_fusion(_detected_events(), end_time=REPLAY_END - ONE_MILLISECOND)
 
     # Then
-    assert result.not_evaluated_reason == "replay_window_not_covered"
+    assert result.not_evaluated_reason == "insufficient_observation"
     assert result.window.replay_end == REPLAY_END
     assert result.selection.included_count == 2
 
@@ -459,7 +463,7 @@ def test_empty_input_in_an_uncovered_window_is_not_evaluated() -> None:
     result = _run_runtime_fusion([], end_time=REPLAY_END - ONE_MILLISECOND)
 
     # Then
-    assert result.not_evaluated_reason == "replay_window_not_covered"
+    assert result.not_evaluated_reason == "insufficient_observation"
     (fusion_result,) = result.fusion_results
     assert fusion_result.entity_id == HOST_ID
     assert fusion_result.fusion_status == "not_evaluated"
@@ -578,3 +582,145 @@ def test_runtime_fusion_is_repeatable_for_the_same_input() -> None:
     assert [result.model_dump() for result in first.fusion_results] == [
         result.model_dump() for result in second.fusion_results
     ]
+
+
+def _run_with_pair_config(events: list[NormalizedEvent]) -> S0RuntimeFusionResult:
+    return run_s0_runtime_fusion(
+        events,
+        run_id=RUN_ID,
+        start_time=START_TIME,
+        end_time=REPLAY_END,
+        expected_entity_ids=(HOST_ID,),
+        config=load_fusion_config(S0_PAIR_CONFIG_PATH),
+    )
+
+
+def test_s0_pair_config_runs_from_normalized_events_through_fusion() -> None:
+    """NormalizedEvent -> extract_evidence -> Runtime selection -> S0 Pair config -> Fusion.
+
+    Unlike tests/decision/fusion/test_s0_fusion_behavior.py, which feeds hand-built
+    Evidence to the engine, the Evidence here comes out of the production
+    extractor inside the Runtime call.
+    """
+    # Given
+    events = [
+        _encoded_command_event("evt-a01", START_TIME),
+        _network_event("evt-a02", START_TIME + timedelta(seconds=120)),
+    ]
+    expected_evidences = [evidence for event in events for evidence in extract_evidence(event)]
+
+    # When
+    result = _run_with_pair_config(events)
+
+    # Then
+    assert [evidence.evidence_type for evidence in expected_evidences] == [
+        "encoded_powershell_command",
+        "script_interpreter_external_connection",
+    ]
+    assert [evidence.event_ids for evidence in expected_evidences] == [["evt-a01"], ["evt-a02"]]
+    assert {evidence.run_id for evidence in expected_evidences} == {RUN_ID}
+    assert {evidence.entity_id for evidence in expected_evidences} == {HOST_ID}
+
+    assert result.not_evaluated_reason is None
+    assert result.selection.included_count == 2
+
+    (fusion_result,) = result.fusion_results
+    assert fusion_result.scoring_config_version == "fusion-config-s0-pair-v0.1"
+    assert fusion_result.run_id == RUN_ID
+    assert fusion_result.entity_id == HOST_ID
+    assert fusion_result.fusion_status == "detected"
+    assert fusion_result.fusion_time == START_TIME + timedelta(seconds=130)
+    assert sorted(fusion_result.contributing_evidence_ids) == sorted(
+        evidence.evidence_id for evidence in expected_evidences
+    )
+
+    (episode,) = fusion_result.fusion_episodes
+    assert episode.start_time == START_TIME + timedelta(seconds=130)
+    assert episode.end_reason == "released"
+    assert episode.end_time == START_TIME + timedelta(seconds=430)
+
+
+@pytest.mark.parametrize("step_size_sec", [7, 25], ids=["step-7", "step-25"])
+def test_replay_step_that_does_not_divide_the_replay_duration_stops_before_fusion(
+    step_size_sec: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    config = load_fusion_config(S0_PAIR_CONFIG_PATH).model_copy(
+        update={"replay": ReplayConfig(step_size_sec=step_size_sec)}
+    )
+    fusion_calls: list[object] = []
+    monkeypatch.setattr(
+        s0_replay_window,
+        "run_fusion_pipeline_from_config",
+        lambda *args, **kwargs: fusion_calls.append(args),
+    )
+
+    # When / Then
+    with pytest.raises(
+        ValueError,
+        match=(
+            "S0 replay policy s0-replay-v0.1 requires replay_duration_sec=660 to be "
+            f"divisible by step_size_sec={step_size_sec}"
+        ),
+    ):
+        run_s0_runtime_fusion(
+            _detected_events(),
+            run_id=RUN_ID,
+            start_time=START_TIME,
+            end_time=REPLAY_END,
+            expected_entity_ids=(HOST_ID,),
+            config=config,
+        )
+    assert fusion_calls == []
+
+
+@pytest.mark.parametrize("step_size_sec", [0, -10], ids=["zero", "negative"])
+def test_a_non_positive_step_is_rejected_by_the_config_model(step_size_sec: int) -> None:
+    # The Runtime check relies on ReplayConfig for a positive step and does not
+    # repeat it.
+    with pytest.raises(ValidationError, match="step_size_sec"):
+        ReplayConfig(step_size_sec=step_size_sec)
+
+
+def test_threshold_first_met_on_the_last_replay_tick_is_not_detected() -> None:
+    # Given: both S0 types are first active together at replay_end, so
+    # persistence_k=2 would need a tick after replay_end. The event after
+    # replay_end must not supply one.
+    late = REPLAY_END + timedelta(seconds=10)
+    events = [
+        _encoded_command_event("evt-a01", REPLAY_END - timedelta(seconds=10)),
+        _network_event("evt-a02", REPLAY_END),
+        _network_event("evt-a03", late),
+    ]
+    snapshot = [event.model_dump() for event in events]
+
+    # When
+    result = _run_with_pair_config(events)
+
+    # Then
+    assert result.selection.included_count == 2
+    assert result.selection.excluded_after_count == 1
+    assert result.selection.excluded_max_timestamp == late
+    assert [event.model_dump() for event in events] == snapshot
+
+    (fusion_result,) = result.fusion_results
+    _assert_miss(fusion_result)
+
+
+def test_threshold_confirmed_on_the_last_replay_tick_is_detected_at_replay_end() -> None:
+    # Given: first met one tick before replay_end, confirmed on replay_end itself.
+    events = [
+        _encoded_command_event("evt-a01", REPLAY_END - timedelta(seconds=20)),
+        _network_event("evt-a02", REPLAY_END - timedelta(seconds=10)),
+    ]
+
+    # When
+    result = _run_with_pair_config(events)
+
+    # Then: only the detection time is fixed here. How the still ACTIVE episode
+    # closes at replay_end waits for the replay end reason in the FusionResult
+    # contract and is tested after that change.
+    (fusion_result,) = result.fusion_results
+    assert fusion_result.fusion_status == "detected"
+    assert fusion_result.fusion_time == REPLAY_END
