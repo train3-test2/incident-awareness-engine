@@ -813,3 +813,118 @@ def test_verify_rejects_tampered_record_counts(
     # When / Then
     with pytest.raises(PreservationError, match=reason):
         verify_preserved_run(run_dir)
+
+
+# --- SHA256SUMS.csv raw byte format ----------------------------------------
+#
+# SHA256SUMS.csv is excluded from its own hash list, so a line ending or an
+# encoding change made after preservation cannot show up as a hash mismatch.
+# These cases tamper with the bytes only and leave every other preserved file
+# and the source artifacts untouched.
+
+
+def _sums_path(run_dir: Path) -> Path:
+    return run_dir / "SHA256SUMS.csv"
+
+
+def _other_preserved_digests(run_dir: Path) -> dict[str, str]:
+    return {
+        path.relative_to(run_dir).as_posix(): _sha256(path)
+        for path in sorted(run_dir.rglob("*"))
+        if path.is_file() and path.relative_to(run_dir).as_posix() != "SHA256SUMS.csv"
+    }
+
+
+def test_verify_accepts_lf_bytes_without_a_bom(tmp_path: Path) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    raw = _sums_path(run_dir).read_bytes()
+
+    # Then
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    assert b"\r" not in raw
+    assert b"\n" in raw
+    assert verify_preserved_run(run_dir) == len(_expected_copied_files()) + 1
+
+
+def test_verify_rejects_crlf_line_endings(tmp_path: Path) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    before = _other_preserved_digests(run_dir)
+    sums_path = _sums_path(run_dir)
+    sums_path.write_bytes(sums_path.read_bytes().replace(b"\n", b"\r\n"))
+
+    # When / Then: a raw format error, not a hash mismatch
+    with pytest.raises(PreservationError, match="must use LF line endings") as error:
+        verify_preserved_run(run_dir)
+    assert "SHA-256 mismatch" not in str(error.value)
+    assert _other_preserved_digests(run_dir) == before
+
+
+def test_verify_rejects_a_utf8_bom(tmp_path: Path) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    before = _other_preserved_digests(run_dir)
+    sums_path = _sums_path(run_dir)
+    sums_path.write_bytes(b"\xef\xbb\xbf" + sums_path.read_bytes())
+
+    # When / Then
+    with pytest.raises(PreservationError, match="must not start with a UTF-8 BOM") as error:
+        verify_preserved_run(run_dir)
+    assert "SHA-256 mismatch" not in str(error.value)
+    assert _other_preserved_digests(run_dir) == before
+
+
+def test_verify_rejects_a_lone_cr(tmp_path: Path) -> None:
+    # Given: a bare CR in the middle, with no CRLF anywhere
+    run_dir = _preserved(tmp_path)
+    sums_path = _sums_path(run_dir)
+    raw = sums_path.read_bytes()
+    head, _, tail = raw.partition(b"\n")
+    sums_path.write_bytes(head + b"\r" + tail)
+
+    # When / Then
+    assert b"\r\n" not in sums_path.read_bytes()
+    with pytest.raises(PreservationError, match="must not contain CR"):
+        verify_preserved_run(run_dir)
+
+
+def test_verify_rejects_bytes_that_are_not_utf8(tmp_path: Path) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    sums_path = _sums_path(run_dir)
+    sums_path.write_bytes(sums_path.read_bytes() + b"\xff\xfe\n")
+
+    # When / Then
+    with pytest.raises(PreservationError, match="is not valid UTF-8"):
+        verify_preserved_run(run_dir)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "reason"),
+    [
+        (lambda raw: raw.replace(b"\n", b"\r\n"), "LF line endings"),
+        (lambda raw: b"\xef\xbb\xbf" + raw, "UTF-8 BOM"),
+        (lambda raw: raw + b"\xff\xfe\n", "not valid UTF-8"),
+    ],
+    ids=["crlf", "bom", "invalid-utf8"],
+)
+def test_command_line_verify_fails_on_a_tampered_sums_format(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    mutate: Callable[[bytes], bytes],
+    reason: str,
+) -> None:
+    # Given
+    run_dir = _preserved(tmp_path)
+    sums_path = _sums_path(run_dir)
+    sums_path.write_bytes(mutate(sums_path.read_bytes()))
+
+    # When
+    status = main(["verify", "--preserved-dir", str(run_dir)])
+
+    # Then
+    assert status != 0
+    output = capsys.readouterr().out
+    assert "[!]" in output
+    assert reason in output

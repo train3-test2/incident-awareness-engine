@@ -21,6 +21,7 @@ See docs/scenarios/s0-artifact-preservation.md.
 """
 
 import argparse
+import codecs
 import csv
 import hashlib
 import io
@@ -465,9 +466,34 @@ def verify_preserved_run(run_dir: Path, *, expected_run_id: str | None = None) -
     return len(listed)
 
 
+def _decode_sha256sums_bytes(raw: bytes) -> str:
+    """Check the raw bytes of SHA256SUMS.csv before any CSV parsing.
+
+    SHA256SUMS.csv is the one preserved file that is not in its own hash list,
+    so a line ending or an encoding change made after preservation cannot be
+    caught by re-hashing. The format rules the record and the document state -
+    UTF-8 without a BOM, LF only - are therefore checked here on the bytes:
+    str.splitlines() treats LF and CRLF alike and would accept a file whose line
+    endings were rewritten in transit.
+    """
+    if raw.startswith(codecs.BOM_UTF8):
+        raise PreservationError(f"{SHA256SUMS_FILENAME} must not start with a UTF-8 BOM")
+
+    if b"\r" in raw:
+        raise PreservationError(
+            f"{SHA256SUMS_FILENAME} must use LF line endings and must not contain CR"
+        )
+
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise PreservationError(f"{SHA256SUMS_FILENAME} is not valid UTF-8: {error}") from error
+
+
 def _read_sha256sums(run_dir: Path) -> dict[str, str]:
     sums_path = _require_regular_file(run_dir / SHA256SUMS_FILENAME, label=SHA256SUMS_FILENAME)
-    rows = list(csv.reader(sums_path.read_text(encoding="utf-8").splitlines()))
+    text = _decode_sha256sums_bytes(sums_path.read_bytes())
+    rows = list(csv.reader(text.splitlines()))
 
     if not rows or tuple(rows[0]) != SHA256SUMS_HEADER:
         raise PreservationError(
