@@ -247,6 +247,8 @@ Fast runner가 생산한 개별 qualifying hit는 `DetectionResult`와 별도인
 | `contributing_evidence_ids` | List[String] |    X |    O | 기여 Evidence 식별자                                                                       |
 | `model_version`             | String       |    X |    O | Fusion 모델 버전                                                                           |
 | `rule_version`              | String       |    X |    O | Detector Rule 버전                                                                         |
+| `source_hit_ids`            | List[String] |    X |    O | Fast Adapter가 보존한 입력 FastHitRecord ID 목록                                           |
+| `selected_source_hit_id`    | String       |    X |    O | detected Fast 결과를 만든 선택 FastHitRecord ID                                            |
 | `config_version`            | String       |    O |    X | `parallel_required`를 포함한 실행 Config 버전                                              |
 | `detector_set_version`      | String       |    X |    O | 동결된 Detector Set 버전                                                                   |
 | `supersedes_decision_id`    | String       |    X |    O | 재계산으로 대체한 이전 Decision 식별자                                                     |
