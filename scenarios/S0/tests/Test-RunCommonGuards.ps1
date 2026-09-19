@@ -234,6 +234,174 @@ Assert-True "the comparison is made in UTC, not local time" (
 
  # ---------------------------------------------------------------------------
 
+ # ---------------------------------------------------------------------------
+ # Approved global IPv4 literal
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== approved global IPv4 ===" -ForegroundColor Cyan
+
+foreach ($ok in @("1.1.1.1", "8.8.8.8", "9.9.9.9", "203.0.114.9", "192.0.0.9")) {
+    Assert-True "global IPv4 accepted: $ok" (Test-ApprovedGlobalIPv4 $ok)
+}
+foreach ($bad in @(
+    "dns.example.com", "2606:4700:4700::1111", "10.0.0.5", "127.0.0.1", "169.254.10.10",
+    "100.64.0.1", "192.168.1.1", "172.16.0.1", "192.0.2.5", "198.51.100.5", "203.0.113.5",
+    "198.18.0.1", "224.0.0.1", "240.0.0.1", "0.0.0.0", " 1.1.1.1", "1.1.1.1 ", "1.1.1")) {
+    Assert-True "non-global or non-canonical rejected: '$bad'" (-not (Test-ApprovedGlobalIPv4 $bad))
+}
+
+ # ---------------------------------------------------------------------------
+ # Formal connection approval gate
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== formal connection approval ===" -ForegroundColor Cyan
+
+function New-ApprovalContext {
+    param([string]$Target = "9.9.9.9", [object]$Port = 443, [string]$Protocol = "TCP")
+    $external = [pscustomobject]@{ target = $Target; port = $Port; protocol = $Protocol }
+    $scenario = [pscustomobject]@{ external_connection = $external }
+    return [pscustomobject]@{ scenario = $scenario }
+}
+
+$now = [datetime]::SpecifyKind([datetime]"2026-09-20T12:00:00", [System.DateTimeKind]::Utc)
+$start = "2026-09-20T11:00:00Z"
+$end = "2026-09-20T13:00:00Z"
+$computer = $env:COMPUTERNAME
+
+Assert-True "a fully approved connection inside the window passes" ((
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext) -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 1 `
+        -NowUtc $now).target -eq "9.9.9.9")
+
+Assert-Throws "a null target is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext -Target "") -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 1 -NowUtc $now
+} "*not an approved global IPv4*"
+
+Assert-Throws "a private target is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext -Target "10.0.0.5") -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 1 -NowUtc $now
+} "*not an approved global IPv4*"
+
+Assert-Throws "a port out of range is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext -Port 70000) -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 1 -NowUtc $now
+} "*port must be an integer in 1..65535*"
+
+Assert-Throws "a non-TCP protocol is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext -Protocol "UDP") -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 1 -NowUtc $now
+} "*protocol must be TCP*"
+
+Assert-Throws "a time before the window is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext) -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 1 `
+        -NowUtc ([datetime]::SpecifyKind([datetime]"2026-09-20T10:59:59", [System.DateTimeKind]::Utc))
+} "*outside the approved window*"
+
+Assert-Throws "a time at or after the window end is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext) -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 1 `
+        -NowUtc ([datetime]::SpecifyKind([datetime]"2026-09-20T13:00:00", [System.DateTimeKind]::Utc))
+} "*outside the approved window*"
+
+Assert-Throws "an empty window (start not before end) is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext) -ApprovedStartUtc $end `
+        -ApprovedEndUtc $start -ApprovedComputerName $computer -MaxConnectionAttempts 1 -NowUtc $now
+} "*approved window is empty*"
+
+Assert-Throws "a computer name mismatch is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext) -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName "SOME-OTHER-HOST" -MaxConnectionAttempts 1 -NowUtc $now
+} "*computer name mismatch*"
+
+Assert-Throws "more than one connection attempt is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext) -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 2 -NowUtc $now
+} "*MaxConnectionAttempts must be exactly 1*"
+
+ # ---------------------------------------------------------------------------
+ # Action causality on synthetic Sysmon events
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== action causality ===" -ForegroundColor Cyan
+
+function New-FakeSysmonEvent {
+    <# A minimal stand-in for a Get-WinEvent record: Id, TimeCreated, RecordId and
+       a ToXml() that Test-ActionCausality can parse for EID 3 fields. #>
+    param(
+        [int]$Id,
+        [datetime]$TimeCreated,
+        [int]$RecordId,
+        [string]$ProcessGuid,
+        [string]$DestinationIp,
+        [string]$DestinationPort
+    )
+    $xml = @"
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><EventData>
+<Data Name="ProcessGuid">$ProcessGuid</Data>
+<Data Name="DestinationIp">$DestinationIp</Data>
+<Data Name="DestinationPort">$DestinationPort</Data>
+</EventData></Event>
+"@
+    $event = [pscustomobject]@{ Id = $Id; TimeCreated = $TimeCreated; RecordId = $RecordId }
+    $event | Add-Member -MemberType ScriptMethod -Name ToXml -Value ([scriptblock]::Create("'$xml'"))
+    return $event
+}
+
+$anchorGuid = "{aaaaaaaa-0000-0000-0000-000000000001}"
+$otherGuid = "{bbbbbbbb-0000-0000-0000-000000000002}"
+$childStarted = [datetime]::SpecifyKind([datetime]"2026-09-20T12:02:00", [System.DateTimeKind]::Utc)
+
+$matchEvent = New-FakeSysmonEvent -Id 3 -TimeCreated $childStarted.AddSeconds(1) -RecordId 10 `
+    -ProcessGuid $anchorGuid -DestinationIp "9.9.9.9" -DestinationPort "443"
+
+Assert-True "matched: same ProcessGuid, target and port after the action" ((
+    Test-ActionCausality -Events @($matchEvent) -AnchorProcessGuid $anchorGuid `
+        -ChildStartedAt $childStarted -ExpectedDestination "9.9.9.9" -ExpectedPort "443").status -eq "matched")
+
+$guidMismatch = New-FakeSysmonEvent -Id 3 -TimeCreated $childStarted.AddSeconds(1) -RecordId 11 `
+    -ProcessGuid $otherGuid -DestinationIp "9.9.9.9" -DestinationPort "443"
+Assert-True "mismatched: a different ProcessGuid does not match" ((
+    Test-ActionCausality -Events @($guidMismatch) -AnchorProcessGuid $anchorGuid `
+        -ChildStartedAt $childStarted -ExpectedDestination "9.9.9.9" -ExpectedPort "443").status -eq "mismatched")
+
+$ipMismatch = New-FakeSysmonEvent -Id 3 -TimeCreated $childStarted.AddSeconds(1) -RecordId 12 `
+    -ProcessGuid $anchorGuid -DestinationIp "203.0.114.9" -DestinationPort "443"
+Assert-True "mismatched: a different destination does not match" ((
+    Test-ActionCausality -Events @($ipMismatch) -AnchorProcessGuid $anchorGuid `
+        -ChildStartedAt $childStarted -ExpectedDestination "9.9.9.9" -ExpectedPort "443").status -eq "mismatched")
+
+$portMismatch = New-FakeSysmonEvent -Id 3 -TimeCreated $childStarted.AddSeconds(1) -RecordId 13 `
+    -ProcessGuid $anchorGuid -DestinationIp "9.9.9.9" -DestinationPort "80"
+Assert-True "mismatched: a different port does not match" ((
+    Test-ActionCausality -Events @($portMismatch) -AnchorProcessGuid $anchorGuid `
+        -ChildStartedAt $childStarted -ExpectedDestination "9.9.9.9" -ExpectedPort "443").status -eq "mismatched")
+
+$early = New-FakeSysmonEvent -Id 3 -TimeCreated $childStarted.AddSeconds(-120) -RecordId 14 `
+    -ProcessGuid $anchorGuid -DestinationIp "9.9.9.9" -DestinationPort "443"
+Assert-True "not_verified: an EID 3 well before the action is ignored" ((
+    Test-ActionCausality -Events @($early) -AnchorProcessGuid $anchorGuid `
+        -ChildStartedAt $childStarted -ExpectedDestination "9.9.9.9" -ExpectedPort "443").status -eq "not_verified")
+
+Assert-True "not_verified: no EID 3 candidate at all" ((
+    Test-ActionCausality -Events @() -AnchorProcessGuid $anchorGuid `
+        -ChildStartedAt $childStarted -ExpectedDestination "9.9.9.9" -ExpectedPort "443").status -eq "not_verified")
+
+Assert-True "not_verified: child action was not executed (null start)" ((
+    Test-ActionCausality -Events @($matchEvent) -AnchorProcessGuid $anchorGuid `
+        -ChildStartedAt $null -ExpectedDestination "9.9.9.9" -ExpectedPort "443").status -eq "not_verified")
+
+$backgroundThenOwn = @(
+    (New-FakeSysmonEvent -Id 3 -TimeCreated $childStarted.AddSeconds(1) -RecordId 20 `
+        -ProcessGuid $otherGuid -DestinationIp "9.9.9.9" -DestinationPort "443"),
+    (New-FakeSysmonEvent -Id 3 -TimeCreated $childStarted.AddSeconds(2) -RecordId 21 `
+        -ProcessGuid $anchorGuid -DestinationIp "9.9.9.9" -DestinationPort "443"))
+$ownResult = Test-ActionCausality -Events $backgroundThenOwn -AnchorProcessGuid $anchorGuid `
+    -ChildStartedAt $childStarted -ExpectedDestination "9.9.9.9" -ExpectedPort "443"
+Assert-True "matched: N02 picks its own ProcessGuid, not a background EID 3" ($ownResult.status -eq "matched")
+Assert-True "matched: the selected record is the worker's own EID 3" ($ownResult.record_id -eq "21")
+
 Write-Host ""
 if ($script:Failures -eq 0) {
     Write-Host "ALL $($script:Total) CHECKS PASSED" -ForegroundColor Green

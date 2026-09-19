@@ -819,3 +819,354 @@ function Write-RunManifest {
     Write-Ok "manifest written: $path"
     return $path
 }
+
+# ---------------------------------------------------------------------------
+# Formal external connection - safety gate, worker and single TCP primitive
+#
+# These helpers are used only by a formal (non-rehearsal) run. Rehearsal never
+# calls them, makes no network connection and needs none of the approval inputs.
+# ---------------------------------------------------------------------------
+
+function Test-ApprovedGlobalIPv4 {
+    <#
+        True only for a canonical, globally routable IPv4 literal.
+
+        This mirrors tools/scenario_to_json.py: the destination the renderer
+        injected is checked again on the VM before any socket is created, so a
+        hand-edited scenario.json cannot slip a private, documentation or
+        non-canonical address into a formal run. IPv6 and hostnames are refused.
+    #>
+    param([string]$Address)
+
+    if ([string]::IsNullOrEmpty($Address)) { return $false }
+    if ($Address -ne $Address.Trim()) { return $false }
+    if ($Address.Contains(":")) { return $false }
+
+    $parsed = [System.Net.IPAddress]::Any
+    if (-not [System.Net.IPAddress]::TryParse($Address, [ref]$parsed)) { return $false }
+    if ($parsed.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { return $false }
+
+    # TryParse accepts "1.1" and shortened forms; require the four dotted octets
+    # to round-trip so only the canonical spelling passes.
+    if ($parsed.ToString() -ne $Address) { return $false }
+
+    $octet = $parsed.GetAddressBytes()
+
+    # 192.0.0.9 and 192.0.0.10 are the only globally reachable hosts in 192.0.0.0/24
+    if ($octet[0] -eq 192 -and $octet[1] -eq 0 -and $octet[2] -eq 0) {
+        return ($octet[3] -eq 9 -or $octet[3] -eq 10)
+    }
+    if ($octet[0] -eq 0) { return $false }                                   # 0.0.0.0/8
+    if ($octet[0] -eq 10) { return $false }                                  # 10.0.0.0/8 private
+    if ($octet[0] -eq 127) { return $false }                                 # 127.0.0.0/8 loopback
+    if ($octet[0] -eq 100 -and $octet[1] -ge 64 -and $octet[1] -le 127) { return $false }  # CGNAT
+    if ($octet[0] -eq 169 -and $octet[1] -eq 254) { return $false }          # link-local
+    if ($octet[0] -eq 172 -and $octet[1] -ge 16 -and $octet[1] -le 31) { return $false }   # private
+    if ($octet[0] -eq 192 -and $octet[1] -eq 0 -and $octet[2] -eq 2) { return $false }      # TEST-NET-1
+    if ($octet[0] -eq 192 -and $octet[1] -eq 88 -and $octet[2] -eq 99) { return $false }    # 6to4 relay
+    if ($octet[0] -eq 192 -and $octet[1] -eq 168) { return $false }          # private
+    if ($octet[0] -eq 198 -and ($octet[1] -eq 18 -or $octet[1] -eq 19)) { return $false }   # benchmark
+    if ($octet[0] -eq 198 -and $octet[1] -eq 51 -and $octet[2] -eq 100) { return $false }    # TEST-NET-2
+    if ($octet[0] -eq 203 -and $octet[1] -eq 0 -and $octet[2] -eq 113) { return $false }     # TEST-NET-3
+    if ($octet[0] -ge 224) { return $false }                                 # multicast and reserved
+
+    return $true
+}
+
+function Assert-FormalConnectionApproval {
+    <#
+        Validate every approval input before a formal external connection.
+
+        The check runs once at the start of a run and again immediately before
+        the connection, so an approval window that closed mid-run stops the
+        connection. It creates no network object; a failure throws before any
+        socket exists.
+
+        Rehearsal never calls this: the caller skips the external action and no
+        approval input is required.
+
+        -VmSnapshot on the run is an attestation recorded in the artifacts. It is
+        not verified here: a guest cannot confirm the hypervisor snapshot state,
+        and a snapshot restore can roll back any attempt counter kept in the VM,
+        so the single-attempt guarantee is enforced per run, not across runs.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Context,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ApprovedStartUtc,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ApprovedEndUtc,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ApprovedComputerName,
+        [Parameter(Mandatory = $true)][int]$MaxConnectionAttempts,
+        [datetime]$NowUtc = (Get-Date).ToUniversalTime()
+    )
+
+    $external = $Context.scenario.external_connection
+    $target = [string]$external.target
+    if (-not (Test-ApprovedGlobalIPv4 $target)) {
+        throw ("external_connection.target is not an approved global IPv4 literal: '" + $target +
+            "'. Render scenario.json with tools/scenario_to_json.py --external-target.")
+    }
+
+    $port = 0
+    if (-not [int]::TryParse([string]$external.port, [ref]$port) -or $port -lt 1 -or $port -gt 65535) {
+        throw ("external_connection.port must be an integer in 1..65535, found '" +
+            [string]$external.port + "'")
+    }
+
+    $protocol = "TCP"
+    if ($external.PSObject.Properties.Name -contains "protocol") {
+        $protocol = ([string]$external.protocol).ToUpper()
+    }
+    if ($protocol -ne "TCP") {
+        throw ("external_connection.protocol must be TCP, found '" + $protocol + "'")
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ApprovedComputerName)) {
+        throw "ApprovedComputerName is required for a formal run"
+    }
+    if ($env:COMPUTERNAME -ne $ApprovedComputerName) {
+        # -ne on strings is case-insensitive by default, which is the intended
+        # exact-but-case-insensitive match for a Windows computer name.
+        throw ("computer name mismatch: this host is '" + $env:COMPUTERNAME +
+            "', approval is for '" + $ApprovedComputerName + "'")
+    }
+
+    $start = [datetime]::MinValue
+    $end = [datetime]::MinValue
+    if (-not [datetime]::TryParse($ApprovedStartUtc, [ref]$start)) {
+        throw "ApprovedStartUtc is not a valid time: '$ApprovedStartUtc'"
+    }
+    if (-not [datetime]::TryParse($ApprovedEndUtc, [ref]$end)) {
+        throw "ApprovedEndUtc is not a valid time: '$ApprovedEndUtc'"
+    }
+    $start = $start.ToUniversalTime()
+    $end = $end.ToUniversalTime()
+    if ($start -ge $end) {
+        throw ("approved window is empty: start " + (Get-UtcStamp $start) +
+            " is not before end " + (Get-UtcStamp $end))
+    }
+
+    $now = $NowUtc.ToUniversalTime()
+    if ($now -lt $start -or $now -ge $end) {
+        throw ("current UTC " + (Get-UtcStamp $now) + " is outside the approved window " +
+            (Get-UtcStamp $start) + " .. " + (Get-UtcStamp $end))
+    }
+
+    if ($MaxConnectionAttempts -ne 1) {
+        throw ("formal MaxConnectionAttempts must be exactly 1, found " + $MaxConnectionAttempts)
+    }
+
+    return [ordered]@{
+        target       = $target
+        port         = $port
+        protocol     = $protocol
+        computer     = $ApprovedComputerName
+        window_start = $start
+        window_end   = $end
+        max_attempts = $MaxConnectionAttempts
+    }
+}
+
+function New-ConnectionWorker {
+    <#
+        Start a harmless PowerShell worker whose own process makes the approved
+        connection, so the Sysmon EID 3 ProcessGuid equals this process's EID 1
+        ProcessGuid (docs/scenarios/s0.md section 4-2).
+
+        The worker reads only the approved target and port from a JSON config in
+        a run-specific channel directory. It never reads a command string and
+        never uses Invoke-Expression. The channel directory must not already
+        exist, so a trigger or status file from an earlier run cannot be reused.
+
+        The process is returned WITHOUT waiting for it to exit; it stays alive so
+        the connection happens inside it and is stopped by Stop-ConnectionWorker
+        after the run.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$WorkDir,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)]$Approval,
+        [int]$ConnectTimeoutMs = 3000,
+        [int]$IdleSeconds = 3600
+    )
+
+    $channelDir = Join-Path $WorkDir ("s0_conn_" + $RunId)
+    if (Test-Path -LiteralPath $channelDir) {
+        throw ("connection channel already exists for this run: " + $channelDir +
+            ". A previous run's trigger/status must not be reused.")
+    }
+    New-Item -ItemType Directory -Path $channelDir -Force | Out-Null
+
+    $config = [ordered]@{
+        target     = $Approval.target
+        port       = $Approval.port
+        timeout_ms = $ConnectTimeoutMs
+        idle_sec   = $IdleSeconds
+    }
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText((Join-Path $channelDir "s0_conn_config.json"),
+        ($config | ConvertTo-Json), $utf8NoBom)
+
+    # The worker script is fixed text. It reads only integers and an IPv4 string
+    # from the config, connects once, and reports the real attempt times. It does
+    # no DNS, no TLS, no retry and sends zero application bytes.
+    $worker = @'
+param([Parameter(Mandatory = $true)][string]$ChannelDir)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$config = Get-Content -LiteralPath (Join-Path $ChannelDir "s0_conn_config.json") -Raw -Encoding UTF8 |
+    ConvertFrom-Json
+$triggerPath = Join-Path $ChannelDir "s0_conn_trigger"
+$statusPath = Join-Path $ChannelDir "s0_conn_status.json"
+$statusTmp = $statusPath + ".tmp"
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+$deadline = (Get-Date).AddSeconds([int]$config.idle_sec)
+while (-not (Test-Path -LiteralPath $triggerPath)) {
+    if ((Get-Date) -ge $deadline) { return }
+    Start-Sleep -Milliseconds 200
+}
+
+$startedUtc = (Get-Date).ToUniversalTime()
+$success = $false
+$errorKind = $null
+$timedOut = $false
+$client = $null
+try {
+    $client = New-Object System.Net.Sockets.TcpClient
+    $async = $client.BeginConnect([string]$config.target, [int]$config.port, $null, $null)
+    if ($async.AsyncWaitHandle.WaitOne([int]$config.timeout_ms, $false) -and $client.Connected) {
+        $client.EndConnect($async)
+        $success = $true
+    } else {
+        $timedOut = $true
+        $errorKind = "timeout"
+    }
+} catch {
+    $errorKind = $_.Exception.GetType().Name
+} finally {
+    if ($null -ne $client) { $client.Close() }
+}
+$endedUtc = (Get-Date).ToUniversalTime()
+
+$status = [ordered]@{
+    pid          = $PID
+    target       = [string]$config.target
+    port         = [int]$config.port
+    protocol     = "TCP"
+    started_utc  = $startedUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+    ended_utc    = $endedUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+    success      = $success
+    timed_out    = $timedOut
+    error_kind   = $errorKind
+}
+[System.IO.File]::WriteAllText($statusTmp, ($status | ConvertTo-Json), $utf8NoBom)
+[System.IO.File]::Move($statusTmp, $statusPath)
+
+# Stay alive so the ProcessGuid persists through the observation window; the
+# orchestrator stops this process during cleanup.
+Start-Sleep -Seconds ([int]$config.idle_sec)
+'@
+    $workerPath = Join-Path $channelDir "s0_worker.ps1"
+    [System.IO.File]::WriteAllText($workerPath, $worker, $utf8NoBom)
+
+    $startedAt = Get-Date
+    $process = Start-Process -FilePath "powershell.exe" `
+        -ArgumentList @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", $workerPath, "-ChannelDir", $channelDir) `
+        -WindowStyle Hidden -PassThru
+
+    return [ordered]@{
+        process     = $process
+        started_at  = $startedAt
+        channel_dir = $channelDir
+        trigger     = (Join-Path $channelDir "s0_conn_trigger")
+        status      = (Join-Path $channelDir "s0_conn_status.json")
+    }
+}
+
+function Invoke-WorkerConnection {
+    <#
+        Trigger the worker's single approved connection and wait for its status.
+
+        The status carries the moment the worker actually attempted the
+        connection; execution_record uses that time, not the moment the trigger
+        was written. A timeout, a connection failure, a target or port mismatch,
+        or a missing status is a formal run failure.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Worker,
+        [Parameter(Mandatory = $true)]$Approval,
+        [int]$WaitTimeoutSec = 60,
+        [int]$PollIntervalMs = 200
+    )
+
+    $triggerText = "connect " + (Get-Date).ToUniversalTime().ToString("o")
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Worker.trigger, $triggerText, $utf8NoBom)
+
+    $deadline = (Get-Date).AddSeconds($WaitTimeoutSec)
+    while (-not (Test-Path -LiteralPath $Worker.status)) {
+        if ((Get-Date) -ge $deadline) {
+            throw ("worker wrote no connection status within " + $WaitTimeoutSec + "s")
+        }
+        Start-Sleep -Milliseconds $PollIntervalMs
+    }
+
+    $status = Get-Content -LiteralPath $Worker.status -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $status.success) {
+        throw ("approved connection did not succeed: timed_out=" + $status.timed_out +
+            " error_kind=" + [string]$status.error_kind)
+    }
+    if ([string]$status.target -ne [string]$Approval.target) {
+        throw ("worker connected to '" + [string]$status.target + "', approved '" + $Approval.target + "'")
+    }
+    if ([int]$status.port -ne [int]$Approval.port) {
+        throw ("worker connected to port " + [string]$status.port + ", approved " + $Approval.port)
+    }
+
+    return [ordered]@{
+        pid          = [int]$status.pid
+        started_utc  = [datetime]::Parse($status.started_utc).ToUniversalTime()
+        target       = [string]$status.target
+        port         = [int]$status.port
+        protocol     = [string]$status.protocol
+    }
+}
+
+function Stop-ConnectionWorker {
+    <#
+        Stop the worker and remove its run-specific channel directory.
+
+        Called during cleanup after the status has been read and the causality
+        checked, so a formal failure never leaves a stray worker process or a
+        reusable trigger/status behind.
+    #>
+    param([object]$Worker)
+
+    if ($null -eq $Worker) { return }
+    $process = $Worker.process
+    if ($null -ne $process -and -not $process.HasExited) {
+        $process.Kill()
+        $process.WaitForExit()
+    }
+    if (-not [string]::IsNullOrEmpty([string]$Worker.channel_dir) -and
+        (Test-Path -LiteralPath $Worker.channel_dir)) {
+        Remove-Item -LiteralPath $Worker.channel_dir -Recurse -Force
+    }
+    Write-Ok "connection worker stopped and channel removed"
+}
+
+function Assert-FormalCausalityMatched {
+    <#
+        In a formal run the A01->A02 (or N02) causality must be "matched": the
+        EID 3 ProcessGuid equals the worker's anchor ProcessGuid and the
+        destination and port match. Anything else fails the run before any
+        success artifact is written. Rehearsal keeps the not_verified result.
+    #>
+    param([Parameter(Mandatory = $true)]$Causality)
+
+    if ($Causality.status -ne "matched") {
+        throw ("formal causality check failed: " + $Causality.status + " (" + $Causality.reason + ")")
+    }
+}

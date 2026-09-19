@@ -7,14 +7,17 @@
         are the ones listed in docs/scenarios/s0.md section 4-1.
 
             N01  admin_action     plain PowerShell management script
-            N02  admin_action     outbound HTTPS lookup           (see below)
+            N02  admin_action     outbound connection from its own process
             N03  file_operation   copy and compress work files
             N04  admin_action     local backup and cleanup
 
-        N02 needs a globally routable destination, so it is not implemented in
-        this file. The destination and the network mode are decided in issue #71.
-        Until then the action raises, and -Rehearsal skips it so the artifact
-        flow can be exercised without any outbound traffic.
+        N02 needs a globally routable destination (issue #71). In a formal run a
+        dedicated worker process (New-ConnectionWorker) makes one approved TCP
+        connection with no payload, and its EID 3 is verified against that
+        worker's own ProcessGuid so a background connection is never taken for
+        N02. -Rehearsal skips N02 and needs no approval, so the artifact flow can
+        be exercised without any outbound traffic. The approval and connection
+        helpers live in run-common.ps1 and docs/scenarios/s0-formal-actions.md.
 
         Shortcut controls (docs/scenarios/s0.md section 7): both runs use the
         same account, the same working directory and the s0_ filename prefix,
@@ -50,6 +53,12 @@ param(
     [Parameter(Mandatory = $true)][string]$SysmonConfigPath,
     [string]$ExpectedSysmonConfigSha256,
     [string]$WorkDir = "C:\S0\work",
+    [int]$AnchorTimeoutSec = 60,
+    [string]$ApprovedStartUtc,
+    [string]$ApprovedEndUtc,
+    [string]$ApprovedComputerName,
+    [int]$MaxConnectionAttempts = 1,
+    [int]$ConnectTimeoutMs = 3000,
     [switch]$Rehearsal
 )
 
@@ -57,23 +66,6 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 . (Join-Path $PSScriptRoot "..\run-common.ps1")
-
-function Invoke-ExternalLookup {
-    <#
-        N02 - outbound HTTPS lookup.
-
-        Not implemented. The destination must satisfy the Evidence condition
-        script_interpreter_external_connection (globally routable address), and
-        the network mode for a run that leaves the isolated network is decided in
-        issue #71. Implement this action only after that decision is recorded in
-        docs/scenarios/s0.md, and keep it to a single connection.
-    #>
-    param([Parameter(Mandatory = $true)]$Context)
-
-    $target = $Context.scenario.external_connection.target
-    throw ("N02 is not implemented. external_connection.target='" + $target +
-        "'; see " + $Context.scenario.external_connection.decision_reference)
-}
 
 
  # ---------------------------------------------------------------------------
@@ -89,7 +81,20 @@ $context = New-RunContext -RunId $RunId -RunType "normal" -ScenarioJsonPath $Sce
     -SysmonConfigPath $SysmonConfigPath -ExpectedSysmonConfigSha256 $ExpectedSysmonConfigSha256 `
     -Rehearsal:$Rehearsal
 
+ # Validate every approval input before anything runs, and again right before N02.
+ # Rehearsal requires no approval and makes no connection.
+$approval = $null
+if (-not $Rehearsal) {
+    $approval = Assert-FormalConnectionApproval -Context $context `
+        -ApprovedStartUtc $ApprovedStartUtc -ApprovedEndUtc $ApprovedEndUtc `
+        -ApprovedComputerName $ApprovedComputerName -MaxConnectionAttempts $MaxConnectionAttempts
+}
+
 Initialize-WorkDir -Path $WorkDir
+
+$worker = $null
+
+try {
 
 Write-Step "N01 management script"
 Wait-ForOffset -Context $context -Rehearsal:$Rehearsal `
@@ -97,14 +102,27 @@ Wait-ForOffset -Context $context -Rehearsal:$Rehearsal `
 $n01 = Start-ScenarioScript -ScriptPath (Join-Path $WorkDir "s0_inventory.ps1")
 Add-ExecutionRecord -Context $context -ActionId "N01" -Timestamp $n01.started_at
 
-Write-Step "N02 outbound HTTPS lookup"
+Write-Step "N02 outbound connection from its own process"
 Wait-ForOffset -Context $context -Rehearsal:$Rehearsal `
     -OffsetSec (Get-ActionOffset -Context $context -ActionId "N02")
+$n02WorkerGuid = $null
+$n02StartedAt = $null
 if ($Rehearsal) {
     Write-Fail "N02 skipped (rehearsal)"
 } else {
-    $n02StartedAt = Get-Date
-    Invoke-ExternalLookup -Context $context
+    # A dedicated worker process makes the connection, so N02's EID 3 carries that
+    # process's own ProcessGuid and cannot be confused with another background
+    # process's EID 3.
+    $worker = New-ConnectionWorker -WorkDir $WorkDir -RunId $RunId -Approval $approval `
+        -ConnectTimeoutMs $ConnectTimeoutMs
+    $n02WorkerGuid = (Get-AnchorTelemetry -ProcessId $worker.process.Id -Since $worker.started_at `
+        -TimeoutSec $AnchorTimeoutSec).process_guid
+
+    Assert-FormalConnectionApproval -Context $context `
+        -ApprovedStartUtc $ApprovedStartUtc -ApprovedEndUtc $ApprovedEndUtc `
+        -ApprovedComputerName $ApprovedComputerName -MaxConnectionAttempts $MaxConnectionAttempts | Out-Null
+    $connection = Invoke-WorkerConnection -Worker $worker -Approval $approval
+    $n02StartedAt = $connection.started_utc
     Add-ExecutionRecord -Context $context -ActionId "N02" -Timestamp $n02StartedAt
 }
 
@@ -127,6 +145,18 @@ Wait-ForObservationEnd -Context $context -AnchorTime $context.start_time -Rehear
 $endTime = Get-Date
 $events = Export-SysmonRunWindow -Context $context
 
+ # N02 causality: the EID 3 must be the worker's own connection to the approved
+ # destination. Fail closed in a formal run so a background process's EID 3 can
+ # never pass as N02.
+if (-not $Rehearsal) {
+    $causality = Test-ActionCausality -Events $events -AnchorProcessGuid $n02WorkerGuid `
+        -ChildStartedAt $n02StartedAt `
+        -ExpectedDestination $context.scenario.external_connection.target `
+        -ExpectedPort $context.scenario.external_connection.port
+    Write-Ok ("N02 causality: " + $causality.status + " (" + $causality.reason + ")")
+    Assert-FormalCausalityMatched -Causality $causality
+}
+
  # A normal run carries no Ground Truth reference: RunMetadata rejects a normal
  # run whose reference_time is not null (docs/scenarios/s0.md section 5).
 Write-ExecutionRecord -Context $context | Out-Null
@@ -136,3 +166,12 @@ Write-RunManifest -Context $context | Out-Null
 
 Write-Ok ("normal run finished: " + $context.run_id + " events=" + $events.Count +
     " actions=" + $context.execution_records.Count)
+
+}
+finally {
+    # Stop the N02 worker and remove its channel so no trigger/status remains for
+    # a later run. In rehearsal $worker is null and nothing needs stopping.
+    if ($null -ne $worker) {
+        Stop-ConnectionWorker -Worker $worker
+    }
+}
