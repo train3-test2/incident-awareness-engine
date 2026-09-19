@@ -1,0 +1,17 @@
+{
+  "run_id": "RUN-20260920-001",
+  "input_csv": "/inputs/fast/handoff.csv",
+  "input_sha256": "87f699f4f0b988596e2f54c2dffea0a0742e88132bea5bf224d9889cff7df881",
+  "config_path": "/inputs/fast/config.json",
+  "config_sha256": "cd402f1925ddac741a4d815d1e3fea28a3c17bc754e7230c40e7c6472ad32b3c",
+  "output_sha256": "078d67b878929b1009523ad8ea330872c317a12b75bf680626b1cdc811b4962c",
+  "input_row_count": 1,
+  "hit_count": 1,
+  "hits": [
+    {
+      "hit_id": "RUN-20260920-001-hit-1",
+      "source_row_index": 1,
+      "rule_id": "mock-rule"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "run_id": "RUN-20260920-001",
+  "scenario_id": "S0",
+  "run_type": "attack",
+  "target_host": "WIN-01",
+  "start_time": "2026-09-20T00:00:00.000Z",
+  "end_time": "2026-09-20T00:00:20.000Z",
+  "schema_versions": {
+    "run_metadata": "v0.2",
+    "event": "v0.2",
+    "evidence": "v0.2",
+    "fast_hit": "v0.2",
+    "detection_result": "v0.2",
+    "fusion_result": "v0.2",
+    "decision_result": "v0.2",
+    "execution_record": "v0.1",
+    "evaluation_input": "v0.1"
+  }
+}

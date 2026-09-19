@@ -1,2 +1,10 @@
 # Sysmon config hashes are computed over file bytes, so pin the line endings (samples/raw/README.md section 4)
 configs/sysmon/*.xml text eol=lf
+tests/fixtures/pipeline/first_cycle/sysmon-0001.jsonl text eol=lf
+tests/fixtures/pipeline/first_cycle/fast/handoff.csv text eol=lf
+tests/fixtures/pipeline/first_cycle/fast/config.json text eol=lf
+tests/fixtures/pipeline/first_cycle/fast/hits.jsonl text eol=lf
+tests/fixtures/pipeline/first_cycle/sysmon-0001.jsonl text eol=lf
+tests/fixtures/pipeline/first_cycle/fast/handoff.csv text eol=lf
+tests/fixtures/pipeline/first_cycle/fast/config.json text eol=lf
+tests/fixtures/pipeline/first_cycle/fast/hits.jsonl text eol=lf
