@@ -50,6 +50,7 @@ class TemporalReplayRunner:
         entity_id: str,
         run_start: datetime,
         run_end: datetime,
+        replay_end: datetime | None = None,
     ) -> TemporalReplayResult:
         self._validate_run_time(run_start, field_name="run_start")
         self._validate_run_time(run_end, field_name="run_end")
@@ -57,8 +58,27 @@ class TemporalReplayRunner:
         if run_end < run_start:
             raise ValueError("run_end must not be earlier than run_start")
 
-        if (run_end - run_start) % self.step_size != timedelta(0):
-            raise ValueError("run_end must align with step_size from run_start")
+        effective_end = run_end
+        boundary_end_reason = "run_end"
+        boundary_field_name = "run_end"
+
+        if replay_end is not None:
+            self._validate_run_time(replay_end, field_name="replay_end")
+
+            if replay_end < run_start:
+                raise ValueError("replay_end must not be earlier than run_start")
+
+            if replay_end > run_end:
+                raise ValueError("replay_end must not be later than run_end")
+
+            effective_end = replay_end
+
+            if replay_end < run_end:
+                boundary_end_reason = "replay_end"
+                boundary_field_name = "replay_end"
+
+        if (effective_end - run_start) % self.step_size != timedelta(0):
+            raise ValueError(f"{boundary_field_name} must align with step_size from run_start")
 
         ordered_evidences = list(evidences)
         previous_evidence_timestamp: datetime | None = None
@@ -78,8 +98,8 @@ class TemporalReplayRunner:
             if evidence.timestamp < run_start:
                 raise ValueError("Evidence timestamp must not be earlier than run_start")
 
-            if evidence.timestamp > run_end:
-                raise ValueError("Evidence timestamp must not exceed run_end")
+            if evidence.timestamp > effective_end:
+                raise ValueError(f"Evidence timestamp must not exceed {boundary_field_name}")
 
             if (
                 previous_evidence_timestamp is not None
@@ -99,7 +119,7 @@ class TemporalReplayRunner:
         evidence_index = 0
         current_time = run_start
 
-        while current_time <= run_end:
+        while current_time <= effective_end:
             while (
                 evidence_index < len(ordered_evidences)
                 and ordered_evidences[evidence_index].timestamp <= current_time
@@ -142,7 +162,8 @@ class TemporalReplayRunner:
             trajectory,
             run_id=run_id,
             entity_id=entity_id,
-            run_end=run_end,
+            run_end=effective_end,
+            boundary_end_reason=boundary_end_reason,
         )
 
         return TemporalReplayResult(

@@ -19,15 +19,15 @@
 - RunMetadata는 `schema_versions` 객체로 Run·Event·Evidence·Fusion·Detection·Decision 계약의 적용 버전을 각각 기록한다.
 - 필드 추가, 이름 변경, 의미 변경은 해당 Contract의 버전을 `v0.1 → v0.2`처럼 올린다.
 - 하나의 Run에서 생산한 결과는 각 Contract별로 기록된 버전을 따라 해석한다.
-- v0.1과 v0.2는 필드 의미가 달라, 변환 규칙 없이 혼용하지 않는다.
+- 서로 다른 Contract 버전은 필드 의미가 다를 수 있으므로, 변환 규칙 없이 혼용하지 않는다.
 - 각 Contract는 정의된 필드만 허용하며, 정의되지 않은 입력 필드는 검증 오류로 처리한다.
 
-| Contract        | 최초 또는 현행 버전 | v0.2 적용 버전 | 비고                                               |
+| Contract        | 최초 버전 | 현재 적용 버전 | 비고                                               |
 | --------------- | ------------------- | -------------- | -------------------------------------------------- |
 | RunMetadata     | `v0.1`              | `v0.2`         | `schema_versions`, `reference_policy_version` 반영 |
 | NormalizedEvent | `v0.1`              | `v0.2`         | 시간축·Provenance drift 복구                       |
 | EvidenceResult  | `v0.1`              | `v0.2`         | `source_event_ids`에서 `event_ids`로 공식 전환     |
-| FusionResult    | `v0.1`              | `v0.2`         | `fusion_episodes[]` 추가                           |
+| FusionResult    | `v0.1`              | `v0.3`         | `fusion_episodes[]`, `replay_end` 종료 사유 반영       |
 | DetectionResult | `v0.1`              | `v0.2`         | Result 참조·상태 규칙 정렬                         |
 | DecisionResult  | `v0.1`              | `v0.2`         | `t_e`, `decision_path`, `winning_path` 정렬        |
 | FastHitRecord   | 없음                | `v0.2`         | 신규 Contract                                      |
@@ -191,7 +191,7 @@ Evaluation entity_id host-level grouping/provenance key
 
 `entity_id`는 D-01에 따라 non-null인 Endpoint Host 식별자다. Evidence가 참조하는 Source Event의 `NormalizedEvent.host_id`를 사용한다.
 
-## 7. FusionResult와 DetectionResult v0.2
+## 7. FusionResult v0.3와 DetectionResult v0.2
 
 현재 `result-contracts.md`의 필드와 상태별 null 규칙을 유지한다.
 
@@ -201,7 +201,7 @@ Evaluation entity_id host-level grouping/provenance key
 - `detected` 상태에서는 해당 판단 시각이 필수다.
 - `miss`, `not_evaluated` 상태에서는 해당 판단 시각은 `null`이다.
 
-`FusionResult`에는 `model_version`, `scoring_config_version`, `scoring_profile_id`, `scoring_method`, `scorer_version`, `score_at_decision`, `contributing_evidence_ids`, `fusion_episodes[]`를 유지한다. `model_version`은 Fusion 모델 또는 모델 artifact의 버전이고, `scorer_version`은 해당 모델의 점수 산출 구현 버전이다. 모델과 점수 산출 구현은 독립적으로 변경될 수 있으므로 둘을 함께 기록한다. `fusion_time`은 최초 ACTIVE 진입 시각으로 latch하며 이후 release·re-entry가 발생해도 바꾸지 않는다. 상태기계 이력은 `run_end`까지 보존한다. `DetectionResult`에는 `detector_id`, `rule_id`, `rule_version`, `severity`를 유지한다.
+`FusionResult`에는 `model_version`, `scoring_config_version`, `scoring_profile_id`, `scoring_method`, `scorer_version`, `score_at_decision`, `contributing_evidence_ids`, `fusion_episodes[]`를 유지한다. `model_version`은 Fusion 모델 또는 모델 artifact의 버전이고, `scorer_version`은 해당 모델의 점수 산출 구현 버전이다. 모델과 점수 산출 구현은 독립적으로 변경될 수 있으므로 둘을 함께 기록한다. `fusion_time`은 최초 ACTIVE 진입 시각으로 latch하며 이후 release·re-entry가 발생해도 바꾸지 않는다. 상태기계 이력은 실제 Run 종료 또는 명시된 Replay 경계까지 보존한다. `DetectionResult`에는 `detector_id`, `rule_id`, `rule_version`, `severity`를 유지한다.
 
 `fusion_episodes[]`의 각 항목은 아래 구조를 따른다.
 
@@ -211,13 +211,13 @@ Evaluation entity_id host-level grouping/provenance key
 | `run_id`                    | String       |    O |    X | 소속 실행                                               |
 | `entity_id`                 | String       |    O |    X | PoC v0 canonical Endpoint Host 식별자                   |
 | `start_time`                | DateTime     |    O |    X | ACTIVE 진입 시각                                        |
-| `end_time`                  | DateTime     |    X |    O | Episode 종료 시각; `run_end` 전 미종료 상태면 `null`    |
-| `end_reason`                | Enum         |    X |    O | `released`, `run_end`; 종료 전에는 `null`               |
+| `end_time`                  | DateTime     |    X |    O | Episode 종료 시각; 종료 전 상태면 `null`                |
+| `end_reason`                | Enum         |    X |    O | `released`, `run_end`, `replay_end`; 종료 전에는 `null`               |
 | `score_at_start`            | Number       |    O |    X | ACTIVE 진입 시점 점수                                   |
 | `peak_score`                | Number       |    O |    X | Episode 동안의 최고 점수                                |
 | `contributing_evidence_ids` | List[String] |    X |    O | Episode에 기여한 Evidence 식별자                        |
 
-Run이 종료될 때 ACTIVE 상태인 Episode는 `end_time`을 `run_end`로 기록하고 `end_reason`을 `run_end`로 기록한다.
+실제 Run이 종료될 때 ACTIVE 상태인 Episode는 `end_time`을 `run_end`로 기록하고 `end_reason`을 `run_end`로 기록한다. 실제 Run은 계속되지만 명시된 Replay 경계에서 처리를 종료한 경우에는 `end_time`을 `replay_end`로 기록하고 `end_reason`을 `replay_end`로 기록한다.
 
 `episode_id`는 전역 식별자가 아니다. 서로 다른 host는 각각 `FEP-001`을 가질 수 있으며, Fusion Episode의 논리적 식별자는 `(run_id, entity_id, episode_id)` 복합키다.
 
