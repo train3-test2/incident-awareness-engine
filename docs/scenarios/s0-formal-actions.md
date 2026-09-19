@@ -57,8 +57,23 @@ approval_window_invalid_range 시작이 종료보다 늦거나 같음
 target_not_approved / port_not_approved / protocol_not_approved / attempts_not_approved
 ```
 
-승인 시각은 UTC 로 직렬화해 전달하고, worker 는 InvariantCulture 와 AssumeUniversal·
-AdjustToUniversal 로 parsing 해 local time 으로 암묵 변환하지 않는다.
+**승인 시각 입력 형식.** 부모 gate 와 worker 는 같은 parser(`ConvertTo-ApprovedUtc`)를 쓴다. worker 는
+`run-common.ps1` 을 dot-source 하므로 구현이 한 곳뿐이고, 같은 입력을 두 경로가 다르게 해석할 수 없다.
+
+```text
+허용   ISO 8601 UTC, 끝에 대문자 Z 필수
+       2026-09-19T05:00:00Z
+       2026-09-19T05:00:00.123Z      소수 초 허용
+거부   2026-09-19T05:00:00           offset 없음
+       2026-09-19T05:00:00+00:00     offset 표기
+       2026-09-19T14:00:00+09:00     다른 offset
+       09/20/2026 05:00:00           로캘 의존 표기
+       빈 문자열, 잘못된 날짜
+```
+
+InvariantCulture 의 `TryParseExact` 에 위 두 형식만 넘기고 AssumeUniversal·AdjustToUniversal 로
+UTC 로 정규화한다. 로캘 fallback 은 두지 않는다. 승인 구간은 `[start, end)` 이므로 종료 시각과 같은
+순간은 거부한다. 실제 승인 시각은 저장소에 넣지 않고 실행 시 인자로 전달한다.
 
 - target 이 승인된 global IPv4, port 1..65535, protocol TCP 인지
 - 승인 computer name 과 `$env:COMPUTERNAME` 의 대소문자 무시 exact match

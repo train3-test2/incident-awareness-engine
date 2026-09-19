@@ -591,6 +591,105 @@ Assert-True "more than one approved attempt creates no client" ($script:FakeClie
 Assert-True "A02 and N02 share one gate function" (
     $null -ne (Get-Command Invoke-ApprovedTcpAttempt -ErrorAction SilentlyContinue))
 
+ # ---------------------------------------------------------------------------
+ # Strict approved UTC parser - shared by the parent gate and the worker
+ #
+ # No clock is waited on and no socket is created in this section.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== approved UTC parser ===" -ForegroundColor Cyan
+
+foreach ($ok in @("2026-09-20T05:00:00Z", "2026-09-20T05:00:00.123Z", "2026-09-20T05:00:00.1234567Z")) {
+    $parsed = ConvertTo-ApprovedUtc -Value $ok -Label "ApprovedStartUtc"
+    Assert-True "ISO 8601 UTC with Z is accepted: $ok" ($parsed.ok -and $parsed.value.Kind -eq "Utc")
+}
+
+foreach ($bad in @(
+    "2026-09-20T05:00:00", "2026-09-20 05:00:00", "2026-09-20T05:00:00+00:00",
+    "2026-09-20T14:00:00+09:00", "09/20/2026 05:00:00", "20.09.2026 05:00:00",
+    "", "2026-13-45T05:00:00Z", "2026-09-20T05:00:00z", " 2026-09-20T05:00:00Z", "not-a-time")) {
+    $parsed = ConvertTo-ApprovedUtc -Value $bad -Label "ApprovedStartUtc"
+    Assert-True "refused: '$bad'" (-not $parsed.ok)
+}
+
+Assert-True "the refusal names the expected format" (
+    (ConvertTo-ApprovedUtc -Value "2026-09-20T05:00:00" -Label "ApprovedStartUtc").reason -like
+        "*ISO 8601 UTC ending in 'Z'*")
+
+ # A value with Z and the same value with an explicit +00:00 offset must not be
+ # treated alike: only the Z form is accepted at all.
+Assert-True "the Z form parses to the expected UTC instant" (
+    (ConvertTo-ApprovedUtc -Value "2026-09-20T05:00:00Z" -Label "x").value -eq
+        [datetime]::SpecifyKind([datetime]"2026-09-20T05:00:00", [System.DateTimeKind]::Utc))
+
+ # ---------------------------------------------------------------------------
+ # Parent and worker agree on the same inputs
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== parent and worker parser agreement ===" -ForegroundColor Cyan
+
+$agreeNow = [datetime]::SpecifyKind([datetime]"2026-09-20T12:00:00", [System.DateTimeKind]::Utc)
+$agreeStart = "2026-09-20T11:00:00Z"
+$agreeEnd = "2026-09-20T13:00:00.500Z"
+
+$parentApproval = Assert-FormalConnectionApproval -Context (New-ApprovalContext) `
+    -ApprovedStartUtc $agreeStart -ApprovedEndUtc $agreeEnd `
+    -ApprovedComputerName $env:COMPUTERNAME -MaxConnectionAttempts 1 -NowUtc $agreeNow
+Assert-True "parent resolves start to the shared parser's value" (
+    $parentApproval.window_start -eq (ConvertTo-ApprovedUtc -Value $agreeStart -Label "s").value)
+Assert-True "parent resolves end to the shared parser's value" (
+    $parentApproval.window_end -eq (ConvertTo-ApprovedUtc -Value $agreeEnd -Label "e").value)
+
+$workerWindow = Test-ApprovalWindowNow -ApprovedStartUtc $agreeStart -ApprovedEndUtc $agreeEnd `
+    -NowUtc $agreeNow
+Assert-True "worker allows the same window the parent allowed" ($workerWindow.allowed)
+
+ # Every input the parent refuses, the worker refuses too.
+foreach ($bad in @(
+    "2026-09-20T11:00:00", "2026-09-20T11:00:00+00:00", "2026-09-20T20:00:00+09:00",
+    "09/20/2026 11:00:00", "")) {
+    $parentRefused = $false
+    try {
+        Assert-FormalConnectionApproval -Context (New-ApprovalContext) -ApprovedStartUtc $bad `
+            -ApprovedEndUtc $agreeEnd -ApprovedComputerName $env:COMPUTERNAME `
+            -MaxConnectionAttempts 1 -NowUtc $agreeNow | Out-Null
+    } catch {
+        $parentRefused = $true
+    }
+    $workerRefused = -not (Test-ApprovalWindowNow -ApprovedStartUtc $bad -ApprovedEndUtc $agreeEnd `
+        -NowUtc $agreeNow).allowed
+    Assert-True "parent and worker both refuse '$bad'" ($parentRefused -and $workerRefused)
+}
+
+ # ---------------------------------------------------------------------------
+ # Worker gate with strict inputs - fake clock and fake client factory
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== worker gate with strict UTC inputs ===" -ForegroundColor Cyan
+
+$strictInside = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" `
+    -Config (New-WorkerConfig -StartUtc "2026-09-20T11:00:00Z" -EndUtc "2026-09-20T13:00:00Z")
+Assert-True "a Z window inside the range connects once" (
+    $strictInside.success -and $script:FakeClientsCreated -eq 1)
+
+$fractional = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" `
+    -Config (New-WorkerConfig -StartUtc "2026-09-20T11:00:00.250Z" -EndUtc "2026-09-20T13:00:00.750Z")
+Assert-True "fractional seconds are accepted by the worker" (
+    $fractional.success -and $script:FakeClientsCreated -eq 1)
+
+foreach ($case in @(
+    @{ Name = "offset-less"; Start = "2026-09-20T11:00:00" },
+    @{ Name = "plus-zero"; Start = "2026-09-20T11:00:00+00:00" },
+    @{ Name = "plus-nine"; Start = "2026-09-20T02:00:00+09:00" },
+    @{ Name = "locale"; Start = "09/20/2026 11:00:00" },
+    @{ Name = "empty"; Start = "" })) {
+    $refused = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" `
+        -Config (New-WorkerConfig -StartUtc $case.Start -EndUtc "2026-09-20T13:00:00Z")
+    Assert-True "worker refuses a $($case.Name) start" (
+        $refused.error_kind -eq "approval_window_malformed")
+    Assert-True "worker creates no client for a $($case.Name) start" ($script:FakeClientsCreated -eq 0)
+}
+
 Write-Host ""
 if ($script:Failures -eq 0) {
     Write-Host "ALL $($script:Total) CHECKS PASSED" -ForegroundColor Green

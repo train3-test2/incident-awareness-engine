@@ -934,16 +934,16 @@ function Assert-FormalConnectionApproval {
             "', approval is for '" + $ApprovedComputerName + "'")
     }
 
-    $start = [datetime]::MinValue
-    $end = [datetime]::MinValue
-    if (-not [datetime]::TryParse($ApprovedStartUtc, [ref]$start)) {
-        throw "ApprovedStartUtc is not a valid time: '$ApprovedStartUtc'"
-    }
-    if (-not [datetime]::TryParse($ApprovedEndUtc, [ref]$end)) {
-        throw "ApprovedEndUtc is not a valid time: '$ApprovedEndUtc'"
-    }
-    $start = $start.ToUniversalTime()
-    $end = $end.ToUniversalTime()
+    # Same strict UTC parser as the worker (ConvertTo-ApprovedUtc): only ISO 8601
+    # with a capital Z. A locale dependent or offset bearing value is refused
+    # here, before a worker or a socket exists.
+    $parsedStart = ConvertTo-ApprovedUtc -Value $ApprovedStartUtc -Label "ApprovedStartUtc"
+    if (-not $parsedStart.ok) { throw $parsedStart.reason }
+    $parsedEnd = ConvertTo-ApprovedUtc -Value $ApprovedEndUtc -Label "ApprovedEndUtc"
+    if (-not $parsedEnd.ok) { throw $parsedEnd.reason }
+
+    $start = $parsedStart.value
+    $end = $parsedEnd.value
     if ($start -ge $end) {
         throw ("approved window is empty: start " + (Get-UtcStamp $start) +
             " is not before end " + (Get-UtcStamp $end))
@@ -970,6 +970,53 @@ function Assert-FormalConnectionApproval {
     }
 }
 
+# The only accepted spellings of an approved time: ISO 8601 UTC with a capital
+# Z, with or without fractional seconds. "T" and "Z" are quoted so they are
+# literals, and AssumeUniversal + AdjustToUniversal then read the value as UTC.
+# There is deliberately no locale fallback and no offset form: "+00:00" and a
+# value with no offset at all are both refused, so the parent and the worker
+# can never disagree about what an input means.
+$APPROVED_UTC_FORMATS = [string[]]@(
+    "yyyy-MM-dd'T'HH:mm:ss'Z'",
+    "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF'Z'"
+)
+
+function ConvertTo-ApprovedUtc {
+    <#
+        Parse one approved time string as strict ISO 8601 UTC.
+
+        This is the single parser for approved times. The parent gate and the
+        worker both call it - the worker dot-sources this file - so an input can
+        never be accepted in one place and refused in the other.
+
+        Returns ok, the UTC value, and a reason when it is refused.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][AllowNull()][string]$Value,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $parsed = [datetime]::MinValue
+    $ok = [datetime]::TryParseExact(
+        [string]$Value,
+        $APPROVED_UTC_FORMATS,
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        ([System.Globalization.DateTimeStyles]::AssumeUniversal -bor
+            [System.Globalization.DateTimeStyles]::AdjustToUniversal),
+        [ref]$parsed)
+
+    if (-not $ok) {
+        return [ordered]@{
+            ok     = $false
+            value  = $null
+            reason = ($Label + " must be ISO 8601 UTC ending in 'Z' " +
+                "(yyyy-MM-ddTHH:mm:ss[.fffffff]Z), found '" + [string]$Value + "'")
+        }
+    }
+
+    return [ordered]@{ ok = $true; value = $parsed; reason = $null }
+}
+
 function Test-ApprovalWindowNow {
     <#
         Decide whether a moment falls inside the approved UTC window.
@@ -988,16 +1035,17 @@ function Test-ApprovalWindowNow {
     )
 
     $now = $NowUtc.ToUniversalTime()
-    $culture = [System.Globalization.CultureInfo]::InvariantCulture
-    $styles = [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor `
-        [System.Globalization.DateTimeStyles]::AssumeUniversal
 
-    $start = [datetime]::MinValue
-    $end = [datetime]::MinValue
-    if (-not [datetime]::TryParse($ApprovedStartUtc, $culture, $styles, [ref]$start) -or
-        -not [datetime]::TryParse($ApprovedEndUtc, $culture, $styles, [ref]$end)) {
+    # The same strict parser the parent gate uses, so an input the parent
+    # accepted cannot be read differently here.
+    $parsedStart = ConvertTo-ApprovedUtc -Value $ApprovedStartUtc -Label "ApprovedStartUtc"
+    $parsedEnd = ConvertTo-ApprovedUtc -Value $ApprovedEndUtc -Label "ApprovedEndUtc"
+    if (-not $parsedStart.ok -or -not $parsedEnd.ok) {
         return [ordered]@{ allowed = $false; reason = "approval_window_malformed"; now = $now }
     }
+
+    $start = $parsedStart.value
+    $end = $parsedEnd.value
 
     if ($start -ge $end) {
         return [ordered]@{ allowed = $false; reason = "approval_window_invalid_range"; now = $now }
@@ -1333,12 +1381,14 @@ function Invoke-WorkerConnection {
         throw ("worker reported " + [string]$status.attempts_made + " connection attempts, approved 1")
     }
 
-    $culture = [System.Globalization.CultureInfo]::InvariantCulture
-    $styles = [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor `
-        [System.Globalization.DateTimeStyles]::AssumeUniversal
+    # The worker stamps its times with Get-UtcStamp, which is the same ISO 8601
+    # UTC spelling the approved times use, so the same parser reads it back.
+    $startedUtc = ConvertTo-ApprovedUtc -Value ([string]$status.started_utc) -Label "worker started_utc"
+    if (-not $startedUtc.ok) { throw $startedUtc.reason }
+
     return [ordered]@{
         pid          = [int]$status.pid
-        started_utc  = [datetime]::Parse([string]$status.started_utc, $culture, $styles)
+        started_utc  = $startedUtc.value
         target       = [string]$status.target
         port         = [int]$status.port
         protocol     = [string]$status.protocol
