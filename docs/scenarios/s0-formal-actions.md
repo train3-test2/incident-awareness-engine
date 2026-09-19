@@ -43,6 +43,23 @@ python tools/scenario_to_json.py scenarios/S0/scenario.yaml --out build/S0/scena
 runner 는 rehearsal 이 아닐 때만 아래를 검사한다(`Assert-FormalConnectionApproval`). 검사는 Run
 시작 전 1회, A02·N02 직전에 다시 1회 수행하며, 어떤 네트워크 객체도 만들기 전에 실패하면 중단한다.
 
+**worker 도 소켓을 만들기 직전에 승인 시간을 다시 검사한다**(`Invoke-ApprovedTcpAttempt`). 부모
+검사와 worker 실행 사이에 승인 구간이 닫혔으면 연결하지 않는다. 순서는 trigger 확인 → config 읽기
+→ target·port·protocol·시도 수 재검증 → 승인 UTC 구간 parsing → 현재 UTC 취득 →
+`approved_start <= now < approved_end` 검사 → 통과한 경우에만 TCP 객체 생성이다. 실패하면 소켓을
+만들지 않고 시도 수 0 으로 종료하며, status 에 검사 시각과 사유를 남긴다.
+
+```text
+approval_window_not_started   승인 시작 전
+approval_window_expired       승인 종료 시각 이후 (종료 시각과 같은 순간 포함)
+approval_window_malformed     승인 시각을 읽을 수 없음
+approval_window_invalid_range 시작이 종료보다 늦거나 같음
+target_not_approved / port_not_approved / protocol_not_approved / attempts_not_approved
+```
+
+승인 시각은 UTC 로 직렬화해 전달하고, worker 는 InvariantCulture 와 AssumeUniversal·
+AdjustToUniversal 로 parsing 해 local time 으로 암묵 변환하지 않는다.
+
 - target 이 승인된 global IPv4, port 1..65535, protocol TCP 인지
 - 승인 computer name 과 `$env:COMPUTERNAME` 의 대소문자 무시 exact match
 - 승인 UTC 시작 < 승인 UTC 종료
@@ -64,6 +81,22 @@ runner 는 방화벽·NAT 규칙을 만들거나 지우지 않는다. 그것은 
 
 A02 는 반드시 A01 과 같은 프로세스에서 일어나야 한다(`s0.md` §4-2, 같은 ProcessGuid). 이를 위해
 A01 은 연결 worker(`New-ConnectionWorker`)로 시작한다.
+
+**실행 형식은 Run 마다 명시적으로 지정한다**(`Get-WorkerLaunch`, 기본값에 기대지 않는다).
+
+| Run | launch mode | 명령줄 | 기대 Evidence |
+| --- | --- | --- | --- |
+| Attack A01 | `EncodedCommand` | `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand <base64>` | `encoded_powershell_command` + `script_interpreter_external_connection` |
+| Normal N02 | `File` | `powershell.exe ... -File <worker> -ChannelDir <channel>` | `script_interpreter_external_connection` 만 |
+
+- Attack A01 은 S0 Attack 계약이 요구하는 `-EncodedCommand` 형식으로 실행한다. base64 는 PowerShell
+  규칙대로 UTF-16LE 를 인코딩한 값이고, 내용은 저장소가 생성한 고정 bootstrap(worker 스크립트를
+  채널 디렉터리 인자와 함께 호출하는 한 줄)뿐이다. 사용자 제공 명령 문자열을 인코딩하거나 실행하지
+  않고, `Invoke-Expression` 도 쓰지 않는다. 경로는 작은따옴표 literal 로 넣고 따옴표는 이중화한다.
+- 명령줄에 `-File`·`-Command` 가 `-EncodedCommand` 앞에 오면 추출기가 거기서 멈추므로, encoded
+  모드의 인자에는 그 토큰을 넣지 않는다.
+- **Normal N02 는 encoded 형식이 아니다.** 같은 worker 를 `-File` 로 실행하므로 Normal 에는
+  `encoded_powershell_command` 가 생기지 않는다.
 
 - worker 는 run-specific 채널 디렉터리(`s0_conn_<run_id>`) 아래의 config·trigger·status 만 쓴다.
   채널이 이미 있으면 시작을 거부해 이전 Run 의 trigger/status 재사용을 막는다.
@@ -125,15 +158,22 @@ reference_time + evaluation_horizon`)는 후속 평가 단계의 책임이다.
 
 ## 9. 테스트
 
-실제 네트워크·VM 없이 합성 fixture 로만 검증한다.
+실제 네트워크·VM 없이 합성 fixture 로만 검증한다. **실제 연결 테스트는 수행하지 않았다.** 테스트는
+소켓을 만들지 않고, 승인 목적지로 연결을 시도하지도 않는다.
 
 - `tests/tools/test_scenario_to_json.py`: renderer override 규칙(IPv4 허용·거부, port·protocol,
   원본 YAML 불변, Normal·Attack 동일 값)을 pytest 로 검증한다. CI(Python 3.13)에서 실행된다.
+- `tests/evidence/test_s0_runner_launch_evidence.py`: runner 가 실제로 실행하는 명령줄 형식을
+  합성 NormalizedEvent 로 만들어 운영 `extract_evidence` 에 넣고, Attack 은 Evidence 2종, Normal 은
+  외부 연결 Evidence 1종만 나오는지 확인한다. Fusion 동작은 PR #99 테스트가 담당하므로 중복하지
+  않는다.
 - `scenarios/S0/tests/Test-RunCommonGuards.ps1`: `Test-ApprovedGlobalIPv4`,
   `Assert-FormalConnectionApproval`(시간·computer·시도 수·target/port/protocol), `Test-ActionCausality`
-  (ProcessGuid·목적지·포트·시간·background EID 3 오인 방지)를 합성 이벤트로 검증한다. 저장소에
-  PowerShell 테스트 harness 가 없어 CI 는 이 스크립트를 실행하지 않는다. Windows PowerShell 에서
-  아래로 수동 실행한다.
+  (ProcessGuid·목적지·포트·시간·background EID 3 오인 방지), `Get-WorkerLaunch`(Attack encoded /
+  Normal file, base64 decode), `Invoke-ApprovedTcpAttempt`(worker 측 승인 시간 검사)를 합성
+  이벤트로 검증한다. 시간과 TCP client 는 fake clock·fake client factory 로 주입해 실제 시간을
+  기다리거나 소켓을 만들지 않는다. 저장소에 PowerShell 테스트 harness 가 없어 CI 는 이 스크립트를
+  실행하지 않는다. Windows PowerShell 에서 아래로 수동 실행한다.
 
 ```text
 powershell -ExecutionPolicy Bypass -File scenarios\S0\tests\Test-RunCommonGuards.ps1

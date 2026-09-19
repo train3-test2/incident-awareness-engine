@@ -219,8 +219,13 @@ if ($Rehearsal) {
 } else {
     # A01 is the connection worker. A02 is performed inside this same process, so
     # the EID 3 ProcessGuid equals this process's EID 1 ProcessGuid.
+    #
+    # EncodedCommand is requested explicitly: the S0 Attack contract requires the
+    # A01 process command line to carry -EncodedCommand, which is what produces
+    # the encoded_powershell_command Evidence. The normal run asks for File and
+    # therefore never produces that Evidence.
     $worker = New-ConnectionWorker -WorkDir $WorkDir -RunId $RunId -Approval $approval `
-        -ConnectTimeoutMs $ConnectTimeoutMs
+        -LaunchMode "EncodedCommand" -ConnectTimeoutMs $ConnectTimeoutMs
     $a01 = [ordered]@{ process = $worker.process; started_at = $worker.started_at }
 }
 Add-ExecutionRecord -Context $context -ActionId "A01" -Timestamp $a01.started_at

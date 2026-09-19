@@ -35,6 +35,10 @@ $SYSMON_EVENT_IDS = @(1, 3)
 $EVTX_WINDOW_MARGIN_MS = 10000
 $RUN_ID_PATTERN = '^RUN-(?<date>[0-9]{8})-(?<sequence>[0-9]{3})$'
 
+# Captured while this file is dot-sourced so a worker process can load the same
+# helpers (Invoke-ApprovedTcpAttempt) the runner uses.
+$RUN_COMMON_PATH = $PSCommandPath
+
 function Write-Step { param([string]$Message) Write-Host "[*] $Message" -ForegroundColor Cyan }
 function Write-Ok { param([string]$Message) Write-Host "[+] $Message" -ForegroundColor Green }
 function Write-Fail { param([string]$Message) Write-Host "[!] $Message" -ForegroundColor Red }
@@ -966,16 +970,232 @@ function Assert-FormalConnectionApproval {
     }
 }
 
+function Test-ApprovalWindowNow {
+    <#
+        Decide whether a moment falls inside the approved UTC window.
+
+        Both bounds are parsed with InvariantCulture and AssumeUniversal +
+        AdjustToUniversal, so a value without an offset is read as UTC and never
+        as local time. The window is half open: approved_start <= now < approved_end.
+
+        Returns allowed, a reason for a refusal, and the UTC moment that was
+        checked. The reasons are the error_kind values the worker status records.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ApprovedStartUtc,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ApprovedEndUtc,
+        [Parameter(Mandatory = $true)][datetime]$NowUtc
+    )
+
+    $now = $NowUtc.ToUniversalTime()
+    $culture = [System.Globalization.CultureInfo]::InvariantCulture
+    $styles = [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor `
+        [System.Globalization.DateTimeStyles]::AssumeUniversal
+
+    $start = [datetime]::MinValue
+    $end = [datetime]::MinValue
+    if (-not [datetime]::TryParse($ApprovedStartUtc, $culture, $styles, [ref]$start) -or
+        -not [datetime]::TryParse($ApprovedEndUtc, $culture, $styles, [ref]$end)) {
+        return [ordered]@{ allowed = $false; reason = "approval_window_malformed"; now = $now }
+    }
+
+    if ($start -ge $end) {
+        return [ordered]@{ allowed = $false; reason = "approval_window_invalid_range"; now = $now }
+    }
+    if ($now -lt $start) {
+        return [ordered]@{ allowed = $false; reason = "approval_window_not_started"; now = $now }
+    }
+    if ($now -ge $end) {
+        return [ordered]@{ allowed = $false; reason = "approval_window_expired"; now = $now }
+    }
+
+    return [ordered]@{ allowed = $true; reason = $null; now = $now }
+}
+
+function Get-WorkerLaunch {
+    <#
+        Build the executable and argument list that starts the worker.
+
+        This is the single place a worker command line is produced: the runner
+        starts the process with exactly what this returns, and the tests check
+        the same values without starting a process.
+
+        Two launch modes, chosen explicitly by the caller, never by a default:
+
+          EncodedCommand  Attack A01. PowerShell is launched with
+                          -EncodedCommand so the process command line carries the
+                          option the S0 Attack contract requires and the Evidence
+                          extractor looks for. The encoded text is a fixed
+                          bootstrap this function builds; it only invokes the
+                          worker script this repository wrote, with the channel
+                          directory as a parameter. No user supplied command
+                          string is ever encoded or executed, and the worker
+                          still reads nothing executable from the trigger.
+
+          File            Normal N02. The worker is started with -File, so the
+                          normal run's command line has no encoded option and
+                          produces no encoded_powershell_command Evidence.
+
+        -EncodedCommand takes UTF-16LE text encoded as Base64, which is what
+        PowerShell expects. Paths are embedded as single quoted PowerShell
+        literals with any quote doubled, so a path cannot break out of the
+        literal.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet("EncodedCommand", "File")][string]$LaunchMode,
+        [Parameter(Mandatory = $true)][string]$WorkerPath,
+        [Parameter(Mandatory = $true)][string]$ChannelDir
+    )
+
+    if ($LaunchMode -eq "EncodedCommand") {
+        $bootstrap = "& '" + $WorkerPath.Replace("'", "''") + "' -ChannelDir '" +
+            $ChannelDir.Replace("'", "''") + "'"
+        $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($bootstrap))
+
+        # -File must not appear here: the Evidence extractor stops at a -File or
+        # -Command token before it reaches -EncodedCommand.
+        return [ordered]@{
+            launch_mode = $LaunchMode
+            executable  = "powershell.exe"
+            arguments   = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-EncodedCommand", $encoded)
+            bootstrap   = $bootstrap
+        }
+    }
+
+    return [ordered]@{
+        launch_mode = $LaunchMode
+        executable  = "powershell.exe"
+        arguments   = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", $WorkerPath, "-ChannelDir", $ChannelDir)
+        bootstrap   = $null
+    }
+}
+
+function Invoke-ApprovedTcpAttempt {
+    <#
+        The worker side of the safety gate, followed by at most one TCP connect.
+
+        The parent already checked the approval before starting the worker and
+        again before writing the trigger. This runs inside the worker process
+        immediately before a socket would exist, so an approval window that
+        closed between the parent's check and this moment still stops the
+        connection.
+
+        Order: re-validate the approved target, port, protocol and attempt count
+        from the config, then parse the approved UTC window, take the current
+        UTC, and only if the moment is inside the window create the client. On
+        any refusal no client is created, attempts_made stays 0 and the status
+        carries the reason and the moment that was checked.
+
+        NowUtcProvider and ClientFactory are the only seams: production uses the
+        real clock and a real TcpClient, and the tests pass a fake clock and a
+        fake client factory so no socket is ever created. There is no way to
+        skip the approval check.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [scriptblock]$NowUtcProvider = { (Get-Date).ToUniversalTime() },
+        [scriptblock]$ClientFactory = { New-Object System.Net.Sockets.TcpClient }
+    )
+
+    $target = [string]$Config.target
+    $port = 0
+    $protocol = ([string]$Config.protocol).ToUpper()
+    $attempts = 0
+    $timeoutMs = [int]$Config.timeout_ms
+
+    $checkedUtc = (& $NowUtcProvider).ToUniversalTime()
+
+    $refusal = $null
+    if (-not (Test-ApprovedGlobalIPv4 $target)) {
+        $refusal = "target_not_approved"
+    } elseif (-not [int]::TryParse([string]$Config.port, [ref]$port) -or
+        $port -lt 1 -or $port -gt 65535) {
+        $refusal = "port_not_approved"
+    } elseif ($protocol -ne "TCP") {
+        $refusal = "protocol_not_approved"
+    } elseif (-not [int]::TryParse([string]$Config.max_attempts, [ref]$attempts) -or $attempts -ne 1) {
+        $refusal = "attempts_not_approved"
+    }
+
+    if ($null -eq $refusal) {
+        $window = Test-ApprovalWindowNow -ApprovedStartUtc ([string]$Config.approved_start_utc) `
+            -ApprovedEndUtc ([string]$Config.approved_end_utc) -NowUtc $checkedUtc
+        if (-not $window.allowed) { $refusal = [string]$window.reason }
+    }
+
+    if ($null -ne $refusal) {
+        # No socket object is created on this path.
+        return [ordered]@{
+            pid           = $PID
+            target        = $target
+            port          = [int]$Config.port
+            protocol      = $protocol
+            checked_utc   = (Get-UtcStamp $checkedUtc)
+            started_utc   = $null
+            ended_utc     = $null
+            success       = $false
+            timed_out     = $false
+            error_kind    = $refusal
+            attempts_made = 0
+        }
+    }
+
+    $startedUtc = (& $NowUtcProvider).ToUniversalTime()
+    $success = $false
+    $timedOut = $false
+    $errorKind = $null
+    $client = $null
+    try {
+        $client = & $ClientFactory
+        $async = $client.BeginConnect($target, $port, $null, $null)
+        if ($async.AsyncWaitHandle.WaitOne($timeoutMs, $false) -and $client.Connected) {
+            $client.EndConnect($async)
+            $success = $true
+        } else {
+            $timedOut = $true
+            $errorKind = "timeout"
+        }
+    } catch {
+        $errorKind = $_.Exception.GetType().Name
+    } finally {
+        if ($null -ne $client) { $client.Close() }
+    }
+    $endedUtc = (& $NowUtcProvider).ToUniversalTime()
+
+    return [ordered]@{
+        pid           = $PID
+        target        = $target
+        port          = $port
+        protocol      = $protocol
+        checked_utc   = (Get-UtcStamp $checkedUtc)
+        started_utc   = (Get-UtcStamp $startedUtc)
+        ended_utc     = (Get-UtcStamp $endedUtc)
+        success       = $success
+        timed_out     = $timedOut
+        error_kind    = $errorKind
+        attempts_made = 1
+    }
+}
+
 function New-ConnectionWorker {
     <#
         Start a harmless PowerShell worker whose own process makes the approved
         connection, so the Sysmon EID 3 ProcessGuid equals this process's EID 1
         ProcessGuid (docs/scenarios/s0.md section 4-2).
 
-        The worker reads only the approved target and port from a JSON config in
-        a run-specific channel directory. It never reads a command string and
-        never uses Invoke-Expression. The channel directory must not already
-        exist, so a trigger or status file from an earlier run cannot be reused.
+        The worker reads only approved values from a JSON config in a
+        run-specific channel directory: the target, port, protocol, attempt count
+        and the approved UTC window. It never reads a command string from the
+        trigger and never uses Invoke-Expression. The channel directory must not
+        already exist, so a trigger or status file from an earlier run cannot be
+        reused.
+
+        -LaunchMode is mandatory and decides the process command line
+        (Get-WorkerLaunch): the attack run asks for EncodedCommand, the normal
+        run asks for File. Nothing falls back to a default, so the two runs
+        cannot silently produce the same Evidence.
 
         The process is returned WITHOUT waiting for it to exit; it stays alive so
         the connection happens inside it and is stopped by Stop-ConnectionWorker
@@ -985,6 +1205,7 @@ function New-ConnectionWorker {
         [Parameter(Mandatory = $true)][string]$WorkDir,
         [Parameter(Mandatory = $true)][string]$RunId,
         [Parameter(Mandatory = $true)]$Approval,
+        [Parameter(Mandatory = $true)][ValidateSet("EncodedCommand", "File")][string]$LaunchMode,
         [int]$ConnectTimeoutMs = 3000,
         [int]$IdleSeconds = 3600
     )
@@ -997,18 +1218,24 @@ function New-ConnectionWorker {
     New-Item -ItemType Directory -Path $channelDir -Force | Out-Null
 
     $config = [ordered]@{
-        target     = $Approval.target
-        port       = $Approval.port
-        timeout_ms = $ConnectTimeoutMs
-        idle_sec   = $IdleSeconds
+        target             = $Approval.target
+        port               = $Approval.port
+        protocol           = $Approval.protocol
+        max_attempts       = $Approval.max_attempts
+        approved_start_utc = (Get-UtcStamp $Approval.window_start)
+        approved_end_utc   = (Get-UtcStamp $Approval.window_end)
+        timeout_ms         = $ConnectTimeoutMs
+        idle_sec           = $IdleSeconds
+        run_common_path    = $RUN_COMMON_PATH
     }
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText((Join-Path $channelDir "s0_conn_config.json"),
         ($config | ConvertTo-Json), $utf8NoBom)
 
-    # The worker script is fixed text. It reads only integers and an IPv4 string
-    # from the config, connects once, and reports the real attempt times. It does
-    # no DNS, no TLS, no retry and sends zero application bytes.
+    # The worker script is fixed text. It waits for the trigger, then hands the
+    # config to Invoke-ApprovedTcpAttempt, which re-checks the approval before a
+    # socket can exist. It does no DNS, no TLS, no retry and sends zero
+    # application bytes.
     $worker = @'
 param([Parameter(Mandatory = $true)][string]$ChannelDir)
 Set-StrictMode -Version Latest
@@ -1016,6 +1243,11 @@ $ErrorActionPreference = "Stop"
 
 $config = Get-Content -LiteralPath (Join-Path $ChannelDir "s0_conn_config.json") -Raw -Encoding UTF8 |
     ConvertFrom-Json
+
+# The gate and the single connect live in run-common.ps1 so the worker and the
+# tests exercise exactly the same code.
+. ([string]$config.run_common_path)
+
 $triggerPath = Join-Path $ChannelDir "s0_conn_trigger"
 $statusPath = Join-Path $ChannelDir "s0_conn_status.json"
 $statusTmp = $statusPath + ".tmp"
@@ -1027,39 +1259,8 @@ while (-not (Test-Path -LiteralPath $triggerPath)) {
     Start-Sleep -Milliseconds 200
 }
 
-$startedUtc = (Get-Date).ToUniversalTime()
-$success = $false
-$errorKind = $null
-$timedOut = $false
-$client = $null
-try {
-    $client = New-Object System.Net.Sockets.TcpClient
-    $async = $client.BeginConnect([string]$config.target, [int]$config.port, $null, $null)
-    if ($async.AsyncWaitHandle.WaitOne([int]$config.timeout_ms, $false) -and $client.Connected) {
-        $client.EndConnect($async)
-        $success = $true
-    } else {
-        $timedOut = $true
-        $errorKind = "timeout"
-    }
-} catch {
-    $errorKind = $_.Exception.GetType().Name
-} finally {
-    if ($null -ne $client) { $client.Close() }
-}
-$endedUtc = (Get-Date).ToUniversalTime()
+$status = Invoke-ApprovedTcpAttempt -Config $config
 
-$status = [ordered]@{
-    pid          = $PID
-    target       = [string]$config.target
-    port         = [int]$config.port
-    protocol     = "TCP"
-    started_utc  = $startedUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-    ended_utc    = $endedUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-    success      = $success
-    timed_out    = $timedOut
-    error_kind   = $errorKind
-}
 [System.IO.File]::WriteAllText($statusTmp, ($status | ConvertTo-Json), $utf8NoBom)
 [System.IO.File]::Move($statusTmp, $statusPath)
 
@@ -1070,16 +1271,16 @@ Start-Sleep -Seconds ([int]$config.idle_sec)
     $workerPath = Join-Path $channelDir "s0_worker.ps1"
     [System.IO.File]::WriteAllText($workerPath, $worker, $utf8NoBom)
 
+    $launch = Get-WorkerLaunch -LaunchMode $LaunchMode -WorkerPath $workerPath -ChannelDir $channelDir
     $startedAt = Get-Date
-    $process = Start-Process -FilePath "powershell.exe" `
-        -ArgumentList @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-            "-File", $workerPath, "-ChannelDir", $channelDir) `
+    $process = Start-Process -FilePath $launch.executable -ArgumentList $launch.arguments `
         -WindowStyle Hidden -PassThru
 
     return [ordered]@{
         process     = $process
         started_at  = $startedAt
         channel_dir = $channelDir
+        launch      = $launch
         trigger     = (Join-Path $channelDir "s0_conn_trigger")
         status      = (Join-Path $channelDir "s0_conn_status.json")
     }
@@ -1092,7 +1293,9 @@ function Invoke-WorkerConnection {
         The status carries the moment the worker actually attempted the
         connection; execution_record uses that time, not the moment the trigger
         was written. A timeout, a connection failure, a target or port mismatch,
-        or a missing status is a formal run failure.
+        a refusal by the worker's own approval re-check (error_kind
+        approval_window_not_started / approval_window_expired and the other
+        approval_* reasons), or a missing status is a formal run failure.
     #>
     param(
         [Parameter(Mandatory = $true)]$Worker,
@@ -1116,7 +1319,9 @@ function Invoke-WorkerConnection {
     $status = Get-Content -LiteralPath $Worker.status -Raw -Encoding UTF8 | ConvertFrom-Json
     if (-not $status.success) {
         throw ("approved connection did not succeed: timed_out=" + $status.timed_out +
-            " error_kind=" + [string]$status.error_kind)
+            " error_kind=" + [string]$status.error_kind +
+            " checked_utc=" + [string]$status.checked_utc +
+            " attempts_made=" + [string]$status.attempts_made)
     }
     if ([string]$status.target -ne [string]$Approval.target) {
         throw ("worker connected to '" + [string]$status.target + "', approved '" + $Approval.target + "'")
@@ -1124,10 +1329,16 @@ function Invoke-WorkerConnection {
     if ([int]$status.port -ne [int]$Approval.port) {
         throw ("worker connected to port " + [string]$status.port + ", approved " + $Approval.port)
     }
+    if ([int]$status.attempts_made -ne 1) {
+        throw ("worker reported " + [string]$status.attempts_made + " connection attempts, approved 1")
+    }
 
+    $culture = [System.Globalization.CultureInfo]::InvariantCulture
+    $styles = [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor `
+        [System.Globalization.DateTimeStyles]::AssumeUniversal
     return [ordered]@{
         pid          = [int]$status.pid
-        started_utc  = [datetime]::Parse($status.started_utc).ToUniversalTime()
+        started_utc  = [datetime]::Parse([string]$status.started_utc, $culture, $styles)
         target       = [string]$status.target
         port         = [int]$status.port
         protocol     = [string]$status.protocol

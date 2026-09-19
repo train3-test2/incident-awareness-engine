@@ -402,6 +402,195 @@ $ownResult = Test-ActionCausality -Events $backgroundThenOwn -AnchorProcessGuid 
 Assert-True "matched: N02 picks its own ProcessGuid, not a background EID 3" ($ownResult.status -eq "matched")
 Assert-True "matched: the selected record is the worker's own EID 3" ($ownResult.record_id -eq "21")
 
+ # ---------------------------------------------------------------------------
+ # Worker launch mode - Attack EncodedCommand vs Normal File
+ #
+ # These cases only build the launch information. No process is started and no
+ # socket is created.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== worker launch mode ===" -ForegroundColor Cyan
+
+$workerPath = "C:\S0\work\s0_conn_RUN-20260920-001\s0_worker.ps1"
+$channel = "C:\S0\work\s0_conn_RUN-20260920-001"
+
+$attackLaunch = Get-WorkerLaunch -LaunchMode "EncodedCommand" -WorkerPath $workerPath -ChannelDir $channel
+$normalLaunch = Get-WorkerLaunch -LaunchMode "File" -WorkerPath $workerPath -ChannelDir $channel
+
+Assert-True "attack launch uses powershell.exe" ($attackLaunch.executable -eq "powershell.exe")
+Assert-True "attack launch carries -EncodedCommand" ($attackLaunch.arguments -contains "-EncodedCommand")
+Assert-True "attack launch has no -File token before the encoded option" (
+    -not ($attackLaunch.arguments -contains "-File"))
+Assert-True "attack launch has no -Command token" (-not ($attackLaunch.arguments -contains "-Command"))
+
+ # The extractor scans the command line left to right and stops at -File/-Command,
+ # so -EncodedCommand must be reachable first.
+$attackCommandLine = ($attackLaunch.arguments -join " ")
+$encodedIndex = $attackCommandLine.IndexOf("-EncodedCommand")
+Assert-True "the command line exposes -EncodedCommand" ($encodedIndex -ge 0)
+
+$encodedValue = $attackLaunch.arguments[$attackLaunch.arguments.Count - 1]
+$decoded = $null
+try {
+    $decoded = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encodedValue))
+} catch {
+    $decoded = $null
+}
+Assert-True "the encoded payload decodes as UTF-16LE Base64" ($null -ne $decoded)
+Assert-True "the decoded bootstrap matches the returned bootstrap" ($decoded -eq $attackLaunch.bootstrap)
+Assert-True "the decoded bootstrap only invokes the repository worker script" (
+    $decoded -eq ("& '" + $workerPath + "' -ChannelDir '" + $channel + "'"))
+Assert-True "the decoded bootstrap has no Invoke-Expression" ($decoded -notmatch "Invoke-Expression")
+Assert-True "the decoded bootstrap has no iex alias" ($decoded -notmatch "\biex\b")
+
+Assert-True "normal launch uses -File" ($normalLaunch.arguments -contains "-File")
+Assert-True "normal launch has no -EncodedCommand" (-not ($normalLaunch.arguments -contains "-EncodedCommand"))
+Assert-True "normal launch has no bootstrap to decode" ($null -eq $normalLaunch.bootstrap)
+Assert-True "normal launch passes the channel directory" ($normalLaunch.arguments -contains $channel)
+
+Assert-Throws "an unknown launch mode is refused" {
+    Get-WorkerLaunch -LaunchMode "Command" -WorkerPath $workerPath -ChannelDir $channel
+} "*"
+
+ # A path holding a single quote must stay inside the quoted literal.
+$quotedLaunch = Get-WorkerLaunch -LaunchMode "EncodedCommand" `
+    -WorkerPath "C:\S0\it's\s0_worker.ps1" -ChannelDir "C:\S0\it's"
+$quotedDecoded = [System.Text.Encoding]::Unicode.GetString(
+    [Convert]::FromBase64String($quotedLaunch.arguments[$quotedLaunch.arguments.Count - 1]))
+Assert-True "a quote in the path is doubled, not left to break the literal" (
+    $quotedDecoded -eq ("& 'C:\S0\it''s\s0_worker.ps1' -ChannelDir 'C:\S0\it''s'"))
+
+ # ---------------------------------------------------------------------------
+ # Worker side approval window - no real clock, no real socket
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== worker approval window ===" -ForegroundColor Cyan
+
+$script:FakeClientsCreated = 0
+
+function New-FakeTcpClient {
+    <# A stand-in for TcpClient that records that it was created but opens
+       nothing. BeginConnect returns a handle whose WaitOne reports success. #>
+    $script:FakeClientsCreated++
+    $handle = [pscustomobject]@{}
+    $handle | Add-Member -MemberType ScriptMethod -Name WaitOne -Value { param($ms, $exit) return $true }
+    $async = [pscustomobject]@{ AsyncWaitHandle = $handle }
+    $client = [pscustomobject]@{ Connected = $true }
+    $client | Add-Member -MemberType ScriptMethod -Name BeginConnect -Value {
+        param($target, $port, $cb, $state) return $async
+    }.GetNewClosure()
+    $client | Add-Member -MemberType ScriptMethod -Name EndConnect -Value { param($a) }
+    $client | Add-Member -MemberType ScriptMethod -Name Close -Value { }
+    return $client
+}
+
+$fakeFactory = { New-FakeTcpClient }
+
+function New-WorkerConfig {
+    param(
+        [string]$Target = "9.9.9.9",
+        [object]$Port = 443,
+        [string]$Protocol = "TCP",
+        [object]$MaxAttempts = 1,
+        [string]$StartUtc = "2026-09-20T11:00:00.000Z",
+        [string]$EndUtc = "2026-09-20T13:00:00.000Z"
+    )
+    return [pscustomobject]@{
+        target             = $Target
+        port               = $Port
+        protocol           = $Protocol
+        max_attempts       = $MaxAttempts
+        approved_start_utc = $StartUtc
+        approved_end_utc   = $EndUtc
+        timeout_ms         = 3000
+        idle_sec           = 10
+    }
+}
+
+function Invoke-GateAt {
+    param([string]$NowUtc, $Config = (New-WorkerConfig))
+    $script:FakeClientsCreated = 0
+    $clock = [scriptblock]::Create(
+        "[datetime]::Parse('$NowUtc', [System.Globalization.CultureInfo]::InvariantCulture, " +
+        "[System.Globalization.DateTimeStyles]::AdjustToUniversal -bor " +
+        "[System.Globalization.DateTimeStyles]::AssumeUniversal)")
+    return Invoke-ApprovedTcpAttempt -Config $Config -NowUtcProvider $clock -ClientFactory $fakeFactory
+}
+
+$inside = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z"
+Assert-True "inside the window the attempt succeeds" ($inside.success -eq $true)
+Assert-True "inside the window exactly one client is created" ($script:FakeClientsCreated -eq 1)
+Assert-True "inside the window one attempt is recorded" ($inside.attempts_made -eq 1)
+Assert-True "the attempt records the worker's own checked time" ($inside.checked_utc -eq "2026-09-20T12:00:00.000Z")
+Assert-True "the attempt records a start time" ($null -ne $inside.started_utc)
+
+$before = Invoke-GateAt -NowUtc "2026-09-20T10:59:59Z"
+Assert-True "before the window the attempt fails" ($before.success -eq $false)
+Assert-True "before the window the reason is approval_window_not_started" (
+    $before.error_kind -eq "approval_window_not_started")
+Assert-True "before the window no client is created" ($script:FakeClientsCreated -eq 0)
+Assert-True "before the window no attempt is counted" ($before.attempts_made -eq 0)
+Assert-True "before the window no start time is recorded" ($null -eq $before.started_utc)
+Assert-True "before the window the checked time is recorded" ($before.checked_utc -eq "2026-09-20T10:59:59.000Z")
+
+$atEnd = Invoke-GateAt -NowUtc "2026-09-20T13:00:00Z"
+Assert-True "exactly at the window end the attempt fails" ($atEnd.success -eq $false)
+Assert-True "exactly at the window end the reason is approval_window_expired" (
+    $atEnd.error_kind -eq "approval_window_expired")
+Assert-True "exactly at the window end no client is created" ($script:FakeClientsCreated -eq 0)
+
+$after = Invoke-GateAt -NowUtc "2026-09-20T13:00:01Z"
+Assert-True "after the window the attempt fails" ($after.success -eq $false)
+Assert-True "after the window the reason is approval_window_expired" (
+    $after.error_kind -eq "approval_window_expired")
+Assert-True "after the window no client is created" ($script:FakeClientsCreated -eq 0)
+
+ # The parent gate passed just before the window closed; the worker then runs one
+ # second after it closed and must refuse.
+$parentNow = [datetime]::SpecifyKind([datetime]"2026-09-20T12:59:59", [System.DateTimeKind]::Utc)
+$parentApproval = Assert-FormalConnectionApproval -Context (New-ApprovalContext) `
+    -ApprovedStartUtc "2026-09-20T11:00:00Z" -ApprovedEndUtc "2026-09-20T13:00:00Z" `
+    -ApprovedComputerName $env:COMPUTERNAME -MaxConnectionAttempts 1 -NowUtc $parentNow
+Assert-True "the parent gate passes just before the window closes" ($parentApproval.target -eq "9.9.9.9")
+$expiredAtWorker = Invoke-GateAt -NowUtc "2026-09-20T13:00:01Z"
+Assert-True "the worker still refuses after the parent gate passed" (
+    $expiredAtWorker.error_kind -eq "approval_window_expired")
+Assert-True "the late worker creates no client" ($script:FakeClientsCreated -eq 0)
+
+$malformed = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" -Config (New-WorkerConfig -StartUtc "not-a-time")
+Assert-True "a malformed approval time fails" ($malformed.success -eq $false)
+Assert-True "a malformed approval time is reported as malformed" (
+    $malformed.error_kind -eq "approval_window_malformed")
+Assert-True "a malformed approval time creates no client" ($script:FakeClientsCreated -eq 0)
+
+$badRange = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" `
+    -Config (New-WorkerConfig -StartUtc "2026-09-20T13:00:00.000Z" -EndUtc "2026-09-20T11:00:00.000Z")
+Assert-True "start at or after end fails" ($badRange.success -eq $false)
+Assert-True "start at or after end is reported as an invalid range" (
+    $badRange.error_kind -eq "approval_window_invalid_range")
+Assert-True "an invalid range creates no client" ($script:FakeClientsCreated -eq 0)
+
+$badTarget = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" -Config (New-WorkerConfig -Target "10.0.0.5")
+Assert-True "a non-approved target fails at the worker too" ($badTarget.error_kind -eq "target_not_approved")
+Assert-True "a non-approved target creates no client" ($script:FakeClientsCreated -eq 0)
+
+$badPort = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" -Config (New-WorkerConfig -Port 0)
+Assert-True "a non-approved port fails at the worker too" ($badPort.error_kind -eq "port_not_approved")
+Assert-True "a non-approved port creates no client" ($script:FakeClientsCreated -eq 0)
+
+$badProtocol = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" -Config (New-WorkerConfig -Protocol "UDP")
+Assert-True "a non-TCP protocol fails at the worker too" ($badProtocol.error_kind -eq "protocol_not_approved")
+Assert-True "a non-TCP protocol creates no client" ($script:FakeClientsCreated -eq 0)
+
+$badAttempts = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" -Config (New-WorkerConfig -MaxAttempts 2)
+Assert-True "more than one approved attempt fails at the worker too" (
+    $badAttempts.error_kind -eq "attempts_not_approved")
+Assert-True "more than one approved attempt creates no client" ($script:FakeClientsCreated -eq 0)
+
+ # Both runs use the same worker side gate; only the launch mode differs.
+Assert-True "A02 and N02 share one gate function" (
+    $null -ne (Get-Command Invoke-ApprovedTcpAttempt -ErrorAction SilentlyContinue))
+
 Write-Host ""
 if ($script:Failures -eq 0) {
     Write-Host "ALL $($script:Total) CHECKS PASSED" -ForegroundColor Green

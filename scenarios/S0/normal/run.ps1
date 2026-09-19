@@ -113,8 +113,12 @@ if ($Rehearsal) {
     # A dedicated worker process makes the connection, so N02's EID 3 carries that
     # process's own ProcessGuid and cannot be confused with another background
     # process's EID 3.
+    #
+    # File launch is requested explicitly: a normal run must not carry
+    # -EncodedCommand on its command line, so it produces only the external
+    # connection Evidence and never encoded_powershell_command.
     $worker = New-ConnectionWorker -WorkDir $WorkDir -RunId $RunId -Approval $approval `
-        -ConnectTimeoutMs $ConnectTimeoutMs
+        -LaunchMode "File" -ConnectTimeoutMs $ConnectTimeoutMs
     $n02WorkerGuid = (Get-AnchorTelemetry -ProcessId $worker.process.Id -Since $worker.started_at `
         -TimeoutSec $AnchorTimeoutSec).process_guid
 
