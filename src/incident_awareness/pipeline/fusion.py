@@ -30,8 +30,14 @@ def run_s0_fusion(
         measured_end_time,
         step_size=timedelta(seconds=config.replay.step_size_sec),
     )
+    ordered_evidences = tuple(
+        sorted(
+            normalized_artifacts.evidences,
+            key=lambda evidence: (evidence.timestamp, evidence.evidence_id),
+        )
+    )
     result = run_fusion_pipeline_from_config(
-        normalized_artifacts.evidences,
+        ordered_evidences,
         config=config,
         run_id=artifacts.run_metadata.run_id,
         entity_id=inputs.entity_id,

@@ -71,6 +71,27 @@ def test_uses_last_cadence_tick_for_a_measured_end_time_between_ticks() -> None:
     assert fusion_result.fusion_time == start_time + timedelta(seconds=20)
 
 
+def test_sorts_evidence_by_timestamp_before_running_fusion() -> None:
+    start_time = datetime(2026, 9, 20, tzinfo=UTC)
+    artifacts = _artifacts(start_time=start_time, end_time=start_time + timedelta(seconds=20))
+    normalized_artifacts = NormalizedEvidenceArtifacts(
+        events=(),
+        evidences=(
+            _evidence(
+                "E-002",
+                "script_interpreter_external_connection",
+                start_time + timedelta(seconds=10),
+            ),
+            _evidence("E-001", "encoded_powershell_command", start_time),
+        ),
+    )
+
+    fusion_result = run_s0_fusion(_inputs(), artifacts, normalized_artifacts)
+
+    assert fusion_result.fusion_status == "detected"
+    assert fusion_result.contributing_evidence_ids == ["E-001", "E-002"]
+
+
 def _inputs() -> PipelineInputs:
     unused_path = Path("unused")
     return PipelineInputs(
