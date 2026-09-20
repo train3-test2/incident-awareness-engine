@@ -234,6 +234,462 @@ Assert-True "the comparison is made in UTC, not local time" (
 
  # ---------------------------------------------------------------------------
 
+ # ---------------------------------------------------------------------------
+ # Approved global IPv4 literal
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== approved global IPv4 ===" -ForegroundColor Cyan
+
+foreach ($ok in @("1.1.1.1", "8.8.8.8", "9.9.9.9", "203.0.114.9", "192.0.0.9")) {
+    Assert-True "global IPv4 accepted: $ok" (Test-ApprovedGlobalIPv4 $ok)
+}
+foreach ($bad in @(
+    "dns.example.com", "2606:4700:4700::1111", "10.0.0.5", "127.0.0.1", "169.254.10.10",
+    "100.64.0.1", "192.168.1.1", "172.16.0.1", "192.0.2.5", "198.51.100.5", "203.0.113.5",
+    "198.18.0.1", "224.0.0.1", "240.0.0.1", "0.0.0.0", " 1.1.1.1", "1.1.1.1 ", "1.1.1")) {
+    Assert-True "non-global or non-canonical rejected: '$bad'" (-not (Test-ApprovedGlobalIPv4 $bad))
+}
+
+ # ---------------------------------------------------------------------------
+ # Formal connection approval gate
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== formal connection approval ===" -ForegroundColor Cyan
+
+function New-ApprovalContext {
+    param([string]$Target = "9.9.9.9", [object]$Port = 443, [string]$Protocol = "TCP")
+    $external = [pscustomobject]@{ target = $Target; port = $Port; protocol = $Protocol }
+    $scenario = [pscustomobject]@{ external_connection = $external }
+    return [pscustomobject]@{ scenario = $scenario }
+}
+
+$now = [datetime]::SpecifyKind([datetime]"2026-09-20T12:00:00", [System.DateTimeKind]::Utc)
+$start = "2026-09-20T11:00:00Z"
+$end = "2026-09-20T13:00:00Z"
+$computer = $env:COMPUTERNAME
+
+Assert-True "a fully approved connection inside the window passes" ((
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext) -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 1 `
+        -NowUtc $now).target -eq "9.9.9.9")
+
+Assert-Throws "a null target is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext -Target "") -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 1 -NowUtc $now
+} "*not an approved global IPv4*"
+
+Assert-Throws "a private target is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext -Target "10.0.0.5") -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 1 -NowUtc $now
+} "*not an approved global IPv4*"
+
+Assert-Throws "a port out of range is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext -Port 70000) -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 1 -NowUtc $now
+} "*port must be an integer in 1..65535*"
+
+Assert-Throws "a non-TCP protocol is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext -Protocol "UDP") -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 1 -NowUtc $now
+} "*protocol must be TCP*"
+
+Assert-Throws "a time before the window is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext) -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 1 `
+        -NowUtc ([datetime]::SpecifyKind([datetime]"2026-09-20T10:59:59", [System.DateTimeKind]::Utc))
+} "*outside the approved window*"
+
+Assert-Throws "a time at or after the window end is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext) -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 1 `
+        -NowUtc ([datetime]::SpecifyKind([datetime]"2026-09-20T13:00:00", [System.DateTimeKind]::Utc))
+} "*outside the approved window*"
+
+Assert-Throws "an empty window (start not before end) is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext) -ApprovedStartUtc $end `
+        -ApprovedEndUtc $start -ApprovedComputerName $computer -MaxConnectionAttempts 1 -NowUtc $now
+} "*approved window is empty*"
+
+Assert-Throws "a computer name mismatch is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext) -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName "SOME-OTHER-HOST" -MaxConnectionAttempts 1 -NowUtc $now
+} "*computer name mismatch*"
+
+Assert-Throws "more than one connection attempt is refused" {
+    Assert-FormalConnectionApproval -Context (New-ApprovalContext) -ApprovedStartUtc $start `
+        -ApprovedEndUtc $end -ApprovedComputerName $computer -MaxConnectionAttempts 2 -NowUtc $now
+} "*MaxConnectionAttempts must be exactly 1*"
+
+ # ---------------------------------------------------------------------------
+ # Action causality on synthetic Sysmon events
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== action causality ===" -ForegroundColor Cyan
+
+function New-FakeSysmonEvent {
+    <# A minimal stand-in for a Get-WinEvent record: Id, TimeCreated, RecordId and
+       a ToXml() that Test-ActionCausality can parse for EID 3 fields. #>
+    param(
+        [int]$Id,
+        [datetime]$TimeCreated,
+        [int]$RecordId,
+        [string]$ProcessGuid,
+        [string]$DestinationIp,
+        [string]$DestinationPort
+    )
+    $xml = @"
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><EventData>
+<Data Name="ProcessGuid">$ProcessGuid</Data>
+<Data Name="DestinationIp">$DestinationIp</Data>
+<Data Name="DestinationPort">$DestinationPort</Data>
+</EventData></Event>
+"@
+    $event = [pscustomobject]@{ Id = $Id; TimeCreated = $TimeCreated; RecordId = $RecordId }
+    $event | Add-Member -MemberType ScriptMethod -Name ToXml -Value ([scriptblock]::Create("'$xml'"))
+    return $event
+}
+
+$anchorGuid = "{aaaaaaaa-0000-0000-0000-000000000001}"
+$otherGuid = "{bbbbbbbb-0000-0000-0000-000000000002}"
+$childStarted = [datetime]::SpecifyKind([datetime]"2026-09-20T12:02:00", [System.DateTimeKind]::Utc)
+
+$matchEvent = New-FakeSysmonEvent -Id 3 -TimeCreated $childStarted.AddSeconds(1) -RecordId 10 `
+    -ProcessGuid $anchorGuid -DestinationIp "9.9.9.9" -DestinationPort "443"
+
+Assert-True "matched: same ProcessGuid, target and port after the action" ((
+    Test-ActionCausality -Events @($matchEvent) -AnchorProcessGuid $anchorGuid `
+        -ChildStartedAt $childStarted -ExpectedDestination "9.9.9.9" -ExpectedPort "443").status -eq "matched")
+
+$guidMismatch = New-FakeSysmonEvent -Id 3 -TimeCreated $childStarted.AddSeconds(1) -RecordId 11 `
+    -ProcessGuid $otherGuid -DestinationIp "9.9.9.9" -DestinationPort "443"
+Assert-True "mismatched: a different ProcessGuid does not match" ((
+    Test-ActionCausality -Events @($guidMismatch) -AnchorProcessGuid $anchorGuid `
+        -ChildStartedAt $childStarted -ExpectedDestination "9.9.9.9" -ExpectedPort "443").status -eq "mismatched")
+
+$ipMismatch = New-FakeSysmonEvent -Id 3 -TimeCreated $childStarted.AddSeconds(1) -RecordId 12 `
+    -ProcessGuid $anchorGuid -DestinationIp "203.0.114.9" -DestinationPort "443"
+Assert-True "mismatched: a different destination does not match" ((
+    Test-ActionCausality -Events @($ipMismatch) -AnchorProcessGuid $anchorGuid `
+        -ChildStartedAt $childStarted -ExpectedDestination "9.9.9.9" -ExpectedPort "443").status -eq "mismatched")
+
+$portMismatch = New-FakeSysmonEvent -Id 3 -TimeCreated $childStarted.AddSeconds(1) -RecordId 13 `
+    -ProcessGuid $anchorGuid -DestinationIp "9.9.9.9" -DestinationPort "80"
+Assert-True "mismatched: a different port does not match" ((
+    Test-ActionCausality -Events @($portMismatch) -AnchorProcessGuid $anchorGuid `
+        -ChildStartedAt $childStarted -ExpectedDestination "9.9.9.9" -ExpectedPort "443").status -eq "mismatched")
+
+$early = New-FakeSysmonEvent -Id 3 -TimeCreated $childStarted.AddSeconds(-120) -RecordId 14 `
+    -ProcessGuid $anchorGuid -DestinationIp "9.9.9.9" -DestinationPort "443"
+Assert-True "not_verified: an EID 3 well before the action is ignored" ((
+    Test-ActionCausality -Events @($early) -AnchorProcessGuid $anchorGuid `
+        -ChildStartedAt $childStarted -ExpectedDestination "9.9.9.9" -ExpectedPort "443").status -eq "not_verified")
+
+Assert-True "not_verified: no EID 3 candidate at all" ((
+    Test-ActionCausality -Events @() -AnchorProcessGuid $anchorGuid `
+        -ChildStartedAt $childStarted -ExpectedDestination "9.9.9.9" -ExpectedPort "443").status -eq "not_verified")
+
+Assert-True "not_verified: child action was not executed (null start)" ((
+    Test-ActionCausality -Events @($matchEvent) -AnchorProcessGuid $anchorGuid `
+        -ChildStartedAt $null -ExpectedDestination "9.9.9.9" -ExpectedPort "443").status -eq "not_verified")
+
+$backgroundThenOwn = @(
+    (New-FakeSysmonEvent -Id 3 -TimeCreated $childStarted.AddSeconds(1) -RecordId 20 `
+        -ProcessGuid $otherGuid -DestinationIp "9.9.9.9" -DestinationPort "443"),
+    (New-FakeSysmonEvent -Id 3 -TimeCreated $childStarted.AddSeconds(2) -RecordId 21 `
+        -ProcessGuid $anchorGuid -DestinationIp "9.9.9.9" -DestinationPort "443"))
+$ownResult = Test-ActionCausality -Events $backgroundThenOwn -AnchorProcessGuid $anchorGuid `
+    -ChildStartedAt $childStarted -ExpectedDestination "9.9.9.9" -ExpectedPort "443"
+Assert-True "matched: N02 picks its own ProcessGuid, not a background EID 3" ($ownResult.status -eq "matched")
+Assert-True "matched: the selected record is the worker's own EID 3" ($ownResult.record_id -eq "21")
+
+ # ---------------------------------------------------------------------------
+ # Worker launch mode - Attack EncodedCommand vs Normal File
+ #
+ # These cases only build the launch information. No process is started and no
+ # socket is created.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== worker launch mode ===" -ForegroundColor Cyan
+
+$workerPath = "C:\S0\work\s0_conn_RUN-20260920-001\s0_worker.ps1"
+$channel = "C:\S0\work\s0_conn_RUN-20260920-001"
+
+$attackLaunch = Get-WorkerLaunch -LaunchMode "EncodedCommand" -WorkerPath $workerPath -ChannelDir $channel
+$normalLaunch = Get-WorkerLaunch -LaunchMode "File" -WorkerPath $workerPath -ChannelDir $channel
+
+Assert-True "attack launch uses powershell.exe" ($attackLaunch.executable -eq "powershell.exe")
+Assert-True "attack launch carries -EncodedCommand" ($attackLaunch.arguments -contains "-EncodedCommand")
+Assert-True "attack launch has no -File token before the encoded option" (
+    -not ($attackLaunch.arguments -contains "-File"))
+Assert-True "attack launch has no -Command token" (-not ($attackLaunch.arguments -contains "-Command"))
+
+ # The extractor scans the command line left to right and stops at -File/-Command,
+ # so -EncodedCommand must be reachable first.
+$attackCommandLine = ($attackLaunch.arguments -join " ")
+$encodedIndex = $attackCommandLine.IndexOf("-EncodedCommand")
+Assert-True "the command line exposes -EncodedCommand" ($encodedIndex -ge 0)
+
+$encodedValue = $attackLaunch.arguments[$attackLaunch.arguments.Count - 1]
+$decoded = $null
+try {
+    $decoded = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encodedValue))
+} catch {
+    $decoded = $null
+}
+Assert-True "the encoded payload decodes as UTF-16LE Base64" ($null -ne $decoded)
+Assert-True "the decoded bootstrap matches the returned bootstrap" ($decoded -eq $attackLaunch.bootstrap)
+Assert-True "the decoded bootstrap only invokes the repository worker script" (
+    $decoded -eq ("& '" + $workerPath + "' -ChannelDir '" + $channel + "'"))
+Assert-True "the decoded bootstrap has no Invoke-Expression" ($decoded -notmatch "Invoke-Expression")
+Assert-True "the decoded bootstrap has no iex alias" ($decoded -notmatch "\biex\b")
+
+Assert-True "normal launch uses -File" ($normalLaunch.arguments -contains "-File")
+Assert-True "normal launch has no -EncodedCommand" (-not ($normalLaunch.arguments -contains "-EncodedCommand"))
+Assert-True "normal launch has no bootstrap to decode" ($null -eq $normalLaunch.bootstrap)
+Assert-True "normal launch passes the channel directory" ($normalLaunch.arguments -contains $channel)
+
+Assert-Throws "an unknown launch mode is refused" {
+    Get-WorkerLaunch -LaunchMode "Command" -WorkerPath $workerPath -ChannelDir $channel
+} "*"
+
+ # A path holding a single quote must stay inside the quoted literal.
+$quotedLaunch = Get-WorkerLaunch -LaunchMode "EncodedCommand" `
+    -WorkerPath "C:\S0\it's\s0_worker.ps1" -ChannelDir "C:\S0\it's"
+$quotedDecoded = [System.Text.Encoding]::Unicode.GetString(
+    [Convert]::FromBase64String($quotedLaunch.arguments[$quotedLaunch.arguments.Count - 1]))
+Assert-True "a quote in the path is doubled, not left to break the literal" (
+    $quotedDecoded -eq ("& 'C:\S0\it''s\s0_worker.ps1' -ChannelDir 'C:\S0\it''s'"))
+
+ # ---------------------------------------------------------------------------
+ # Worker side approval window - no real clock, no real socket
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== worker approval window ===" -ForegroundColor Cyan
+
+$script:FakeClientsCreated = 0
+
+function New-FakeTcpClient {
+    <# A stand-in for TcpClient that records that it was created but opens
+       nothing. BeginConnect returns a handle whose WaitOne reports success. #>
+    $script:FakeClientsCreated++
+    $handle = [pscustomobject]@{}
+    $handle | Add-Member -MemberType ScriptMethod -Name WaitOne -Value { param($ms, $exit) return $true }
+    $async = [pscustomobject]@{ AsyncWaitHandle = $handle }
+    $client = [pscustomobject]@{ Connected = $true }
+    $client | Add-Member -MemberType ScriptMethod -Name BeginConnect -Value {
+        param($target, $port, $cb, $state) return $async
+    }.GetNewClosure()
+    $client | Add-Member -MemberType ScriptMethod -Name EndConnect -Value { param($a) }
+    $client | Add-Member -MemberType ScriptMethod -Name Close -Value { }
+    return $client
+}
+
+$fakeFactory = { New-FakeTcpClient }
+
+function New-WorkerConfig {
+    param(
+        [string]$Target = "9.9.9.9",
+        [object]$Port = 443,
+        [string]$Protocol = "TCP",
+        [object]$MaxAttempts = 1,
+        [string]$StartUtc = "2026-09-20T11:00:00.000Z",
+        [string]$EndUtc = "2026-09-20T13:00:00.000Z"
+    )
+    return [pscustomobject]@{
+        target             = $Target
+        port               = $Port
+        protocol           = $Protocol
+        max_attempts       = $MaxAttempts
+        approved_start_utc = $StartUtc
+        approved_end_utc   = $EndUtc
+        timeout_ms         = 3000
+        idle_sec           = 10
+    }
+}
+
+function Invoke-GateAt {
+    param([string]$NowUtc, $Config = (New-WorkerConfig))
+    $script:FakeClientsCreated = 0
+    $clock = [scriptblock]::Create(
+        "[datetime]::Parse('$NowUtc', [System.Globalization.CultureInfo]::InvariantCulture, " +
+        "[System.Globalization.DateTimeStyles]::AdjustToUniversal -bor " +
+        "[System.Globalization.DateTimeStyles]::AssumeUniversal)")
+    return Invoke-ApprovedTcpAttempt -Config $Config -NowUtcProvider $clock -ClientFactory $fakeFactory
+}
+
+$inside = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z"
+Assert-True "inside the window the attempt succeeds" ($inside.success -eq $true)
+Assert-True "inside the window exactly one client is created" ($script:FakeClientsCreated -eq 1)
+Assert-True "inside the window one attempt is recorded" ($inside.attempts_made -eq 1)
+Assert-True "the attempt records the worker's own checked time" ($inside.checked_utc -eq "2026-09-20T12:00:00.000Z")
+Assert-True "the attempt records a start time" ($null -ne $inside.started_utc)
+
+$before = Invoke-GateAt -NowUtc "2026-09-20T10:59:59Z"
+Assert-True "before the window the attempt fails" ($before.success -eq $false)
+Assert-True "before the window the reason is approval_window_not_started" (
+    $before.error_kind -eq "approval_window_not_started")
+Assert-True "before the window no client is created" ($script:FakeClientsCreated -eq 0)
+Assert-True "before the window no attempt is counted" ($before.attempts_made -eq 0)
+Assert-True "before the window no start time is recorded" ($null -eq $before.started_utc)
+Assert-True "before the window the checked time is recorded" ($before.checked_utc -eq "2026-09-20T10:59:59.000Z")
+
+$atEnd = Invoke-GateAt -NowUtc "2026-09-20T13:00:00Z"
+Assert-True "exactly at the window end the attempt fails" ($atEnd.success -eq $false)
+Assert-True "exactly at the window end the reason is approval_window_expired" (
+    $atEnd.error_kind -eq "approval_window_expired")
+Assert-True "exactly at the window end no client is created" ($script:FakeClientsCreated -eq 0)
+
+$after = Invoke-GateAt -NowUtc "2026-09-20T13:00:01Z"
+Assert-True "after the window the attempt fails" ($after.success -eq $false)
+Assert-True "after the window the reason is approval_window_expired" (
+    $after.error_kind -eq "approval_window_expired")
+Assert-True "after the window no client is created" ($script:FakeClientsCreated -eq 0)
+
+ # The parent gate passed just before the window closed; the worker then runs one
+ # second after it closed and must refuse.
+$parentNow = [datetime]::SpecifyKind([datetime]"2026-09-20T12:59:59", [System.DateTimeKind]::Utc)
+$parentApproval = Assert-FormalConnectionApproval -Context (New-ApprovalContext) `
+    -ApprovedStartUtc "2026-09-20T11:00:00Z" -ApprovedEndUtc "2026-09-20T13:00:00Z" `
+    -ApprovedComputerName $env:COMPUTERNAME -MaxConnectionAttempts 1 -NowUtc $parentNow
+Assert-True "the parent gate passes just before the window closes" ($parentApproval.target -eq "9.9.9.9")
+$expiredAtWorker = Invoke-GateAt -NowUtc "2026-09-20T13:00:01Z"
+Assert-True "the worker still refuses after the parent gate passed" (
+    $expiredAtWorker.error_kind -eq "approval_window_expired")
+Assert-True "the late worker creates no client" ($script:FakeClientsCreated -eq 0)
+
+$malformed = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" -Config (New-WorkerConfig -StartUtc "not-a-time")
+Assert-True "a malformed approval time fails" ($malformed.success -eq $false)
+Assert-True "a malformed approval time is reported as malformed" (
+    $malformed.error_kind -eq "approval_window_malformed")
+Assert-True "a malformed approval time creates no client" ($script:FakeClientsCreated -eq 0)
+
+$badRange = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" `
+    -Config (New-WorkerConfig -StartUtc "2026-09-20T13:00:00.000Z" -EndUtc "2026-09-20T11:00:00.000Z")
+Assert-True "start at or after end fails" ($badRange.success -eq $false)
+Assert-True "start at or after end is reported as an invalid range" (
+    $badRange.error_kind -eq "approval_window_invalid_range")
+Assert-True "an invalid range creates no client" ($script:FakeClientsCreated -eq 0)
+
+$badTarget = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" -Config (New-WorkerConfig -Target "10.0.0.5")
+Assert-True "a non-approved target fails at the worker too" ($badTarget.error_kind -eq "target_not_approved")
+Assert-True "a non-approved target creates no client" ($script:FakeClientsCreated -eq 0)
+
+$badPort = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" -Config (New-WorkerConfig -Port 0)
+Assert-True "a non-approved port fails at the worker too" ($badPort.error_kind -eq "port_not_approved")
+Assert-True "a non-approved port creates no client" ($script:FakeClientsCreated -eq 0)
+
+$badProtocol = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" -Config (New-WorkerConfig -Protocol "UDP")
+Assert-True "a non-TCP protocol fails at the worker too" ($badProtocol.error_kind -eq "protocol_not_approved")
+Assert-True "a non-TCP protocol creates no client" ($script:FakeClientsCreated -eq 0)
+
+$badAttempts = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" -Config (New-WorkerConfig -MaxAttempts 2)
+Assert-True "more than one approved attempt fails at the worker too" (
+    $badAttempts.error_kind -eq "attempts_not_approved")
+Assert-True "more than one approved attempt creates no client" ($script:FakeClientsCreated -eq 0)
+
+ # Both runs use the same worker side gate; only the launch mode differs.
+Assert-True "A02 and N02 share one gate function" (
+    $null -ne (Get-Command Invoke-ApprovedTcpAttempt -ErrorAction SilentlyContinue))
+
+ # ---------------------------------------------------------------------------
+ # Strict approved UTC parser - shared by the parent gate and the worker
+ #
+ # No clock is waited on and no socket is created in this section.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== approved UTC parser ===" -ForegroundColor Cyan
+
+foreach ($ok in @("2026-09-20T05:00:00Z", "2026-09-20T05:00:00.123Z", "2026-09-20T05:00:00.1234567Z")) {
+    $parsed = ConvertTo-ApprovedUtc -Value $ok -Label "ApprovedStartUtc"
+    Assert-True "ISO 8601 UTC with Z is accepted: $ok" ($parsed.ok -and $parsed.value.Kind -eq "Utc")
+}
+
+foreach ($bad in @(
+    "2026-09-20T05:00:00", "2026-09-20 05:00:00", "2026-09-20T05:00:00+00:00",
+    "2026-09-20T14:00:00+09:00", "09/20/2026 05:00:00", "20.09.2026 05:00:00",
+    "", "2026-13-45T05:00:00Z", "2026-09-20T05:00:00z", " 2026-09-20T05:00:00Z", "not-a-time")) {
+    $parsed = ConvertTo-ApprovedUtc -Value $bad -Label "ApprovedStartUtc"
+    Assert-True "refused: '$bad'" (-not $parsed.ok)
+}
+
+Assert-True "the refusal names the expected format" (
+    (ConvertTo-ApprovedUtc -Value "2026-09-20T05:00:00" -Label "ApprovedStartUtc").reason -like
+        "*ISO 8601 UTC ending in 'Z'*")
+
+ # A value with Z and the same value with an explicit +00:00 offset must not be
+ # treated alike: only the Z form is accepted at all.
+Assert-True "the Z form parses to the expected UTC instant" (
+    (ConvertTo-ApprovedUtc -Value "2026-09-20T05:00:00Z" -Label "x").value -eq
+        [datetime]::SpecifyKind([datetime]"2026-09-20T05:00:00", [System.DateTimeKind]::Utc))
+
+ # ---------------------------------------------------------------------------
+ # Parent and worker agree on the same inputs
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== parent and worker parser agreement ===" -ForegroundColor Cyan
+
+$agreeNow = [datetime]::SpecifyKind([datetime]"2026-09-20T12:00:00", [System.DateTimeKind]::Utc)
+$agreeStart = "2026-09-20T11:00:00Z"
+$agreeEnd = "2026-09-20T13:00:00.500Z"
+
+$parentApproval = Assert-FormalConnectionApproval -Context (New-ApprovalContext) `
+    -ApprovedStartUtc $agreeStart -ApprovedEndUtc $agreeEnd `
+    -ApprovedComputerName $env:COMPUTERNAME -MaxConnectionAttempts 1 -NowUtc $agreeNow
+Assert-True "parent resolves start to the shared parser's value" (
+    $parentApproval.window_start -eq (ConvertTo-ApprovedUtc -Value $agreeStart -Label "s").value)
+Assert-True "parent resolves end to the shared parser's value" (
+    $parentApproval.window_end -eq (ConvertTo-ApprovedUtc -Value $agreeEnd -Label "e").value)
+
+$workerWindow = Test-ApprovalWindowNow -ApprovedStartUtc $agreeStart -ApprovedEndUtc $agreeEnd `
+    -NowUtc $agreeNow
+Assert-True "worker allows the same window the parent allowed" ($workerWindow.allowed)
+
+ # Every input the parent refuses, the worker refuses too.
+foreach ($bad in @(
+    "2026-09-20T11:00:00", "2026-09-20T11:00:00+00:00", "2026-09-20T20:00:00+09:00",
+    "09/20/2026 11:00:00", "")) {
+    $parentRefused = $false
+    try {
+        Assert-FormalConnectionApproval -Context (New-ApprovalContext) -ApprovedStartUtc $bad `
+            -ApprovedEndUtc $agreeEnd -ApprovedComputerName $env:COMPUTERNAME `
+            -MaxConnectionAttempts 1 -NowUtc $agreeNow | Out-Null
+    } catch {
+        $parentRefused = $true
+    }
+    $workerRefused = -not (Test-ApprovalWindowNow -ApprovedStartUtc $bad -ApprovedEndUtc $agreeEnd `
+        -NowUtc $agreeNow).allowed
+    Assert-True "parent and worker both refuse '$bad'" ($parentRefused -and $workerRefused)
+}
+
+ # ---------------------------------------------------------------------------
+ # Worker gate with strict inputs - fake clock and fake client factory
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== worker gate with strict UTC inputs ===" -ForegroundColor Cyan
+
+$strictInside = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" `
+    -Config (New-WorkerConfig -StartUtc "2026-09-20T11:00:00Z" -EndUtc "2026-09-20T13:00:00Z")
+Assert-True "a Z window inside the range connects once" (
+    $strictInside.success -and $script:FakeClientsCreated -eq 1)
+
+$fractional = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" `
+    -Config (New-WorkerConfig -StartUtc "2026-09-20T11:00:00.250Z" -EndUtc "2026-09-20T13:00:00.750Z")
+Assert-True "fractional seconds are accepted by the worker" (
+    $fractional.success -and $script:FakeClientsCreated -eq 1)
+
+foreach ($case in @(
+    @{ Name = "offset-less"; Start = "2026-09-20T11:00:00" },
+    @{ Name = "plus-zero"; Start = "2026-09-20T11:00:00+00:00" },
+    @{ Name = "plus-nine"; Start = "2026-09-20T02:00:00+09:00" },
+    @{ Name = "locale"; Start = "09/20/2026 11:00:00" },
+    @{ Name = "empty"; Start = "" })) {
+    $refused = Invoke-GateAt -NowUtc "2026-09-20T12:00:00Z" `
+        -Config (New-WorkerConfig -StartUtc $case.Start -EndUtc "2026-09-20T13:00:00Z")
+    Assert-True "worker refuses a $($case.Name) start" (
+        $refused.error_kind -eq "approval_window_malformed")
+    Assert-True "worker creates no client for a $($case.Name) start" ($script:FakeClientsCreated -eq 0)
+}
+
 Write-Host ""
 if ($script:Failures -eq 0) {
     Write-Host "ALL $($script:Total) CHECKS PASSED" -ForegroundColor Green
