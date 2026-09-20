@@ -56,12 +56,12 @@ def normalized_event() -> NormalizedEvent:
     )
 
 
-def test_save_upserts_event_and_commits(normalized_event: NormalizedEvent) -> None:
+def test_save_upserts_event_without_committing(normalized_event: NormalizedEvent) -> None:
     connection = FakeConnection()
 
     EventRepository(connection).save(normalized_event)
 
-    assert connection.commits == 1
+    assert connection.commits == 0
     assert len(connection.statements) == 1
     query, params = connection.statements[0]
     assert query == _UPSERT_EVENT

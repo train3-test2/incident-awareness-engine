@@ -26,6 +26,8 @@ class DatabaseConnection(Protocol):
 
     def commit(self) -> None: ...
 
+    def rollback(self) -> None: ...
+
 
 def persist_s0_results(
     artifacts: S0PipelineArtifacts,
@@ -36,7 +38,7 @@ def persist_s0_results(
     *,
     connection: DatabaseConnection | None = None,
 ) -> None:
-    """Save Run, Event, Fusion, Detection, and Decision contracts in that order."""
+    """Atomically save Run, Event, Fusion, Detection, and Decision contracts."""
     _validate_result_scope(
         artifacts,
         normalized_artifacts,
@@ -71,13 +73,18 @@ def _persist(
     fast_result: FastDetectionAdapterResult,
     decision_result: DecisionResult,
 ) -> None:
-    RunRepository(connection).save(artifacts.run_metadata)
-    event_repository = EventRepository(connection)
-    for event in normalized_artifacts.events:
-        event_repository.save(event)
-    FusionResultRepository(connection).save(fusion_result)
-    DetectionResultRepository(connection).save(fast_result.detection_result)
-    DecisionRepository(connection).save(decision_result)
+    try:
+        RunRepository(connection).save(artifacts.run_metadata)
+        event_repository = EventRepository(connection)
+        for event in normalized_artifacts.events:
+            event_repository.save(event)
+        FusionResultRepository(connection).save(fusion_result)
+        DetectionResultRepository(connection).save(fast_result.detection_result)
+        DecisionRepository(connection).save(decision_result)
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
 
 
 def _validate_result_scope(

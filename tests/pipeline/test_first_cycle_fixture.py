@@ -59,7 +59,7 @@ def test_first_cycle_fixture_runs_through_the_assembled_pipeline(tmp_path: Path)
     assert summary.fusion_status == "detected"
     assert summary.detector_status == "detected"
     assert summary.decision_path == "fast_and_fusion"
-    assert connection.commits == 6
+    assert connection.commits == 1
 
 
 def _rewrite_trace_paths_for_local_fixture(fixture_root: Path) -> None:

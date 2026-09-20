@@ -13,8 +13,6 @@ class _Cursor(Protocol):
 class _Connection(Protocol):
     def execute(self, query: str, params: tuple[object, ...]) -> _Cursor: ...
 
-    def commit(self) -> None: ...
-
 
 _UPSERT_EVENT = """
 INSERT INTO events (
@@ -56,7 +54,6 @@ class EventRepository:
                 Jsonb(event.model_dump(mode="json")),
             ),
         )
-        self._connection.commit()
 
     def get(self, event_id: str) -> NormalizedEvent | None:
         """event_id에 해당하는 저장된 NormalizedEvent를 반환한다."""

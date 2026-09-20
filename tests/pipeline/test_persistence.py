@@ -23,16 +23,23 @@ class _Cursor:
 
 
 class _Connection:
-    def __init__(self) -> None:
+    def __init__(self, *, fail_on_statement: int | None = None) -> None:
         self.statements: list[tuple[str, tuple[object, ...]]] = []
         self.commits = 0
+        self.rollbacks = 0
+        self._fail_on_statement = fail_on_statement
 
     def execute(self, query: str, params: tuple[object, ...]) -> _Cursor:
         self.statements.append((query, params))
+        if self._fail_on_statement == len(self.statements):
+            raise RuntimeError("database write failed")
         return _Cursor()
 
     def commit(self) -> None:
         self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
 
 
 def test_persists_first_cycle_contracts_in_dependency_order() -> None:
@@ -57,7 +64,26 @@ def test_persists_first_cycle_contracts_in_dependency_order() -> None:
         ["INSERT", "INTO", "detection_results"],
         ["INSERT", "INTO", "decisions"],
     ]
-    assert connection.commits == 5
+    assert connection.commits == 1
+    assert connection.rollbacks == 0
+
+
+def test_rolls_back_all_writes_when_persistence_fails() -> None:
+    connection = _Connection(fail_on_statement=4)
+    fusion_result, fast_result, decision_result = _results()
+
+    with pytest.raises(RuntimeError, match="database write failed"):
+        persist_s0_results(
+            _artifacts(),
+            NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
+            fusion_result,
+            fast_result,
+            decision_result,
+            connection=connection,
+        )
+
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
 
 
 def test_rejects_result_with_run_id_outside_persisted_run() -> None:
