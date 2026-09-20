@@ -101,6 +101,43 @@ def test_rejects_result_with_run_id_outside_persisted_run() -> None:
         )
 
 
+def test_rejects_result_for_a_host_other_than_the_run_target() -> None:
+    fusion_result, fast_result, decision_result = _results()
+    other_host = "WIN-02"
+    invalid_fusion = fusion_result.model_copy(update={"entity_id": other_host})
+    invalid_fast = FastDetectionAdapterResult(
+        detection_result=fast_result.detection_result.model_copy(update={"entity_id": other_host}),
+        source_hit_ids=fast_result.source_hit_ids,
+        selected_source_hit_id=fast_result.selected_source_hit_id,
+    )
+    invalid_decision = decision_result.model_copy(update={"entity_id": other_host})
+
+    with pytest.raises(ValueError, match="entity_id must match RunMetadata target_host"):
+        persist_s0_results(
+            _artifacts(),
+            NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
+            invalid_fusion,
+            invalid_fast,
+            invalid_decision,
+            connection=_Connection(),
+        )
+
+
+def test_rejects_event_for_a_host_other_than_the_run_target() -> None:
+    fusion_result, fast_result, decision_result = _results()
+    invalid_event = _event().model_copy(update={"host_id": "WIN-02"})
+
+    with pytest.raises(ValueError, match="host_id must match RunMetadata target_host"):
+        persist_s0_results(
+            _artifacts(),
+            NormalizedEvidenceArtifacts(events=(invalid_event,), evidences=()),
+            fusion_result,
+            fast_result,
+            decision_result,
+            connection=_Connection(),
+        )
+
+
 def _artifacts() -> S0PipelineArtifacts:
     return S0PipelineArtifacts(
         run_metadata=RunMetadata.model_validate(

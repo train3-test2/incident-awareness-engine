@@ -97,10 +97,15 @@ def _validate_result_scope(
     run_id = artifacts.run_metadata.run_id
     if any(event.run_id != run_id for event in normalized_artifacts.events):
         raise ValueError("NormalizedEvent run_id must match RunMetadata before persistence")
+    target_host = artifacts.run_metadata.target_host
+    if any(event.host_id != target_host for event in normalized_artifacts.events):
+        raise ValueError("NormalizedEvent host_id must match RunMetadata target_host")
 
     results = (fusion_result, fast_result.detection_result, decision_result)
     if any(result.run_id != run_id for result in results):
         raise ValueError("result run_id must match RunMetadata before persistence")
+    if any(result.entity_id != target_host for result in results):
+        raise ValueError("result entity_id must match RunMetadata target_host")
 
     entity_ids = {result.entity_id for result in results}
     if len(entity_ids) != 1:
