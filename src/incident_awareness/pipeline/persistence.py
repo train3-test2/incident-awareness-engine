@@ -1,5 +1,6 @@
 """Persist completed First Cycle pipeline contracts through PostgreSQL repositories."""
 
+import logging
 from typing import Protocol
 
 import psycopg
@@ -17,6 +18,8 @@ from incident_awareness.storage.repositories.result_repository import (
     FusionResultRepository,
 )
 from incident_awareness.storage.repositories.run_repository import RunRepository
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class DatabaseConnection(Protocol):
@@ -83,7 +86,10 @@ def _persist(
         DecisionRepository(connection).save(decision_result)
         connection.commit()
     except Exception:
-        connection.rollback()
+        try:
+            connection.rollback()
+        except Exception:
+            _LOGGER.exception("First Cycle persistence rollback failed")
         raise
 
 

@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime
 
 import pytest
@@ -23,11 +24,17 @@ class _Cursor:
 
 
 class _Connection:
-    def __init__(self, *, fail_on_statement: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        fail_on_statement: int | None = None,
+        fail_rollback: bool = False,
+    ) -> None:
         self.statements: list[tuple[str, tuple[object, ...]]] = []
         self.commits = 0
         self.rollbacks = 0
         self._fail_on_statement = fail_on_statement
+        self._fail_rollback = fail_rollback
 
     def execute(self, query: str, params: tuple[object, ...]) -> _Cursor:
         self.statements.append((query, params))
@@ -40,6 +47,8 @@ class _Connection:
 
     def rollback(self) -> None:
         self.rollbacks += 1
+        if self._fail_rollback:
+            raise RuntimeError("database rollback failed")
 
 
 def test_persists_first_cycle_contracts_in_dependency_order() -> None:
@@ -84,6 +93,24 @@ def test_rolls_back_all_writes_when_persistence_fails() -> None:
 
     assert connection.commits == 0
     assert connection.rollbacks == 1
+
+
+def test_preserves_save_error_when_rollback_fails(caplog: pytest.LogCaptureFixture) -> None:
+    connection = _Connection(fail_on_statement=4, fail_rollback=True)
+    fusion_result, fast_result, decision_result = _results()
+
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError, match="database write failed"):
+        persist_s0_results(
+            _artifacts(),
+            NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
+            fusion_result,
+            fast_result,
+            decision_result,
+            connection=connection,
+        )
+
+    assert connection.rollbacks == 1
+    assert "First Cycle persistence rollback failed" in caplog.text
 
 
 def test_rejects_result_with_run_id_outside_persisted_run() -> None:
