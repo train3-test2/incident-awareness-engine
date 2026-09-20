@@ -47,6 +47,30 @@ def test_rejects_fusion_for_run_that_has_not_ended() -> None:
         run_s0_fusion(_inputs(), artifacts, NormalizedEvidenceArtifacts(events=(), evidences=()))
 
 
+def test_uses_last_cadence_tick_for_a_measured_end_time_between_ticks() -> None:
+    start_time = datetime(2026, 9, 20, tzinfo=UTC)
+    artifacts = _artifacts(
+        start_time=start_time,
+        end_time=start_time + timedelta(seconds=20, milliseconds=1),
+    )
+    normalized_artifacts = NormalizedEvidenceArtifacts(
+        events=(),
+        evidences=(
+            _evidence("E-001", "encoded_powershell_command", start_time),
+            _evidence(
+                "E-002",
+                "script_interpreter_external_connection",
+                start_time + timedelta(seconds=10),
+            ),
+        ),
+    )
+
+    fusion_result = run_s0_fusion(_inputs(), artifacts, normalized_artifacts)
+
+    assert fusion_result.fusion_status == "detected"
+    assert fusion_result.fusion_time == start_time + timedelta(seconds=20)
+
+
 def _inputs() -> PipelineInputs:
     unused_path = Path("unused")
     return PipelineInputs(
