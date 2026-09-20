@@ -171,3 +171,40 @@ def test_rejects_unreadable_sysmon_jsonl(inputs: PipelineInputs) -> None:
 
     with pytest.raises(ValueError, match="not readable"):
         load_s0_pipeline_artifacts(inputs)
+
+
+@pytest.mark.parametrize("invalid_item", ["not-an-object", 1, None])
+def test_rejects_non_object_manifest_items(
+    inputs: PipelineInputs,
+    invalid_item: object,
+) -> None:
+    manifest = _read_manifest(inputs)
+    items = manifest["items"]
+    assert isinstance(items, list)
+    items.append(invalid_item)
+    _write_manifest_data(inputs, manifest)
+
+    with pytest.raises(TypeError, match="must be a JSON object"):
+        load_s0_pipeline_artifacts(inputs)
+
+
+def test_rejects_derived_from_that_matches_only_an_evtx_filename(inputs: PipelineInputs) -> None:
+    manifest = _read_manifest(inputs)
+    items = manifest["items"]
+    assert isinstance(items, list)
+    items[0]["path"] = f"D:\\copied\\raw\\{RUN_ID}\\telemetry\\sysmon-0001.evtx"
+    _write_manifest_data(inputs, manifest)
+
+    with pytest.raises(ValueError, match="exactly one EVTX"):
+        load_s0_pipeline_artifacts(inputs)
+
+
+def test_rejects_derived_from_with_multiple_matching_evtx_items(inputs: PipelineInputs) -> None:
+    manifest = _read_manifest(inputs)
+    items = manifest["items"]
+    assert isinstance(items, list)
+    items.append(items[0].copy())
+    _write_manifest_data(inputs, manifest)
+
+    with pytest.raises(ValueError, match="exactly one EVTX"):
+        load_s0_pipeline_artifacts(inputs)

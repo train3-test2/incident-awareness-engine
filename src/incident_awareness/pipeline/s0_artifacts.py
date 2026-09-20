@@ -98,9 +98,10 @@ def _validate_sysmon_manifest_item(
         raise TypeError("manifest items must be an array")
 
     candidates: list[dict[str, object]] = []
-    for item in items:
+    evtx_items: list[dict[str, object]] = []
+    for index, item in enumerate(items):
         if not isinstance(item, dict):
-            continue
+            raise TypeError(f"manifest items[{index}] must be a JSON object")
 
         try:
             artifact_name = manifest_artifact_name(item.get("path"), run_id=run_id)
@@ -109,6 +110,8 @@ def _validate_sysmon_manifest_item(
 
         if artifact_name == _SYSMON_JSONL_FILENAME:
             candidates.append(item)
+        elif artifact_name == "sysmon-0001.evtx":
+            evtx_items.append(item)
 
     if len(candidates) != 1:
         raise ValueError("manifest must contain exactly one Sysmon JSONL item")
@@ -127,12 +130,19 @@ def _validate_sysmon_manifest_item(
     ):
         raise ValueError("Sysmon JSONL manifest item must define a non-blank raw_log_id")
 
+    derived_from = item.get("derived_from")
     try:
-        derived_name = manifest_artifact_name(item.get("derived_from"), run_id=run_id)
+        derived_name = manifest_artifact_name(derived_from, run_id=run_id)
     except ManifestPathError as error:
         raise ValueError("Sysmon JSONL manifest item must derive from sysmon-0001.evtx") from error
     if derived_name != "sysmon-0001.evtx":
         raise ValueError("Sysmon JSONL manifest item must derive from sysmon-0001.evtx")
+    parent_items = [parent for parent in evtx_items if parent.get("path") == derived_from]
+    if len(parent_items) != 1:
+        raise ValueError("Sysmon JSONL derived_from must resolve to exactly one EVTX manifest item")
+    parent = parent_items[0]
+    if parent.get("layer") != "raw_telemetry" or parent.get("source") != "sysmon":
+        raise ValueError("Sysmon JSONL parent EVTX must be raw_telemetry from sysmon")
 
     expected_sha256 = item.get("sha256")
     if not _is_sha256(expected_sha256):
