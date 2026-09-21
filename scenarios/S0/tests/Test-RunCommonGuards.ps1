@@ -690,6 +690,104 @@ foreach ($case in @(
     Assert-True "worker creates no client for a $($case.Name) start" ($script:FakeClientsCreated -eq 0)
 }
 
+ # ---------------------------------------------------------------------------
+ # Observation window remaining time
+ #
+ # Every case uses synthetic moments. Nothing sleeps and no clock is read, so
+ # the result does not depend on the machine's time zone.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== observation window remaining ===" -ForegroundColor Cyan
+
+ # S0 policy: evaluation_horizon_sec 600 + post_reference_margin_sec 60.
+$observationSec = 660
+
+function New-Utc { param([string]$Value) return [datetime]::SpecifyKind([datetime]$Value, [System.DateTimeKind]::Utc) }
+function New-Local { param([string]$Value) return [datetime]::SpecifyKind([datetime]$Value, [System.DateTimeKind]::Local) }
+
+ # The attack run anchors on reference_time converted to UTC while the runner
+ # reads the clock locally. This is the combination that skipped the wait.
+$attackAnchorUtc = New-Utc "2026-09-20T09:21:34.826"
+$attackNowLocal = (New-Utc "2026-09-20T09:29:34.000").ToLocalTime()
+$attackRemaining = Get-ObservationRemainingSeconds -AnchorTime $attackAnchorUtc `
+    -ObservationSec $observationSec -Now $attackNowLocal
+Assert-True "UTC anchor with a local now leaves the real remaining time" (
+    [math]::Abs($attackRemaining - 180.826) -lt 0.01)
+Assert-True "UTC anchor with a local now is not negative" ($attackRemaining -gt 0)
+
+ # The normal run anchors on the local start_time. Its behaviour must not move.
+$normalAnchorLocal = New-Local "2026-09-20T17:40:03.000"
+$normalNowLocal = New-Local "2026-09-20T17:48:03.000"
+Assert-True "local anchor with a local now is unchanged" (
+    (Get-ObservationRemainingSeconds -AnchorTime $normalAnchorLocal `
+        -ObservationSec $observationSec -Now $normalNowLocal) -eq 180)
+
+ # Same instant expressed either way must give the same answer.
+Assert-True "UTC anchor with a UTC now agrees" (
+    (Get-ObservationRemainingSeconds -AnchorTime $attackAnchorUtc `
+        -ObservationSec $observationSec -Now (New-Utc "2026-09-20T09:29:34.826")) -eq 180)
+Assert-True "the same moment in UTC and local form gives the same result" (
+    (Get-ObservationRemainingSeconds -AnchorTime $normalAnchorLocal `
+        -ObservationSec $observationSec -Now $normalNowLocal) -eq
+    (Get-ObservationRemainingSeconds -AnchorTime $normalAnchorLocal.ToUniversalTime() `
+        -ObservationSec $observationSec -Now $normalNowLocal.ToUniversalTime()))
+
+ # Boundary: exactly at the close, and after it.
+Assert-True "now exactly at the close leaves zero" (
+    (Get-ObservationRemainingSeconds -AnchorTime $attackAnchorUtc `
+        -ObservationSec $observationSec -Now (New-Utc "2026-09-20T09:32:34.826")) -eq 0)
+Assert-True "a closed window is not positive, so no wait happens" (
+    (Get-ObservationRemainingSeconds -AnchorTime $attackAnchorUtc `
+        -ObservationSec $observationSec -Now (New-Utc "2026-09-20T09:40:00.000")) -le 0)
+
+ # A window that opens before midnight and closes after it: 23:55 plus 660s
+ # closes at 00:06 the next day.
+$midnightAnchor = New-Utc "2026-09-20T23:55:00.000"
+Assert-True "a window crossing midnight is still open before the close" (
+    (Get-ObservationRemainingSeconds -AnchorTime $midnightAnchor `
+        -ObservationSec $observationSec -Now (New-Utc "2026-09-21T00:03:00.000")) -eq 180)
+Assert-True "a window crossing midnight is closed after the next day's close" (
+    (Get-ObservationRemainingSeconds -AnchorTime $midnightAnchor `
+        -ObservationSec $observationSec -Now (New-Utc "2026-09-21T00:07:00.000")) -eq -60)
+
+ # Fractional seconds survive the comparison.
+Assert-True "fractional seconds are preserved" (
+    [math]::Abs((Get-ObservationRemainingSeconds -AnchorTime (New-Utc "2026-09-20T09:00:00.250") `
+        -ObservationSec $observationSec -Now (New-Utc "2026-09-20T09:10:00.100")) - 60.15) -lt 0.001)
+
+ # The 600 + 60 policy itself.
+Assert-True "the observation span is horizon 600 plus margin 60" (
+    (Get-ObservationRemainingSeconds -AnchorTime $attackAnchorUtc `
+        -ObservationSec $observationSec -Now $attackAnchorUtc) -eq 660)
+Assert-True "a run that ends at horizon 600 has not reached the close yet" (
+    (Get-ObservationRemainingSeconds -AnchorTime $attackAnchorUtc `
+        -ObservationSec $observationSec -Now $attackAnchorUtc.AddSeconds(600)) -eq 60)
+
+ # The pure function must not sleep: a closed window returns immediately.
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+$null = Get-ObservationRemainingSeconds -AnchorTime $attackAnchorUtc -ObservationSec $observationSec `
+    -Now (New-Utc "2026-09-21T00:00:00.000")
+$sw.Stop()
+Assert-True "the calculation does not sleep" ($sw.Elapsed.TotalSeconds -lt 1)
+
+ # Wait-ForObservationEnd must not wait once the window has closed. The context
+ # carries the same 600 + 60 policy the scenario file defines.
+$observationContext = [pscustomobject]@{
+    scenario = [pscustomobject]@{
+        run_length = [pscustomobject]@{ evaluation_horizon_sec = 600; post_reference_margin_sec = 60 }
+    }
+}
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+Wait-ForObservationEnd -Context $observationContext -AnchorTime (Get-Date).AddSeconds(-($observationSec + 60))
+$sw.Stop()
+Assert-True "Wait-ForObservationEnd returns at once for a closed window" ($sw.Elapsed.TotalSeconds -lt 1)
+
+ # Rehearsal skips the wait whatever the anchor is.
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+Wait-ForObservationEnd -Context $observationContext -AnchorTime (Get-Date) -Rehearsal
+$sw.Stop()
+Assert-True "rehearsal never waits" ($sw.Elapsed.TotalSeconds -lt 1)
+
 Write-Host ""
 if ($script:Failures -eq 0) {
     Write-Host "ALL $($script:Total) CHECKS PASSED" -ForegroundColor Green
