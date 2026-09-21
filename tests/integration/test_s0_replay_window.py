@@ -584,12 +584,16 @@ def test_runtime_fusion_is_repeatable_for_the_same_input() -> None:
     ]
 
 
-def _run_with_pair_config(events: list[NormalizedEvent]) -> S0RuntimeFusionResult:
+def _run_with_pair_config(
+    events: list[NormalizedEvent],
+    *,
+    end_time: datetime = REPLAY_END,
+) -> S0RuntimeFusionResult:
     return run_s0_runtime_fusion(
         events,
         run_id=RUN_ID,
         start_time=START_TIME,
-        end_time=REPLAY_END,
+        end_time=end_time,
         expected_entity_ids=(HOST_ID,),
         config=load_fusion_config(S0_PAIR_CONFIG_PATH),
     )
@@ -709,18 +713,37 @@ def test_threshold_first_met_on_the_last_replay_tick_is_not_detected() -> None:
 
 
 def test_threshold_confirmed_on_the_last_replay_tick_is_detected_at_replay_end() -> None:
-    # Given: first met one tick before replay_end, confirmed on replay_end itself.
+    # Given: first met one tick before replay_end, confirmed on replay_end itself,
+    # while the actual run continues beyond the analysis boundary.
     events = [
         _encoded_command_event("evt-a01", REPLAY_END - timedelta(seconds=20)),
         _network_event("evt-a02", REPLAY_END - timedelta(seconds=10)),
     ]
 
     # When
-    result = _run_with_pair_config(events)
+    result = _run_with_pair_config(events, end_time=REPLAY_END + ONE_MILLISECOND)
 
-    # Then: only the detection time is fixed here. How the still ACTIVE episode
-    # closes at replay_end waits for the replay end reason in the FusionResult
-    # contract and is tested after that change.
+    # Then
     (fusion_result,) = result.fusion_results
     assert fusion_result.fusion_status == "detected"
     assert fusion_result.fusion_time == REPLAY_END
+    (episode,) = fusion_result.fusion_episodes
+    assert episode.end_time == REPLAY_END
+    assert episode.end_reason == "replay_end"
+
+
+def test_active_episode_uses_run_end_when_actual_run_ends_at_replay_end() -> None:
+    # Given: the same threshold trajectory, but collection and replay end together.
+    events = [
+        _encoded_command_event("evt-a01", REPLAY_END - timedelta(seconds=20)),
+        _network_event("evt-a02", REPLAY_END - timedelta(seconds=10)),
+    ]
+
+    # When
+    result = _run_with_pair_config(events, end_time=REPLAY_END)
+
+    # Then
+    (fusion_result,) = result.fusion_results
+    (episode,) = fusion_result.fusion_episodes
+    assert episode.end_time == REPLAY_END
+    assert episode.end_reason == "run_end"

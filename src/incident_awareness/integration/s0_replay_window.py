@@ -15,10 +15,9 @@ section 5-3). Whether the attack evaluation horizon is covered is a separate
 check that belongs to the evaluation stage.
 
 The replay window follows the S0 replay policy s0-replay-v0.1
-(docs/scenarios/s0.md section 11). An episode still ACTIVE at replay_end closes
-with the engine's current end reason until the FusionResult contract gains a
-replay end reason, so this module is not ready to merge before that contract
-change lands.
+(docs/scenarios/s0.md section 11). The actual collection end remains run_end.
+When the run continues beyond replay_end, an episode still ACTIVE at that
+analysis boundary closes with the FusionResult v0.3 replay_end reason.
 """
 
 from collections.abc import Iterable
@@ -300,7 +299,8 @@ def run_s0_runtime_fusion(
             run_id=selection.run_id,
             entity_id=entity_id,
             run_start=window.replay_start,
-            run_end=window.replay_end,
+            run_end=window.observed_end,
+            replay_end=window.replay_end,
         ).fusion_result
         for entity_id in entity_ids
     )
