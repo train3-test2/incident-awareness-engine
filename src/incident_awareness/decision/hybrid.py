@@ -11,6 +11,8 @@ def combine_results(
     decision_id: str,
     config_version: str,
     parallel_required: bool,
+    source_hit_ids: list[str] | tuple[str, ...] | None = None,
+    selected_source_hit_id: str | None = None,
 ) -> DecisionResult:
     """Use the v0.2 truth table; optional-path policies need a separate config."""
     if parallel_required is not True:
@@ -74,4 +76,6 @@ def combine_results(
         contributing_evidence_ids=list(fusion.contributing_evidence_ids),
         model_version=fusion.model_version,
         rule_version=detection.rule_version,
+        source_hit_ids=list(source_hit_ids) if source_hit_ids is not None else None,
+        selected_source_hit_id=selected_source_hit_id,
     )

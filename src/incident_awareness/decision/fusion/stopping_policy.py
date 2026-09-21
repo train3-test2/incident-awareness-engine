@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 from math import isfinite
 from typing import Literal
 
+from incident_awareness.common.models.fusion import FusionEndReason
+
 
 def _validate_utc_datetime(value: datetime, *, field_name: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
@@ -38,7 +40,7 @@ class FusionEpisode:
     entity_id: str
     start_time: datetime
     end_time: datetime
-    end_reason: Literal["released", "run_end"]
+    end_reason: FusionEndReason
     score_at_start: float
     peak_score: float
 
@@ -82,6 +84,7 @@ class ThresholdStoppingPolicy:
         run_id: str,
         entity_id: str,
         run_end: datetime,
+        boundary_end_reason: Literal["run_end", "replay_end"] = "run_end",
     ) -> StoppingResult:
         _validate_entity_id(entity_id)
 
@@ -95,6 +98,9 @@ class ThresholdStoppingPolicy:
         episodes: list[FusionEpisode] = []
 
         _validate_utc_datetime(run_end, field_name="run_end")
+
+        if boundary_end_reason not in ("run_end", "replay_end"):
+            raise ValueError("boundary_end_reason must be run_end or replay_end")
 
         previous_timestamp: datetime | None = None
 
@@ -183,7 +189,7 @@ class ThresholdStoppingPolicy:
                     entity_id=entity_id,
                     start_time=episode_start_time,
                     end_time=run_end,
-                    end_reason="run_end",
+                    end_reason=boundary_end_reason,
                     score_at_start=episode_score_at_start,
                     peak_score=peak_score,
                 )

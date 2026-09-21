@@ -172,7 +172,7 @@ Fusion 내부 score/window/stopping 알고리즘은 역할 1이 담당한다.
 | `model_version`             | String       |    X |    O | 모델 버전              |
 | `scoring_method`            | String       |    O |    X | 점수 산출 방식         |
 | `scorer_version`            | String       |    O |    X | 점수 산출 구현 버전    |
-| `fusion_episodes`           | List[Object] |    O |    X | Run 전체 Fusion Episode 이력 |
+| `fusion_episodes`           | List[Object] |    O |    X | Fusion 실행 구간의 Episode 이력 |
 
 ---
 
@@ -261,7 +261,7 @@ score_at_decision = null
 
 ## 4-6. fusion_episodes
 
-`fusion_episodes`는 `run_end`까지의 전체 상태기계 이력이다. `fusion_time`은 최초 ACTIVE 진입 시각으로 latch하며 이후 release·re-entry가 발생해도 변경하지 않는다.
+`fusion_episodes`는 실제 Run 종료 또는 명시된 Replay 경계까지의 전체 상태기계 이력이다. `fusion_time`은 최초 ACTIVE 진입 시각으로 latch하며 이후 release·re-entry가 발생해도 변경하지 않는다.
 
 | 필드 | 타입 | 필수 | null | 설명 |
 | --- | --- | ---: | ---: | --- |
@@ -270,12 +270,12 @@ score_at_decision = null
 | `entity_id` | String | X | O | 분석 대상 Entity |
 | `start_time` | DateTime | O | X | ACTIVE 진입 시각 |
 | `end_time` | DateTime | X | O | 종료 시각 |
-| `end_reason` | Enum | X | O | `released`, `run_end`; 종료 전에는 `null` |
+| `end_reason` | Enum | X | O | `released`, `run_end`, `replay_end`; 종료 전에는 `null` |
 | `score_at_start` | Float | O | X | ACTIVE 진입 시점 점수 |
 | `peak_score` | Float | O | X | Episode 최고 점수 |
 | `contributing_evidence_ids` | List[String] | X | O | 기여 Evidence ID |
 
-Run 종료 시 ACTIVE인 Episode는 `end_time=run_end`, `end_reason=run_end`로 기록한다.
+실제 Run 종료 시 ACTIVE인 Episode는 `end_time=run_end`, `end_reason=run_end`로 기록한다. 실제 Run은 계속되지만 명시된 Replay 경계에서 처리를 종료한 경우에는 `end_time=replay_end`, `end_reason=replay_end`로 기록한다.
 
 ---
 
@@ -401,6 +401,18 @@ Fast runner가 생산한 개별 qualifying hit는 `DetectionResult`와 별도인
 
 `FastHitRecord`에는 Comparator 관측 사실과 실행 context만 기록한다. Ground Truth, eligible 여부, episode credit, TTSD, Recall 등 평가 파생값은 포함하지 않는다. 모든 유효한 `hit_id`는 Fast Adapter 이후에도 Provenance 보존 표현으로 추적 가능해야 한다.
 
+### 5-6-1. Fast Adapter entity mapping
+
+D-01에 따라 PoC v0의 `DetectionResult.entity_id`는 non-null canonical Endpoint Host다. 반면 `FastHitRecord.native_host_id`는 source-native 식별자이므로, Fast Adapter는 두 값을 문자열 동일성으로 계약하지 않고 다음 매핑 정책으로 분리한다.
+
+```text
+FastHitRecord.native_host_id
+    ↓ entity_mapper
+DetectionResult.entity_id (canonical Endpoint Host)
+```
+
+First Cycle 기본 정책은 `direct_host_entity_mapper`이며, source-native host 문자열을 그대로 canonical `entity_id`로 사용한다. 별도 canonical ID가 필요한 입력은 명시적인 `entity_mapper`를 제공해야 한다. 선택된 hit가 mapping되지 않거나 요청한 `entity_id`와 다르면 `detected` 결과를 만들 수 없다. `miss`는 해당 mapper가 같은 canonical entity로 해석하는 qualifying hit가 하나라도 있으면 허용하지 않는다. 다른 entity로 해석되거나 mapping되지 않은 hit는 해당 entity의 `miss`를 막지 않는다.
+
 
 ### hit_id 생성 규칙
 
@@ -420,7 +432,17 @@ First Cycle에서는 다음 규칙을 사용한다.
 
 Fast Adapter 이후에도 Fast Path 원본 hit의 provenance를 추적할 수 있도록 `hit_id`를 downstream에서 보존하는 방식을 사용한다.
 
-구체적인 downstream 필드명은 역할 3 Fast Adapter 구현에서 정한다.
+### 5-6-2. Fast Adapter provenance envelope
+
+`DetectionResult` Contract에는 FastHitRecord provenance 필드가 없다. 따라서 역할 3 Fast Adapter는 Python 전달 객체 `FastDetectionAdapterResult`로 다음 값을 함께 보존한다.
+
+| 필드 | 타입 | 규칙 |
+| --- | --- | --- |
+| `detection_result` | `DetectionResult` | 공통 결과 Contract |
+| `source_hit_ids` | `tuple[str, ...]` | Adapter 입력으로 검증된 모든 FastHitRecord의 `hit_id`를 JSONL 순서대로 보존. 중복은 허용하지 않음. |
+| `selected_source_hit_id` | `str \| None` | `detected` 결과를 만들기 위해 역할 5가 선택한 `hit_id`. `detected`에서는 `source_hit_ids`에 반드시 포함되며, `miss`와 `not_evaluated`에서는 `null`. |
+
+Pipeline은 Hybrid 호출 및 후속 저장 경계까지 이 envelope를 유지해야 한다. `DetectionResult`만 전달하여 `source_hit_ids`를 조용히 폐기하면 provenance 검증 실패로 처리한다.
 
 ---
 
@@ -453,6 +475,8 @@ Fusion Path와 Fast Detection Path의 결과를 결합하여 기술적 후보 �
 | `contributing_evidence_ids` | List[String] | X | O | 기여 Evidence ID |
 | `model_version` | String | X | O | Fusion 모델 버전 |
 | `rule_version` | String | X | O | Fast Rule 버전 |
+| `source_hit_ids` | List[String] | X | O | Fast Adapter가 보존한 입력 FastHitRecord ID 목록 |
+| `selected_source_hit_id` | String | X | O | detected Fast 결과를 만든 선택 FastHitRecord ID |
 | `detector_set_version` | String | X | O | 동결 Detector Set 버전 |
 | `supersedes_decision_id` | String | X | O | 재계산으로 대체한 이전 Decision ID |
 
@@ -466,6 +490,8 @@ Fusion Path와 Fast Detection Path의 결과를 결합하여 기술적 후보 �
 `FusionResult.contributing_evidence_ids`의 복사본으로, Fusion 판단 근거의 provenance다.
 Fast가 더 빠르더라도 보존하며 최종 `t_e`의 직접 기여 Evidence 또는 Fusion 전체
 episode의 Evidence 합집합을 뜻하지 않는다.
+
+`DecisionResult.source_hit_ids`와 `selected_source_hit_id`는 Fast Adapter envelope의 provenance를 저장 경계까지 전달하기 위한 선택 필드다. `source_hit_ids`는 중복·빈 값을 허용하지 않으며, `selected_source_hit_id`가 있으면 반드시 해당 목록에 포함된다. Fast 상태가 `detected`가 아닌 경우 `selected_source_hit_id`는 `null`이다.
 
 현재 구현의 `DecisionResult` 모델과 JSON Schema는 역할 1·5가 정한 필수 병렬 실행의
 미실행 정책을 적용한다. 한 경로라도 `not_evaluated`이면 `t_e`, `decision_path`,

@@ -11,7 +11,7 @@ from pydantic import (
 )
 
 FusionStatus = Literal["detected", "miss", "not_evaluated"]
-FusionEndReason = Literal["released", "run_end"]
+FusionEndReason = Literal["released", "run_end", "replay_end"]
 
 
 def _reject_numeric_timestamp(

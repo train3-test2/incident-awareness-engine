@@ -110,6 +110,7 @@ def run_fast_handoff(
         "run_id": run_id,
         "input_csv": str(csv_path.resolve()),
         "input_sha256": hashlib.sha256(csv_path.read_bytes()).hexdigest(),
+        "config_path": str(config_path.resolve()),
         "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
         "input_row_count": len(rows),
         "hit_count": len(hits),

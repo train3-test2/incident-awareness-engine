@@ -175,6 +175,38 @@ def test_enters_active_after_k_consecutive_scores() -> None:
     assert episode.end_reason == "run_end"
 
 
+def test_closes_active_episode_with_replay_end_reason() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    trajectory = [
+        make_point(0, 0.75),
+        make_point(10, 0.80),
+        make_point(20, 0.90),
+    ]
+    replay_end = make_point(30, 0.0).timestamp
+
+    # When
+    result = policy.evaluate(
+        trajectory,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_end=replay_end,
+        boundary_end_reason="replay_end",
+    )
+
+    # Then
+    assert result.fusion_status == "detected"
+    assert len(result.fusion_episodes) == 1
+
+    episode = result.fusion_episodes[0]
+    assert episode.end_time == replay_end
+    assert episode.end_reason == "replay_end"
+
+
 @pytest.mark.parametrize("entity_id", [None, "", "   "])
 def test_rejects_invalid_entity_id(entity_id: object) -> None:
     # Given

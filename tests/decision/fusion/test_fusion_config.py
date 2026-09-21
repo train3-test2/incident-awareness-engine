@@ -210,6 +210,46 @@ def test_pipeline_from_config_records_config_metadata() -> None:
     assert result.model_version is None
 
 
+def test_pipeline_from_config_preserves_replay_end_reason() -> None:
+    # Given
+    config = FusionConfig.model_validate(_valid_config_data())
+    run_start = datetime(2026, 9, 13, 12, 0, tzinfo=UTC)
+    replay_end = run_start + timedelta(seconds=30)
+    run_end = run_start + timedelta(seconds=40)
+
+    evidences = [
+        _make_evidence(
+            evidence_id="E-001",
+            timestamp=run_start,
+            evidence_type="encoded_powershell_command",
+        ),
+        _make_evidence(
+            evidence_id="E-002",
+            timestamp=run_start + timedelta(seconds=10),
+            evidence_type="script_interpreter_external_connection",
+        ),
+    ]
+
+    # When
+    result = run_fusion_pipeline_from_config(
+        evidences,
+        config=config,
+        run_id="RUN-20260913-001",
+        entity_id="HOST-CONFIG-001",
+        run_start=run_start,
+        run_end=run_end,
+        replay_end=replay_end,
+    ).fusion_result
+
+    # Then
+    assert result.fusion_status == "detected"
+    assert len(result.fusion_episodes) == 1
+
+    episode = result.fusion_episodes[0]
+    assert episode.end_time == replay_end
+    assert episode.end_reason == "replay_end"
+
+
 def test_pipeline_from_config_is_deterministic_for_same_input() -> None:
     # Given
     config = FusionConfig.model_validate(_valid_config_data())
