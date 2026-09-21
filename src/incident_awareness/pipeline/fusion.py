@@ -17,8 +17,8 @@ def run_s0_fusion(
 ) -> FusionResult:
     """Create one FusionResult from the current Run's extracted Evidence.
 
-    Fusion is only evaluated after the Run has ended because the temporal
-    replay requires a finite, cadence-aligned evaluation interval.
+    Fusion is only evaluated after the Run has ended. The measured end time
+    closes open episodes, while replay uses the last complete cadence tick.
     """
     measured_end_time = artifacts.run_metadata.end_time
     if measured_end_time is None:
@@ -42,7 +42,8 @@ def run_s0_fusion(
         run_id=artifacts.run_metadata.run_id,
         entity_id=inputs.entity_id,
         run_start=artifacts.run_metadata.start_time,
-        run_end=replay_end,
+        run_end=measured_end_time,
+        replay_end=replay_end,
     )
     return result.fusion_result
 

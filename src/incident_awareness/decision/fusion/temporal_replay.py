@@ -50,6 +50,7 @@ class TemporalReplayRunner:
         entity_id: str,
         run_start: datetime,
         run_end: datetime,
+        replay_end: datetime | None = None,
     ) -> TemporalReplayResult:
         self._validate_run_time(run_start, field_name="run_start")
         self._validate_run_time(run_end, field_name="run_end")
@@ -57,8 +58,17 @@ class TemporalReplayRunner:
         if run_end < run_start:
             raise ValueError("run_end must not be earlier than run_start")
 
-        if (run_end - run_start) % self.step_size != timedelta(0):
-            raise ValueError("run_end must align with step_size from run_start")
+        replay_boundary_name = "replay_end"
+        if replay_end is None:
+            replay_end = run_end
+            replay_boundary_name = "run_end"
+        self._validate_run_time(replay_end, field_name="replay_end")
+
+        if replay_end < run_start or replay_end > run_end:
+            raise ValueError("replay_end must fall within [run_start, run_end]")
+
+        if (replay_end - run_start) % self.step_size != timedelta(0):
+            raise ValueError(f"{replay_boundary_name} must align with step_size from run_start")
 
         ordered_evidences = list(evidences)
         previous_evidence_timestamp: datetime | None = None
@@ -89,6 +99,10 @@ class TemporalReplayRunner:
 
             previous_evidence_timestamp = evidence.timestamp
 
+        replay_evidences = tuple(
+            evidence for evidence in ordered_evidences if evidence.timestamp <= replay_end
+        )
+
         self.window_engine.reset(
             run_id=run_id,
             entity_id=entity_id,
@@ -99,12 +113,12 @@ class TemporalReplayRunner:
         evidence_index = 0
         current_time = run_start
 
-        while current_time <= run_end:
+        while current_time <= replay_end:
             while (
-                evidence_index < len(ordered_evidences)
-                and ordered_evidences[evidence_index].timestamp <= current_time
+                evidence_index < len(replay_evidences)
+                and replay_evidences[evidence_index].timestamp <= current_time
             ):
-                evidence = ordered_evidences[evidence_index]
+                evidence = replay_evidences[evidence_index]
 
                 self.window_engine.ingest(evidence)
                 evidence_index += 1
