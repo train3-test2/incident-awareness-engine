@@ -29,7 +29,7 @@ run_metadata:
     evidence: v0.2
     fast_hit: v0.2
     detection_result: v0.2
-    fusion_result: v0.2
+    fusion_result: v0.3
     decision_result: v0.2
     execution_record: v0.1
     evaluation_input: v0.1
@@ -45,11 +45,11 @@ telemetry:
 # reference_time, not to start_time, because the evaluator cuts the window at
 # min(reference_time + evaluation_horizon_sec, run_end).
 run_length:
-  evaluation_horizon_sec: 600          # provisional; owned by role 5 (s0.md section 11, item 5)
-  post_reference_margin_sec: 60        # absorbs the gap between run start and reference_time
+  evaluation_horizon_sec: 600          # confirmed evaluation value; not a Fusion setting
+  post_reference_margin_sec: 60        # runner operating margin; not an evaluation contract
   run_end_alignment:
-    step_size_sec: null                # cadence undecided (s0.md section 11, item 8)
-    policy: undecided                  # who rounds run_end onto the cadence grid - PR #70 precondition
+    step_size_sec: null                # actual end is preserved; replay cadence comes from Fusion config
+    policy: separate_replay_end        # replay_end carries the aligned analysis boundary
 
 # Destination for the external connection actions (N02, A02). The Evidence
 # condition script_interpreter_external_connection requires a globally routable

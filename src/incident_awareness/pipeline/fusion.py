@@ -36,8 +36,11 @@ def run_s0_fusion(
             key=lambda evidence: (evidence.timestamp, evidence.evidence_id),
         )
     )
+    replay_evidences = tuple(
+        evidence for evidence in ordered_evidences if evidence.timestamp <= replay_end
+    )
     result = run_fusion_pipeline_from_config(
-        ordered_evidences,
+        replay_evidences,
         config=config,
         run_id=artifacts.run_metadata.run_id,
         entity_id=inputs.entity_id,

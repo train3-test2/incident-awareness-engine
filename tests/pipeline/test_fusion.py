@@ -75,11 +75,8 @@ def test_uses_last_cadence_tick_for_a_measured_end_time_between_ticks() -> None:
     assert fusion_result.fusion_status == "detected"
     assert fusion_result.fusion_time == start_time + timedelta(seconds=20)
     assert fusion_result.contributing_evidence_ids == ["E-001", "E-002"]
-    assert fusion_result.fusion_episodes[0].end_time == start_time + timedelta(
-        seconds=20,
-        milliseconds=1,
-    )
-    assert fusion_result.fusion_episodes[0].end_reason == "run_end"
+    assert fusion_result.fusion_episodes[0].end_time == start_time + timedelta(seconds=20)
+    assert fusion_result.fusion_episodes[0].end_reason == "replay_end"
 
 
 def test_sorts_evidence_by_timestamp_before_running_fusion() -> None:

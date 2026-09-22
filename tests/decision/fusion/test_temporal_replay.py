@@ -282,6 +282,214 @@ def test_rejects_non_aligned_run_end() -> None:
     assert str(exc_info.value) == ("run_end must align with step_size from run_start")
 
 
+def test_replay_end_closes_active_episode_before_run_end() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    replay_end = run_start + timedelta(seconds=20)
+    run_end = run_start + timedelta(seconds=40)
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=0,
+        evidence_type="encoded_powershell_command",
+    )
+
+    # When
+    result = runner.run(
+        [evidence],
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+        replay_end=replay_end,
+    )
+
+    # Then
+    assert result.trajectory[-1].timestamp == replay_end
+    assert len(result.stopping_result.fusion_episodes) == 1
+
+    episode = result.stopping_result.fusion_episodes[0]
+    assert episode.end_time == replay_end
+    assert episode.end_reason == "replay_end"
+
+
+def test_replay_end_equal_to_run_end_uses_run_end_reason() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=20)
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=0,
+        evidence_type="encoded_powershell_command",
+    )
+
+    # When
+    result = runner.run(
+        [evidence],
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+        replay_end=run_end,
+    )
+
+    # Then
+    episode = result.stopping_result.fusion_episodes[0]
+    assert episode.end_time == run_end
+    assert episode.end_reason == "run_end"
+
+
+def test_allows_non_aligned_run_end_when_replay_end_is_aligned() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    replay_end = run_start + timedelta(seconds=20)
+    run_end = run_start + timedelta(seconds=25)
+    evidence = make_evidence(
+        evidence_id="EVD-001",
+        seconds=0,
+        evidence_type="encoded_powershell_command",
+    )
+
+    # When
+    result = runner.run(
+        [evidence],
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+        replay_end=replay_end,
+    )
+
+    # Then
+    assert result.trajectory[-1].timestamp == replay_end
+
+    episode = result.stopping_result.fusion_episodes[0]
+    assert episode.end_time == replay_end
+    assert episode.end_reason == "replay_end"
+
+
+def test_rejects_replay_end_before_run_start() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=40)
+    replay_end = run_start - timedelta(seconds=10)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+            replay_end=replay_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "replay_end must not be earlier than run_start"
+
+
+def test_rejects_replay_end_after_run_end() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=40)
+    replay_end = run_start + timedelta(seconds=50)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+            replay_end=replay_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == "replay_end must not be later than run_end"
+
+
+def test_rejects_non_aligned_replay_end() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=60)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=40)
+    replay_end = run_start + timedelta(seconds=25)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        runner.run(
+            [],
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            run_start=run_start,
+            run_end=run_end,
+            replay_end=replay_end,
+        )
+
+    # Then
+    assert str(exc_info.value) == ("replay_end must align with step_size from run_start")
+
+
 def test_empty_evidence_produces_zero_scores_and_miss() -> None:
     # Given
     runner = TemporalReplayRunner(

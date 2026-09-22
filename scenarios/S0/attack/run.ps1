@@ -12,18 +12,18 @@
             A04  execution             follow-on process
 
         This file does NOT implement the malicious shape of the scenario. A01 is
-        run as a harmless local anchor only in rehearsal, so the reference_time
-        and causality plumbing can be exercised without any attack behaviour. In a
-        normal run A01 and A02 raise an explicit "not implemented" error: the
-        -EncodedCommand launch (A01) and the external connection (A02) are written
-        only after the network isolation decision on issue #71 is recorded, and
-        no substitute behaviour is created in the meantime.
+        a harmless anchor process in every mode: the obfuscated -EncodedCommand
+        launch is intentionally not written. In rehearsal the anchor is a local
+        sleep script and A02 is skipped. In a formal run A01 is the connection
+        worker (New-ConnectionWorker) and A02 is that same worker making one
+        approved TCP connection with no payload; the approval, worker and
+        causality checks are in run-common.ps1 and docs/scenarios/s0-formal-actions.md.
 
         reference_time is the first Sysmon EID 1 the A01 process produces, and
         reference_source_event_id is that record's Sysmon RecordId
-        (docs/scenarios/s0.md section 6). A02 must run inside the A01 process
-        (same ProcessGuid, section 4-2); Test-ActionCausality checks that once A02
-        exists. Until then the check returns not_verified, which is expected.
+        (docs/scenarios/s0.md section 6). A02 runs inside the A01 process (same
+        ProcessGuid, section 4-2); Test-ActionCausality checks that, and a formal
+        run stops unless the result is "matched". Rehearsal keeps not_verified.
 
         NOTE: this file is intentionally ASCII only. Windows PowerShell 5.1
         misreads UTF-8 source files without a BOM, and a lost BOM corrupts
@@ -56,6 +56,11 @@ param(
     [string]$ExpectedSysmonConfigSha256,
     [string]$WorkDir = "C:\S0\work",
     [int]$AnchorTimeoutSec = 60,
+    [string]$ApprovedStartUtc,
+    [string]$ApprovedEndUtc,
+    [string]$ApprovedComputerName,
+    [int]$MaxConnectionAttempts = 1,
+    [int]$ConnectTimeoutMs = 3000,
     [switch]$Rehearsal
 )
 
@@ -127,11 +132,12 @@ function Start-AnchorProcess {
         The caller stops the rehearsal anchor with Stop-AnchorProcess after the
         run, never before A02.
 
-        In rehearsal this starts a harmless local script so the PID and the
-        reference_time path can be exercised. In a normal run the real A01
-        (-EncodedCommand launch) is not implemented: the malicious shape is
-        written only after the issue #71 decision, with no substitute here, and
-        A02 is added as behaviour of this process, not as a new Start-Process.
+        This is the rehearsal anchor only: it starts a harmless local script so
+        the PID and the reference_time path can be exercised without a
+        connection. A formal run does not call this; it starts the connection
+        worker (New-ConnectionWorker) as A01, and A02 is a behaviour of that same
+        worker process, not a new Start-Process. A non-rehearsal call is refused
+        so this harmless anchor can never stand in for a formal A01.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$ScriptPath,
@@ -139,9 +145,8 @@ function Start-AnchorProcess {
     )
 
     if (-not $Rehearsal) {
-        throw ("A01 is not implemented for a real run. The -EncodedCommand launch " +
-            "is written after the network isolation decision (see scenario.external_connection). " +
-            "No substitute behaviour is created here.")
+        throw ("Start-AnchorProcess is the rehearsal anchor only. A formal A01 is the " +
+            "connection worker; see New-ConnectionWorker.")
     }
 
     $startedAt = Get-Date
@@ -172,24 +177,6 @@ function Stop-AnchorProcess {
     }
 }
 
-function Invoke-ExternalConnection {
-    <#
-        A02 - the A01 process connects outbound to a global destination.
-
-        Not implemented. The destination must satisfy the Evidence condition
-        script_interpreter_external_connection (globally routable address), and a
-        run that leaves the isolated network needs the issue #71 decision. The
-        connection must be made by the A01 process itself so the ProcessGuid
-        matches (docs/scenarios/s0.md section 4-2); that is written together with
-        the real A01.
-    #>
-    param([Parameter(Mandatory = $true)]$Context)
-
-    $target = $Context.scenario.external_connection.target
-    throw ("A02 is not implemented. external_connection.target='" + $target +
-        "'; see " + $Context.scenario.external_connection.decision_reference)
-}
-
  # ---------------------------------------------------------------------------
  # Run
  # ---------------------------------------------------------------------------
@@ -204,18 +191,43 @@ $context = New-RunContext -RunId $RunId -RunType "attack" -ScenarioJsonPath $Sce
     -SysmonConfigPath $SysmonConfigPath -ExpectedSysmonConfigSha256 $ExpectedSysmonConfigSha256 `
     -Rehearsal:$Rehearsal
 
+ # Validate every approval input before anything runs. This throws before a
+ # worker or a socket exists, and it is checked again right before A02. Rehearsal
+ # requires no approval and makes no connection.
+$approval = $null
+if (-not $Rehearsal) {
+    $approval = Assert-FormalConnectionApproval -Context $context `
+        -ApprovedStartUtc $ApprovedStartUtc -ApprovedEndUtc $ApprovedEndUtc `
+        -ApprovedComputerName $ApprovedComputerName -MaxConnectionAttempts $MaxConnectionAttempts
+}
+
 Initialize-AttackWorkDir -Path $WorkDir
 
 $anchorProcessGuid = $null
 $a02StartedAt = $null
 $a01 = $null
+$worker = $null
 
 try {
 
 Write-Step "A01 anchor process"
 Wait-ForOffset -Context $context -Rehearsal:$Rehearsal `
     -OffsetSec (Get-ActionOffset -Context $context -ActionId "A01")
-$a01 = Start-AnchorProcess -ScriptPath (Join-Path $WorkDir "s0_anchor.ps1") -Rehearsal:$Rehearsal
+if ($Rehearsal) {
+    # A harmless anchor exercises the reference_time and causality plumbing.
+    $a01 = Start-AnchorProcess -ScriptPath (Join-Path $WorkDir "s0_anchor.ps1") -Rehearsal:$Rehearsal
+} else {
+    # A01 is the connection worker. A02 is performed inside this same process, so
+    # the EID 3 ProcessGuid equals this process's EID 1 ProcessGuid.
+    #
+    # EncodedCommand is requested explicitly: the S0 Attack contract requires the
+    # A01 process command line to carry -EncodedCommand, which is what produces
+    # the encoded_powershell_command Evidence. The normal run asks for File and
+    # therefore never produces that Evidence.
+    $worker = New-ConnectionWorker -WorkDir $WorkDir -RunId $RunId -Approval $approval `
+        -LaunchMode "EncodedCommand" -ConnectTimeoutMs $ConnectTimeoutMs
+    $a01 = [ordered]@{ process = $worker.process; started_at = $worker.started_at }
+}
 Add-ExecutionRecord -Context $context -ActionId "A01" -Timestamp $a01.started_at
 
  # reference_time is read from the live Sysmon channel, not from the EVTX export,
@@ -233,8 +245,14 @@ Wait-ForOffset -Context $context -Rehearsal:$Rehearsal `
 if ($Rehearsal) {
     Write-Fail "A02 skipped (rehearsal)"
 } else {
-    $a02StartedAt = Get-Date
-    Invoke-ExternalConnection -Context $context
+    # Re-check the approval window right before the connection, then let the A01
+    # worker make exactly one approved TCP connection. The recorded time is the
+    # worker's real attempt time, not the moment the trigger was written.
+    Assert-FormalConnectionApproval -Context $context `
+        -ApprovedStartUtc $ApprovedStartUtc -ApprovedEndUtc $ApprovedEndUtc `
+        -ApprovedComputerName $ApprovedComputerName -MaxConnectionAttempts $MaxConnectionAttempts | Out-Null
+    $connection = Invoke-WorkerConnection -Worker $worker -Approval $approval
+    $a02StartedAt = $connection.started_utc
     Add-ExecutionRecord -Context $context -ActionId "A02" -Timestamp $a02StartedAt
 }
 
@@ -267,6 +285,13 @@ $causality = Test-ActionCausality -Events $events -AnchorProcessGuid $anchorProc
     -ExpectedPort $context.scenario.external_connection.port
 Write-Ok ("A01 -> A02 causality: " + $causality.status + " (" + $causality.reason + ")")
 
+ # Fail closed: a formal run must not produce a success manifest unless the EID 3
+ # is the anchor's own connection to the approved destination. Rehearsal keeps
+ # the not_verified result and still writes its (clearly marked) artifacts.
+if (-not $Rehearsal) {
+    Assert-FormalCausalityMatched -Causality $causality
+}
+
 Write-ExecutionRecord -Context $context | Out-Null
 Write-RunMetadata -Context $context -EndTime $endTime `
     -ReferenceTime $reference.reference_time `
@@ -279,7 +304,13 @@ Write-Ok ("attack run finished: " + $context.run_id + " events=" + $events.Count
 
 }
 finally {
-    # Stop the rehearsal anchor only here, after every action and the export, so
-    # A01 never exits before A02. In a real run A01 threw and $a01 is still null.
-    Stop-AnchorProcess -AnchorResult $a01
+    # Stop the anchor only here, after every action and the export, so A01 never
+    # exits before A02. Rehearsal used a harmless anchor; a formal run used the
+    # connection worker, whose channel is removed here so no trigger/status is
+    # left behind for a later run to reuse.
+    if ($null -ne $worker) {
+        Stop-ConnectionWorker -Worker $worker
+    } else {
+        Stop-AnchorProcess -AnchorResult $a01
+    }
 }
