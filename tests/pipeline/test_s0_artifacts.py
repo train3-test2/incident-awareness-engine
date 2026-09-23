@@ -14,7 +14,7 @@ SCHEMA_VERSIONS = {
     "evidence": "v0.2",
     "fast_hit": "v0.2",
     "detection_result": "v0.2",
-    "fusion_result": "v0.2",
+    "fusion_result": "v0.3",
     "decision_result": "v0.2",
     "execution_record": "v0.1",
     "evaluation_input": "v0.1",
@@ -116,6 +116,7 @@ def test_loads_s0_artifacts_with_manifest_bound_provenance(inputs: PipelineInput
     artifacts = load_s0_pipeline_artifacts(inputs)
 
     assert artifacts.run_metadata.run_id == RUN_ID
+    assert artifacts.run_metadata.schema_versions.fusion_result == "v0.3"
     assert artifacts.normalization_context.run_id == RUN_ID
     assert artifacts.normalization_context.raw_log_id == "RAW-002"
     assert artifacts.normalization_context.segment_no == 1

@@ -180,7 +180,7 @@ def _artifacts() -> S0PipelineArtifacts:
                     "evidence": "v0.2",
                     "fast_hit": "v0.2",
                     "detection_result": "v0.2",
-                    "fusion_result": "v0.2",
+                    "fusion_result": "v0.3",
                     "decision_result": "v0.2",
                     "execution_record": "v0.1",
                     "evaluation_input": "v0.1",
