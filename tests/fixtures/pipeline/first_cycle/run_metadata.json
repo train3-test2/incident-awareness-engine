@@ -4,7 +4,7 @@
   "run_type": "attack",
   "target_host": "WIN-01",
   "start_time": "2026-09-20T00:00:00.000Z",
-  "end_time": "2026-09-20T00:00:20.000Z",
+  "end_time": "2026-09-20T00:11:00.000Z",
   "schema_versions": {
     "run_metadata": "v0.2",
     "event": "v0.2",

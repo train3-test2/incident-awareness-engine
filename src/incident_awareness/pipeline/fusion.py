@@ -1,10 +1,8 @@
-"""Run the existing Fusion pipeline for normalized First Cycle Evidence."""
-
-from datetime import datetime, timedelta
+"""Run First Cycle Fusion through the official S0 Runtime path."""
 
 from incident_awareness.common.models.fusion import FusionResult
 from incident_awareness.decision.fusion.config import load_fusion_config
-from incident_awareness.decision.fusion.pipeline import run_fusion_pipeline_from_config
+from incident_awareness.integration.s0_replay_window import run_s0_runtime_fusion
 from incident_awareness.pipeline.cli import PipelineInputs
 from incident_awareness.pipeline.event_evidence import NormalizedEvidenceArtifacts
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
@@ -15,51 +13,21 @@ def run_s0_fusion(
     artifacts: S0PipelineArtifacts,
     normalized_artifacts: NormalizedEvidenceArtifacts,
 ) -> FusionResult:
-    """Create one FusionResult from the current Run's extracted Evidence.
-
-    Fusion is only evaluated after the Run has ended. The measured end time
-    closes open episodes, while replay uses the last complete cadence tick.
-    """
+    """Create the target host FusionResult using the S0 replay policy."""
     measured_end_time = artifacts.run_metadata.end_time
     if measured_end_time is None:
         raise ValueError("Fusion requires a completed RunMetadata end_time")
 
     config = load_fusion_config(inputs.fusion_config_path)
-    replay_end = _last_replay_tick(
-        artifacts.run_metadata.start_time,
-        measured_end_time,
-        step_size=timedelta(seconds=config.replay.step_size_sec),
-    )
-    ordered_evidences = tuple(
-        sorted(
-            normalized_artifacts.evidences,
-            key=lambda evidence: (evidence.timestamp, evidence.evidence_id),
-        )
-    )
-    replay_evidences = tuple(
-        evidence for evidence in ordered_evidences if evidence.timestamp <= replay_end
-    )
-    result = run_fusion_pipeline_from_config(
-        replay_evidences,
+    runtime_result = run_s0_runtime_fusion(
+        normalized_artifacts.events,
         config=config,
         run_id=artifacts.run_metadata.run_id,
-        entity_id=inputs.entity_id,
-        run_start=artifacts.run_metadata.start_time,
-        run_end=measured_end_time,
-        replay_end=replay_end,
+        start_time=artifacts.run_metadata.start_time,
+        end_time=measured_end_time,
+        expected_entity_ids=(inputs.entity_id,),
     )
-    return result.fusion_result
-
-
-def _last_replay_tick(
-    run_start: datetime,
-    measured_end_time: datetime,
-    *,
-    step_size: timedelta,
-) -> datetime:
-    """Return the last fixed-cadence replay point that does not exceed Run end."""
-    elapsed = measured_end_time - run_start
-    return run_start + (elapsed // step_size) * step_size
+    return runtime_result.fusion_results[0]
 
 
 __all__ = ["run_s0_fusion"]

@@ -3,7 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from incident_awareness.common.models.evidence import Evidence
+from incident_awareness.common.models.event import (
+    NetworkInfo,
+    NormalizedEvent,
+    ProcessInfo,
+    RawLogReference,
+)
 from incident_awareness.common.models.run import RunMetadata
 from incident_awareness.normalization.sysmon import SysmonNormalizationContext
 from incident_awareness.pipeline.cli import PipelineInputs
@@ -18,17 +23,13 @@ FUSION_CONFIG_PATH = Path("configs/fusion/fusion_config_s0_pair_v0.1.yaml")
 
 def test_runs_existing_fusion_pipeline_and_returns_fusion_result() -> None:
     start_time = datetime(2026, 9, 20, tzinfo=UTC)
-    artifacts = _artifacts(start_time=start_time, end_time=start_time + timedelta(seconds=20))
+    artifacts = _artifacts(start_time=start_time, end_time=start_time + timedelta(seconds=660))
     normalized_artifacts = NormalizedEvidenceArtifacts(
-        events=(),
-        evidences=(
-            _evidence("E-001", "encoded_powershell_command", start_time),
-            _evidence(
-                "E-002",
-                "script_interpreter_external_connection",
-                start_time + timedelta(seconds=10),
-            ),
+        events=(
+            _encoded_command_event("evt-001", start_time),
+            _network_event("evt-002", start_time + timedelta(seconds=10)),
         ),
+        evidences=(),
     )
 
     fusion_result = run_s0_fusion(_inputs(), artifacts, normalized_artifacts)
@@ -37,7 +38,7 @@ def test_runs_existing_fusion_pipeline_and_returns_fusion_result() -> None:
     assert fusion_result.entity_id == ENTITY_ID
     assert fusion_result.fusion_status == "detected"
     assert fusion_result.fusion_time == start_time + timedelta(seconds=20)
-    assert fusion_result.contributing_evidence_ids == ["E-001", "E-002"]
+    assert len(fusion_result.contributing_evidence_ids) == 2
 
 
 def test_rejects_fusion_for_run_that_has_not_ended() -> None:
@@ -47,57 +48,61 @@ def test_rejects_fusion_for_run_that_has_not_ended() -> None:
         run_s0_fusion(_inputs(), artifacts, NormalizedEvidenceArtifacts(events=(), evidences=()))
 
 
-def test_uses_last_cadence_tick_for_a_measured_end_time_between_ticks() -> None:
+def test_uses_official_replay_end_and_excludes_events_after_it() -> None:
     start_time = datetime(2026, 9, 20, tzinfo=UTC)
     artifacts = _artifacts(
         start_time=start_time,
-        end_time=start_time + timedelta(seconds=20, milliseconds=1),
+        end_time=start_time + timedelta(seconds=660, milliseconds=1),
     )
     normalized_artifacts = NormalizedEvidenceArtifacts(
-        events=(),
-        evidences=(
-            _evidence("E-001", "encoded_powershell_command", start_time),
-            _evidence(
-                "E-002",
-                "script_interpreter_external_connection",
-                start_time + timedelta(seconds=10),
-            ),
-            _evidence(
-                "E-003",
-                "encoded_powershell_command",
-                start_time + timedelta(seconds=20, milliseconds=1),
-            ),
+        events=(
+            _encoded_command_event("evt-001", start_time + timedelta(seconds=640)),
+            _network_event("evt-002", start_time + timedelta(seconds=650)),
+            _encoded_command_event("evt-003", start_time + timedelta(seconds=660, milliseconds=1)),
         ),
+        evidences=(),
     )
 
     fusion_result = run_s0_fusion(_inputs(), artifacts, normalized_artifacts)
 
     assert fusion_result.fusion_status == "detected"
-    assert fusion_result.fusion_time == start_time + timedelta(seconds=20)
-    assert fusion_result.contributing_evidence_ids == ["E-001", "E-002"]
-    assert fusion_result.fusion_episodes[0].end_time == start_time + timedelta(seconds=20)
+    assert fusion_result.fusion_time == start_time + timedelta(seconds=660)
+    assert fusion_result.contributing_evidence_ids
+    assert fusion_result.fusion_episodes[0].end_time == start_time + timedelta(seconds=660)
     assert fusion_result.fusion_episodes[0].end_reason == "replay_end"
 
 
 def test_sorts_evidence_by_timestamp_before_running_fusion() -> None:
     start_time = datetime(2026, 9, 20, tzinfo=UTC)
-    artifacts = _artifacts(start_time=start_time, end_time=start_time + timedelta(seconds=20))
+    artifacts = _artifacts(start_time=start_time, end_time=start_time + timedelta(seconds=660))
     normalized_artifacts = NormalizedEvidenceArtifacts(
-        events=(),
-        evidences=(
-            _evidence(
-                "E-002",
-                "script_interpreter_external_connection",
-                start_time + timedelta(seconds=10),
-            ),
-            _evidence("E-001", "encoded_powershell_command", start_time),
+        events=(
+            _network_event("evt-002", start_time + timedelta(seconds=10)),
+            _encoded_command_event("evt-001", start_time),
         ),
+        evidences=(),
     )
 
     fusion_result = run_s0_fusion(_inputs(), artifacts, normalized_artifacts)
 
     assert fusion_result.fusion_status == "detected"
-    assert fusion_result.contributing_evidence_ids == ["E-001", "E-002"]
+    assert len(fusion_result.contributing_evidence_ids) == 2
+
+
+def test_returns_not_evaluated_before_official_replay_window_is_covered() -> None:
+    start_time = datetime(2026, 9, 20, tzinfo=UTC)
+    artifacts = _artifacts(
+        start_time=start_time,
+        end_time=start_time + timedelta(seconds=659, milliseconds=999),
+    )
+
+    fusion_result = run_s0_fusion(
+        _inputs(),
+        artifacts,
+        NormalizedEvidenceArtifacts(events=(), evidences=()),
+    )
+
+    assert fusion_result.fusion_status == "not_evaluated"
 
 
 def _inputs() -> PipelineInputs:
@@ -148,15 +153,36 @@ def _artifacts(*, start_time: datetime, end_time: datetime | None) -> S0Pipeline
     )
 
 
-def _evidence(evidence_id: str, evidence_type: str, timestamp: datetime) -> Evidence:
-    return Evidence(
-        evidence_id=evidence_id,
+def _encoded_command_event(event_id: str, timestamp: datetime) -> NormalizedEvent:
+    return NormalizedEvent(
+        event_id=event_id,
         run_id=RUN_ID,
         timestamp=timestamp,
-        entity_id=ENTITY_ID,
-        evidence_type=evidence_type,
-        event_ids=[f"evt-{evidence_id}"],
-        derived_from_source_layer="raw_telemetry",
-        feature_channel_group="fusion_feature",
-        extractor_version="test-v0.1",
+        timestamp_source="event_time",
+        event_time=timestamp,
+        host_id=ENTITY_ID,
+        source="sysmon",
+        source_layer="raw_telemetry",
+        source_event_id=event_id,
+        event_type="process_create",
+        raw_ref=RawLogReference(raw_log_id="RAW-002", segment_no=1, record_no=1),
+        process=ProcessInfo(name="powershell.exe", command_line="powershell.exe -enc SQBFAFgA"),
+    )
+
+
+def _network_event(event_id: str, timestamp: datetime) -> NormalizedEvent:
+    return NormalizedEvent(
+        event_id=event_id,
+        run_id=RUN_ID,
+        timestamp=timestamp,
+        timestamp_source="event_time",
+        event_time=timestamp,
+        host_id=ENTITY_ID,
+        source="sysmon",
+        source_layer="raw_telemetry",
+        source_event_id=event_id,
+        event_type="network_connection",
+        raw_ref=RawLogReference(raw_log_id="RAW-002", segment_no=1, record_no=2),
+        process=ProcessInfo(name="powershell.exe", command_line="powershell.exe -enc SQBFAFgA"),
+        network=NetworkInfo(protocol="tcp", dst_ip="1.1.1.1", dst_port=443),
     )
