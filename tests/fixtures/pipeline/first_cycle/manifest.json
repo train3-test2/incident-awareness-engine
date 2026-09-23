@@ -1,0 +1,20 @@
+{
+  "run_id": "RUN-20260920-001",
+  "items": [
+    {
+      "raw_log_id": "RAW-001",
+      "path": "C:\\S0\\data\\raw\\RUN-20260920-001\\telemetry\\sysmon-0001.evtx",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "layer": "raw_telemetry",
+      "source": "sysmon"
+    },
+    {
+      "raw_log_id": "RAW-002",
+      "path": "C:\\S0\\data\\raw\\RUN-20260920-001\\telemetry\\sysmon-0001.jsonl",
+      "sha256": "c7e11a5ce279f204418e2d22f6541d65e9a507057ac70005df526de315a05d4d",
+      "layer": "raw_telemetry",
+      "source": "sysmon",
+      "derived_from": "C:\\S0\\data\\raw\\RUN-20260920-001\\telemetry\\sysmon-0001.evtx"
+    }
+  ]
+}

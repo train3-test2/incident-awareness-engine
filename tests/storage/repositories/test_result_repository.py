@@ -105,7 +105,7 @@ def test_fusion_repository_saves_and_rebuilds_result(fusion_result: FusionResult
     repository.save(fusion_result)
     stored_result = repository.get(fusion_result.run_id, fusion_result.entity_id)
 
-    assert connection.commits == 1
+    assert connection.commits == 0
     assert connection.statements[0][0] == _UPSERT_FUSION_RESULT
     assert connection.statements[0][1][:4] == (
         fusion_result.run_id,
@@ -130,7 +130,7 @@ def test_detection_repository_saves_and_rebuilds_result(
     repository.save(detection_result)
     stored_result = repository.get(detection_result.run_id, detection_result.entity_id)
 
-    assert connection.commits == 1
+    assert connection.commits == 0
     assert connection.statements[0][0] == _UPSERT_DETECTION_RESULT
     assert connection.statements[0][1][:5] == (
         detection_result.run_id,
@@ -157,7 +157,7 @@ def test_decision_repository_inserts_and_rebuilds_immutable_result(
     stored_result = repository.get(decision_result.decision_id)
 
     assert "ON CONFLICT" not in _INSERT_DECISION
-    assert connection.commits == 1
+    assert connection.commits == 0
     assert connection.statements[0][0] == _INSERT_DECISION
     assert connection.statements[0][1][:5] == (
         "DEC-001",

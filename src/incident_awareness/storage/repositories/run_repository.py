@@ -13,8 +13,6 @@ class _Cursor(Protocol):
 class _Connection(Protocol):
     def execute(self, query: str, params: tuple[object, ...]) -> _Cursor: ...
 
-    def commit(self) -> None: ...
-
 
 _UPSERT_RUN = """
 INSERT INTO runs (
@@ -59,7 +57,6 @@ class RunRepository:
                 Jsonb(run.model_dump(mode="json")),
             ),
         )
-        self._connection.commit()
 
     def get(self, run_id: str) -> RunMetadata | None:
         """run_id에 해당하는 저장된 RunMetadata를 반환한다."""

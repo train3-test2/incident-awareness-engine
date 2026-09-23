@@ -1,0 +1,1 @@
+{"hit_id":"RUN-20260920-001-hit-1","run_id":"RUN-20260920-001","timestamp":"2026-09-20T00:00:05.000Z","detector_engine":"hayabusa","detector_engine_version":"fixture-v0.1","rule_id":"mock-rule","rule_version":"mock-v1","alert_key":"mock-alert","native_host_id":"WIN-01","native_record_ref":"1","detector_config_version":"fixture-v0.1"}

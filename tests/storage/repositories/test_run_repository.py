@@ -56,12 +56,12 @@ def run_metadata() -> RunMetadata:
     )
 
 
-def test_save_upserts_run_metadata_and_commits(run_metadata: RunMetadata) -> None:
+def test_save_upserts_run_metadata_without_committing(run_metadata: RunMetadata) -> None:
     connection = FakeConnection()
 
     RunRepository(connection).save(run_metadata)
 
-    assert connection.commits == 1
+    assert connection.commits == 0
     assert len(connection.statements) == 1
     query, params = connection.statements[0]
     assert query == _UPSERT_RUN

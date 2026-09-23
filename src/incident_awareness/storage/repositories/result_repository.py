@@ -14,8 +14,6 @@ class _Cursor(Protocol):
 class _Connection(Protocol):
     def execute(self, query: str, params: tuple[object, ...]) -> _Cursor: ...
 
-    def commit(self) -> None: ...
-
 
 _UPSERT_FUSION_RESULT = """
 INSERT INTO fusion_results (
@@ -98,7 +96,6 @@ class FusionResultRepository:
                 Jsonb(result.model_dump(mode="json")),
             ),
         )
-        self._connection.commit()
 
     def get(self, run_id: str, entity_id: str) -> FusionResult | None:
         row = self._connection.execute(
@@ -129,7 +126,6 @@ class DetectionResultRepository:
                 Jsonb(result.model_dump(mode="json")),
             ),
         )
-        self._connection.commit()
 
     def get(self, run_id: str, entity_id: str) -> DetectionResult | None:
         row = self._connection.execute(
@@ -167,7 +163,6 @@ class DecisionRepository:
                 Jsonb(result.model_dump(mode="json")),
             ),
         )
-        self._connection.commit()
 
     def get(self, decision_id: str) -> DecisionResult | None:
         row = self._connection.execute(_SELECT_DECISION_PAYLOAD, (decision_id,)).fetchone()

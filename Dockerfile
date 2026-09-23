@@ -3,7 +3,8 @@ FROM python:3.13-slim
 WORKDIR /app
 
 ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONPATH="/app/src"
+    PYTHONPATH="/app/src" \
+    INCIDENT_AWARENESS_EVENT_TYPES_PATH="/app/configs/event_types_v0.2.yaml"
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.10 /uv /uvx /bin/
 
