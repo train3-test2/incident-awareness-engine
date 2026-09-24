@@ -4,7 +4,7 @@
 
 이 문서는 멘토 지시에 따라 First Cycle 이전에 구성한 AWS 개발 smoke 환경의 실행 및 상태 확인 절차를 기록한다.
 
-현재 환경은 ECR 이미지가 ECS Fargate에서 실행되고 CloudWatch Logs로 출력되는지만 확인한다. 역할 3 파이프라인 실행 진입점, Docker Compose 통합 실행, ECS Service 및 `configs/` 전달 방식은 아직 구현 범위에 포함하지 않는다.
+현재 환경은 ECR 이미지가 ECS Fargate에서 실행되고 CloudWatch Logs로 출력되는지만 확인한다. First Cycle CLI와 이미지 내 `configs/`는 준비되어 있지만, 실제 Artifact 전달·PostgreSQL 연결·Pipeline 실행은 아직 구현 범위에 포함하지 않는다. AWS First Cycle 입력 경로는 [AWS First Cycle 입력 Artifact 계약](aws-first-cycle-inputs.md)을 따른다.
 
 프로젝트의 장기 Cloud Compute 선택은 [Project Technical Baseline](project-guidelines.md)의 First Cycle 이후 결정 원칙을 따른다.
 
@@ -162,8 +162,8 @@ protocol=None src_ip=None src_port=None dst_ip=None dst_port=None
 
 ## 후속 범위
 
-- First Cycle Pipeline의 실제 실행 진입점 구현
-- `configs/`의 이미지 포함 또는 런타임 전달 방식 결정
+- S3 입력 Artifact 다운로드와 First Cycle Pipeline 실행 entrypoint 구현
+- PostgreSQL 연결 및 결과 저장을 포함한 ECS Fargate E2E 검증
 - 로컬 Docker Compose E2E 구현
 - 실제 Pipeline Docker E2E 및 AWS E2E 검증
 - 지속 실행이 필요한 컴포넌트가 생긴 뒤 ECS Service 구성
