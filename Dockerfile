@@ -15,6 +15,9 @@ COPY src ./src
 COPY configs ./configs
 COPY infra/postgres/migrations ./infra/postgres/migrations
 
-RUN groupadd --system app && useradd --system --gid app --create-home app
+RUN groupadd --system app \
+    && useradd --system --gid app --create-home app \
+    && mkdir /inputs \
+    && chown app:app /inputs
 
 USER app
