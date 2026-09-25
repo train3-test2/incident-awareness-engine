@@ -24,6 +24,10 @@ def test_basic_attack_evaluation():
     assert result["detected_runs"] == 1
     assert result["run_recall"] == 1.0
     assert result["median_ttsd_sec"] == 60.0
+    assert result["ttsd_iqr_sec"] == 0.0
+    assert result["total_normal_runs"] == 0
+    assert result["false_positive_runs"] == 0
+    assert result["benign_run_fpr"] is None
 
 
 def test_missed_attack_run_reduces_recall():
@@ -467,3 +471,101 @@ def test_csv_accepts_millisecond_values(tmp_path, value):
     path = tmp_path / "time.csv"
     pd.DataFrame([row]).to_csv(path, index=False)
     assert load_data(path).loc[0, "timestamp"] == pd.Timestamp(value)
+
+
+@pytest.mark.parametrize("has_hit, expected_fpr", [(False, 0.0), (True, 1.0)])
+def test_normal_only_metrics(valid_attack, has_hit, expected_fpr):
+    normal = valid_attack.copy()
+    normal["class"] = "normal"
+    normal["reference_time"] = pd.NaT
+    if not has_hit:
+        normal["timestamp"] = pd.NaT
+    result = evaluate(normal, evaluation_horizon=HORIZON)
+    assert result["total_normal_runs"] == 1
+    assert result["false_positive_runs"] == int(has_hit)
+    assert result["benign_run_fpr"] == expected_fpr
+    assert result["total_attack_runs"] == 0
+    assert result["run_recall"] is None
+    assert result["median_ttsd_sec"] is None
+    assert result["ttsd_iqr_sec"] is None
+
+
+def test_mixed_runs_count_each_normal_once_and_preserve_input(valid_attack):
+    normal = valid_attack.copy()
+    normal["run_id"] = "RUN-20260902-002"
+    normal["class"] = "normal"
+    normal["reference_time"] = pd.NaT
+    later_hit = normal.copy()
+    # Normal exposure is not capped by the attack evaluation horizon.
+    later_hit["timestamp"] = pd.Timestamp("2026-09-02T00:15:00Z")
+    no_hit_row = normal.copy()
+    no_hit_row["timestamp"] = pd.NaT
+    quiet_run = no_hit_row.copy()
+    quiet_run["run_id"] = "RUN-20260902-003"
+    df = pd.concat([valid_attack, normal, later_hit, no_hit_row, quiet_run, quiet_run])
+    original = df.copy(deep=True)
+    result = evaluate(df, evaluation_horizon=HORIZON)
+    assert result["total_normal_runs"] == 2
+    assert result["false_positive_runs"] == 1
+    assert result["benign_run_fpr"] == 0.5
+    assert result["total_attack_runs"] == 1
+    assert result["run_recall"] == 1.0
+    assert result["median_ttsd_sec"] == 60.0
+    pd.testing.assert_frame_equal(df, original)
+
+
+def test_normal_hit_after_attack_horizon_still_counts(valid_attack):
+    valid_attack["class"] = "normal"
+    valid_attack["reference_time"] = pd.NaT
+    valid_attack["timestamp"] = pd.Timestamp("2026-09-02T00:15:00Z")
+    assert evaluate(valid_attack, evaluation_horizon=HORIZON)["benign_run_fpr"] == 1.0
+
+
+@pytest.mark.parametrize("delay", [None, -1, 601])
+def test_no_eligible_attack_detection_has_no_iqr(valid_attack, delay):
+    valid_attack["timestamp"] = (
+        pd.NaT if delay is None else valid_attack["reference_time"] + pd.Timedelta(seconds=delay)
+    )
+    result = evaluate(valid_attack, evaluation_horizon=HORIZON)
+    assert result["detected_runs"] == 0
+    assert result["median_ttsd_sec"] is None
+    assert result["ttsd_iqr_sec"] is None
+
+
+def test_iqr_uses_first_eligible_detection_per_run(valid_attack):
+    rows = []
+    # Eligible first delays [0, 60, 120, 600]: Q1=45, Q3=240, IQR=195.
+    for index, delay in enumerate([0, 60, 120, 600, None], start=1):
+        row = valid_attack.copy()
+        row["run_id"] = f"RUN-20260902-{index:03d}"
+        row["timestamp"] = (
+            pd.NaT if delay is None else row["reference_time"] + pd.Timedelta(seconds=delay)
+        )
+        rows.append(row)
+    for delay in [-1, 300, 900]:
+        extra = rows[1].copy()
+        extra["timestamp"] = extra["reference_time"] + pd.Timedelta(seconds=delay)
+        rows.append(extra)
+    df = pd.concat(rows).sample(frac=1, random_state=51)
+    result = evaluate(df, evaluation_horizon=HORIZON)
+    assert result["total_attack_runs"] == 5
+    assert result["detected_runs"] == 4
+    assert result["run_recall"] == 0.8
+    assert result["median_ttsd_sec"] == 90.0
+    assert result["ttsd_iqr_sec"] == 195.0
+
+
+def test_csv_normal_no_hit_is_in_fpr_denominator(valid_attack, tmp_path):
+    normal = valid_attack.copy()
+    normal["class"] = "normal"
+    normal["reference_time"] = pd.NaT
+    quiet = normal.copy()
+    quiet["run_id"] = "RUN-20260902-002"
+    quiet["timestamp"] = pd.NaT
+    df = pd.concat([normal, quiet])
+    df["run_start"] = pd.Timestamp("2026-09-02T00:00:00Z")
+    path = tmp_path / "normal.csv"
+    df.to_csv(path, index=False)
+    result = evaluate(load_data(path), evaluation_horizon=HORIZON)
+    assert result["total_normal_runs"] == 2
+    assert result["benign_run_fpr"] == 0.5
