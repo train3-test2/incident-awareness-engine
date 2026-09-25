@@ -7,6 +7,7 @@ HORIZON = pd.Timedelta(minutes=10)
 
 
 def test_basic_attack_evaluation():
+    """A single detected attack has zero IQR and no normal-run FPR."""
     df = pd.DataFrame(
         {
             "run_id": ["RUN-20260902-001"],
@@ -475,6 +476,7 @@ def test_csv_accepts_millisecond_values(tmp_path, value):
 
 @pytest.mark.parametrize("has_hit, expected_fpr", [(False, 0.0), (True, 1.0)])
 def test_normal_only_metrics(valid_attack, has_hit, expected_fpr):
+    """Normal-only input reports FPR while attack statistics remain undefined."""
     normal = valid_attack.copy()
     normal["class"] = "normal"
     normal["reference_time"] = pd.NaT
@@ -491,6 +493,7 @@ def test_normal_only_metrics(valid_attack, has_hit, expected_fpr):
 
 
 def test_mixed_runs_count_each_normal_once_and_preserve_input(valid_attack):
+    """Duplicate normal rows do not inflate FPR or mutate the input table."""
     normal = valid_attack.copy()
     normal["run_id"] = "RUN-20260902-002"
     normal["class"] = "normal"
@@ -515,6 +518,7 @@ def test_mixed_runs_count_each_normal_once_and_preserve_input(valid_attack):
 
 
 def test_normal_hit_after_attack_horizon_still_counts(valid_attack):
+    """Normal observation is not shortened by the attack evaluation horizon."""
     valid_attack["class"] = "normal"
     valid_attack["reference_time"] = pd.NaT
     valid_attack["timestamp"] = pd.Timestamp("2026-09-02T00:15:00Z")
@@ -523,6 +527,7 @@ def test_normal_hit_after_attack_horizon_still_counts(valid_attack):
 
 @pytest.mark.parametrize("delay", [None, -1, 601])
 def test_no_eligible_attack_detection_has_no_iqr(valid_attack, delay):
+    """Missing and out-of-window detections contribute no TTSD samples."""
     valid_attack["timestamp"] = (
         pd.NaT if delay is None else valid_attack["reference_time"] + pd.Timedelta(seconds=delay)
     )
@@ -533,6 +538,7 @@ def test_no_eligible_attack_detection_has_no_iqr(valid_attack, delay):
 
 
 def test_iqr_uses_first_eligible_detection_per_run(valid_attack):
+    """IQR uses linear quartiles of first eligible hits, excluding misses and later hits."""
     rows = []
     # Eligible first delays [0, 60, 120, 600]: Q1=45, Q3=240, IQR=195.
     for index, delay in enumerate([0, 60, 120, 600, None], start=1):
@@ -556,6 +562,7 @@ def test_iqr_uses_first_eligible_detection_per_run(valid_attack):
 
 
 def test_csv_normal_no_hit_is_in_fpr_denominator(valid_attack, tmp_path):
+    """A CSV row with an empty timestamp preserves a quiet normal Run in the denominator."""
     normal = valid_attack.copy()
     normal["class"] = "normal"
     normal["reference_time"] = pd.NaT
