@@ -75,3 +75,18 @@ python -m incident_awareness.pipeline \
 S3 객체를 모두 내려받기 전에 CLI를 실행하거나, 임의의 호스트 경로를 CLI 인자로
 전달해서는 안 된다. 이 계약의 파일 목록 또는 경로를 변경하면 Fast trace와 Manifest
 검증 규칙, ECS entrypoint, Task Definition을 같은 변경 단위로 갱신한다.
+
+## PostgreSQL migration 실행
+
+First Cycle schema는 이미지에 포함한
+`/app/infra/postgres/migrations/001_first_cycle.sql`로 관리한다. DB 연결 환경 변수
+`INCIDENT_AWARENESS_DATABASE_URL`이 주입된 별도 Fargate 일회성 태스크에서 아래 명령을
+한 번 실행한다.
+
+```text
+python -m incident_awareness.storage.migrate
+```
+
+명령은 `schema_migrations`에 `001_first_cycle` 적용 이력을 남긴다. 같은 migration을
+다시 실행하면 DDL을 재실행하지 않고 정상 종료한다. migration 태스크는 S3 입력을
+필요로 하지 않으며, First Cycle 실행 태스크와 분리한다.
