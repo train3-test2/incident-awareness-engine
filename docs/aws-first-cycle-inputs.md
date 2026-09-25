@@ -3,8 +3,8 @@
 ## 범위
 
 이 문서는 ECS Fargate의 First Cycle **일회성 태스크**가 읽는 S3 입력 Artifact와
-컨테이너 내부 경로를 정의한다. 실행 결과의 PostgreSQL 저장, ECS Task Definition,
-S3 다운로드 entrypoint 구현은 후속 작업 범위다.
+컨테이너 내부 경로를 정의한다. 실행 결과의 PostgreSQL 저장과 ECS Task Definition은
+후속 작업 범위다.
 
 Fargate는 S3를 파일시스템으로 직접 마운트하지 않는다. 태스크 시작 시 entrypoint가
 S3 객체를 `/inputs`에 내려받고, 파이프라인 프로세스는 그 디렉터리를 읽기 전용으로
@@ -19,7 +19,8 @@ S3 객체를 `/inputs`에 내려받고, 파이프라인 프로세스는 그 디�
 s3://<bucket>/first-cycle/<run_id>/
 ```
 
-entrypoint는 prefix 아래의 객체를 경로 구조를 유지한 채 `/inputs`에 내려받는다.
+`python -m incident_awareness.pipeline.aws_task` entrypoint는 prefix 아래의 객체를
+경로 구조를 유지한 채 `/inputs`에 내려받는다.
 
 | S3 객체 key | 컨테이너 경로 | 용도 |
 | --- | --- | --- |
@@ -55,8 +56,19 @@ Cycle CLI는 EVTX 바이트를 직접 읽지 않고 지정된 Sysmon JSONL의 �
 
 ## CLI 호출 기준
 
-entrypoint가 다운로드를 완료한 뒤 다음 파일 경로로 First Cycle CLI를 호출한다.
-`<entity_id>`, `<decision_id>`, `<decision_config_version>`은 실행 요청에서 명시한다.
+entrypoint는 다운로드한 파일 경로로 First Cycle CLI를 호출한다. Task Definition은
+아래 환경 변수를 명시한다.
+
+| 환경 변수 | 값 |
+| --- | --- |
+| `INCIDENT_AWARENESS_S3_INPUT_URI` | `s3://<bucket>/first-cycle/<run_id>/` |
+| `INCIDENT_AWARENESS_ENTITY_ID` | canonical Endpoint Host `entity_id` |
+| `INCIDENT_AWARENESS_DECISION_ID` | 이번 실행에서 저장할 Decision 식별자 |
+| `INCIDENT_AWARENESS_DECISION_CONFIG_VERSION` | 적용할 Hybrid Decision 실행 Config 버전 |
+
+`INCIDENT_AWARENESS_S3_INPUT_URI`의 `<run_id>`는 내려받은 `run_metadata.json`의
+`run_id`와 일치해야 한다. 다운로드가 완료된 뒤 entrypoint가 호출하는 CLI 경로는
+다음과 같다.
 
 ```text
 python -m incident_awareness.pipeline \
