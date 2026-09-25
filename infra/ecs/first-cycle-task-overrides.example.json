@@ -1,0 +1,25 @@
+{
+  "containerOverrides": [
+    {
+      "name": "incident-awareness-engine-first-cycle",
+      "environment": [
+        {
+          "name": "INCIDENT_AWARENESS_S3_INPUT_URI",
+          "value": "s3://<bucket>/first-cycle/RUN-YYYYMMDD-NNN/"
+        },
+        {
+          "name": "INCIDENT_AWARENESS_ENTITY_ID",
+          "value": "<canonical-entity-id>"
+        },
+        {
+          "name": "INCIDENT_AWARENESS_DECISION_ID",
+          "value": "<decision-id>"
+        },
+        {
+          "name": "INCIDENT_AWARENESS_DECISION_CONFIG_VERSION",
+          "value": "<decision-config-version>"
+        }
+      ]
+    }
+  ]
+}

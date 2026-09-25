@@ -3,8 +3,8 @@
 ## 범위
 
 이 문서는 ECS Fargate의 First Cycle **일회성 태스크**가 읽는 S3 입력 Artifact와
-컨테이너 내부 경로를 정의한다. 실행 결과의 PostgreSQL 저장과 ECS Task Definition은
-후속 작업 범위다.
+컨테이너 내부 경로를 정의한다. 실행 결과는 PostgreSQL에 저장하며, 실행 및 migration
+태스크 정의는 `infra/ecs/`에서 관리한다.
 
 Fargate는 S3를 파일시스템으로 직접 마운트하지 않는다. 태스크 시작 시 entrypoint가
 S3 객체를 `/inputs`에 내려받고, 파이프라인 프로세스는 그 디렉터리를 읽기 전용으로
@@ -88,6 +88,44 @@ S3 객체를 모두 내려받기 전에 CLI를 실행하거나, 임의의 호스
 전달해서는 안 된다. 이 계약의 파일 목록 또는 경로를 변경하면 Fast trace와 Manifest
 검증 규칙, ECS entrypoint, Task Definition을 같은 변경 단위로 갱신한다.
 
+## ECS Task Definition과 실행 override
+
+`infra/ecs/task-definition.first-cycle.json`은 Pipeline 실행용 Fargate Task Definition
+템플릿이다. `ecsFirstCycleTaskRole`을 Task Role로 사용해 `first-cycle/*` S3 객체만 읽고,
+DB URL은 Secrets Manager에서 `INCIDENT_AWARENESS_DATABASE_URL` 환경 변수로 주입한다.
+
+`IMAGE_URI`와 `DATABASE_URL_SECRET_ARN`은 저장소에 실제 환경 값을 기록하지 않기 위한
+자리표시자다. 등록 전에 각각 ECR 이미지 URI와 Secrets Manager의 **전체 ARN**으로
+교체한다. `DATABASE_URL_SECRET_ARN` 뒤의
+`:INCIDENT_AWARENESS_DATABASE_URL::`는 Secret JSON의 해당 key를 선택하는 ECS 형식이다.
+
+Run마다 달라지는 입력은 Task Definition에 고정하지 않는다.
+`infra/ecs/first-cycle-task-overrides.example.json`을 복사해 다음 네 환경 변수를 실제 값으로
+교체한 뒤 `ContainerOverride`로 전달한다.
+
+- `INCIDENT_AWARENESS_S3_INPUT_URI`
+- `INCIDENT_AWARENESS_ENTITY_ID`
+- `INCIDENT_AWARENESS_DECISION_ID`
+- `INCIDENT_AWARENESS_DECISION_CONFIG_VERSION`
+
+예를 들어 AWS CLI에서는 등록된 revision을 지정하고 `--overrides`에 복사한 JSON 파일을
+전달한다. 네트워크 값은 RDS 접근이 허용된 First Cycle Task 보안 그룹과 같은 VPC subnet을
+사용한다. 현재 Default VPC 기반 개발 환경에서는 NAT Gateway 또는 필요한 VPC Endpoint가
+없으므로 public subnet과 `assignPublicIp=ENABLED`를 사용한다. 태스크는 외부 요청을 받지
+않으므로 보안 그룹의 인바운드 규칙은 추가하지 않는다. private subnet으로 전환할 때는 먼저
+ECR·S3·CloudWatch Logs에 대한 NAT Gateway 또는 VPC Endpoint를 구성한다.
+
+```powershell
+aws ecs run-task `
+  --cluster incident-awareness-engine-dev `
+  --task-definition incident-awareness-engine-first-cycle:<revision> `
+  --launch-type FARGATE `
+  --network-configuration "awsvpcConfiguration={subnets=[<public-subnet-id>],securityGroups=[<first-cycle-task-security-group-id>],assignPublicIp=ENABLED}" `
+  --overrides file://infra/ecs/first-cycle-task-overrides.json `
+  --region ap-northeast-2 `
+  --profile incident-dev
+```
+
 ## PostgreSQL migration 실행
 
 First Cycle schema는 이미지에 포함한
@@ -102,3 +140,8 @@ python -m incident_awareness.storage.migrate
 명령은 `schema_migrations`에 `001_first_cycle` 적용 이력을 남긴다. 같은 migration을
 다시 실행하면 DDL을 재실행하지 않고 정상 종료한다. migration 태스크는 S3 입력을
 필요로 하지 않으며, First Cycle 실행 태스크와 분리한다.
+
+`infra/ecs/task-definition.first-cycle-migrate.json`은 이 명령만 실행하는 전용 Fargate
+Task Definition 템플릿이다. S3 권한이 필요한 Pipeline Task Role을 부여하지 않는다. Pipeline
+태스크와 마찬가지로 등록 전에 `IMAGE_URI`와 `DATABASE_URL_SECRET_ARN`을 실제 값으로
+교체한다.

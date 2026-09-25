@@ -1,0 +1,34 @@
+{
+  "family": "incident-awareness-engine-first-cycle-migrate",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::998301375101:role/ecsTaskExecutionRole",
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "containerDefinitions": [
+    {
+      "name": "incident-awareness-engine-first-cycle-migrate",
+      "image": "IMAGE_URI",
+      "essential": true,
+      "command": ["python", "-m", "incident_awareness.storage.migrate"],
+      "secrets": [
+        {
+          "name": "INCIDENT_AWARENESS_DATABASE_URL",
+          "valueFrom": "DATABASE_URL_SECRET_ARN:INCIDENT_AWARENESS_DATABASE_URL::"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/incident-awareness-engine-dev",
+          "awslogs-region": "ap-northeast-2",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
