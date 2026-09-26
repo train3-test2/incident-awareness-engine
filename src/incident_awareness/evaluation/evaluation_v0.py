@@ -78,13 +78,17 @@ def evaluate(
 ) -> dict:
     """Evaluate one method using a complete Run inventory.
 
-    Every attack Run must have at least one row; timestamp=null represents
-    a miss. A hit-only table cannot supply the Recall denominator. Future
+    Every attack and normal Run must have at least one row; timestamp=null
+    represents an evaluated Run with no detection. A hit-only table cannot
+    supply the Recall or FPR denominator. Future
     integrations must obtain the complete inventory from run_metadata.
     Eligible timestamps include both reference_time and evaluation_end.
     Horizon must be a non-negative pd.Timedelta; zero permits only immediate
     detection. Non-null times must be UTC datetimes with millisecond precision. Run metadata
     must agree across rows, and attack run_end cannot precede reference_time.
+    Normal Runs count once as false positives if any timestamp is non-null
+    (#51); callers must supply alerts belonging to the Run observation period.
+    IQR uses linear-interpolated Q3 minus Q1 of first eligible attack TTSDs.
     """
     required = {"run_id", "class", "run_end", "method", "reference_time", "timestamp"}
     missing = required.difference(df.columns)
@@ -163,12 +167,28 @@ def evaluate(
 
     median_ttsd = first_detection_per_run["ttsd_sec"].median() if detected_runs > 0 else None
 
+    ttsd_iqr = None
+    if detected_runs > 0:
+        quartiles = first_detection_per_run["ttsd_sec"].quantile(
+            [0.25, 0.75], interpolation="linear"
+        )
+        ttsd_iqr = float(quartiles.loc[0.75] - quartiles.loc[0.25])
+
+    normal_df = df[df["class"] == "normal"]
+    total_normal_runs = normal_df["run_id"].nunique()
+    false_positive_runs = normal_df.loc[normal_df["timestamp"].notna(), "run_id"].nunique()
+    benign_run_fpr = false_positive_runs / total_normal_runs if total_normal_runs > 0 else None
+
     return {
         "method": methods[0],
         "total_attack_runs": total_attack_runs,
         "detected_runs": detected_runs,
         "run_recall": recall,
         "median_ttsd_sec": median_ttsd,
+        "total_normal_runs": total_normal_runs,
+        "false_positive_runs": false_positive_runs,
+        "benign_run_fpr": benign_run_fpr,
+        "ttsd_iqr_sec": ttsd_iqr,
     }
 
 
