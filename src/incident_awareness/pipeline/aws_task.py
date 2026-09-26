@@ -134,7 +134,11 @@ def _relative_object_path(key: str, prefix: str) -> PurePosixPath:
         raise ValueError("S3 list response returned an object outside the requested prefix")
 
     relative_path = PurePosixPath(key.removeprefix(prefix))
-    if not relative_path.parts or any(part in (".", "..") for part in relative_path.parts):
+    if (
+        relative_path.is_absolute()
+        or not relative_path.parts
+        or any(part in (".", "..") for part in relative_path.parts)
+    ):
         raise ValueError("S3 input object key must resolve to a file below the input prefix")
     return relative_path
 

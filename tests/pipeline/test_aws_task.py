@@ -97,6 +97,13 @@ def test_download_s3_inputs_rejects_key_outside_requested_prefix(tmp_path: Path)
         aws_task.download_s3_inputs(location, tmp_path, s3_client=client)
 
 
+def test_relative_object_path_rejects_absolute_path_after_prefix() -> None:
+    prefix = "first-cycle/RUN-20260920-001/"
+
+    with pytest.raises(ValueError, match="below"):
+        aws_task._relative_object_path(f"{prefix}/outside-inputs.json", prefix)
+
+
 def test_main_downloads_contract_paths_and_invokes_pipeline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
