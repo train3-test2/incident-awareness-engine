@@ -23,6 +23,8 @@ def test_first_cycle_migration_defines_only_the_documented_minimum_tables() -> N
 
     assert "CREATE TABLE raw_logs" not in migration
     assert "CREATE TABLE evidences" not in migration
+    assert "BEGIN;" not in migration
+    assert "COMMIT;" not in migration
 
 
 def test_first_cycle_migration_preserves_contract_payloads_and_run_relations() -> None:

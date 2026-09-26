@@ -4,7 +4,11 @@
 
 이 문서는 멘토 지시에 따라 First Cycle 이전에 구성한 AWS 개발 smoke 환경의 실행 및 상태 확인 절차를 기록한다.
 
-현재 환경은 ECR 이미지가 ECS Fargate에서 실행되고 CloudWatch Logs로 출력되는지만 확인한다. 역할 3 파이프라인 실행 진입점, Docker Compose 통합 실행, ECS Service 및 `configs/` 전달 방식은 아직 구현 범위에 포함하지 않는다.
+현재 환경은 ECR 이미지가 ECS Fargate에서 실행되고 CloudWatch Logs로 출력되는 smoke
+경로를 제공한다. First Cycle Pipeline·S3 입력 entrypoint·PostgreSQL migration과 실행
+Task Definition 템플릿은 준비되어 있지만, 실제 AWS E2E 실행 결과는 별도로 확인해야
+한다. 입력 및 실행 계약은 [AWS First Cycle 입력 Artifact 계약](aws-first-cycle-inputs.md)을
+따른다.
 
 프로젝트의 장기 Cloud Compute 선택은 [Project Technical Baseline](project-guidelines.md)의 First Cycle 이후 결정 원칙을 따른다.
 
@@ -19,9 +23,13 @@
 | 컨테이너 이름 | `incident-awareness-engine-smoke` | 로그 스트림 이름의 두 번째 경로 요소 |
 | CloudWatch 로그 그룹 | `/ecs/incident-awareness-engine-dev` | 컨테이너 표준 출력 확인 |
 | CloudWatch 로그 스트림 prefix | `ecs` | 로그 스트림 이름 접두사 |
-| 실행 역할 | `ecsTaskExecutionRole` | ECR 이미지 pull 및 CloudWatch 로그 전송 |
+| 실행 역할 | `ecsTaskExecutionRole` | ECR 이미지 pull, CloudWatch 로그 전송 및 DB URL Secret 주입 |
 
-`ecsTaskExecutionRole`에는 AWS 관리형 정책 `AmazonECSTaskExecutionRolePolicy`가 연결되어야 한다.
+`ecsTaskExecutionRole`에는 AWS 관리형 정책 `AmazonECSTaskExecutionRolePolicy`와
+`infra/iam/ecs-task-execution-secrets-policy.json`의 인라인 정책이 연결되어야 한다. 후자는
+First Cycle DB URL Secret 하나에만 `secretsmanager:GetSecretValue`를 허용한다. 현재 Secret은
+AWS 관리형 `aws/secretsmanager` 키를 사용하므로 별도 `kms:Decrypt` 권한이 필요 없다. 이후
+고객 관리형 KMS 키로 변경하면 해당 키 ARN에만 `kms:Decrypt`를 추가한다.
 
 ## 사전 조건
 
@@ -162,9 +170,7 @@ protocol=None src_ip=None src_port=None dst_ip=None dst_port=None
 
 ## 후속 범위
 
-- First Cycle Pipeline의 실제 실행 진입점 구현
-- `configs/`의 이미지 포함 또는 런타임 전달 방식 결정
-- 로컬 Docker Compose E2E 구현
-- 실제 Pipeline Docker E2E 및 AWS E2E 검증
+- 실제 S3 Artifact·Secrets Manager DB URL을 사용한 First Cycle ECS Fargate E2E 검증
+- First Cycle Task Definition 등록과 migration 적용 절차의 실행 결과 확인
 - 지속 실행이 필요한 컴포넌트가 생긴 뒤 ECS Service 구성
-- `develop` push 기준 GitHub Actions smoke 배포 실행 결과 확인 및 실패 대응 절차 보완
+- First Cycle AWS 배포 자동화가 필요해질 때 GitHub OIDC 권한과 workflow 확장
