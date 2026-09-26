@@ -94,10 +94,10 @@ S3 객체를 모두 내려받기 전에 CLI를 실행하거나, 임의의 호스
 템플릿이다. `ecsFirstCycleTaskRole`을 Task Role로 사용해 `first-cycle/*` S3 객체만 읽고,
 DB URL은 Secrets Manager에서 `INCIDENT_AWARENESS_DATABASE_URL` 환경 변수로 주입한다.
 
-`IMAGE_URI`와 `DATABASE_URL_SECRET_ARN`은 저장소에 실제 환경 값을 기록하지 않기 위한
-자리표시자다. 등록 전에 각각 ECR 이미지 URI와 Secrets Manager의 **전체 ARN**으로
-교체한다. `DATABASE_URL_SECRET_ARN` 뒤의
-`:INCIDENT_AWARENESS_DATABASE_URL::`는 Secret JSON의 해당 key를 선택하는 ECS 형식이다.
+`IMAGE_URI`는 저장소에 실제 배포 이미지를 기록하지 않기 위한 자리표시자다. 등록 전에
+ECR 이미지 URI로 교체한다. DB Secret은 확인된 전체 ARN으로 Task Definition에 고정하며,
+뒤의 `:INCIDENT_AWARENESS_DATABASE_URL::`는 Secret JSON의 해당 key를 선택하는 ECS
+형식이다.
 
 Run마다 달라지는 입력은 Task Definition에 고정하지 않는다.
 `infra/ecs/first-cycle-task-overrides.example.json`을 복사해 다음 네 환경 변수를 실제 값으로
@@ -143,5 +143,4 @@ python -m incident_awareness.storage.migrate
 
 `infra/ecs/task-definition.first-cycle-migrate.json`은 이 명령만 실행하는 전용 Fargate
 Task Definition 템플릿이다. S3 권한이 필요한 Pipeline Task Role을 부여하지 않는다. Pipeline
-태스크와 마찬가지로 등록 전에 `IMAGE_URI`와 `DATABASE_URL_SECRET_ARN`을 실제 값으로
-교체한다.
+태스크와 마찬가지로 등록 전에 `IMAGE_URI`만 실제 값으로 교체한다.

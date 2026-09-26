@@ -55,7 +55,11 @@ def test_first_cycle_task_definition_contract(
     assert container["secrets"] == [
         {
             "name": "INCIDENT_AWARENESS_DATABASE_URL",
-            "valueFrom": "DATABASE_URL_SECRET_ARN:INCIDENT_AWARENESS_DATABASE_URL::",
+            "valueFrom": (
+                "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:"
+                "incident-awareness/first-cycle/database-url-9KGf2f:"
+                "INCIDENT_AWARENESS_DATABASE_URL::"
+            ),
         }
     ]
     assert container["logConfiguration"]["options"] == {
@@ -94,7 +98,7 @@ def test_execution_role_secret_policy_is_scoped_to_first_cycle_database_url() ->
                 "Action": "secretsmanager:GetSecretValue",
                 "Resource": (
                     "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:"
-                    "incident-awareness/first-cycle/database-url-*"
+                    "incident-awareness/first-cycle/database-url-9KGf2f"
                 ),
             }
         ],

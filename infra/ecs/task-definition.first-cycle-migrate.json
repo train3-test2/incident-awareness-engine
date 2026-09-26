@@ -18,7 +18,7 @@
       "secrets": [
         {
           "name": "INCIDENT_AWARENESS_DATABASE_URL",
-          "valueFrom": "DATABASE_URL_SECRET_ARN:INCIDENT_AWARENESS_DATABASE_URL::"
+          "valueFrom": "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:incident-awareness/first-cycle/database-url-9KGf2f:INCIDENT_AWARENESS_DATABASE_URL::"
         }
       ],
       "logConfiguration": {
