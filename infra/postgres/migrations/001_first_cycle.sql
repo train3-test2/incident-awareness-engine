@@ -1,8 +1,6 @@
 -- First Cycle의 구조화된 메타데이터와 결과 Contract를 저장한다.
 -- Raw artifact와 Evidence는 후속 migration에서 별도로 관리한다.
 
-BEGIN;
-
 CREATE TABLE runs (
     run_id TEXT PRIMARY KEY,
     scenario_id TEXT NOT NULL,
@@ -106,5 +104,3 @@ CREATE INDEX events_run_id_timestamp_idx ON events (run_id, timestamp);
 CREATE INDEX fusion_results_run_id_idx ON fusion_results (run_id);
 CREATE INDEX detection_results_run_id_idx ON detection_results (run_id);
 CREATE INDEX decisions_run_id_entity_id_idx ON decisions (run_id, entity_id);
-
-COMMIT;

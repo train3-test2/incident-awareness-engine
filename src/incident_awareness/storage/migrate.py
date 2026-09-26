@@ -57,7 +57,7 @@ def main() -> int:
     """Apply the First Cycle migration using the configured runtime database."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     database_config = DatabaseConfig.from_environment()
-    with psycopg.connect(database_config.url, autocommit=True) as connection:
+    with psycopg.connect(database_config.url, autocommit=False) as connection:
         applied = apply_first_cycle_migration(connection)
 
     if applied:

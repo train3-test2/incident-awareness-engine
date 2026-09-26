@@ -1,3 +1,9 @@
+from typing import Self
+
+import pytest
+
+from incident_awareness.storage import migrate
+from incident_awareness.storage.config import DatabaseConfig
 from incident_awareness.storage.migrate import apply_first_cycle_migration
 
 
@@ -21,6 +27,19 @@ class _Connection:
         return _Cursor(None)
 
 
+class _ContextConnection(_Connection):
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exception_type: object,
+        exception: object,
+        traceback: object,
+    ) -> None:
+        return None
+
+
 def test_applies_first_cycle_migration_and_records_it() -> None:
     connection = _Connection(already_applied=False)
 
@@ -41,3 +60,27 @@ def test_skips_first_cycle_migration_when_it_is_already_recorded() -> None:
 
     assert applied is False
     assert not any("CREATE TABLE runs" in query for query, _ in connection.queries)
+
+
+def test_main_uses_connection_managed_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _ContextConnection(already_applied=True)
+    received: dict[str, object] = {}
+
+    def fake_connect(url: str, *, autocommit: bool) -> _ContextConnection:
+        received.update(url=url, autocommit=autocommit)
+        return connection
+
+    monkeypatch.setattr(
+        migrate.DatabaseConfig,
+        "from_environment",
+        lambda: DatabaseConfig("postgresql://user:password@host/database"),
+    )
+    monkeypatch.setattr(migrate.psycopg, "connect", fake_connect)
+
+    assert migrate.main() == 0
+    assert received == {
+        "url": "postgresql://user:password@host/database",
+        "autocommit": False,
+    }
