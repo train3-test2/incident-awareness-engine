@@ -1,0 +1,385 @@
+{
+  "snapshot_id": "snapshot-1",
+  "plan": {
+    "scenario_id": "S0",
+    "purpose": "smoke",
+    "decision_ids": {
+      "RUN-20260920-001": "D-1",
+      "RUN-20260920-002": "D-2",
+      "RUN-20260920-003": "D-3",
+      "RUN-20260920-004": "D-4"
+    },
+    "decision_config_version": "parallel-v1",
+    "scoring_config_version": "fusion-v1",
+    "detector_set_version": "set-v1",
+    "fast_episode_policy_version": "episodes-v1",
+    "evaluation_horizon_sec": 120,
+    "parallel_required": true
+  },
+  "runs": [
+    {
+      "run_metadata": {
+        "run_id": "RUN-20260920-001",
+        "scenario_id": "S0",
+        "run_type": "attack",
+        "target_host": "WIN-01",
+        "start_time": "2026-09-20T00:00:00Z",
+        "end_time": "2026-09-20T00:05:00Z",
+        "family_id": null,
+        "variation_id": null,
+        "repetition": null,
+        "reference_time": "2026-09-20T00:01:00Z",
+        "reference_action_id": null,
+        "reference_source_event_id": null,
+        "vm_snapshot": null,
+        "sysmon_config_version": null,
+        "detector_set_version": "set-v1",
+        "scenario_version": null,
+        "schema_versions": {
+          "run_metadata": "v0.2",
+          "event": "v0.2",
+          "evidence": "v0.2",
+          "fast_hit": "v0.2",
+          "detection_result": "v0.2",
+          "fusion_result": "v0.3",
+          "decision_result": "v0.2",
+          "execution_record": "v0.1",
+          "evaluation_input": "v0.1"
+        },
+        "reference_policy_version": null
+      },
+      "detection": {
+        "run_id": "RUN-20260920-001",
+        "entity_id": "WIN-01",
+        "detector_time": "2026-09-20T00:00:20.000Z",
+        "detector_status": "detected",
+        "detector_id": "hayabusa",
+        "rule_id": "rule-1",
+        "rule_version": "rule-v1",
+        "severity": null
+      },
+      "fusion": {
+        "run_id": "RUN-20260920-001",
+        "entity_id": "WIN-01",
+        "fusion_time": "2026-09-20T00:00:30.000Z",
+        "fusion_status": "detected",
+        "score_at_decision": 1.0,
+        "contributing_evidence_ids": [
+          "ev-1"
+        ],
+        "scoring_config_version": "fusion-v1",
+        "scoring_profile_id": "profile-v1",
+        "model_version": null,
+        "scoring_method": "simple_score",
+        "scorer_version": "score-v1",
+        "fusion_episodes": [
+          {
+            "episode_id": "FEP-0",
+            "run_id": "RUN-20260920-001",
+            "entity_id": "WIN-01",
+            "start_time": "2026-09-20T00:00:30.000Z",
+            "end_time": "2026-09-20T00:01:20.000Z",
+            "end_reason": "released",
+            "score_at_start": 1.0,
+            "peak_score": 1.0,
+            "contributing_evidence_ids": [
+              "ev-1"
+            ]
+          },
+          {
+            "episode_id": "FEP-1",
+            "run_id": "RUN-20260920-001",
+            "entity_id": "WIN-01",
+            "start_time": "2026-09-20T00:02:10.000Z",
+            "end_time": "2026-09-20T00:04:10.000Z",
+            "end_reason": "released",
+            "score_at_start": 1.0,
+            "peak_score": 1.0,
+            "contributing_evidence_ids": [
+              "ev-1"
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "run_id": "RUN-20260920-001",
+        "decision_id": "D-1",
+        "entity_id": "WIN-01",
+        "fast_status": "detected",
+        "fusion_status": "detected",
+        "fusion_time": "2026-09-20T00:00:30.000Z",
+        "detector_time": "2026-09-20T00:00:20.000Z",
+        "t_e": "2026-09-20T00:00:20.000Z",
+        "decision_path": "fast_and_fusion",
+        "winning_path": "fast",
+        "decision_reason": "Both paths detected; compared canonical UTC millisecond timestamps",
+        "config_version": "parallel-v1",
+        "contributing_evidence_ids": [
+          "ev-1"
+        ],
+        "model_version": null,
+        "rule_version": "rule-v1",
+        "source_hit_ids": null,
+        "selected_source_hit_id": null,
+        "detector_set_version": null,
+        "supersedes_decision_id": null
+      },
+      "fast_episodes": {
+        "run_id": "RUN-20260920-001",
+        "entity_id": "WIN-01",
+        "policy_version": "episodes-v1",
+        "detector_set_version": "set-v1",
+        "observation_start": "2026-09-20T00:00:00Z",
+        "observation_end": "2026-09-20T00:05:00Z",
+        "start_times": [
+          "2026-09-20T00:00:20Z",
+          "2026-09-20T00:01:40Z"
+        ]
+      }
+    },
+    {
+      "run_metadata": {
+        "run_id": "RUN-20260920-002",
+        "scenario_id": "S0",
+        "run_type": "attack",
+        "target_host": "WIN-01",
+        "start_time": "2026-09-20T00:00:00Z",
+        "end_time": "2026-09-20T00:05:00Z",
+        "family_id": null,
+        "variation_id": null,
+        "repetition": null,
+        "reference_time": "2026-09-20T00:01:00Z",
+        "reference_action_id": null,
+        "reference_source_event_id": null,
+        "vm_snapshot": null,
+        "sysmon_config_version": null,
+        "detector_set_version": "set-v1",
+        "scenario_version": null,
+        "schema_versions": {
+          "run_metadata": "v0.2",
+          "event": "v0.2",
+          "evidence": "v0.2",
+          "fast_hit": "v0.2",
+          "detection_result": "v0.2",
+          "fusion_result": "v0.3",
+          "decision_result": "v0.2",
+          "execution_record": "v0.1",
+          "evaluation_input": "v0.1"
+        },
+        "reference_policy_version": null
+      },
+      "detection": {
+        "run_id": "RUN-20260920-002",
+        "entity_id": "WIN-01",
+        "detector_time": null,
+        "detector_status": "miss",
+        "detector_id": null,
+        "rule_id": "rule-1",
+        "rule_version": "rule-v1",
+        "severity": null
+      },
+      "fusion": {
+        "run_id": "RUN-20260920-002",
+        "entity_id": "WIN-01",
+        "fusion_time": null,
+        "fusion_status": "miss",
+        "score_at_decision": null,
+        "contributing_evidence_ids": [],
+        "scoring_config_version": "fusion-v1",
+        "scoring_profile_id": "profile-v1",
+        "model_version": null,
+        "scoring_method": "simple_score",
+        "scorer_version": "score-v1",
+        "fusion_episodes": []
+      },
+      "decision": {
+        "run_id": "RUN-20260920-002",
+        "decision_id": "D-2",
+        "entity_id": "WIN-01",
+        "fast_status": "miss",
+        "fusion_status": "miss",
+        "fusion_time": null,
+        "detector_time": null,
+        "t_e": null,
+        "decision_path": "none",
+        "winning_path": "none",
+        "decision_reason": "Both evaluated paths missed",
+        "config_version": "parallel-v1",
+        "contributing_evidence_ids": [],
+        "model_version": null,
+        "rule_version": "rule-v1",
+        "source_hit_ids": null,
+        "selected_source_hit_id": null,
+        "detector_set_version": null,
+        "supersedes_decision_id": null
+      },
+      "fast_episodes": null
+    },
+    {
+      "run_metadata": {
+        "run_id": "RUN-20260920-003",
+        "scenario_id": "S0",
+        "run_type": "normal",
+        "target_host": "WIN-01",
+        "start_time": "2026-09-20T00:00:00Z",
+        "end_time": "2026-09-20T00:05:00Z",
+        "family_id": null,
+        "variation_id": null,
+        "repetition": null,
+        "reference_time": null,
+        "reference_action_id": null,
+        "reference_source_event_id": null,
+        "vm_snapshot": null,
+        "sysmon_config_version": null,
+        "detector_set_version": "set-v1",
+        "scenario_version": null,
+        "schema_versions": {
+          "run_metadata": "v0.2",
+          "event": "v0.2",
+          "evidence": "v0.2",
+          "fast_hit": "v0.2",
+          "detection_result": "v0.2",
+          "fusion_result": "v0.3",
+          "decision_result": "v0.2",
+          "execution_record": "v0.1",
+          "evaluation_input": "v0.1"
+        },
+        "reference_policy_version": null
+      },
+      "detection": {
+        "run_id": "RUN-20260920-003",
+        "entity_id": "WIN-01",
+        "detector_time": "2026-09-20T00:04:50.000Z",
+        "detector_status": "detected",
+        "detector_id": "hayabusa",
+        "rule_id": "rule-1",
+        "rule_version": "rule-v1",
+        "severity": null
+      },
+      "fusion": {
+        "run_id": "RUN-20260920-003",
+        "entity_id": "WIN-01",
+        "fusion_time": null,
+        "fusion_status": "miss",
+        "score_at_decision": null,
+        "contributing_evidence_ids": [],
+        "scoring_config_version": "fusion-v1",
+        "scoring_profile_id": "profile-v1",
+        "model_version": null,
+        "scoring_method": "simple_score",
+        "scorer_version": "score-v1",
+        "fusion_episodes": []
+      },
+      "decision": {
+        "run_id": "RUN-20260920-003",
+        "decision_id": "D-3",
+        "entity_id": "WIN-01",
+        "fast_status": "detected",
+        "fusion_status": "miss",
+        "fusion_time": null,
+        "detector_time": "2026-09-20T00:04:50.000Z",
+        "t_e": "2026-09-20T00:04:50.000Z",
+        "decision_path": "fast",
+        "winning_path": "fast",
+        "decision_reason": "Only Fast detected",
+        "config_version": "parallel-v1",
+        "contributing_evidence_ids": [],
+        "model_version": null,
+        "rule_version": "rule-v1",
+        "source_hit_ids": null,
+        "selected_source_hit_id": null,
+        "detector_set_version": null,
+        "supersedes_decision_id": null
+      },
+      "fast_episodes": {
+        "run_id": "RUN-20260920-003",
+        "entity_id": "WIN-01",
+        "policy_version": "episodes-v1",
+        "detector_set_version": "set-v1",
+        "observation_start": "2026-09-20T00:00:00Z",
+        "observation_end": "2026-09-20T00:05:00Z",
+        "start_times": [
+          "2026-09-20T00:04:50Z"
+        ]
+      }
+    },
+    {
+      "run_metadata": {
+        "run_id": "RUN-20260920-004",
+        "scenario_id": "S0",
+        "run_type": "normal",
+        "target_host": "WIN-01",
+        "start_time": "2026-09-20T00:00:00Z",
+        "end_time": "2026-09-20T00:05:00Z",
+        "family_id": null,
+        "variation_id": null,
+        "repetition": null,
+        "reference_time": null,
+        "reference_action_id": null,
+        "reference_source_event_id": null,
+        "vm_snapshot": null,
+        "sysmon_config_version": null,
+        "detector_set_version": "set-v1",
+        "scenario_version": null,
+        "schema_versions": {
+          "run_metadata": "v0.2",
+          "event": "v0.2",
+          "evidence": "v0.2",
+          "fast_hit": "v0.2",
+          "detection_result": "v0.2",
+          "fusion_result": "v0.3",
+          "decision_result": "v0.2",
+          "execution_record": "v0.1",
+          "evaluation_input": "v0.1"
+        },
+        "reference_policy_version": null
+      },
+      "detection": {
+        "run_id": "RUN-20260920-004",
+        "entity_id": "WIN-01",
+        "detector_time": null,
+        "detector_status": "miss",
+        "detector_id": null,
+        "rule_id": "rule-1",
+        "rule_version": "rule-v1",
+        "severity": null
+      },
+      "fusion": {
+        "run_id": "RUN-20260920-004",
+        "entity_id": "WIN-01",
+        "fusion_time": null,
+        "fusion_status": "miss",
+        "score_at_decision": null,
+        "contributing_evidence_ids": [],
+        "scoring_config_version": "fusion-v1",
+        "scoring_profile_id": "profile-v1",
+        "model_version": null,
+        "scoring_method": "simple_score",
+        "scorer_version": "score-v1",
+        "fusion_episodes": []
+      },
+      "decision": {
+        "run_id": "RUN-20260920-004",
+        "decision_id": "D-4",
+        "entity_id": "WIN-01",
+        "fast_status": "miss",
+        "fusion_status": "miss",
+        "fusion_time": null,
+        "detector_time": null,
+        "t_e": null,
+        "decision_path": "none",
+        "winning_path": "none",
+        "decision_reason": "Both evaluated paths missed",
+        "config_version": "parallel-v1",
+        "contributing_evidence_ids": [],
+        "model_version": null,
+        "rule_version": "rule-v1",
+        "source_hit_ids": null,
+        "selected_source_hit_id": null,
+        "detector_set_version": null,
+        "supersedes_decision_id": null
+      },
+      "fast_episodes": null
+    }
+  ]
+}
