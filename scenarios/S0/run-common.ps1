@@ -584,17 +584,49 @@ function Get-AnchorTelemetry {
     }
 }
 
+function Get-ObservationRemainingSeconds {
+    <#
+        Seconds left until the observation window closes.
+
+        The two callers do not hand in the same DateTimeKind: a normal run
+        anchors on the local start_time, an attack run anchors on reference_time
+        converted to UTC. Subtracting a raw local "now" from a UTC anchor
+        compares tick counts across time zones, so outside UTC the result is off
+        by the offset and the whole wait is skipped. Both moments are normalised
+        to UTC first, the same way Test-AnchorEventBoundary compares its two
+        times.
+
+        The value is negative or zero once the window has closed, so the caller
+        can decide not to wait without another time comparison.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][datetime]$AnchorTime,
+        [Parameter(Mandatory = $true)][int]$ObservationSec,
+        [Parameter(Mandatory = $true)][datetime]$Now
+    )
+
+    $due = $AnchorTime.ToUniversalTime().AddSeconds($ObservationSec)
+    return ($due - $Now.ToUniversalTime()).TotalSeconds
+}
+
 function Wait-ForObservationEnd {
     <#
         Hold the run open until the observation window closes.
 
         The anchor is reference_time for an attack run and run start for a normal
         run, so both runs are observed for the same span (docs/scenarios/s0.md
-        sections 7 and 9).
+        sections 7 and 9). The anchors carry different DateTimeKind values, so
+        the remaining time is computed by Get-ObservationRemainingSeconds, which
+        compares both moments in UTC.
+
+        -Now exists so a test can decide the window from fixed moments instead
+        of the machine clock. A run omits it and keeps reading the real clock,
+        so the production path is unchanged.
     #>
     param(
         [Parameter(Mandatory = $true)]$Context,
         [Parameter(Mandatory = $true)][datetime]$AnchorTime,
+        [datetime]$Now = (Get-Date),
         [switch]$Rehearsal
     )
 
@@ -608,7 +640,8 @@ function Wait-ForObservationEnd {
         return
     }
 
-    $remaining = ($due - (Get-Date)).TotalSeconds
+    $remaining = Get-ObservationRemainingSeconds -AnchorTime $AnchorTime `
+        -ObservationSec $observationSec -Now $Now
     if ($remaining -gt 0) {
         Write-Step ("observing for {0:N0}s more" -f $remaining)
         Start-Sleep -Seconds ([int][Math]::Ceiling($remaining))
