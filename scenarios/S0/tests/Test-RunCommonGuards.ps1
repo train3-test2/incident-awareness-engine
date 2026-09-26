@@ -763,30 +763,50 @@ Assert-True "a run that ends at horizon 600 has not reached the close yet" (
     (Get-ObservationRemainingSeconds -AnchorTime $attackAnchorUtc `
         -ObservationSec $observationSec -Now $attackAnchorUtc.AddSeconds(600)) -eq 60)
 
- # The pure function must not sleep: a closed window returns immediately.
-$sw = [System.Diagnostics.Stopwatch]::StartNew()
-$null = Get-ObservationRemainingSeconds -AnchorTime $attackAnchorUtc -ObservationSec $observationSec `
-    -Now (New-Utc "2026-09-21T00:00:00.000")
-$sw.Stop()
-Assert-True "the calculation does not sleep" ($sw.Elapsed.TotalSeconds -lt 1)
+ # A closed window is decided from the given moments alone.
+Assert-True "a closed window reports a negative remaining time" (
+    (Get-ObservationRemainingSeconds -AnchorTime $attackAnchorUtc -ObservationSec $observationSec `
+        -Now (New-Utc "2026-09-21T00:00:00.000")) -lt 0)
 
- # Wait-ForObservationEnd must not wait once the window has closed. The context
- # carries the same 600 + 60 policy the scenario file defines.
+ # Wait-ForObservationEnd must not wait once the window has closed. Both the
+ # anchor and the current moment are fixed, so neither the machine clock nor a
+ # pause on the test host can change the outcome. Start-Sleep is shadowed to
+ # record calls instead of waiting, so the check is on what the function did,
+ # not on how long it took.
 $observationContext = [pscustomobject]@{
     scenario = [pscustomobject]@{
         run_length = [pscustomobject]@{ evaluation_horizon_sec = 600; post_reference_margin_sec = 60 }
     }
 }
-$sw = [System.Diagnostics.Stopwatch]::StartNew()
-Wait-ForObservationEnd -Context $observationContext -AnchorTime (Get-Date).AddSeconds(-($observationSec + 60))
-$sw.Stop()
-Assert-True "Wait-ForObservationEnd returns at once for a closed window" ($sw.Elapsed.TotalSeconds -lt 1)
+function Start-Sleep { param([int]$Seconds, [int]$Milliseconds) $script:SleepCalls++ }
 
- # Rehearsal skips the wait whatever the anchor is.
-$sw = [System.Diagnostics.Stopwatch]::StartNew()
-Wait-ForObservationEnd -Context $observationContext -AnchorTime (Get-Date) -Rehearsal
-$sw.Stop()
-Assert-True "rehearsal never waits" ($sw.Elapsed.TotalSeconds -lt 1)
+$script:SleepCalls = 0
+Wait-ForObservationEnd -Context $observationContext -AnchorTime $attackAnchorUtc `
+    -Now $attackAnchorUtc.AddSeconds($observationSec + 60)
+Assert-True "a closed window never calls Start-Sleep" ($script:SleepCalls -eq 0)
+
+ # Rehearsal returns before the window is considered at all.
+$script:SleepCalls = 0
+Wait-ForObservationEnd -Context $observationContext -AnchorTime $attackAnchorUtc `
+    -Now $attackAnchorUtc -Rehearsal
+Assert-True "rehearsal never calls Start-Sleep" ($script:SleepCalls -eq 0)
+
+ # An open window still reaches Start-Sleep, so the two checks above are not
+ # passing for the wrong reason.
+$script:SleepCalls = 0
+Wait-ForObservationEnd -Context $observationContext -AnchorTime $attackAnchorUtc `
+    -Now $attackAnchorUtc.AddSeconds(60)
+Assert-True "an open window still calls Start-Sleep once" ($script:SleepCalls -eq 1)
+
+Remove-Item function:Start-Sleep
+Assert-True "the real Start-Sleep is restored" ((Get-Command Start-Sleep).CommandType -eq "Cmdlet")
+
+ # The injection point is optional, so a run keeps reading the real clock.
+$nowParameter = (Get-Command Wait-ForObservationEnd).Parameters['Now']
+Assert-True "Wait-ForObservationEnd takes an optional Now" (
+    $null -ne $nowParameter -and -not (
+        $nowParameter.Attributes |
+            Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.Mandatory }))
 
 Write-Host ""
 if ($script:Failures -eq 0) {

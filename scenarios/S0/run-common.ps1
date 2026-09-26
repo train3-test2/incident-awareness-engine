@@ -618,10 +618,15 @@ function Wait-ForObservationEnd {
         sections 7 and 9). The anchors carry different DateTimeKind values, so
         the remaining time is computed by Get-ObservationRemainingSeconds, which
         compares both moments in UTC.
+
+        -Now exists so a test can decide the window from fixed moments instead
+        of the machine clock. A run omits it and keeps reading the real clock,
+        so the production path is unchanged.
     #>
     param(
         [Parameter(Mandatory = $true)]$Context,
         [Parameter(Mandatory = $true)][datetime]$AnchorTime,
+        [datetime]$Now = (Get-Date),
         [switch]$Rehearsal
     )
 
@@ -636,7 +641,7 @@ function Wait-ForObservationEnd {
     }
 
     $remaining = Get-ObservationRemainingSeconds -AnchorTime $AnchorTime `
-        -ObservationSec $observationSec -Now (Get-Date)
+        -ObservationSec $observationSec -Now $Now
     if ($remaining -gt 0) {
         Write-Step ("observing for {0:N0}s more" -f $remaining)
         Start-Sleep -Seconds ([int][Math]::Ceiling($remaining))
