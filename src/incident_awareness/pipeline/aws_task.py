@@ -105,7 +105,7 @@ def download_s3_inputs(
             key = item.get("Key")
             if not isinstance(key, str):
                 raise TypeError("S3 list response contains an invalid object key")
-            if key == location.prefix:
+            if key == location.prefix or key.endswith("/"):
                 continue
 
             relative_path = _relative_object_path(key, location.prefix)

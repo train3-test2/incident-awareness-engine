@@ -64,6 +64,7 @@ def test_download_s3_inputs_preserves_relative_paths(tmp_path: Path) -> None:
                 "Contents": [
                     {"Key": prefix},
                     {"Key": f"{prefix}run_metadata.json"},
+                    {"Key": f"{prefix}fast/"},
                     {"Key": f"{prefix}fast/hits.jsonl"},
                 ]
             }
@@ -77,6 +78,10 @@ def test_download_s3_inputs_preserves_relative_paths(tmp_path: Path) -> None:
     aws_task.download_s3_inputs(location, tmp_path, s3_client=client)
 
     assert client.paginator.arguments == {"Bucket": "input-bucket", "Prefix": prefix}
+    assert client.downloads == [
+        ("input-bucket", f"{prefix}run_metadata.json"),
+        ("input-bucket", f"{prefix}fast/hits.jsonl"),
+    ]
     assert (tmp_path / "run_metadata.json").read_bytes() == b"metadata"
     assert (tmp_path / "fast" / "hits.jsonl").read_bytes() == b"hits"
 
