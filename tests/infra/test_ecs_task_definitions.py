@@ -7,6 +7,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 ECS_DIRECTORY = ROOT / "infra" / "ecs"
+IAM_DIRECTORY = ROOT / "infra" / "iam"
 
 
 @pytest.mark.parametrize(
@@ -76,4 +77,25 @@ def test_first_cycle_task_overrides_supply_only_run_specific_inputs() -> None:
         "INCIDENT_AWARENESS_ENTITY_ID",
         "INCIDENT_AWARENESS_DECISION_ID",
         "INCIDENT_AWARENESS_DECISION_CONFIG_VERSION",
+    }
+
+
+def test_execution_role_secret_policy_is_scoped_to_first_cycle_database_url() -> None:
+    policy = json.loads(
+        (IAM_DIRECTORY / "ecs-task-execution-secrets-policy.json").read_text(encoding="utf-8")
+    )
+
+    assert policy == {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "ReadFirstCycleDatabaseUrl",
+                "Effect": "Allow",
+                "Action": "secretsmanager:GetSecretValue",
+                "Resource": (
+                    "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:"
+                    "incident-awareness/first-cycle/database-url-*"
+                ),
+            }
+        ],
     }

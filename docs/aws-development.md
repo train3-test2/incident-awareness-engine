@@ -23,9 +23,13 @@ Task Definition 템플릿은 준비되어 있지만, 실제 AWS E2E 실행 결�
 | 컨테이너 이름 | `incident-awareness-engine-smoke` | 로그 스트림 이름의 두 번째 경로 요소 |
 | CloudWatch 로그 그룹 | `/ecs/incident-awareness-engine-dev` | 컨테이너 표준 출력 확인 |
 | CloudWatch 로그 스트림 prefix | `ecs` | 로그 스트림 이름 접두사 |
-| 실행 역할 | `ecsTaskExecutionRole` | ECR 이미지 pull 및 CloudWatch 로그 전송 |
+| 실행 역할 | `ecsTaskExecutionRole` | ECR 이미지 pull, CloudWatch 로그 전송 및 DB URL Secret 주입 |
 
-`ecsTaskExecutionRole`에는 AWS 관리형 정책 `AmazonECSTaskExecutionRolePolicy`가 연결되어야 한다.
+`ecsTaskExecutionRole`에는 AWS 관리형 정책 `AmazonECSTaskExecutionRolePolicy`와
+`infra/iam/ecs-task-execution-secrets-policy.json`의 인라인 정책이 연결되어야 한다. 후자는
+First Cycle DB URL Secret 하나에만 `secretsmanager:GetSecretValue`를 허용한다. 현재 Secret은
+AWS 관리형 `aws/secretsmanager` 키를 사용하므로 별도 `kms:Decrypt` 권한이 필요 없다. 이후
+고객 관리형 KMS 키로 변경하면 해당 키 ARN에만 `kms:Decrypt`를 추가한다.
 
 ## 사전 조건
 
