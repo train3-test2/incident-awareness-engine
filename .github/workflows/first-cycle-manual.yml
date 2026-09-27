@@ -213,3 +213,136 @@ jobs:
             echo "- Image: \`${{ steps.image.outputs.uri }}\`"
             echo "- Task definition: \`${{ steps.register.outputs.task_definition_arn }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  run-first-cycle:
+    name: Run First Cycle Fargate task
+    needs: register-task-definition
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SUBNET_IDS: ${{ vars.ECS_SUBNET_IDS }}
+      ECS_SECURITY_GROUP_IDS: ${{ vars.ECS_SECURITY_GROUP_IDS }}
+      FIRST_CYCLE_S3_BUCKET: ${{ vars.FIRST_CYCLE_S3_BUCKET }}
+      RUN_ID: ${{ inputs.run_id }}
+      ENTITY_ID: ${{ inputs.entity_id }}
+      DECISION_ID: ${{ inputs.decision_id }}
+      DECISION_CONFIG_VERSION: ${{ inputs.decision_config_version }}
+      TASK_DEFINITION_ARN: ${{ needs.register-task-definition.outputs.task_definition_arn }}
+    steps:
+      - name: Validate ECS execution configuration
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for value in AWS_ROLE_ARN AWS_REGION ECS_CLUSTER ECS_SUBNET_IDS ECS_SECURITY_GROUP_IDS FIRST_CYCLE_S3_BUCKET; do
+            if [[ -z "${!value//[[:space:]]/}" ]]; then
+              echo "GitHub Actions variable $value must be configured."
+              exit 1
+            fi
+          done
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run First Cycle task
+        id: run-task
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          jq -n \
+            --arg s3_input_uri "s3://$FIRST_CYCLE_S3_BUCKET/first-cycle/$RUN_ID/" \
+            --arg entity_id "$ENTITY_ID" \
+            --arg decision_id "$DECISION_ID" \
+            --arg decision_config_version "$DECISION_CONFIG_VERSION" \
+            '{
+              containerOverrides: [{
+                name: "incident-awareness-engine-first-cycle",
+                environment: [
+                  {name: "INCIDENT_AWARENESS_S3_INPUT_URI", value: $s3_input_uri},
+                  {name: "INCIDENT_AWARENESS_ENTITY_ID", value: $entity_id},
+                  {name: "INCIDENT_AWARENESS_DECISION_ID", value: $decision_id},
+                  {name: "INCIDENT_AWARENESS_DECISION_CONFIG_VERSION", value: $decision_config_version}
+                ]
+              }]
+            }' > overrides.json
+
+          result="$(
+            aws ecs run-task \
+              --cluster "$ECS_CLUSTER" \
+              --task-definition "$TASK_DEFINITION_ARN" \
+              --launch-type FARGATE \
+              --count 1 \
+              --network-configuration "awsvpcConfiguration={subnets=[$ECS_SUBNET_IDS],securityGroups=[$ECS_SECURITY_GROUP_IDS],assignPublicIp=ENABLED}" \
+              --overrides file://overrides.json
+          )"
+
+          if [[ "$(jq '.failures | length' <<< "$result")" != "0" ]]; then
+            jq '.failures' <<< "$result"
+            exit 1
+          fi
+
+          task_arn="$(jq -r '.tasks[0].taskArn' <<< "$result")"
+          if [[ -z "$task_arn" || "$task_arn" == "null" ]]; then
+            echo "ECS did not return a task ARN."
+            exit 1
+          fi
+
+          echo "task_arn=$task_arn" >> "$GITHUB_OUTPUT"
+          echo "task_id=${task_arn##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for task completion
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws ecs wait tasks-stopped \
+            --cluster "$ECS_CLUSTER" \
+            --tasks "${{ steps.run-task.outputs.task_arn }}"
+
+      - name: Summarize task result
+        id: result
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          task="$(
+            aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks "${{ steps.run-task.outputs.task_arn }}"
+          )"
+          container="$(jq '.tasks[0].containers[] | select(.name == "incident-awareness-engine-first-cycle")' <<< "$task")"
+          exit_code="$(jq -r '.exitCode // "missing"' <<< "$container")"
+          stop_code="$(jq -r '.tasks[0].stopCode // ""' <<< "$task")"
+          stopped_reason="$(jq -r '.tasks[0].stoppedReason // ""' <<< "$task")"
+          log_stream="ecs/incident-awareness-engine-first-cycle/${{ steps.run-task.outputs.task_id }}"
+          log_group="/ecs/incident-awareness-engine-dev"
+          encoded_group="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$log_group")"
+          encoded_stream="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$log_stream")"
+          log_url="https://${AWS_REGION}.console.aws.amazon.com/cloudwatch/home?region=${AWS_REGION}#logsV2:log-groups/log-group/${encoded_group}/log-events/${encoded_stream}"
+
+          {
+            echo "## First Cycle task result"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Task ARN | \`${{ steps.run-task.outputs.task_arn }}\` |"
+            echo "| Exit code | \`$exit_code\` |"
+            echo "| Stop code | $stop_code |"
+            echo "| Stopped reason | $stopped_reason |"
+            echo "| CloudWatch Logs | [Open log stream]($log_url) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$exit_code" != "0" ]]; then
+            echo "First Cycle task failed with exit code $exit_code."
+            exit 1
+          fi

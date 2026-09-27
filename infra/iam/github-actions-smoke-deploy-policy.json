@@ -51,6 +51,12 @@
       "Resource": "arn:aws:ecs:ap-northeast-2:998301375101:task-definition/incident-awareness-engine-smoke:*"
     },
     {
+      "Sid": "RunFirstCycleTask",
+      "Effect": "Allow",
+      "Action": "ecs:RunTask",
+      "Resource": "arn:aws:ecs:ap-northeast-2:998301375101:task-definition/incident-awareness-engine-first-cycle:*"
+    },
+    {
       "Sid": "ReadSmokeTaskStatus",
       "Effect": "Allow",
       "Action": [
