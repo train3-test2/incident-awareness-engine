@@ -148,3 +148,68 @@ jobs:
             echo "- S3 input: \`s3://$FIRST_CYCLE_S3_BUCKET/first-cycle/$RUN_ID/\`"
             echo "- ECR image: \`$ECR_REPOSITORY:$IMAGE_TAG\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  register-task-definition:
+    name: Register First Cycle task definition
+    needs: validate-aws-resources
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_uri: ${{ steps.image.outputs.uri }}
+      task_definition_arn: ${{ steps.register.outputs.task_definition_arn }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build image URI
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          image_uri="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "uri=$image_uri" >> "$GITHUB_OUTPUT"
+
+      - name: Render First Cycle task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: infra/ecs/task-definition.first-cycle.json
+          container-name: incident-awareness-engine-first-cycle
+          image: ${{ steps.image.outputs.uri }}
+
+      - name: Register First Cycle task definition revision
+        id: register
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          task_definition_arn="$(
+            aws ecs register-task-definition \
+              --cli-input-json "file://${{ steps.render.outputs.task-definition }}" \
+              --query 'taskDefinition.taskDefinitionArn' \
+              --output text
+          )"
+          echo "task_definition_arn=$task_definition_arn" >> "$GITHUB_OUTPUT"
+
+      - name: Write task definition summary
+        shell: bash
+        run: |
+          {
+            echo "## First Cycle task definition registered"
+            echo
+            echo "- Image: \`${{ steps.image.outputs.uri }}\`"
+            echo "- Task definition: \`${{ steps.register.outputs.task_definition_arn }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
