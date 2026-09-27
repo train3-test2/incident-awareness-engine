@@ -1,0 +1,72 @@
+name: Run First Cycle
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "S3 First Cycle input Run ID (for example, RUN-20260926-003)"
+        required: true
+        type: string
+      entity_id:
+        description: "Canonical entity ID"
+        required: true
+        type: string
+      decision_id:
+        description: "Decision ID to persist for this run"
+        required: true
+        type: string
+      decision_config_version:
+        description: "Hybrid Decision configuration version"
+        required: true
+        default: "parallel-v0.2"
+        type: string
+      image_tag:
+        description: "Existing ECR image tag to execute"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate-inputs:
+    name: Validate First Cycle inputs
+    runs-on: ubuntu-latest
+    env:
+      RUN_ID: ${{ inputs.run_id }}
+      ENTITY_ID: ${{ inputs.entity_id }}
+      DECISION_ID: ${{ inputs.decision_id }}
+      DECISION_CONFIG_VERSION: ${{ inputs.decision_config_version }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+    steps:
+      - name: Validate required input values
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$RUN_ID" =~ ^RUN-[0-9]{8}-[0-9]{3}$ ]]; then
+            echo "run_id must match RUN-YYYYMMDD-NNN."
+            exit 1
+          fi
+
+          for value in ENTITY_ID DECISION_ID DECISION_CONFIG_VERSION IMAGE_TAG; do
+            if [[ -z "${!value//[[:space:]]/}" ]]; then
+              echo "$value must not be blank."
+              exit 1
+            fi
+          done
+
+      - name: Write execution request summary
+        shell: bash
+        run: |
+          {
+            echo "## First Cycle execution request"
+            echo
+            echo "| Input | Value |"
+            echo "| --- | --- |"
+            echo "| Run ID | $RUN_ID |"
+            echo "| Entity ID | $ENTITY_ID |"
+            echo "| Decision ID | $DECISION_ID |"
+            echo "| Decision config version | $DECISION_CONFIG_VERSION |"
+            echo "| ECR image tag | $IMAGE_TAG |"
+          } >> "$GITHUB_STEP_SUMMARY"
