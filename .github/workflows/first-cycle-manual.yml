@@ -70,3 +70,81 @@ jobs:
             echo "| Decision config version | $DECISION_CONFIG_VERSION |"
             echo "| ECR image tag | $IMAGE_TAG |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  validate-aws-resources:
+    name: Validate First Cycle AWS resources
+    needs: validate-inputs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      FIRST_CYCLE_S3_BUCKET: ${{ vars.FIRST_CYCLE_S3_BUCKET }}
+      RUN_ID: ${{ inputs.run_id }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+    steps:
+      - name: Validate AWS configuration
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for value in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY FIRST_CYCLE_S3_BUCKET; do
+            if [[ -z "${!value//[[:space:]]/}" ]]; then
+              echo "GitHub Actions variable $value must be configured."
+              exit 1
+            fi
+          done
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify First Cycle input artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          prefix="first-cycle/$RUN_ID"
+          required_keys=(
+            "$prefix/run_metadata.json"
+            "$prefix/manifest.json"
+            "$prefix/telemetry/sysmon-0001.jsonl"
+            "$prefix/fast/hits.jsonl"
+            "$prefix/fast/trace.json"
+            "$prefix/fast/selection.json"
+            "$prefix/fast/handoff.csv"
+            "$prefix/fast/config.json"
+          )
+
+          for key in "${required_keys[@]}"; do
+            aws s3api head-object \
+              --bucket "$FIRST_CYCLE_S3_BUCKET" \
+              --key "$key" \
+              > /dev/null
+          done
+
+      - name: Verify ECR image tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids "imageTag=$IMAGE_TAG" \
+            > /dev/null
+
+      - name: Write preflight summary
+        shell: bash
+        run: |
+          {
+            echo "## AWS preflight passed"
+            echo
+            echo "- S3 input: \`s3://$FIRST_CYCLE_S3_BUCKET/first-cycle/$RUN_ID/\`"
+            echo "- ECR image: \`$ECR_REPOSITORY:$IMAGE_TAG\`"
+          } >> "$GITHUB_STEP_SUMMARY"

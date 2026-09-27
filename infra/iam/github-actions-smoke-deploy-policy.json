@@ -14,11 +14,29 @@
         "ecr:BatchCheckLayerAvailability",
         "ecr:BatchGetImage",
         "ecr:CompleteLayerUpload",
+        "ecr:DescribeImages",
         "ecr:InitiateLayerUpload",
         "ecr:PutImage",
         "ecr:UploadLayerPart"
       ],
       "Resource": "arn:aws:ecr:ap-northeast-2:998301375101:repository/incident-awareness-engine"
+    },
+    {
+      "Sid": "ReadFirstCycleInputArtifactMetadata",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::incident-awareness-first-cycle-998301375101-ap-northeast-2-an",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": "first-cycle/*"
+        }
+      }
+    },
+    {
+      "Sid": "ReadFirstCycleInputArtifacts",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::incident-awareness-first-cycle-998301375101-ap-northeast-2-an/first-cycle/*"
     },
     {
       "Sid": "RegisterSmokeTaskDefinition",
