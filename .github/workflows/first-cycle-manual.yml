@@ -302,15 +302,37 @@ jobs:
 
       - name: Wait for task completion
         shell: bash
+        timeout-minutes: 60
+        env:
+          TASK_ARN: ${{ steps.run-task.outputs.task_arn }}
         run: |
           set -euo pipefail
 
-          aws ecs wait tasks-stopped \
-            --cluster "$ECS_CLUSTER" \
-            --tasks "${{ steps.run-task.outputs.task_arn }}"
+          deadline=$((SECONDS + 55 * 60))
+          while (( SECONDS < deadline )); do
+            status="$(
+              aws ecs describe-tasks \
+                --cluster "$ECS_CLUSTER" \
+                --tasks "$TASK_ARN" \
+                --query 'tasks[0].lastStatus' \
+                --output text \
+                --cli-connect-timeout 10 \
+                --cli-read-timeout 10
+            )"
+
+            if [[ "$status" == "STOPPED" ]]; then
+              exit 0
+            fi
+
+            sleep 15
+          done
+
+          echo "Timed out waiting for ECS task to stop after 55 minutes."
+          exit 1
 
       - name: Summarize task result
         id: result
+        if: always() && steps.run-task.outputs.task_arn != ''
         shell: bash
         run: |
           set -euo pipefail
