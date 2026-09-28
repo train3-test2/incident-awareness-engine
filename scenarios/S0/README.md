@@ -94,8 +94,11 @@ A01 · A02 는 구현돼 있다. 막혀 있는 것은 구현이 아니라 **승�
   `-ApprovedComputerName` 과 같은지, 현재 UTC 가 `-ApprovedStartUtc` ~ `-ApprovedEndUtc` 안인지,
   `-MaxConnectionAttempts` 가 정확히 1 인지 검사한다. 하나라도 어긋나면 **소켓이 생기기 전에**
   중단된다.
-- 같은 검사를 worker 가 소켓 직전에 한 번 더 한다(`Invoke-ApprovedTcpAttempt`). run 시작과
-  연결 사이에 승인 창이 닫혀도 연결은 일어나지 않는다.
+- 부모는 A02 · N02 trigger 를 쓰기 직전에 `Assert-FormalConnectionApproval` 을 다시 호출해
+  실행 호스트를 포함한 위 조건 전체를 재검사한다.
+- worker 는 소켓 직전에 목적지 · 포트 · 프로토콜 · 시도 횟수 · 승인 시간 창만 재검사한다
+  (`Invoke-ApprovedTcpAttempt`). 실행 호스트는 worker 설정에 들어가지 않으므로 부모가 맡는다.
+  부모 검사 뒤에 승인 창이 닫혀도 worker 가 연결을 막는다.
 - 외부 연결 목적지(`scenario.yaml` 의 `external_connection.target`)가 비어 있으면, 정식 모드는
   컨텍스트 생성 단계에서 차단되고 rehearsal 만 경고 후 진행한다. 정본 YAML 은 `target` 을
   `null` 로 유지한다. 승인된 목적지는 저장소에 두지 않고, 정식 수집용 JSON 을 렌더링할 때만
@@ -335,8 +338,14 @@ Runtime 판정과, 평가 단계의 horizon 판정은 이 검증기가 하지 �
 ### 6-5. 검증 상태
 
 - macOS · Python 3.13 에서 rehearsal 산출물 RUN-20260914-002 를 `--rehearsal` 로 검증해 통과했다.
-- 정식 S0 Pair 산출물로도 검증했다. macOS · Python 3.13 에서 정상 Run 과 공격 Run 을
-  `--rehearsal` 없이 실행해 둘 다 통과했다(각 13 개 검사, 종료 코드 0). 공격 Run 에서는
-  `reference_time` 이 해당 `RecordId` 의 Sysmon EID 1 이고 run 구간 안이며 A01 실행 시각보다
-  이르지 않다는 검사와, `reference_time` 이후 horizon 만큼 관측이 열려 있었다는 검사가 함께
-  통과했다. 수집물과 검증 transcript 는 저장소 밖에 보관한다(§5-3 과 같은 규칙).
+- 정식 S0 Pair 산출물로도 검증했다. macOS · Python 3.13 에서 `--rehearsal` 없이 실행해 둘 다
+  통과했다. 공격 Run 에서는 `reference_time` 이 해당 `RecordId` 의 Sysmon EID 1 이고 run 구간
+  안이며 A01 실행 시각보다 이르지 않다는 검사와, `reference_time` 이후 horizon 만큼 관측이
+  열려 있었다는 검사가 함께 통과했다.
+
+| 유형 | run_id | 결과 |
+| --- | --- | --- |
+| Normal | `RUN-20260927-001` | 13 개 검사 통과, 종료 코드 0 |
+| Attack | `RUN-20260927-002` | 13 개 검사 통과, 종료 코드 0 |
+
+수집물과 검증 transcript 는 저장소 밖에 보관한다(§5-3 과 같은 규칙).
