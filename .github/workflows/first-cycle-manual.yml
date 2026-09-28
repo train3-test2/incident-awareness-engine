@@ -1,0 +1,370 @@
+name: Run First Cycle
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "S3 First Cycle input Run ID (for example, RUN-20260926-003)"
+        required: true
+        type: string
+      entity_id:
+        description: "Canonical entity ID"
+        required: true
+        type: string
+      decision_id:
+        description: "Decision ID to persist for this run"
+        required: true
+        type: string
+      decision_config_version:
+        description: "Hybrid Decision configuration version"
+        required: true
+        default: "parallel-v0.2"
+        type: string
+      image_tag:
+        description: "Existing ECR image tag to execute"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate-inputs:
+    name: Validate First Cycle inputs
+    runs-on: ubuntu-latest
+    env:
+      RUN_ID: ${{ inputs.run_id }}
+      ENTITY_ID: ${{ inputs.entity_id }}
+      DECISION_ID: ${{ inputs.decision_id }}
+      DECISION_CONFIG_VERSION: ${{ inputs.decision_config_version }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+    steps:
+      - name: Validate required input values
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$RUN_ID" =~ ^RUN-[0-9]{8}-[0-9]{3}$ ]]; then
+            echo "run_id must match RUN-YYYYMMDD-NNN."
+            exit 1
+          fi
+
+          for value in ENTITY_ID DECISION_ID DECISION_CONFIG_VERSION IMAGE_TAG; do
+            if [[ -z "${!value//[[:space:]]/}" ]]; then
+              echo "$value must not be blank."
+              exit 1
+            fi
+          done
+
+      - name: Write execution request summary
+        shell: bash
+        run: |
+          {
+            echo "## First Cycle execution request"
+            echo
+            echo "| Input | Value |"
+            echo "| --- | --- |"
+            echo "| Run ID | $RUN_ID |"
+            echo "| Entity ID | $ENTITY_ID |"
+            echo "| Decision ID | $DECISION_ID |"
+            echo "| Decision config version | $DECISION_CONFIG_VERSION |"
+            echo "| ECR image tag | $IMAGE_TAG |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  validate-aws-resources:
+    name: Validate First Cycle AWS resources
+    needs: validate-inputs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      FIRST_CYCLE_S3_BUCKET: ${{ vars.FIRST_CYCLE_S3_BUCKET }}
+      RUN_ID: ${{ inputs.run_id }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+    steps:
+      - name: Validate AWS configuration
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for value in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY FIRST_CYCLE_S3_BUCKET; do
+            if [[ -z "${!value//[[:space:]]/}" ]]; then
+              echo "GitHub Actions variable $value must be configured."
+              exit 1
+            fi
+          done
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify First Cycle input artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          prefix="first-cycle/$RUN_ID"
+          required_keys=(
+            "$prefix/run_metadata.json"
+            "$prefix/manifest.json"
+            "$prefix/telemetry/sysmon-0001.jsonl"
+            "$prefix/fast/hits.jsonl"
+            "$prefix/fast/trace.json"
+            "$prefix/fast/selection.json"
+            "$prefix/fast/handoff.csv"
+            "$prefix/fast/config.json"
+          )
+
+          for key in "${required_keys[@]}"; do
+            aws s3api head-object \
+              --bucket "$FIRST_CYCLE_S3_BUCKET" \
+              --key "$key" \
+              > /dev/null
+          done
+
+      - name: Verify ECR image tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids "imageTag=$IMAGE_TAG" \
+            > /dev/null
+
+      - name: Write preflight summary
+        shell: bash
+        run: |
+          {
+            echo "## AWS preflight passed"
+            echo
+            echo "- S3 input: \`s3://$FIRST_CYCLE_S3_BUCKET/first-cycle/$RUN_ID/\`"
+            echo "- ECR image: \`$ECR_REPOSITORY:$IMAGE_TAG\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  register-task-definition:
+    name: Register First Cycle task definition
+    needs: validate-aws-resources
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_uri: ${{ steps.image.outputs.uri }}
+      task_definition_arn: ${{ steps.register.outputs.task_definition_arn }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build image URI
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          image_uri="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "uri=$image_uri" >> "$GITHUB_OUTPUT"
+
+      - name: Render First Cycle task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: infra/ecs/task-definition.first-cycle.json
+          container-name: incident-awareness-engine-first-cycle
+          image: ${{ steps.image.outputs.uri }}
+
+      - name: Register First Cycle task definition revision
+        id: register
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          task_definition_arn="$(
+            aws ecs register-task-definition \
+              --cli-input-json "file://${{ steps.render.outputs.task-definition }}" \
+              --query 'taskDefinition.taskDefinitionArn' \
+              --output text
+          )"
+          echo "task_definition_arn=$task_definition_arn" >> "$GITHUB_OUTPUT"
+
+      - name: Write task definition summary
+        shell: bash
+        run: |
+          {
+            echo "## First Cycle task definition registered"
+            echo
+            echo "- Image: \`${{ steps.image.outputs.uri }}\`"
+            echo "- Task definition: \`${{ steps.register.outputs.task_definition_arn }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  run-first-cycle:
+    name: Run First Cycle Fargate task
+    needs: register-task-definition
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SUBNET_IDS: ${{ vars.ECS_SUBNET_IDS }}
+      ECS_SECURITY_GROUP_IDS: ${{ vars.ECS_SECURITY_GROUP_IDS }}
+      FIRST_CYCLE_S3_BUCKET: ${{ vars.FIRST_CYCLE_S3_BUCKET }}
+      RUN_ID: ${{ inputs.run_id }}
+      ENTITY_ID: ${{ inputs.entity_id }}
+      DECISION_ID: ${{ inputs.decision_id }}
+      DECISION_CONFIG_VERSION: ${{ inputs.decision_config_version }}
+      TASK_DEFINITION_ARN: ${{ needs.register-task-definition.outputs.task_definition_arn }}
+    steps:
+      - name: Validate ECS execution configuration
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for value in AWS_ROLE_ARN AWS_REGION ECS_CLUSTER ECS_SUBNET_IDS ECS_SECURITY_GROUP_IDS FIRST_CYCLE_S3_BUCKET; do
+            if [[ -z "${!value//[[:space:]]/}" ]]; then
+              echo "GitHub Actions variable $value must be configured."
+              exit 1
+            fi
+          done
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run First Cycle task
+        id: run-task
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          jq -n \
+            --arg s3_input_uri "s3://$FIRST_CYCLE_S3_BUCKET/first-cycle/$RUN_ID/" \
+            --arg entity_id "$ENTITY_ID" \
+            --arg decision_id "$DECISION_ID" \
+            --arg decision_config_version "$DECISION_CONFIG_VERSION" \
+            '{
+              containerOverrides: [{
+                name: "incident-awareness-engine-first-cycle",
+                environment: [
+                  {name: "INCIDENT_AWARENESS_S3_INPUT_URI", value: $s3_input_uri},
+                  {name: "INCIDENT_AWARENESS_ENTITY_ID", value: $entity_id},
+                  {name: "INCIDENT_AWARENESS_DECISION_ID", value: $decision_id},
+                  {name: "INCIDENT_AWARENESS_DECISION_CONFIG_VERSION", value: $decision_config_version}
+                ]
+              }]
+            }' > overrides.json
+
+          result="$(
+            aws ecs run-task \
+              --cluster "$ECS_CLUSTER" \
+              --task-definition "$TASK_DEFINITION_ARN" \
+              --launch-type FARGATE \
+              --count 1 \
+              --network-configuration "awsvpcConfiguration={subnets=[$ECS_SUBNET_IDS],securityGroups=[$ECS_SECURITY_GROUP_IDS],assignPublicIp=ENABLED}" \
+              --overrides file://overrides.json
+          )"
+
+          if [[ "$(jq '.failures | length' <<< "$result")" != "0" ]]; then
+            jq '.failures' <<< "$result"
+            exit 1
+          fi
+
+          task_arn="$(jq -r '.tasks[0].taskArn' <<< "$result")"
+          if [[ -z "$task_arn" || "$task_arn" == "null" ]]; then
+            echo "ECS did not return a task ARN."
+            exit 1
+          fi
+
+          echo "task_arn=$task_arn" >> "$GITHUB_OUTPUT"
+          echo "task_id=${task_arn##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for task completion
+        shell: bash
+        timeout-minutes: 60
+        env:
+          TASK_ARN: ${{ steps.run-task.outputs.task_arn }}
+        run: |
+          set -euo pipefail
+
+          deadline=$((SECONDS + 55 * 60))
+          while (( SECONDS < deadline )); do
+            status="$(
+              aws ecs describe-tasks \
+                --cluster "$ECS_CLUSTER" \
+                --tasks "$TASK_ARN" \
+                --query 'tasks[0].lastStatus' \
+                --output text \
+                --cli-connect-timeout 10 \
+                --cli-read-timeout 10
+            )"
+
+            if [[ "$status" == "STOPPED" ]]; then
+              exit 0
+            fi
+
+            sleep 15
+          done
+
+          echo "Timed out waiting for ECS task to stop after 55 minutes."
+          exit 1
+
+      - name: Summarize task result
+        id: result
+        if: always() && steps.run-task.outputs.task_arn != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          task="$(
+            aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks "${{ steps.run-task.outputs.task_arn }}"
+          )"
+          container="$(jq '.tasks[0].containers[] | select(.name == "incident-awareness-engine-first-cycle")' <<< "$task")"
+          exit_code="$(jq -r '.exitCode // "missing"' <<< "$container")"
+          stop_code="$(jq -r '.tasks[0].stopCode // ""' <<< "$task")"
+          stopped_reason="$(jq -r '.tasks[0].stoppedReason // ""' <<< "$task")"
+          log_stream="ecs/incident-awareness-engine-first-cycle/${{ steps.run-task.outputs.task_id }}"
+          log_group="/ecs/incident-awareness-engine-dev"
+          encoded_group="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$log_group")"
+          encoded_stream="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$log_stream")"
+          log_url="https://${AWS_REGION}.console.aws.amazon.com/cloudwatch/home?region=${AWS_REGION}#logsV2:log-groups/log-group/${encoded_group}/log-events/${encoded_stream}"
+
+          {
+            echo "## First Cycle task result"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Task ARN | \`${{ steps.run-task.outputs.task_arn }}\` |"
+            echo "| Exit code | \`$exit_code\` |"
+            echo "| Stop code | $stop_code |"
+            echo "| Stopped reason | $stopped_reason |"
+            echo "| CloudWatch Logs | [Open log stream]($log_url) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$exit_code" != "0" ]]; then
+            echo "First Cycle task failed with exit code $exit_code."
+            exit 1
+          fi
