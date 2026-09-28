@@ -65,6 +65,7 @@ snapshot = read_stored_snapshot(
     snapshot_id="experiment-export-v1",
     plan=plan,
     fast_episodes=episode_history_by_run,
+    fusion_observations=fusion_observation_by_run,
 )
 # 새 파일로 보관: 기존 snapshot 덮어쓰기 금지
 with open("evaluation-snapshot.json", "x", encoding="utf-8") as output:
@@ -93,3 +94,22 @@ Fast/Hybrid 0.5, Fusion 0.0이고 탐지 1건의 IQR은 0.0이다.
 `build_evaluation_inputs(snapshot)`이 반환한 DataFrame은 각 method별 CSV로 보관할 수 있다.
 `evaluate_snapshot(snapshot)`은 현재 평가기의 지표와 제외 내역을 반환한다. CLI는 이를
 JSON으로 stdout에 출력한다. 실제 DB·실제 실험 데이터의 성공을 이 fixture로 주장하지 않는다.
+
+## Fusion coverage 및 provenance 고정
+
+계획에는 `scoring_profile_id`, `scoring_method`, `scorer_version`, `model_version`도
+필수로 기록한다. 모델이 없으면 `model_version: null`을 명시한다. 모든 Run의 Fusion
+결과를 이 값들과 대조하며, 서로 다른 구현을 같은 비교 집합으로 취급하지 않는다.
+
+평가된 Fusion에는 `fusion_observation` 객체(run_id, entity_id, observation_start,
+observation_end)가 필수다. 실행 생산자가 기록한 실제 replay 시작·종료를 사용한다.
+RunMetadata.end_time이나 마지막 episode 시각으로 대신 채우면 안 된다. 특히 OFF 상태로
+종료된 partial replay도 이 메타데이터가 필요하다. 시작은 Run 시작과 같아야 하고,
+끝은 실제 Run 종료를 넘지 않으면서 Attack의 `min(reference_time + horizon, run_end)`,
+Normal의 `run_end`까지 포함해야 한다. 부족하거나 누락되면 detected/miss 모두 오류다.
+`not_evaluated` Fusion은 coverage 없이 기존 제외 규칙을 따른다.
+
+DB 조회 시에도 `fusion_observations={run_id: FusionObservation(...)}`를 명시적으로
+전달한다. DB 결과 자체에는 이 경계가 없으므로 자동 생성하지 않는다. 실행 당시 기록과
+함께 snapshot을 보존하며, 기존 snapshot은 실제 실행 경계를 확보한 뒤 새 형식으로
+변환해야 한다. 단순히 measured Run 전체를 replay했다고 가정해서는 안 된다.

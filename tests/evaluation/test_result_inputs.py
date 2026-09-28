@@ -15,6 +15,7 @@ from incident_awareness.evaluation.result_inputs import (
     EvaluationPlan,
     EvaluationSnapshot,
     FastEpisodeStarts,
+    FusionObservation,
     StoredRunResults,
     build_evaluation_inputs,
     evaluate_snapshot,
@@ -113,6 +114,14 @@ def bundle(
         fusion=fused,
         decision=decision,
         fast_episodes=history,
+        fusion_observation=FusionObservation(
+            run_id=run.run_id,
+            entity_id=run.target_host,
+            observation_start=run.start_time,
+            observation_end=run.end_time,
+        )
+        if fusion_status != "not_evaluated"
+        else None,
     )
 
 
@@ -126,6 +135,10 @@ def snapshot(*runs):
             decision_ids={run.run_metadata.run_id: run.decision.decision_id for run in runs},
             decision_config_version="parallel-v1",
             scoring_config_version="fusion-v1",
+            scoring_profile_id="profile-v1",
+            scoring_method="simple_score",
+            scorer_version="score-v1",
+            model_version=None,
             detector_set_version="set-v1",
             fast_episode_policy_version="episodes-v1",
             evaluation_horizon_sec=120,
@@ -299,3 +312,51 @@ def test_submillisecond_episode_time_is_rejected_before_serialization():
     value.runs[0].fusion.fusion_episodes[1].start_time += timedelta(microseconds=1)
     with pytest.raises(ValueError, match="millisecond"):
         evaluate_snapshot(value)
+
+
+@pytest.mark.parametrize("normal,end", [(False, 179), (True, 299)])
+def test_partial_off_replay_cannot_be_counted_as_miss(normal, end):
+    value = snapshot(bundle(normal=normal, fusion_status="miss", fusion=()))
+    value.runs[0].fusion_observation.observation_end = at(end)
+    with pytest.raises(ValueError, match="cover the evaluation interval"):
+        build_evaluation_inputs(value)
+
+
+def test_attack_coverage_can_end_at_eligible_upper_bound():
+    value = snapshot(bundle(fusion_status="miss", fusion=()))
+    value.runs[0].fusion_observation.observation_end = at(180)
+    frames, _ = build_evaluation_inputs(value)
+    assert pd.isna(frames["Fusion"].iloc[0].timestamp)
+
+
+def test_missing_fusion_coverage_is_not_inferred_from_empty_episodes():
+    value = snapshot(bundle(fusion_status="miss", fusion=()))
+    value.runs[0].fusion_observation = None
+    with pytest.raises(ValueError, match="explicit observation coverage"):
+        build_evaluation_inputs(value)
+
+
+@pytest.mark.parametrize(
+    "field", ["scoring_profile_id", "scoring_method", "scorer_version", "model_version"]
+)
+def test_fusion_provenance_must_match_pinned_plan(field):
+    value = snapshot(bundle())
+    setattr(value.plan, field, "different-version")
+    with pytest.raises(ValueError, match=f"Fusion {field} must match plan"):
+        build_evaluation_inputs(value)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("run_id", "RUN-20260920-099"),
+        ("entity_id", "other"),
+        ("observation_start", at(10)),
+        ("observation_end", at(301)),
+    ],
+)
+def test_fusion_coverage_rejects_wrong_identity_or_boundaries(field, value):
+    data = snapshot(bundle())
+    setattr(data.runs[0].fusion_observation, field, value)
+    with pytest.raises(ValueError, match="Fusion observation"):
+        build_evaluation_inputs(data)

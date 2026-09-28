@@ -47,6 +47,10 @@ class EvaluationPlan(BaseModel):
     decision_ids: dict[str, str]
     decision_config_version: str
     scoring_config_version: str
+    scoring_profile_id: str
+    scoring_method: str
+    scorer_version: str
+    model_version: str | None
     detector_set_version: str
     fast_episode_policy_version: str
     evaluation_horizon_sec: int = Field(ge=0)
@@ -66,6 +70,16 @@ class FastEpisodeStarts(BaseModel):
     start_times: list[datetime]
 
 
+class FusionObservation(BaseModel):
+    """Actual replay boundaries exported by the producer, never inferred from episodes."""
+
+    model_config = ConfigDict(extra="forbid")
+    run_id: str
+    entity_id: str
+    observation_start: datetime
+    observation_end: datetime
+
+
 class StoredRunResults(BaseModel):
     """One snapshot bundle; absent results are errors, never detector misses."""
 
@@ -75,6 +89,7 @@ class StoredRunResults(BaseModel):
     fusion: FusionResult | None = None
     decision: DecisionResult | None = None
     fast_episodes: FastEpisodeStarts | None = None
+    fusion_observation: FusionObservation | None = None
 
 
 class EvaluationSnapshot(BaseModel):
@@ -132,6 +147,9 @@ def _validate_bundle(bundle: StoredRunResults, plan: EvaluationPlan) -> None:
         raise ValueError("decision config_version must match plan")
     if fusion.scoring_config_version != plan.scoring_config_version:
         raise ValueError("Fusion scoring_config_version must match plan")
+    for name in ("scoring_profile_id", "scoring_method", "scorer_version", "model_version"):
+        if getattr(fusion, name) != getattr(plan, name):
+            raise ValueError(f"Fusion {name} must match plan")
     if decision.detector_set_version not in (None, plan.detector_set_version):
         raise ValueError("Decision detector_set_version must match plan")
     # A saved Decision must agree with the supplied path results, not a later DB overwrite.
@@ -198,9 +216,33 @@ def _fast_starts(bundle: StoredRunResults, plan: EvaluationPlan) -> list[datetim
     return starts
 
 
-def _fusion_starts(bundle: StoredRunResults) -> list[datetime]:
+def _fusion_starts(bundle: StoredRunResults, plan: EvaluationPlan) -> list[datetime]:
     fusion, run = bundle.fusion, bundle.run_metadata
     assert fusion is not None and run.end_time is not None
+    coverage = bundle.fusion_observation
+    if fusion.fusion_status == "not_evaluated":
+        if coverage is not None:
+            raise ValueError("not_evaluated Fusion must not carry observation coverage")
+        return []
+    if coverage is None:
+        raise ValueError("evaluated Fusion requires explicit observation coverage")
+    if coverage.run_id != run.run_id or coverage.entity_id != run.target_host:
+        raise ValueError("Fusion observation run_id/entity_id mismatch")
+    _time(coverage.observation_start, "Fusion observation_start")
+    _time(coverage.observation_end, "Fusion observation_end")
+    required_end = run.end_time
+    if run.run_type == "attack":
+        assert run.reference_time is not None
+        required_end = min(
+            run.reference_time + timedelta(seconds=plan.evaluation_horizon_sec), run.end_time
+        )
+    if (
+        coverage.observation_start != run.start_time
+        or not required_end <= coverage.observation_end <= run.end_time
+    ):
+        raise ValueError(
+            "Fusion observation must cover the evaluation interval within measured Run"
+        )
     episodes = sorted(fusion.fusion_episodes, key=lambda item: item.start_time)
     previous_end = None
     for episode in episodes:
@@ -208,7 +250,7 @@ def _fusion_starts(bundle: StoredRunResults) -> list[datetime]:
         if episode.end_time is None:
             raise ValueError("completed Fusion episode end_time is required")
         _time(episode.end_time, "Fusion episode end")
-        if not run.start_time <= episode.start_time <= episode.end_time <= run.end_time:
+        if not run.start_time <= episode.start_time <= episode.end_time <= coverage.observation_end:
             raise ValueError("Fusion episode outside measured Run")
         if previous_end is not None and episode.start_time < previous_end:
             raise ValueError("Fusion episodes must not overlap")
@@ -233,10 +275,15 @@ def build_evaluation_inputs(
         "scenario_id",
         "decision_config_version",
         "scoring_config_version",
+        "scoring_profile_id",
+        "scoring_method",
+        "scorer_version",
         "detector_set_version",
         "fast_episode_policy_version",
     ):
         _identifier(getattr(plan, name), name)
+    if plan.model_version is not None:
+        _identifier(plan.model_version, "model_version")
     if plan.scenario_id == "S0" and plan.purpose != "smoke":
         raise ValueError("S0 must be evaluated separately for smoke purposes only")
     run_ids = [bundle.run_metadata.run_id for bundle in snapshot.runs]
@@ -261,7 +308,7 @@ def build_evaluation_inputs(
         )
         assert detection is not None and fusion is not None and decision is not None
         assert run.end_time is not None
-        starts = {"Fast": _fast_starts(bundle, plan), "Fusion": _fusion_starts(bundle)}
+        starts = {"Fast": _fast_starts(bundle, plan), "Fusion": _fusion_starts(bundle, plan)}
         lower = run.reference_time if run.run_type == "attack" else run.start_time
         assert lower is not None
         upper = min(lower + horizon, run.end_time) if run.run_type == "attack" else run.end_time

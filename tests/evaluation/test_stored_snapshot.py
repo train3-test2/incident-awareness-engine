@@ -59,6 +59,11 @@ def test_exact_inventory_loaded_through_repositories_in_read_only_transaction():
         connection,
         snapshot_id=source.snapshot_id,
         plan=source.plan,
+        fusion_observations={
+            b.run_metadata.run_id: b.fusion_observation
+            for b in source.runs
+            if b.fusion_observation is not None
+        },
         fast_episodes={
             b.run_metadata.run_id: b.fast_episodes
             for b in source.runs
@@ -80,6 +85,11 @@ def test_missing_db_result_is_not_silently_dropped():
             SnapshotConnection(source),
             snapshot_id="test",
             plan=source.plan,
+            fusion_observations={
+                b.run_metadata.run_id: b.fusion_observation
+                for b in source.runs
+                if b.fusion_observation is not None
+            },
             fast_episodes={
                 b.run_metadata.run_id: b.fast_episodes
                 for b in source.runs
@@ -93,5 +103,15 @@ def test_active_caller_transaction_is_not_modified():
     connection = SnapshotConnection(source)
     connection.info.transaction_status = TransactionStatus.INTRANS
     with pytest.raises(ValueError, match="idle"):
-        read_stored_snapshot(connection, snapshot_id="test", plan=source.plan, fast_episodes={})
+        read_stored_snapshot(
+            connection,
+            snapshot_id="test",
+            plan=source.plan,
+            fusion_observations={
+                b.run_metadata.run_id: b.fusion_observation
+                for b in source.runs
+                if b.fusion_observation is not None
+            },
+            fast_episodes={},
+        )
     assert connection.queries == []

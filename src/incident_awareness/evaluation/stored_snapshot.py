@@ -9,6 +9,7 @@ from incident_awareness.evaluation.result_inputs import (
     EvaluationPlan,
     EvaluationSnapshot,
     FastEpisodeStarts,
+    FusionObservation,
     StoredRunResults,
     build_evaluation_inputs,
 )
@@ -26,6 +27,7 @@ def read_stored_snapshot(
     snapshot_id: str,
     plan: EvaluationPlan,
     fast_episodes: Mapping[str, FastEpisodeStarts],
+    fusion_observations: Mapping[str, FusionObservation],
 ) -> EvaluationSnapshot:
     """Read the exact inventory in one read-only, repeatable-read transaction.
 
@@ -37,6 +39,8 @@ def read_stored_snapshot(
         raise ValueError("snapshot loading requires a dedicated idle database connection")
     if set(fast_episodes) - set(plan.decision_ids):
         raise ValueError("Fast episode history contains unplanned Runs")
+    if set(fusion_observations) - set(plan.decision_ids):
+        raise ValueError("Fusion observation coverage contains unplanned Runs")
     with connection.transaction():
         connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         runs = []
@@ -51,6 +55,7 @@ def read_stored_snapshot(
                     fusion=FusionResultRepository(connection).get(run_id, run.target_host),
                     decision=DecisionRepository(connection).get(decision_id),
                     fast_episodes=fast_episodes.get(run_id),
+                    fusion_observation=fusion_observations.get(run_id),
                 )
             )
         snapshot = EvaluationSnapshot(snapshot_id=snapshot_id, plan=plan, runs=runs)
