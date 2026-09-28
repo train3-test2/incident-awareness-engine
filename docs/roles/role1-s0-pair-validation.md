@@ -438,9 +438,9 @@ run_type = attack
 reference_time = 2026-09-27T07:49:41.397Z
 ```
 
-그러나 Temporal Fusion 실행에는 해당 Ground Truth 정보를 전달하지 않았다.
+`S0PipelineArtifacts`에는 검증된 RunMetadata 전체가 존재하지만, 실제 Fusion runtime 호출에서는 `run_type`, `reference_time` 등의 평가용 필드를 참조하거나 전달하지 않았다.
 
-Runtime Fusion에 사용한 Run 관련 입력은 다음 중립 정보뿐이다.
+`run_s0_runtime_fusion()`에 전달된 Run 관련 입력은 다음과 같다.
 
 ```text
 run_id
@@ -450,9 +450,15 @@ expected_entity_ids
 Fusion config
 ```
 
-따라서 `reference_time`이나 `run_type`을 이용해 Attack 여부 또는 `fusion_time`을 결정하지 않았다.
+이번 로컬 검증에서 `expected_entity_ids`에는 `('WIN-01',)`을 사용했다. 해당 값은 검증 명령의 `PipelineInputs.entity_id='WIN-01'`로 명시적으로 전달했으며, S0의 canonical Endpoint Host 식별자다.
 
-Ground Truth는 이후 Evaluation 단계에서만 사용한다.
+검증 데이터의 `RunMetadata.target_host`는 `WIN-01`이며, 실제 Runtime Fusion 실행에서도 다른 `host_id`가 존재했다면 `expected_entity_ids` 검증에서 오류가 발생하도록 되어 있다. 이번 실행은 해당 검증을 통과했다.
+
+`expected_entity_ids`는 공격 여부나 평가 정답을 나타내는 값이 아니라 Fusion 상태를 `(run_id, entity_id)` 단위로 제한하기 위한 host 식별자다.
+
+따라서 이번 검증에서 Fusion 판단에 `run_type`, `reference_time`, `reference_action_id`, `reference_source_event_id` 등의 Ground Truth 평가 필드는 사용되지 않았다.
+
+본 검증에서 말하는 "Ground Truth 비참조"는 위 평가용 필드가 Fusion 판단에 사용되지 않았다는 의미이며, `run_id`, `start_time`, `end_time`, `host` 식별자와 같은 runtime-neutral Run 정보까지 사용하지 않았다는 의미는 아니다.
 
 ---
 
