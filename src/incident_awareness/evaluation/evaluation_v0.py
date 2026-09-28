@@ -137,6 +137,9 @@ def evaluate(
         if (df.groupby("run_id")[column].nunique(dropna=False) > 1).any():
             raise ValueError(f"inconsistent Run metadata: {column}")
 
+    if df.loc[df["class"] == "normal", "reference_time"].notna().any():
+        raise ValueError("reference_time must be null for normal Runs")
+
     attack_df = df[df["class"] == "attack"].copy()
     if (attack_df["run_end"] < attack_df["reference_time"]).any():
         raise ValueError("attack run_end must be >= reference_time")

@@ -576,3 +576,17 @@ def test_csv_normal_no_hit_is_in_fpr_denominator(valid_attack, tmp_path):
     result = evaluate(load_data(path), evaluation_horizon=HORIZON)
     assert result["total_normal_runs"] == 2
     assert result["benign_run_fpr"] == 0.5
+
+
+@pytest.mark.parametrize("via_csv", [False, True], ids=["dataframe", "csv"])
+def test_rejects_normal_reference_time(valid_attack, tmp_path, via_csv):
+    """Reject a normal Run even when every row shares the same non-null reference."""
+    normal = pd.concat([valid_attack, valid_attack], ignore_index=True)
+    normal["class"] = "normal"
+    if via_csv:
+        normal["run_start"] = pd.Timestamp("2026-09-02T00:00:00Z")
+        path = tmp_path / "invalid-normal.csv"
+        normal.to_csv(path, index=False)
+        normal = load_data(path)
+    with pytest.raises(ValueError, match="reference_time must be null for normal Runs"):
+        evaluate(normal, evaluation_horizon=HORIZON)
