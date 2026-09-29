@@ -109,30 +109,24 @@ PASS
 
 ## 4. Run Metadata
 
-### Normal
+S0 Runtime Fusion의 분석 구간은 실제 `RunMetadata.end_time`까지가 아니라
+`start_time`부터 고정 660초의 replay 구간까지다.
 
 ```text
-run_id      = RUN-20260927-001
-run_type    = normal
-target_host = WIN-01
-start_time  = 2026-09-27T07:23:46.786Z
-end_time    = 2026-09-27T07:34:47.253Z
+Normal
+replay_start = 2026-09-27T07:23:46.786Z
+replay_end   = 2026-09-27T07:34:46.786Z
+actual end   = 2026-09-27T07:34:47.253Z
+
+Attack
+replay_start = 2026-09-27T07:49:41.150Z
+replay_end   = 2026-09-27T08:00:41.150Z
+actual end   = 2026-09-27T08:00:41.470Z
 ```
 
-Normal Run에는 `reference_time`이 없다.
+두 Run 모두 실제 관측 종료 시각이 `replay_end` 이후이므로 고정 660초 replay 구간을 충분히 커버한다.
 
-### Attack
-
-```text
-run_id         = RUN-20260927-002
-run_type       = attack
-target_host    = WIN-01
-start_time     = 2026-09-27T07:49:41.150Z
-reference_time = 2026-09-27T07:49:41.397Z
-end_time       = 2026-09-27T08:00:41.470Z
-```
-
-두 Run 모두 S0 replay duration인 660초 이상 관측됐다.
+`RunMetadata.end_time`은 실제 Run의 관측 종료 시각이며, Fusion 판단의 분석 종료 경계는 별도의 `replay_end`다.
 
 ---
 
@@ -511,7 +505,7 @@ sha256_run2= c53f453bc19749fe0b0c24d79860d2c8f964291e8038cc4c8d07f299a7a59da5
 - 실제 Normalized Event에서 S0 Semantic Evidence가 추출됐다.
 - S0 replay margin filtering이 정상 동작했다.
 - Normal Run에서는 scoring Evidence 한 종류만 활성화되어 최대 score 0.5를 기록했다.
-- Normal Run은 `threshold_on=0.8`에 도달하지 않아 `miss`로 종료됐다.
+- Normal Run은 고정 660초 S0 replay 구간에서 `threshold_on=0.8`에 도달하지 않아 `miss`로 종료됐다. 실제 Run은 `replay_end` 이후 0.467초 더 관측됐으며, 해당 replay 종료 이후 포함 대상 Event는 없었다.
 - Attack Run에서는 두 scoring Evidence type이 동일 300초 window 안에서 활성화됐다.
 - Attack Run의 score는 1.0까지 상승했다.
 - `persistence_k=2` 조건을 만족한 뒤 `fusion_time=2026-09-27T07:52:01.150Z`가 생성됐다.
