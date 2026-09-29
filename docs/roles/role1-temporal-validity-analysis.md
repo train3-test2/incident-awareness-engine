@@ -489,7 +489,7 @@ Attack에서만 관측
 score 1.0
 ```
 
-이번 결과는 개별 Evidence 하나보다 서로 다른 Evidence type의 시간적 공존과 누적이 score trajectory에 추가적인 정보를 제공했음을 보여준다.
+이번 Pair에서는 서로 다른 Evidence type이 300초 Window 안에서 중첩되면서 활성 scoring Evidence type이 2종이 되었고, 그 결과 score가 1.0으로 상승했다. 이 상태가 다음 cadence까지 유지되면서 `persistence_k=2`를 충족해 Fusion 판단으로 이어졌다.
 
 단, 이 결과는 Normal 1 Run / Attack 1 Run의 S0 단일 Pair에 한정되며, Evidence diversity가 일반적인 공격 구분 특성이라고 일반화하지 않는다.
 
@@ -981,27 +981,6 @@ ML 모델 비교
 특히 현재 Fast 후보가 Attack을 탐지하지 못했다는 이유로 Fusion 파라미터나 Fast rule을 이번 S0 Pair에 맞게 조정하지 않는다.
 
 후속 모델 연구 여부는 decisive detector coverage 확인과 R1 판정 이후 별도로 결정한다.
-
-## 13. 후속 모델 연구 진행 여부
-
-> TODO — R1 Feasibility 판정 후 작성
-
-본 단계에서는 다음 작업을 시작하지 않는다.
-
-```text
-Temporal Feature Builder 확장
-새로운 temporal feature 구현
-Weighted scoring
-Window 크기 탐색
-cadence 탐색
-threshold 튜닝
-Gradient Boosting 모델 학습
-ML 모델 비교
-```
-
-R1 Feasibility 판정 이후 후속 연구 필요성이 확인될 경우 별도 Issue / Branch에서 진행한다.
-
-고도화 작업에 진입할 경우 본 S0 단일 Pair에 맞춰 Feature나 하이퍼파라미터를 선택하지 않고, 별도의 validation 기준과 데이터 범위를 먼저 확정한다.
 
 ---
 
