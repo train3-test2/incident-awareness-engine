@@ -103,9 +103,9 @@ def bundle(
             detector_set_version="set-v1",
             observation_start=run.start_time,
             observation_end=run.end_time,
-            start_times=[at(t) for t in fast],
+            start_times=[at(t) for t in fast] if fast_status == "detected" else [],
         )
-        if fast_status == "detected"
+        if fast_status != "not_evaluated"
         else None
     )
     return StoredRunResults(
@@ -359,4 +359,36 @@ def test_fusion_coverage_rejects_wrong_identity_or_boundaries(field, value):
     data = snapshot(bundle())
     setattr(data.runs[0].fusion_observation, field, value)
     with pytest.raises(ValueError, match="Fusion observation"):
+        build_evaluation_inputs(data)
+
+
+@pytest.mark.parametrize("normal", [False, True], ids=["attack", "normal"])
+def test_fast_miss_requires_explicit_full_run_coverage(normal):
+    value = snapshot(bundle(normal=normal, fast_status="miss"))
+    value.runs[0].fast_episodes = None
+    with pytest.raises(ValueError, match="evaluated Fast requires complete"):
+        build_evaluation_inputs(value)
+
+
+@pytest.mark.parametrize("normal", [False, True], ids=["attack", "normal"])
+def test_fast_miss_with_full_coverage_and_no_starts_is_evaluated(normal):
+    value = snapshot(bundle(normal=normal, fast_status="miss"))
+    frames, excluded = build_evaluation_inputs(value)
+    assert len(frames["Fast"]) == 1
+    assert pd.isna(frames["Fast"].iloc[0].timestamp)
+    assert not excluded
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("observation_start", at(1)),
+        ("observation_end", at(299)),
+        ("start_times", [at(100)]),
+    ],
+)
+def test_fast_miss_rejects_partial_coverage_or_episode_starts(field, value):
+    data = snapshot(bundle(fast_status="miss"))
+    setattr(data.runs[0].fast_episodes, field, value)
+    with pytest.raises(ValueError, match="entire measured Run|miss Fast must not carry"):
         build_evaluation_inputs(data)

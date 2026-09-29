@@ -39,9 +39,11 @@
   credit이 없다. 유효 episode가 없되 실행은 완료됐다면 timestamp=null의 miss 행을 만든다.
 - Fusion은 저장된 전체 fusion_episodes를 사용한다. 종료되지 않은 episode나 구간 중첩,
   관측 범위 밖 시각은 오류다.
-- Fast detected는 전체 관측 구간의 versioned episode 시작 목록이 필수다. 최초
+- Fast detected/miss 모두 전체 관측 구간의 versioned episode 시작 목록이 필수다. 최초
   detector_time 한 건이나 raw hit를 임의로 episode로 취급하지 않는다. 목록의 최초 시작과
-  detector_time도 대조한다. Fast miss는 검증된 결과 계약을 신뢰하며 시작 목록이 없어도 된다.
+  detector_time도 대조한다. Fast miss는 observation_start/end가 실제 Run 시작/종료와
+  일치하고 start_times가 빈 목록이어야 한다. coverage 누락·부분 실행은 오류이며,
+  DetectionResult의 miss 상태만으로 전체 관측을 추정하지 않는다.
 - Hybrid 평가 시각은 두 경로의 eligible 시각 중 이른 값이다. 원본 DecisionResult/t_e는
   바꾸지 않는다. Hybrid incident merge / FA/BH 집계는 구현하지 않는다.
 - Normal은 실제 관측 구간 전체를 사용하며 공격용 horizon을 적용하지 않는다.

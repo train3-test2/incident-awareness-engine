@@ -223,7 +223,15 @@
         "detector_set_version": null,
         "supersedes_decision_id": null
       },
-      "fast_episodes": null,
+      "fast_episodes": {
+        "run_id": "RUN-20260920-002",
+        "entity_id": "WIN-01",
+        "policy_version": "episodes-v1",
+        "detector_set_version": "set-v1",
+        "observation_start": "2026-09-20T00:00:00Z",
+        "observation_end": "2026-09-20T00:05:00Z",
+        "start_times": []
+      },
       "fusion_observation": {
         "run_id": "RUN-20260920-002",
         "entity_id": "WIN-01",
@@ -401,7 +409,15 @@
         "detector_set_version": null,
         "supersedes_decision_id": null
       },
-      "fast_episodes": null,
+      "fast_episodes": {
+        "run_id": "RUN-20260920-004",
+        "entity_id": "WIN-01",
+        "policy_version": "episodes-v1",
+        "detector_set_version": "set-v1",
+        "observation_start": "2026-09-20T00:00:00Z",
+        "observation_end": "2026-09-20T00:05:00Z",
+        "start_times": []
+      },
       "fusion_observation": {
         "run_id": "RUN-20260920-004",
         "entity_id": "WIN-01",
