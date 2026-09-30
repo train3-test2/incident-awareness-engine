@@ -338,7 +338,8 @@ Runtime 판정과, 평가 단계의 horizon 판정은 이 검증기가 하지 �
 ### 6-5. 검증 상태
 
 - macOS · Python 3.13 에서 rehearsal 산출물 RUN-20260914-002 를 `--rehearsal` 로 검증해 통과했다.
-- 정식 S0 Pair 산출물로도 검증했다. macOS · Python 3.13 에서 `--rehearsal` 없이 실행해 둘 다
+- 정식 S0 Pair 는 `WIN-01` Windows VM 에서 정식 runner 로 수집했다. 저장소 밖으로 보존한
+  산출물을 macOS · Python 3.13 의 validator 에 `--rehearsal` 없이 입력했고 Normal · Attack 모두
   통과했다. 공격 Run 에서는 `reference_time` 이 해당 `RecordId` 의 Sysmon EID 1 이고 run 구간
   안이며 A01 실행 시각보다 이르지 않다는 검사와, `reference_time` 이후 horizon 만큼 관측이
   열려 있었다는 검사가 함께 통과했다.
