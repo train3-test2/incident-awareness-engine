@@ -15,11 +15,14 @@ from incident_awareness.common.models.result import (
 )
 from incident_awareness.storage.repositories.result_repository import (
     _INSERT_DECISION,
+    _SELECT_CURRENT_DECISION_HEADS,
+    _SELECT_DECISION_IN_SCOPE,
     _SELECT_DECISION_PAYLOAD,
     _SELECT_DETECTION_RESULT_PAYLOAD,
     _SELECT_FUSION_RESULT_PAYLOAD,
     _UPSERT_DETECTION_RESULT,
     _UPSERT_FUSION_RESULT,
+    DecisionIntegrityError,
     DecisionRepository,
     DetectionResultRepository,
     FusionResultRepository,
@@ -27,22 +30,35 @@ from incident_awareness.storage.repositories.result_repository import (
 
 
 class FakeCursor:
-    def __init__(self, row: tuple[object, ...] | Mapping[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        row: tuple[object, ...] | Mapping[str, object] | None = None,
+        rows: list[tuple[object, ...] | Mapping[str, object]] | None = None,
+    ) -> None:
         self._row = row
+        self._rows = rows if rows is not None else []
 
     def fetchone(self) -> tuple[object, ...] | Mapping[str, object] | None:
         return self._row
 
+    def fetchall(self) -> list[tuple[object, ...] | Mapping[str, object]]:
+        return self._rows
+
 
 class FakeConnection:
-    def __init__(self, row: tuple[object, ...] | Mapping[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        row: tuple[object, ...] | Mapping[str, object] | None = None,
+        rows: list[tuple[object, ...] | Mapping[str, object]] | None = None,
+    ) -> None:
         self.row = row
+        self.rows = rows
         self.statements: list[tuple[str, tuple[object, ...]]] = []
         self.commits = 0
 
     def execute(self, query: str, params: tuple[object, ...]) -> FakeCursor:
         self.statements.append((query, params))
-        return FakeCursor(self.row)
+        return FakeCursor(self.row, self.rows)
 
     def commit(self) -> None:
         self.commits += 1
@@ -169,6 +185,96 @@ def test_decision_repository_inserts_and_rebuilds_immutable_result(
     assert isinstance(connection.statements[0][1][10], Jsonb)
     assert connection.statements[1] == (_SELECT_DECISION_PAYLOAD, ("DEC-001",))
     assert stored_result == decision_result
+
+
+def test_decision_repository_returns_none_when_current_head_does_not_exist() -> None:
+    # Given
+    connection = FakeConnection(rows=[])
+    repository = DecisionRepository(connection)
+
+    # When
+    current_head = repository.get_current_head("RUN-20260912-001", "WIN-01")
+
+    # Then
+    assert current_head is None
+    assert connection.statements == [
+        (
+            _SELECT_CURRENT_DECISION_HEADS,
+            ("RUN-20260912-001", "WIN-01"),
+        ),
+        (
+            _SELECT_DECISION_IN_SCOPE,
+            ("RUN-20260912-001", "WIN-01"),
+        ),
+    ]
+
+
+def test_decision_repository_rejects_missing_current_head_when_scope_has_decision() -> None:
+    # Given
+    connection = FakeConnection(row=(1,), rows=[])
+    repository = DecisionRepository(connection)
+
+    # When
+    with pytest.raises(DecisionIntegrityError) as exc_info:
+        repository.get_current_head("RUN-20260912-001", "WIN-01")
+
+    # Then
+    assert "no current Decision head" in str(exc_info.value)
+    assert connection.statements == [
+        (
+            _SELECT_CURRENT_DECISION_HEADS,
+            ("RUN-20260912-001", "WIN-01"),
+        ),
+        (
+            _SELECT_DECISION_IN_SCOPE,
+            ("RUN-20260912-001", "WIN-01"),
+        ),
+    ]
+
+
+def test_decision_repository_rebuilds_single_current_head(
+    decision_result: DecisionResult,
+) -> None:
+    # Given
+    expected_head = decision_result.model_copy(
+        update={
+            "decision_id": "DEC-002",
+            "supersedes_decision_id": "DEC-001",
+        }
+    )
+    connection = FakeConnection(rows=[(expected_head.model_dump(mode="json"),)])
+    repository = DecisionRepository(connection)
+
+    # When
+    current_head = repository.get_current_head(
+        expected_head.run_id,
+        expected_head.entity_id,
+    )
+
+    # Then
+    assert current_head == expected_head
+
+
+def test_decision_repository_rejects_multiple_current_heads(
+    decision_result: DecisionResult,
+) -> None:
+    # Given
+    first_head = decision_result.model_copy(update={"decision_id": "DEC-002"})
+    second_head = decision_result.model_copy(update={"decision_id": "DEC-003"})
+    connection = FakeConnection(
+        rows=[
+            (first_head.model_dump(mode="json"),),
+            (second_head.model_dump(mode="json"),),
+        ]
+    )
+    repository = DecisionRepository(connection)
+
+    # When
+    with pytest.raises(DecisionIntegrityError) as exc_info:
+        repository.get_current_head(decision_result.run_id, decision_result.entity_id)
+
+    # Then
+    assert "multiple current Decision heads" in str(exc_info.value)
 
 
 @pytest.mark.parametrize(

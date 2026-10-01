@@ -10,6 +10,8 @@ from incident_awareness.common.models.result import DecisionResult, DetectionRes
 class _Cursor(Protocol):
     def fetchone(self) -> tuple[object, ...] | Mapping[str, object] | None: ...
 
+    def fetchall(self) -> list[tuple[object, ...] | Mapping[str, object]]: ...
+
 
 class _Connection(Protocol):
     def execute(self, query: str, params: tuple[object, ...]) -> _Cursor: ...
@@ -77,6 +79,33 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 _SELECT_DECISION_PAYLOAD = "SELECT payload FROM decisions WHERE decision_id = %s"
+
+
+_SELECT_CURRENT_DECISION_HEADS = """
+SELECT candidate.payload
+FROM decisions AS candidate
+WHERE candidate.run_id = %s
+  AND candidate.entity_id = %s
+  AND NOT EXISTS (
+      SELECT 1
+      FROM decisions AS successor
+      WHERE successor.run_id = candidate.run_id
+        AND successor.entity_id = candidate.entity_id
+        AND successor.payload ->> 'supersedes_decision_id' = candidate.decision_id
+  )
+LIMIT 2
+"""
+
+_SELECT_DECISION_IN_SCOPE = """
+SELECT 1
+FROM decisions
+WHERE run_id = %s AND entity_id = %s
+LIMIT 1
+"""
+
+
+class DecisionIntegrityError(RuntimeError):
+    """저장된 Decision lifecycle이 무결성 조건을 위반했다."""
 
 
 class FusionResultRepository:
@@ -170,6 +199,28 @@ class DecisionRepository:
             return None
 
         return DecisionResult.model_validate(_payload_from_row(row, table_name="decisions"))
+
+    def get_current_head(self, run_id: str, entity_id: str) -> DecisionResult | None:
+        rows = self._connection.execute(
+            _SELECT_CURRENT_DECISION_HEADS,
+            (run_id, entity_id),
+        ).fetchall()
+        if not rows:
+            row = self._connection.execute(
+                _SELECT_DECISION_IN_SCOPE,
+                (run_id, entity_id),
+            ).fetchone()
+            if row is None:
+                return None
+            raise DecisionIntegrityError(
+                f"no current Decision head for run_id={run_id!r}, entity_id={entity_id!r}"
+            )
+        if len(rows) > 1:
+            raise DecisionIntegrityError(
+                f"multiple current Decision heads for run_id={run_id!r}, entity_id={entity_id!r}"
+            )
+
+        return DecisionResult.model_validate(_payload_from_row(rows[0], table_name="decisions"))
 
 
 def _payload_from_row(
