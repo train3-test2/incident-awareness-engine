@@ -74,25 +74,41 @@ Set-Location C:\Tools\S0\attack
 `run_id` 는 매번 새로 발급한다. 이미 산출물이 있는 `run_id` 로 다시 실행하면 §5-3 의 재사용
 차단에 걸려 아무것도 쓰지 않고 중단된다.
 
-## 3. 정식 attack 실행은 지금 의도적으로 막혀 있다
+## 3. 정식 attack 실행은 승인 입력이 갖춰져야만 진행된다
 
-공격 Run 의 A01 · A02 는 네트워크 격리 결정(issue #71) 전까지 **미구현 예외로 중단된다.**
+A01 · A02 는 구현돼 있다. 막혀 있는 것은 구현이 아니라 **승인 없이 실행하는 경로**다.
 
 | 행위 | rehearsal | 정식 모드 |
 | --- | --- | --- |
-| A01 난독화 PowerShell 실행 | 무해한 로컬 anchor 프로세스 | **미구현 예외.** `-EncodedCommand` 나 대체 행위를 만들지 않는다 |
-| A02 외부 TCP 연결 | 건너뜀 | **미구현 예외.** issue #71 결정 후 A01 프로세스 내부 동작으로 추가한다 |
+| A01 난독화 PowerShell 실행 | 무해한 로컬 anchor 프로세스 | `New-ConnectionWorker` 가 `-EncodedCommand` 로 띄우는 연결 worker |
+| A02 외부 TCP 연결 | 건너뜀 | 그 worker **자신의 프로세스**에서 승인된 목적지로 TCP 1 회 |
 | A03 로컬 수집·압축 | 로컬 스크립트 | 로컬 스크립트 |
 | A04 후속 프로세스 | 로컬 스크립트 | 로컬 스크립트 |
 
 - A02 는 반드시 A01 프로세스 내부에서 수행해야 한다(같은 Sysmon `ProcessGuid`, `s0.md` §4-2).
-  별도 프로세스로 연결하면 인과가 끊긴다. `Start-AnchorProcess` 는 anchor 를 종료하지 않고
-  PID 만 돌려주며, rehearsal anchor 는 run 이 끝난 뒤 `Stop-AnchorProcess` 로만 정리한다.
+  별도 프로세스로 연결하면 인과가 끊긴다. 그래서 정식 A01 은 anchor 가 아니라 worker 자체이고,
+  `Start-AnchorProcess` 는 rehearsal 전용으로 남아 정식 모드에서 호출되면 예외를 던진다.
+  rehearsal anchor 는 run 이 끝난 뒤 `Stop-AnchorProcess` 로만 정리한다.
+- 정식 모드는 `Assert-FormalConnectionApproval` 이 통과해야 시작한다. 목적지가 globally
+  routable IPv4 리터럴인지, 포트가 1..65535 인지, 프로토콜이 TCP 인지, 실행 호스트가
+  `-ApprovedComputerName` 과 같은지, 현재 UTC 가 `-ApprovedStartUtc` ~ `-ApprovedEndUtc` 안인지,
+  `-MaxConnectionAttempts` 가 정확히 1 인지 검사한다. 하나라도 어긋나면 **소켓이 생기기 전에**
+  중단된다.
+- 부모는 A02 · N02 trigger 를 쓰기 직전에 `Assert-FormalConnectionApproval` 을 다시 호출해
+  실행 호스트를 포함한 위 조건 전체를 재검사한다.
+- worker 는 소켓 직전에 목적지 · 포트 · 프로토콜 · 시도 횟수 · 승인 시간 창만 재검사한다
+  (`Invoke-ApprovedTcpAttempt`). 실행 호스트는 worker 설정에 들어가지 않으므로 부모가 맡는다.
+  부모 검사 뒤에 승인 창이 닫혀도 worker 가 연결을 막는다.
 - 외부 연결 목적지(`scenario.yaml` 의 `external_connection.target`)가 비어 있으면, 정식 모드는
-  컨텍스트 생성 단계에서 차단되고 rehearsal 만 경고 후 진행한다.
+  컨텍스트 생성 단계에서 차단되고 rehearsal 만 경고 후 진행한다. 정본 YAML 은 `target` 을
+  `null` 로 유지한다. 승인된 목적지는 저장소에 두지 않고, 정식 수집용 JSON 을 렌더링할 때만
+  `--external-target` 으로 주입한다(§1).
+- 인과 검증이 `matched` 가 아니면 정식 Run 은 실패로 끝난다(`Assert-FormalCausalityMatched`).
+  rehearsal 은 `not_verified` 를 그대로 두고 산출물을 쓴다.
 
 **이 저장소는 public 이다.** 실제 공격 명령·난독화·외부 통신·자격증명 접근·로그 삭제·보안
-우회 코드를 이 폴더에 넣지 않는다.
+우회 코드를 이 폴더에 넣지 않는다. `-EncodedCommand` 로 실행되는 내용은 승인된 목적지로
+TCP 연결 1 회를 시도하고 결과를 기록하는 것뿐이다.
 
 ## 4. VM 으로 스크립트를 옮길 때
 
@@ -216,9 +232,9 @@ overwrite the existing artifacts.
   경로는 존재하지 않는다. 검증기는 §6-2 의 규칙으로 파일 이름만 매핑해 이 문제를 피한다.
   manifest 자체를 상대 경로로 바꿀지는 Manifest 결정 항목(`s0.md` §10)과 함께 정한다.
 - 추출 창은 `start_time` 보다 10초 앞에서 시작한다(`EVTX_WINDOW_MARGIN_MS`). 그래서 run 직전의
-  이벤트가 함께 수집된다. 여유 폭을 줄일지는 정식 수집 전에 정한다.
-- 정식 모드에서 A01 · A02 가 미구현 예외로 중단되는지는 아직 확인하지 않았다.
-- 정식 수집은 issue #71 의 제한된 NAT 예외 **세부 승인값**과 cadence(`step_size`) 확정 이후에 한다.
+  이벤트가 함께 수집된다. 정식 수집에서 이 여유분은 Runtime replay 창(`replay_start` =
+  `start_time`) 밖으로 그대로 떨어져 나가므로 판정에는 들어가지 않는다. 여유 폭 자체를 줄일지는
+  아직 정하지 않았다.
 
 ## 6. 산출물 검증기
 
@@ -322,4 +338,15 @@ Runtime 판정과, 평가 단계의 horizon 판정은 이 검증기가 하지 �
 ### 6-5. 검증 상태
 
 - macOS · Python 3.13 에서 rehearsal 산출물 RUN-20260914-002 를 `--rehearsal` 로 검증해 통과했다.
-- 정식 S0 Pair 산출물로는 아직 검증하지 않았다. 정식 수집 뒤 `--rehearsal` 없이 실행한다.
+- 정식 S0 Pair 는 `WIN-01` Windows VM 에서 정식 runner 로 수집했다. 저장소 밖으로 보존한
+  산출물을 macOS · Python 3.13 의 validator 에 `--rehearsal` 없이 입력했고 Normal · Attack 모두
+  통과했다. 공격 Run 에서는 `reference_time` 이 해당 `RecordId` 의 Sysmon EID 1 이고 run 구간
+  안이며 A01 실행 시각보다 이르지 않다는 검사와, `reference_time` 이후 horizon 만큼 관측이
+  열려 있었다는 검사가 함께 통과했다.
+
+| 유형 | run_id | 결과 |
+| --- | --- | --- |
+| Normal | `RUN-20260927-001` | 13 개 검사 통과, 종료 코드 0 |
+| Attack | `RUN-20260927-002` | 13 개 검사 통과, 종료 코드 0 |
+
+수집물과 검증 transcript 는 저장소 밖에 보관한다(§5-3 과 같은 규칙).
