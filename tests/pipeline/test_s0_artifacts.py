@@ -10,7 +10,7 @@ from incident_awareness.pipeline.s0_artifacts import load_s0_pipeline_artifacts
 RUN_ID = "RUN-20260920-001"
 SCHEMA_VERSIONS = {
     "run_metadata": "v0.2",
-    "event": "v0.2",
+    "event": "v0.3",
     "evidence": "v0.2",
     "fast_hit": "v0.2",
     "detection_result": "v0.2",

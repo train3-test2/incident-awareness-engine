@@ -12,7 +12,7 @@ from incident_awareness.common.models.event import NormalizedEvent
 _SYSMON_PROCESS_CREATE_EVENT_ID = 1
 _SYSMON_NETWORK_CONNECTION_EVENT_ID = 3
 _SYSMON_NORMALIZER_ID = "sysmon-normalizer"
-_SYSMON_NORMALIZER_VERSION = "v0.2"
+_SYSMON_NORMALIZER_VERSION = "v0.3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,10 +56,12 @@ def normalize_sysmon_process_create(
         user=_optional_string(event_data, "User"),
         process={
             "pid": _optional_integer(event_data, "ProcessId"),
+            "process_guid": _optional_string(event_data, "ProcessGuid"),
             "name": PureWindowsPath(image).name,
             "path": image,
             "command_line": _optional_string(event_data, "CommandLine"),
             "parent_pid": _optional_integer(event_data, "ParentProcessId"),
+            "parent_process_guid": _optional_string(event_data, "ParentProcessGuid"),
             "parent_name": PureWindowsPath(parent_image).name if parent_image else None,
         },
         network=None,
@@ -105,10 +107,12 @@ def normalize_sysmon_network_connection(
         user=_optional_string(event_data, "User"),
         process={
             "pid": _optional_integer(event_data, "ProcessId"),
+            "process_guid": _optional_string(event_data, "ProcessGuid"),
             "name": PureWindowsPath(image).name if image else None,
             "path": image,
             "command_line": _optional_string(event_data, "CommandLine"),
             "parent_pid": _optional_integer(event_data, "ParentProcessId"),
+            "parent_process_guid": None,
             "parent_name": _path_name(_optional_string(event_data, "ParentImage")),
         },
         network={

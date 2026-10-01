@@ -1,6 +1,6 @@
 # event_v0 정의
 
-> 상위 정본은 `docs/data-contract-v0.2.md`다. 이 문서는 v0.2 Event Contract의 상세 명세다.
+> 상위 정본은 `docs/data-contract-v0.2.md`다. 이 문서는 v0.3 Event Contract의 상세 명세다.
 
 ## 1. 목적
 
@@ -31,10 +31,12 @@
   "user": "labuser",
   "process": {
     "pid": 4120,
+    "process_guid": "{A1B2C3D4-0000-0000-0000-000000000153}",
     "name": "powershell.exe",
     "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
     "command_line": "powershell.exe -Command whoami",
     "parent_pid": 2380,
+    "parent_process_guid": "{A1B2C3D4-0000-0000-0000-000000000152}",
     "parent_name": "explorer.exe"
   },
   "network": null,
@@ -44,7 +46,7 @@
     "record_no": 153,
     "source_record_id": "153",
     "parser_id": "sysmon-normalizer",
-    "parser_version": "v0.2"
+    "parser_version": "v0.3"
   }
 }
 ```
@@ -181,10 +183,12 @@ network_connection
 | 필드           | 타입    | 필수 | 설명              |
 | -------------- | ------- | ---- | ----------------- |
 | `pid`          | Integer | X    | Process ID        |
+| `process_guid` | String  | X    | Source-native Process 인스턴스 식별자. Sysmon `ProcessGuid`를 그대로 보존 |
 | `name`         | String  | X    | Process 이름      |
 | `path`         | String  | X    | 실행 파일 경로    |
 | `command_line` | String  | X    | 실행 Command Line |
 | `parent_pid`   | Integer | X    | 부모 Process ID   |
+| `parent_process_guid` | String | X | 부모 Process 인스턴스 식별자. Sysmon EID 1의 `ParentProcessGuid`; EID 3에서는 `null` |
 | `parent_name`  | String  | X    | 부모 Process 이름 |
 
 프로세스 정보가 없는 Event에서는:
@@ -491,4 +495,4 @@ event_v0
 Evidence / Detection / Fusion
 ```
 
-`event_v0`의 상세 필드가 변경될 경우 역할 1·2·5와 Data Contract 변경사항을 공유하고, 관련 테스트 및 JSON Schema도 함께 갱신한다.
+`event_v0`의 상세 필드가 변경될 경우 역할 1·2·5와 Data Contract 변경사항을 공유하고, 관련 테스트 및 JSON Schema도 함께 갱신한다. v0.3의 Process GUID 필드는 R1에서 EID 1 → EID 3 연결과 부모 계보 재구성에 사용할 수 있는 관찰값만 보존하며, 그 자체로 Evidence·Fusion 판정을 만들지 않는다.
