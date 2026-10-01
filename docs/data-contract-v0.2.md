@@ -119,7 +119,7 @@ v0.2 First Cycle은 Raw Log에서 정규화한 Event만 다루므로 `raw_ref`�
 
 `process.process_guid`, `process.parent_process_guid`는 Sysmon 원본의 `ProcessGuid`,
 `ParentProcessGuid`를 문자열 그대로 보존하는 선택 필드다. Sysmon EID 1은 두 값을 기록하며,
-EID 3은 `ProcessGuid`만 기록한다. 동일 `host_id` 안에서 EID 1과 EID 3의
+EID 3은 `ProcessGuid`만 기록한다. 동일 `run_id`, 동일 `host_id` 안에서 EID 1과 EID 3의
 `process_guid`가 같은 경우에만 같은 프로세스 인스턴스의 연결로 해석할 수 있다. PID는 재사용될 수
 있으므로 이 연결의 대체 식별자로 사용하지 않는다.
 

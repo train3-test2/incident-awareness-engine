@@ -186,7 +186,8 @@ def test_runner_records_preserve_process_guid_for_eid_1_to_eid_3_link(
     process_create = normalize_sysmon_process_create(records[1], context=CONTEXT)
     network_connection = normalize_sysmon_network_connection(records[3], context=CONTEXT)
 
-    # then: 동일 host의 같은 ProcessGuid가 보존되어 인스턴스 연결에 사용할 수 있다
+    # then: 동일 Run·host의 같은 ProcessGuid가 보존되어 인스턴스 연결에 사용할 수 있다
+    assert process_create.run_id == network_connection.run_id
     assert process_create.host_id == network_connection.host_id
     assert process_create.process is not None
     assert network_connection.process is not None
