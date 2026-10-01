@@ -13,7 +13,8 @@ HTML/CSS/JavaScript를 제공합니다. PR #121의 API 계약과 구현에 의�
 확인 순서: 서버 접속 → 토큰 입력 → Runs → Run 선택 → Decision ID 조회 → Event 페이지 이동.
 잘못된 토큰, 없는 Decision, 서버 연결 실패, 결과 없는 Run도 확인합니다.
 
-후속 범위는 Overview 집계, Decision 이력 선택 목록, Report/LLM 연동입니다.
+Overview는 전체 Run·Decision 유무·Event 수 및 최신 Decision 기준 경로별 상태를 표시합니다.
+후속 범위는 Decision 이력 선택 목록, Report/LLM 연동입니다.
 실제 RDS 및 브라우저 E2E 검증은 별도 환경에서 필요합니다. 공유 운영자 토큰 방식은
 개인별 감사·권한 분리를 제공하지 않으므로 배포 인증 방식과 별도로 연결해야 합니다.
 

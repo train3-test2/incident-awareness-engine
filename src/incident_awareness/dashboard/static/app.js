@@ -16,5 +16,27 @@ const current=el("article",null,root);el("h2","현재 Entity 결과",current);el
 const evidence=el("article",null,root);el("h2","Evidence ID",evidence);el("p",data.evidence.availability==="not_available"?"Evidence 정보 없음":data.evidence.ids.length?data.evidence.ids.join(", "):"기여 Evidence ID 없음",evidence);el("p","Evidence 본문 및 Event와의 연결은 제공되지 않습니다.",evidence);
 el("h2","Event",root);table(root,["ID","시각","호스트","유형"],data.events.items.map(e=>[e.event_id,fmt(e.timestamp),e.host_id,e.event_type]));if(!data.events.items.length)el("p","표시할 Event가 없습니다.",root);const page=el("div",null,root);page.className="pagination";el("span",`전체 ${data.events.total}개`,page);button("이전",page,()=>detail(runId,d?.decision_id??decisionId,offset-50),offset===0);button("다음",page,()=>detail(runId,d?.decision_id??decisionId,offset+50),offset+50>=data.events.total);
 el("h2","타임라인",root);el("p","현재 Event 페이지와 선택한 Decision의 시각만 표시합니다.",root);table(root,["시각","종류","출처 ID"],data.timeline.items.map(e=>[fmt(e.timestamp),e.kind,e.source_id]));});}
-$("auth").onsubmit=e=>{e.preventDefault();listOffset=0;token=$("token").value;$("token").value="";$("login").hidden=true;$("workspace").hidden=false;runs();};
+$("auth").onsubmit=e=>{e.preventDefault();listOffset=0;token=$("token").value;$("token").value="";$("login").hidden=true;$("workspace").hidden=false;overview();};
 $("home").onclick=runs;$("logout").onclick=()=>{token="";generation++;$("content").replaceChildren();$("message").textContent="";$("workspace").hidden=true;$("login").hidden=false;};
+
+function overview() {
+  load("/api/overview", data => {
+    const root = $("content");
+    el("h1", "Overview", root);
+    el("p", "전체 Run 기준 · Run마다 가장 최근에 저장된 Decision 1건을 집계합니다. 여러 호스트의 통합 판정이나 성능 평가 지표가 아닙니다.", root);
+    const cards = el("div", null, root);
+    cards.className = "cards";
+    for (const [name, count] of [["전체 Run", data.total_runs], ["판단 결과 있음", data.runs_with_decision], ["결과 없음", data.runs_without_decision], ["전체 Event", data.total_events]]) {
+      const card = el("article", null, cards);
+      el("h2", name, card);
+      el("strong", count, card).className = "metric";
+    }
+    if (!data.total_runs) el("p", "저장된 Run이 없습니다.", root);
+    el("h2", "경로별 상태", root);
+    table(root, ["경로", "탐지", "미탐지", "미평가", "결과 없음"], ["fast", "fusion"].map(key => [labels[key], data[key].detected, data[key].miss, data[key].not_evaluated, data[key].missing]));
+    el("h2", "최신 Decision의 탐지 경로", root);
+    table(root, ["탐지 경로", "Run 수"], Object.entries(data.decision_paths).map(([key, count]) => [key === "missing" ? "결과 없음" : labels[key], count]));
+    button("Run 목록 보기", root, runs);
+  });
+}
+$("overview").onclick = overview;

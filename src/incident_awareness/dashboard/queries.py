@@ -58,6 +58,48 @@ class DashboardQueries:
     def __init__(self, connection):
         self.db = connection
 
+    def overview(self):
+        """Count one latest Decision per Run, never all Decision history rows."""
+        groups = self.db.execute(
+            "SELECT d.decision_id IS NOT NULL AS has_decision, "
+            "d.fast_status, d.fusion_status, d.decision_path, count(*) AS count "
+            "FROM runs r LEFT JOIN LATERAL ("
+            "SELECT decision_id, fast_status, fusion_status, decision_path "
+            "FROM decisions WHERE run_id = r.run_id "
+            "ORDER BY created_at DESC, decision_id DESC LIMIT 1"
+            ") d ON true GROUP BY 1, 2, 3, 4"
+        ).fetchall()
+        status_keys = ("detected", "miss", "not_evaluated", "missing")
+        result = {
+            "scope": "all_runs",
+            "decision_basis": "latest_per_run",
+            "total_runs": 0,
+            "runs_with_decision": 0,
+            "runs_without_decision": 0,
+            "fast": dict.fromkeys(status_keys, 0),
+            "fusion": dict.fromkeys(status_keys, 0),
+            "decision_paths": dict.fromkeys(
+                ("fast", "fusion", "fast_and_fusion", "none", "not_evaluated", "missing"), 0
+            ),
+        }
+        for group in groups:
+            count = group["count"]
+            result["total_runs"] += count
+            if not group["has_decision"]:
+                result["runs_without_decision"] += count
+                for key in ("fast", "fusion", "decision_paths"):
+                    result[key]["missing"] += count
+                continue
+            result["runs_with_decision"] += count
+            for key in ("fast", "fusion"):
+                result[key][group[f"{key}_status"]] += count
+            path = group["decision_path"]
+            result["decision_paths"][path if path is not None else "not_evaluated"] += count
+        result["total_events"] = self.db.execute("SELECT count(*) AS count FROM events").fetchone()[
+            "count"
+        ]
+        return result
+
     def latest(self, run_id):
         return self.db.execute(
             "SELECT payload, created_at FROM decisions WHERE run_id = %s "

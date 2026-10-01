@@ -96,6 +96,11 @@ async def source_error(request, exc):
     return error("DATA_SOURCE_UNAVAILABLE", 503)
 
 
+@app.get("/api/overview")
+def overview(queries: Annotated[DashboardQueries, Depends(get_queries)]):
+    return queries.overview()
+
+
 @app.get("/api/runs")
 def runs(
     queries: Annotated[DashboardQueries, Depends(get_queries)],

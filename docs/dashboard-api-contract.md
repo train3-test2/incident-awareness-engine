@@ -1,6 +1,6 @@
 # 대시보드 조회 API 계약 v1 — 구현 기준 제안
 
-범위: Overview / Runs / Run Detail의 읽기 API. 공통 DetectionResult 등의 정본을 변경하지 않는 화면용 read model이다. Run 목록·상세 API는 구현했으며, Overview 집계와 프런트엔드는 후속 구현 대상이다. Report 저장·LLM API는 별도 계약이다.
+범위: Overview / Runs / Run Detail의 읽기 API. 공통 DetectionResult 등의 정본을 변경하지 않는 화면용 read model이다. Run 목록·상세 API는 구현했으며, Overview 집계와 Runs·Run Detail 화면도 구현했다. Report 저장·LLM API는 별도 계약이다.
 
 ## 공통
 
@@ -113,5 +113,22 @@ DB 조회는 요청별 read-only/repeatable-read 트랜잭션이며 SQL 실행 �
 DB 연결 오류 및 저장된 결과의 계약 위반은 세부 접속정보 없이 503으로 반환합니다.
 
 이번 구현은 `GET /api/runs`와 `GET /api/runs/{run_id}`입니다.
-Overview 집계, Decision 이력 목록, Event 상세, Report 생성·수정 API와 프론트 화면은
+Decision 이력 목록, Event 상세, Report 생성·수정 API는
 후속 구현 대상입니다. 현재 결과와 과거 Decision의 연관성은 `unverified`로 유지합니다.
+
+## Overview 전체 집계
+
+`GET /api/overview`는 인증된 운영자 범위의 전체 Run을 집계합니다. 페이지나 날짜
+필터는 적용하지 않습니다. 동일 read-only/repeatable-read 트랜잭션에서 읽습니다.
+
+- `scope`: `all_runs`
+- `decision_basis`: `latest_per_run`
+- `total_runs`, `runs_with_decision`, `runs_without_decision`, `total_events`: 정수
+- `fast`, `fusion`: `detected / miss / not_evaluated / missing`별 Run 수
+- `decision_paths`: `fast / fusion / fast_and_fusion / none / not_evaluated / missing`별 Run 수
+
+최신 Decision은 목록 API와 같은 `created_at DESC, decision_id DESC` 순서입니다.
+Decision 없는 Run은 `missing`, Decision의 null 경로는 `not_evaluated`로 집계합니다.
+`none`은 양쪽 미탐지에 대응하며 null 경로와 구분합니다. 빈 DB는 모든 건수가 0입니다.
+여러 entity의 Run 단위 통합 판정이 아니며 Recall·FPR·FA/BH를 의미하지 않습니다.
+과거 Decision과 현재 Fast/Fusion upsert 결과를 결합해서 집계하지 않습니다.
