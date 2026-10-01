@@ -17,10 +17,12 @@ def test_process_info_allows_omitted_fields() -> None:
 
     # then: 모든 선택 필드는 None이다
     assert process_info.pid is None
+    assert process_info.process_guid is None
     assert process_info.name is None
     assert process_info.path is None
     assert process_info.command_line is None
     assert process_info.parent_pid is None
+    assert process_info.parent_process_guid is None
     assert process_info.parent_name is None
 
 
@@ -34,6 +36,15 @@ def test_network_info_allows_omitted_fields() -> None:
     assert network_info.src_port is None
     assert network_info.dst_ip is None
     assert network_info.dst_port is None
+
+
+@pytest.mark.parametrize("field_name", ["process_guid", "parent_process_guid"])
+@pytest.mark.parametrize("value", ["", " ", b"{guid}"])
+def test_process_info_rejects_invalid_process_guid(field_name: str, value: str | bytes) -> None:
+    # given: 비어 있거나 문자열이 아닌 Sysmon Process GUID
+    # when & then: ProcessInfo 생성 시 검증 오류가 발생한다
+    with pytest.raises(ValidationError):
+        ProcessInfo.model_validate({field_name: value})
 
 
 @pytest.mark.parametrize(("port",), [(0,), (65535,)])
@@ -340,6 +351,8 @@ def test_normalized_event_generates_json_schema() -> None:
     assert {"user", "process", "network"} <= set(properties)
     assert {"event_id", "timestamp", "source_event_id", "raw_ref"} <= required_fields
     assert schema["additionalProperties"] is False
+    process_properties = schema["$defs"]["ProcessInfo"]["properties"]
+    assert {"process_guid", "parent_process_guid"} <= set(process_properties)
 
 
 @pytest.mark.parametrize("timestamp_source", ["record_time", "ingest_time"])

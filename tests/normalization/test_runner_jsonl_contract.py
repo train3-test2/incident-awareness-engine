@@ -57,6 +57,7 @@ PROCESS_CREATE_RECORD = {
             "-NonInteractive -ExecutionPolicy Bypass -File C:\\S0\\work\\s0_anchor.ps1"
         ),
         "ParentProcessId": "5744",
+        "ParentProcessGuid": "{c1ae1b3a-0300-6aa8-6402-000000000899}",
         "ParentImage": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
     },
 }
@@ -71,7 +72,7 @@ NETWORK_CONNECTION_RECORD = {
     "EventData": {
         "RuleName": "-",
         "UtcTime": "2026-09-14 15:21:44.095",
-        "ProcessGuid": "{c1ae1b3a-fe08-6aa7-eb03-000000000000}",
+        "ProcessGuid": "{c1ae1b3a-0300-6aa8-6402-000000000900}",
         "ProcessId": "4",
         "Image": "System",
         "User": "NT AUTHORITY\\SYSTEM",
@@ -127,6 +128,8 @@ def test_runner_process_create_record_normalizes_to_event_v0(runner_jsonl: Path)
     assert event.source_event_id == "7809"
     assert event.process is not None
     assert event.process.pid == 444
+    assert event.process.process_guid == "{c1ae1b3a-0300-6aa8-6402-000000000900}"
+    assert event.process.parent_process_guid == "{c1ae1b3a-0300-6aa8-6402-000000000899}"
     assert event.process.name == "powershell.exe"
     assert event.raw_ref.raw_log_id == "RAW-001"
     assert event.raw_ref.source_record_id == "7809"
@@ -150,6 +153,9 @@ def test_runner_network_connection_record_normalizes_to_event_v0(runner_jsonl: P
     assert event.network.protocol == "udp"
     assert event.network.dst_ip == "192.168.9.2"
     assert event.network.dst_port == 137
+    assert event.process is not None
+    assert event.process.process_guid == "{c1ae1b3a-0300-6aa8-6402-000000000900}"
+    assert event.process.parent_process_guid is None
     assert event.raw_ref.source_record_id == "7808"
     assert event.raw_ref.record_no == 1
 
@@ -166,3 +172,20 @@ def test_normalized_runner_events_round_trip_through_the_contract(runner_jsonl: 
         restored = NormalizedEvent.model_validate(event.model_dump(mode="json"))
         assert restored == event
         assert restored.run_id == RUN_ID
+
+
+def test_runner_records_preserve_process_guid_for_eid_1_to_eid_3_link(
+    runner_jsonl: Path,
+) -> None:
+    # given: 같은 Sysmon ProcessGuid를 가진 EID 1과 EID 3 원본 Record
+    records = {record.data["EventId"]: record for record in read_sysmon_jsonl(runner_jsonl)}
+
+    # when: 두 Record를 각각 정규화한다
+    process_create = normalize_sysmon_process_create(records[1], context=CONTEXT)
+    network_connection = normalize_sysmon_network_connection(records[3], context=CONTEXT)
+
+    # then: 동일 host의 같은 ProcessGuid가 보존되어 인스턴스 연결에 사용할 수 있다
+    assert process_create.host_id == network_connection.host_id
+    assert process_create.process is not None
+    assert network_connection.process is not None
+    assert process_create.process.process_guid == network_connection.process.process_guid

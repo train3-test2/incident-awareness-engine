@@ -44,10 +44,12 @@ def test_normalize_sysmon_network_connection_maps_event_id_3(
     assert event.process is not None
     assert event.process.model_dump() == {
         "pid": 5544,
+        "process_guid": "{c1ae1b3a-15a0-6aa0-1003-000000000800}",
         "name": "powershell.exe",
         "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
         "command_line": None,
         "parent_pid": None,
+        "parent_process_guid": None,
         "parent_name": None,
     }
     assert event.network is not None
@@ -64,7 +66,7 @@ def test_normalize_sysmon_network_connection_maps_event_id_3(
         "segment_no": 1,
         "record_no": 7,
         "parser_id": "sysmon-normalizer",
-        "parser_version": "v0.2",
+        "parser_version": "v0.3",
     }
 
 
