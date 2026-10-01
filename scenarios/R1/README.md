@@ -158,7 +158,8 @@ $credential = Get-Credential
 3. 사전 세션으로 Target-A 의 컴퓨터 이름과 Sysmon 설정 해시를 확인하고 닫는다.
 4. 시나리오 세션에서 다섯 행위를 offset 에 맞춰 실행한다.
 5. 관측 창이 끝날 때까지 기다린다.
-6. 수집 세션으로 Run 구간의 Sysmon 을 export 해 가져오고 JSONL 로 변환한다.
+6. 수집 세션으로 Run 구간의 Sysmon 을 export 해 가져오고 JSONL 로 변환한다. 구간은 Target-A 가
+   자기 시계로 계산한다(`start_time` 10 초 전부터 export 시점까지).
 7. 수집한 레코드에서 이 Run 이 시작한 프로세스의 계보와 연결을 확인한다.
 8. 그 뒤에만 `execution_record.csv` · `run_metadata.json` · `manifest.json` 을 쓴다.
 
@@ -319,6 +320,7 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
 | --- | --- |
 | 원격 세션 host 의 Image 가 `wsmprovhost.exe` 다 (`r1.md` §11-7) | `scenario.yaml` 의 `lineage.session_host.image` 를 고친다 |
 | 세션 host → 중간 프로세스 → 최종 관리 도구가 두 Run 모두 **직접 부모-자식**으로 기록된다 | 계보가 3 단계가 아니게 되므로 launcher 방식을 다시 정한다 |
+| Target-A 의 보안 설정이 두 중간 프로세스의 최종 관리 도구 실행을 막지 않는다 | 최종 도구가 준비 신호를 내지 못해 Run 이 중단된다. 실험 VM 정책을 역할 3 과 확인한다 |
 | 최종 관리 도구의 내부 연결이 같은 `ProcessGuid` 의 EID 3 으로 남는다 (`r1.md` §11-9) | 연결 방식 또는 수집 설정을 역할 3 과 다시 확인한다 |
 | Sysmon `Computer` 값이 `target_host` 와 같다 (대소문자 무시) | 사전 세션이 먼저 비교해 바로 중단한다. 렌더링할 때 `--target-host` 를 그 값으로 준다 |
 | Controller 가 Sysmon 없이도 가져온 EVTX 를 읽어 JSONL 로 변환한다 | 변환을 Target-A 쪽 단계로 옮긴다 |

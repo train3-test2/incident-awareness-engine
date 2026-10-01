@@ -604,16 +604,26 @@ $R1_REMOTE_STEPS = @{
     }
 
     # After the observation window, in a session of its own: export the Sysmon
-    # records of the run window. The window is a duration, so the Controller and
-    # Target-A clocks do not have to agree.
+    # records of the run window. The window reaches back from now to the start of
+    # the run plus a margin. Both ends are this host's clock - the start is the
+    # stamp it gave in the pre-run check - which is also the clock the records
+    # carry, so the Controller clock and the time a session takes to open do not
+    # move the window.
     export = {
         param($Arguments)
         Set-StrictMode -Version Latest
         $ErrorActionPreference = "Stop"
 
-        $utc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+        $now = (Get-Date).ToUniversalTime()
+        $start = [datetime]::ParseExact([string]$Arguments.start_utc, "yyyy-MM-dd'T'HH:mm:ss.fff'Z'",
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            ([System.Globalization.DateTimeStyles]::AssumeUniversal -bor
+                [System.Globalization.DateTimeStyles]::AdjustToUniversal))
+        if ($now -lt $start) { throw "the start of the run is later than the clock of this host" }
+        $windowMs = [long]($now - $start).TotalMilliseconds + [long]$Arguments.margin_ms
+
         $idClause = (@($Arguments.event_ids) | ForEach-Object { "EventID=$_" }) -join " or "
-        $query = "*[System[($idClause) and TimeCreated[timediff(@SystemTime) <= $($Arguments.window_ms)]]]"
+        $query = "*[System[($idClause) and TimeCreated[timediff(@SystemTime) <= $windowMs]]]"
         if (Test-Path -LiteralPath $Arguments.export_path) { Remove-Item -LiteralPath $Arguments.export_path -Force }
 
         # Do not redirect stderr: in Windows PowerShell 5.1 "2>&1" on a native
@@ -623,7 +633,11 @@ $R1_REMOTE_STEPS = @{
             throw ("wevtutil epl failed for " + $Arguments.log_name)
         }
 
-        return @{ utc = $utc; evtx_path = [string]$Arguments.export_path }
+        return @{
+            utc       = $now.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+            evtx_path = [string]$Arguments.export_path
+            window_ms = $windowMs
+        }
     }
 
     # Remove what the run left on Target-A once the export has been fetched.
@@ -952,6 +966,9 @@ function Invoke-R1PilotRun {
             sysmon_config_path = $TargetSysmonConfigPath
             log_name           = $SYSMON_LOG
         }
+        # The Controller reads its own clock as soon as the stamp of the target
+        # arrives, so the two readings are apart by the way back at most.
+        $clockStart = & $NowProvider
         & $Transport.close $session | Out-Null
         $session = $null
 
@@ -971,10 +988,10 @@ function Invoke-R1PilotRun {
         }
         Test-SysmonConfigApplied -ConfigSha256 $configSha256 -ConfigState $probe.sysmon -Rehearsal:$Rehearsal
 
-        # The run starts here. start_time is Target-A's clock; the Controller
-        # clock only schedules the offsets and measures durations.
+        # The run starts at the stamp of the pre-run check. start_time is
+        # Target-A's clock; the Controller clock, read when that stamp arrived,
+        # only schedules the offsets and measures durations.
         $startTime = ConvertTo-R1Utc $probe.utc "probe utc"
-        $clockStart = & $NowProvider
 
         if ($Rehearsal) {
             New-Item -ItemType Directory -Path $effectiveRoot -Force | Out-Null
@@ -1130,15 +1147,15 @@ function Invoke-R1PilotRun {
 
         # --- 6. collection session ---------------------------------------------
         Write-Step "collecting the Sysmon window from Target-A"
-        $windowMs = [int]((& $NowProvider).ToUniversalTime() - $clockStart.ToUniversalTime()).TotalMilliseconds +
-            $EVTX_WINDOW_MARGIN_MS
         $exportPath = $plan.work_dir + "\" + $R1_EXPORT_FILE
         $evtxPath = Join-Path $telemetryDir "sysmon-0001.evtx"
         $jsonlPath = Join-Path $telemetryDir "sysmon-0001.jsonl"
 
+        # The target measures the window itself, from the start it stamped.
         $session = & $Transport.open $Connection
         $export = & $Transport.invoke $session "export" @{
-            window_ms   = $windowMs
+            start_utc   = (Get-UtcStamp $startTime)
+            margin_ms   = $EVTX_WINDOW_MARGIN_MS
             log_name    = $SYSMON_LOG
             event_ids   = @($SYSMON_EVENT_IDS)
             export_path = $exportPath

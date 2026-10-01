@@ -834,8 +834,10 @@ foreach ($case in @(
         (@($script:FakeArguments["launch"].arguments) -join " ") -ceq (@($case.plan.intermediate.arguments) -join " "))
     Assert-True ($label + "the offsets and the window are waited on the injected clock") (
         ($script:SleepCalls -join ",") -eq "120,180,180,120,60")
-    Assert-True ($label + "the export window covers the whole observation plus the margin") (
-        [int]$script:FakeArguments["export"].window_ms -eq (660000 + $EVTX_WINDOW_MARGIN_MS))
+    Assert-True ($label + "the export reaches back to the start the target stamped, plus the margin") (
+        [string]$script:FakeArguments["export"].start_utc -eq "2030-01-01T00:00:00.000Z" -and
+        [int]$script:FakeArguments["export"].margin_ms -eq $EVTX_WINDOW_MARGIN_MS -and
+        -not $script:FakeArguments["export"].ContainsKey("window_ms"))
     Assert-True ($label + "the run cleans its channel and export off the target") (
         (@($script:FakeArguments["cleanup"].paths) -join ",") -eq ($TEST_WORK + "\r1_chan," + $TEST_WORK + "\r1_sysmon_export.evtx"))
 
@@ -937,6 +939,8 @@ Assert-True "the later actions keep their offsets from the start of the run" (
 Assert-True "the time a session takes to open is not waited for a second time" (
     ($script:SleepCalls -join ",") -eq "117,180,180,120,60")
 Assert-True "the run ends with the stamp of the collection session" ($slowMetadata.end_time -eq "2030-01-01T00:11:06.000Z")
+Assert-True "the export is given the start_time the run recorded, whatever a session took to open" (
+    [string]$script:FakeArguments["export"].start_utc -eq $slowMetadata.start_time)
 
  # The host check uses the name Sysmon writes into its records when the target
  # can read one, because that is the name the lineage check compares.
