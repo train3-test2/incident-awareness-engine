@@ -3,6 +3,7 @@
 import os
 import secrets
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Annotated
 
 import psycopg
@@ -10,6 +11,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
 from pydantic import ValidationError
 
@@ -112,3 +114,11 @@ def run_detail(
     event_offset: Annotated[int, Query(ge=0)] = 0,
 ):
     return queries.detail(run_id, decision_id, event_limit, event_offset)
+
+
+# Public shell contains no data or credentials; all data endpoints remain authenticated.
+app.mount(
+    "/dashboard",
+    StaticFiles(directory=Path(__file__).parent / "static", html=True),
+    name="dashboard",
+)
