@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from math import isfinite
@@ -31,6 +32,14 @@ def _validate_entity_id(value: object) -> None:
 class ScorePoint:
     timestamp: datetime
     score: float
+
+
+@dataclass(frozen=True, slots=True)
+class StoppingTracePoint:
+    timestamp: datetime
+    score: float
+    persistence_count: int | None
+    policy_state: Literal["off", "on"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +94,7 @@ class ThresholdStoppingPolicy:
         entity_id: str,
         run_end: datetime,
         boundary_end_reason: Literal["run_end", "replay_end"] = "run_end",
+        observer: Callable[[StoppingTracePoint], None] | None = None,
     ) -> StoppingResult:
         _validate_entity_id(entity_id)
 
@@ -121,6 +131,7 @@ class ThresholdStoppingPolicy:
                 raise ValueError("ScorePoint timestamp must not exceed run_end")
 
             previous_timestamp = point.timestamp
+            persistence_count: int | None = None
 
             if active:
                 if point.score < self.threshold_off:
@@ -146,21 +157,29 @@ class ThresholdStoppingPolicy:
                     episode_start_time = None
                     episode_score_at_start = None
                     peak_score = None
-                    continue
-
-                if peak_score is None or point.score > peak_score:
+                elif peak_score is None or point.score > peak_score:
                     peak_score = point.score
+
+                if observer is not None:
+                    observer(
+                        StoppingTracePoint(
+                            timestamp=point.timestamp,
+                            score=point.score,
+                            persistence_count=None,
+                            policy_state="on" if active else "off",
+                        )
+                    )
 
                 continue
 
             if point.score >= self.threshold_on:
                 consecutive += 1
+                persistence_count = consecutive
             else:
                 consecutive = 0
 
             if consecutive >= self.persistence_k:
                 active = True
-                consecutive = 0
                 episode_start_time = point.timestamp
                 episode_score_at_start = point.score
                 peak_score = point.score
@@ -168,6 +187,18 @@ class ThresholdStoppingPolicy:
                 if fusion_time is None:
                     fusion_time = point.timestamp
                     score_at_decision = point.score
+
+                consecutive = 0
+
+            if observer is not None:
+                observer(
+                    StoppingTracePoint(
+                        timestamp=point.timestamp,
+                        score=point.score,
+                        persistence_count=persistence_count,
+                        policy_state="on" if active else "off",
+                    )
+                )
 
         if fusion_time is None:
             return StoppingResult(

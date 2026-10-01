@@ -5,6 +5,7 @@ import pytest
 
 from incident_awareness.decision.fusion.stopping_policy import (
     ScorePoint,
+    StoppingTracePoint,
     ThresholdStoppingPolicy,
 )
 
@@ -753,3 +754,118 @@ def test_rejects_score_outside_unit_interval(invalid_score: float) -> None:
 
     # Then
     assert str(exc_info.value) == "ScorePoint score must be between 0 and 1"
+
+
+def test_observer_records_s0_persistence_hysteresis_and_release_without_changing_result() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.8,
+        threshold_off=0.4,
+        persistence_k=2,
+    )
+    first_high = datetime(2026, 9, 27, 7, 51, 51, 150000, tzinfo=UTC)
+    trajectory = [
+        ScorePoint(
+            timestamp=first_high,
+            score=1.0,
+        ),
+        ScorePoint(
+            timestamp=first_high + timedelta(seconds=10),
+            score=1.0,
+        ),
+        ScorePoint(
+            timestamp=first_high + timedelta(minutes=3),
+            score=0.5,
+        ),
+        ScorePoint(
+            timestamp=first_high + timedelta(minutes=5),
+            score=0.0,
+        ),
+    ]
+    run_end = trajectory[-1].timestamp
+    trace: list[StoppingTracePoint] = []
+
+    expected_without_observer = policy.evaluate(
+        trajectory,
+        run_id="RUN-20260927-002",
+        entity_id="WIN-01",
+        run_end=run_end,
+    )
+
+    # When
+    result = policy.evaluate(
+        trajectory,
+        run_id="RUN-20260927-002",
+        entity_id="WIN-01",
+        run_end=run_end,
+        observer=trace.append,
+    )
+
+    # Then
+    assert result == expected_without_observer
+    assert trace == [
+        StoppingTracePoint(
+            timestamp=trajectory[0].timestamp,
+            score=1.0,
+            persistence_count=1,
+            policy_state="off",
+        ),
+        StoppingTracePoint(
+            timestamp=trajectory[1].timestamp,
+            score=1.0,
+            persistence_count=2,
+            policy_state="on",
+        ),
+        StoppingTracePoint(
+            timestamp=trajectory[2].timestamp,
+            score=0.5,
+            persistence_count=None,
+            policy_state="on",
+        ),
+        StoppingTracePoint(
+            timestamp=trajectory[3].timestamp,
+            score=0.0,
+            persistence_count=None,
+            policy_state="off",
+        ),
+    ]
+
+
+def test_observer_resets_persistence_after_score_falls_below_threshold_on() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.7,
+        threshold_off=0.5,
+        persistence_k=2,
+    )
+    trajectory = [
+        make_point(0, 0.75),
+        make_point(10, 0.60),
+        make_point(20, 0.80),
+        make_point(30, 0.85),
+    ]
+    trace: list[StoppingTracePoint] = []
+
+    # When
+    result = policy.evaluate(
+        trajectory,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_end=make_point(40, 0.0).timestamp,
+        observer=trace.append,
+    )
+
+    # Then
+    assert result.fusion_status == "detected"
+    assert [point.persistence_count for point in trace] == [
+        1,
+        None,
+        1,
+        2,
+    ]
+    assert [point.policy_state for point in trace] == [
+        "off",
+        "off",
+        "off",
+        "on",
+    ]
