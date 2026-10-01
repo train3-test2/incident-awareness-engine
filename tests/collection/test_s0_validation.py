@@ -76,7 +76,7 @@ NORMAL_ACTIONS = (
 
 SCHEMA_VERSIONS = {
     "run_metadata": "v0.2",
-    "event": "v0.2",
+    "event": "v0.3",
     "evidence": "v0.2",
     "fast_hit": "v0.2",
     "detection_result": "v0.2",

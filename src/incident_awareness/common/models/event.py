@@ -11,6 +11,7 @@ type EventSource = StrictStr
 type EventType = StrictStr
 
 _EVENT_TYPES_CONFIG_PATH_ENV = "INCIDENT_AWARENESS_EVENT_TYPES_PATH"
+NORMALIZED_EVENT_SCHEMA_VERSION = "v0.3"
 
 
 @cache
