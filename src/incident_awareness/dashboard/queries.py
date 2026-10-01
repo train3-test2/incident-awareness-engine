@@ -122,6 +122,25 @@ class DashboardQueries:
             )
         return {"items": items, "total": total, "limit": limit, "offset": offset}
 
+    def decisions(self, run_id, limit, offset):
+        exists = self.db.execute("SELECT run_id FROM runs WHERE run_id = %s", (run_id,)).fetchone()
+        if exists is None:
+            raise MissingResource("RUN_NOT_FOUND")
+        total = self.db.execute(
+            "SELECT count(*) AS count FROM decisions WHERE run_id = %s", (run_id,)
+        ).fetchone()["count"]
+        rows = self.db.execute(
+            "SELECT payload, created_at FROM decisions WHERE run_id = %s "
+            "ORDER BY created_at DESC, decision_id DESC LIMIT %s OFFSET %s",
+            (run_id, limit, offset),
+        ).fetchall()
+        return {
+            "items": [decision(row) for row in rows],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
     def detail(self, run_id, decision_id, event_limit, event_offset):
         row = self.db.execute(
             f"SELECT {RUN_COLUMNS} FROM runs WHERE run_id = %s",

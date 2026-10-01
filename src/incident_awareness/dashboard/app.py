@@ -110,6 +110,16 @@ def runs(
     return queries.runs(limit, offset)
 
 
+@app.get("/api/runs/{run_id}/decisions")
+def decision_history(
+    run_id: str,
+    queries: Annotated[DashboardQueries, Depends(get_queries)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+):
+    return queries.decisions(run_id, limit, offset)
+
+
 @app.get("/api/runs/{run_id}")
 def run_detail(
     run_id: str,

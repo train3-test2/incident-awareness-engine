@@ -10,6 +10,7 @@ function table(parent,headers,rows){const wrap=el("div",null,parent);wrap.classN
 async function load(path,render){const request=++generation;$("content").replaceChildren();$("message").className="";$("message").textContent="조회 중…";try{const response=await fetch(path,{headers:{Authorization:`Bearer ${token}`},cache:"no-store"});if(!response.ok)throw new Error(response.status===401?"인증이 만료되었거나 토큰이 올바르지 않습니다.":response.status===404?"요청한 Run 또는 Decision이 없습니다.":"조회 오류가 발생했습니다. 연결 상태를 확인하고 다시 시도해 주세요.");const data=await response.json();if(request!==generation)return;$("message").textContent="";render(data);}catch(error){if(request!==generation)return;$("message").className="error";$("message").textContent=error.message;button("다시 시도",$("content"),()=>load(path,render));}}
 function runs(){load(`/api/runs?limit=20&offset=${listOffset}`,data=>{const root=$("content");el("h1","Runs",root);el("p",`전체 ${data.total}개 · 시각: KST (UTC+9)`,root);if(!data.items.length)el("p","표시할 Run이 없습니다.",root);else table(root,["Run / 시나리오","대상 호스트","시작 시각","Fast / Fusion","최신 Decision"],data.items.map(run=>{const link=el("button",run.run_id);link.onclick=()=>detail(run.run_id);const d=run.latest_decision;const identity=el("div");identity.append(link);el("p",run.scenario_id,identity);return [identity,run.target_host,fmt(run.start_time),d?`${labels[d.fast_status]} / ${labels[d.fusion_status]}`:"결과 없음",d?`${d.decision_id} · ${d.entity_id}`:"결과 없음"];}));const p=el("div",null,root);p.className="pagination";button("이전",p,()=>{listOffset-=20;runs();},listOffset===0);button("다음",p,()=>{listOffset+=20;runs();},listOffset+20>=data.total);});}
 function detail(runId,decisionId=null,offset=0){const params=new URLSearchParams({event_limit:"50",event_offset:String(offset)});if(decisionId)params.set("decision_id",decisionId);load(`/api/runs/${encodeURIComponent(runId)}?${params}`,data=>{const root=$("content"),d=data.selected_decision;el("h1",runId,root);el("p","모든 시각은 KST (UTC+9)입니다. 시스템 판단 시각은 담당자의 사고 인지 시각과 다릅니다.",root);fields(root,[["시나리오",data.run.scenario_id],["Run 유형 (실험 분류)",data.run.run_type],["대상 호스트",data.run.target_host],["시작",fmt(data.run.start_time)],["종료",fmt(data.run.end_time)]]);
+button("Decision 이력",root,()=>history(runId,d?.decision_id??decisionId));
 const form=el("form",null,root),label=el("label","Decision ID ",form),input=el("input",null,label);input.value=decisionId??"";input.placeholder="비우면 최신 Decision";button("조회",form,()=>{});form.onsubmit=e=>{e.preventDefault();detail(runId,input.value.trim()||null);};
 const summary=el("article",null,root);el("h2","선택한 판단 결과",summary);if(!d)el("p","결과 없음",summary);else fields(summary,[["Decision / Entity",`${d.decision_id} / ${d.entity_id}`],["Fast",labels[d.fast_status]],["Fast 탐지 시각",fmt(d.detector_time)],["Fusion",labels[d.fusion_status]],["Fusion 탐지 시각",fmt(d.fusion_time)],["시스템 판단 시각",fmt(d.t_e)],["탐지 경로",labels[d.decision_path]??"—"],["최초 탐지 경로",labels[d.winning_path]??"—"],["설정 버전",d.config_version],["판단 근거",d.decision_reason]]);
 const current=el("article",null,root);el("h2","현재 Entity 결과",current);el("p","선택한 Decision과 동일 실행의 결과인지 확인되지 않았습니다. 과거 판단의 근거로 사용하지 않습니다.",current);if(!data.current_entity_results)el("p","결과 없음",current);else for(const name of ["fast","fusion"]){const item=data.current_entity_results[name];const value=item.value;fields(current,[[name==="fast"?"Fast":"Fusion",item.availability==="missing"?"결과 없음":labels[value.detector_status??value.fusion_status]],["시각",fmt(value?.detector_time??value?.fusion_time)]]);}
@@ -40,3 +41,24 @@ function overview() {
   });
 }
 $("overview").onclick = overview;
+
+function history(runId, selectedId = null, offset = 0) {
+  load(`/api/runs/${encodeURIComponent(runId)}/decisions?limit=20&offset=${offset}`, data => {
+    const root = $("content");
+    el("h1", "Decision 이력", root);
+    el("p", `${runId} · 전체 ${data.total}건 · 저장 시각 최신순 · KST (UTC+9)`, root);
+    el("p", "여러 Entity의 결과를 포함합니다. 대체 관계는 저장된 supersedes_decision_id만 표시합니다.", root);
+    button("상세로 돌아가기", root, () => detail(runId, selectedId));
+    button("최신 Decision 보기", root, () => detail(runId));
+    if (!data.items.length) el("p", "표시할 Decision 이력이 없습니다.", root);
+    else table(root, ["Decision", "Entity", "저장 시각", "Fast / Fusion", "시스템 판단 시각", "대체 대상 ID"], data.items.map(item => {
+      const select = el("button", item.decision_id === selectedId ? `${item.decision_id} (선택됨)` : item.decision_id);
+      select.onclick = () => detail(runId, item.decision_id);
+      return [select, item.entity_id, fmt(item.created_at), `${labels[item.fast_status]} / ${labels[item.fusion_status]}`, fmt(item.t_e), item.supersedes_decision_id ?? "—"];
+    }));
+    const pager = el("div", null, root);
+    pager.className = "pagination";
+    button("이전", pager, () => history(runId, selectedId, offset - 20), offset === 0);
+    button("다음", pager, () => history(runId, selectedId, offset + 20), offset + 20 >= data.total);
+  });
+}
