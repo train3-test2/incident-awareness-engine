@@ -1,11 +1,13 @@
 """R1 Pilot process-lineage checks over raw Sysmon JSONL.
 
-`docs/scenarios/r1.md` section 8-2 verifies the R1-V02 Pilot on the raw Sysmon
-JSONL rather than on NormalizedEvent, because `ProcessInfo` carries no
-ProcessGuid and the normalized `network_connection` therefore cannot be tied
-back to the process that opened it (r1.md section 5-3). The raw records still
-carry `ProcessGuid` and `ParentProcessGuid`, so the lineage and the
-EID 1 -> EID 3 link can be reconstructed here.
+`docs/scenarios/r1.md` section 8-2 runs the R1-V02 telemetry Pilot on the raw
+Sysmon JSONL. This module checks the source-native Sysmon lineage and the
+EID 1 -> EID 3 link directly on those records, through the `ProcessGuid` and
+`ParentProcessGuid` each one carries.
+
+It is a check of the collection step and is separate from the NormalizedEvent
+Full path of r1.md section 8-3. Whether the normalized contract and the Evidence
+built on it hold is verified on that path and is outside this module.
 
 This module answers only two questions:
 
@@ -380,10 +382,16 @@ def _connection_sort_key(connection: ConnectionRecord) -> tuple[object, ...]:
     """Order connections by what the event itself carries, not by file position.
 
     RecordId comes first. It belongs to the event, so shuffling the JSONL lines
-    does not change the order. A record without one sorts after the ones that
-    have it, and a numeric RecordId sorts numerically so 9 comes before 10.
-    RecordIds that are equal as numbers but written differently are ordered by
-    their text.
+    does not change the order. A RecordId made only of ASCII decimal digits is
+    numeric and sorts by magnitude, so 9 comes before 10. The magnitude is
+    compared through the digits themselves, not through `int()`, so no digit
+    string can raise, however long it is. RecordIds that are equal as numbers
+    but written differently are ordered by their text.
+
+    Every other RecordId is ordered as text after the numeric ones. That
+    includes digit characters outside ASCII: `str.isdigit()` accepts some that
+    `int()` refuses, so they are never treated as numbers. A record without a
+    RecordId sorts last.
 
     Records that share a RecordId, or have none, are then ordered by the stored
     fields of the connection: Image, destination, protocol and source endpoint.
@@ -399,11 +407,12 @@ def _connection_sort_key(connection: ConnectionRecord) -> tuple[object, ...]:
     """
     record_id = connection.record_id
     if record_id is None:
-        ranked: tuple[int, int, str] = (2, 0, "")
-    elif record_id.isdigit():
-        ranked = (0, int(record_id), record_id)
+        ranked: tuple[int, int, str, str] = (2, 0, "", "")
+    elif record_id.isascii() and record_id.isdigit():
+        magnitude = record_id.lstrip("0")
+        ranked = (0, len(magnitude), magnitude, record_id)
     else:
-        ranked = (1, 0, record_id)
+        ranked = (1, 0, record_id, "")
 
     return (
         ranked,

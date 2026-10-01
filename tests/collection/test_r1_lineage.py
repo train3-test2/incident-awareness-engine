@@ -515,6 +515,31 @@ def test_record_ids_equal_as_numbers_are_ordered_by_their_text(tmp_path: Path) -
         assert [item.record_id for item in linked] == ["007", "7"], name
 
 
+def test_only_ascii_decimal_record_ids_are_numeric_and_none_raises(tmp_path: Path) -> None:
+    # "\u00b2" is a superscript two and "\u2460" a circled one: str.isdigit() is
+    # true for both and int() refuses both. "\u0663" is an Arabic-Indic three,
+    # which int() would read. None of them is ASCII, so all three are text here.
+    # The 5000 digit RecordId is longer than int() accepts by default. Numeric
+    # RecordIds are never converted, so it is ordered by magnitude like the rest
+    # and nothing in this capture raises.
+    anchor = ProcessKey(host=HOST, process_guid=NORMAL_TOOL_GUID)
+    huge = "9" * 5000
+    record_ids = [10, "\u2460", huge, "\u00b2", 9, "\u0663", "007", 7]
+    events = normal_candidate_events()[:3]
+    for record_id in record_ids:
+        event = connection_event(record_id=1, guid=NORMAL_TOOL_GUID)
+        event["RecordId"] = record_id
+        events.append(event)
+    expected = ["007", "7", "9", "10", huge, "\u00b2", "\u0663", "\u2460"]
+
+    for name, ordered in {"forward": events, "reverse": list(reversed(events))}.items():
+        path = write_jsonl(tmp_path / f"{name}.jsonl", ordered)
+        _, _, connections = load_tree(path)
+        linked = select_connections(connections, anchor)
+
+        assert [item.record_id for item in linked] == expected, name
+
+
 def test_record_order_does_not_change_the_result(tmp_path: Path) -> None:
     # Both captures use one file name in different directories: a report names
     # the file it read, so only the record order may differ between the two.
