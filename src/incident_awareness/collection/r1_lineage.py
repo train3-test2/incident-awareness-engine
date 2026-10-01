@@ -18,6 +18,16 @@ result whatever the run is called. Deciding whether a lineage means the run was
 normal or an attack is a Ground Truth question (r1.md section 2), not a
 telemetry one.
 
+These checks are a subset of the Pilot in r1.md section 8-2, not the Pilot
+verdict. For one capture and one anchor process they cover the parent chain the
+caller expects, by ProcessGuid (S-3), an EID 3 carrying the anchor's host and
+ProcessGuid (S-4, S-8), and the destination when the caller gives one (S-5,
+S-6). They do not compare the two runs of a pair (S-1, and the lineages
+differing in S-3), do not find the designated tool or compare Images (S-2: the
+caller supplies the anchor), and do not check the t+5 or t+8 window (S-7).
+`R1LineageReport.ok` therefore means the requested lineage and link checks held
+for this capture. It never means the Pilot passed.
+
 Time ordering is deliberately not checked. A raw record carries two candidate
 times, `TimeCreated` and `EventData.UtcTime`, and the repository has no settled
 contract saying which one orders raw lineage records. Both are kept on the
@@ -49,6 +59,10 @@ class R1LineageReport:
     `errors` is the verdict, the same way `S0ValidationReport` uses it: an empty
     list means every requested check held. `checks` records what was actually
     confirmed so a passing run is not a bare boolean.
+
+    The verdict covers this module's lineage and link checks only. The Pilot in
+    r1.md section 8-2 needs more than these (see the module docstring), so `ok`
+    must not be reported as a Pilot pass.
     """
 
     errors: list[str] = field(default_factory=list)
@@ -93,10 +107,17 @@ class ProcessRecord:
 
 @dataclass(frozen=True, slots=True)
 class ConnectionRecord:
-    """One Sysmon EID 3 reduced to the fields the EID 1 link needs."""
+    """One Sysmon EID 3 reduced to the fields the EID 1 link needs.
+
+    The source address and port are not part of that link. They are kept so
+    several connections of one process to one destination can still be told
+    apart when a record has no RecordId (see `_connection_sort_key`).
+    """
 
     key: ProcessKey
     image: str | None
+    source_ip: str | None
+    source_port: str | None
     destination_ip: str | None
     destination_port: str | None
     protocol: str | None
@@ -252,6 +273,8 @@ def read_r1_lineage_records(
                 ConnectionRecord(
                     key=key,
                     image=_string(event_data, "Image"),
+                    source_ip=_string(event_data, "SourceIp"),
+                    source_port=_scalar_string(event_data, "SourcePort"),
                     destination_ip=_string(event_data, "DestinationIp"),
                     destination_port=_scalar_string(event_data, "DestinationPort"),
                     protocol=_string(event_data, "Protocol"),
@@ -352,11 +375,20 @@ def resolve_lineage(
 
 
 def _connection_sort_key(connection: ConnectionRecord) -> tuple[object, ...]:
-    """Order connections by their own Sysmon RecordId, not by file position.
+    """Order connections by what the event itself carries, not by file position.
 
-    RecordId belongs to the event, so shuffling the JSONL lines does not change
-    the order. A record without one sorts after the ones that have it, and a
-    numeric RecordId sorts numerically so 9 comes before 10.
+    RecordId comes first. It belongs to the event, so shuffling the JSONL lines
+    does not change the order. A record without one sorts after the ones that
+    have it, and a numeric RecordId sorts numerically so 9 comes before 10.
+
+    The rest of the key is the connection's own destination, protocol and source
+    endpoint. Records that share a RecordId, or have none, therefore still come
+    back in one order as long as they are different connections.
+
+    Neither time field is in the key. Which of the two orders raw records is not
+    settled (see the module docstring), so none is picked here. Records that tie
+    on the whole key keep their file order: without a RecordId only a time could
+    separate them.
     """
     record_id = connection.record_id
     if record_id is None:
@@ -371,6 +403,8 @@ def _connection_sort_key(connection: ConnectionRecord) -> tuple[object, ...]:
         connection.destination_ip or "",
         connection.destination_port or "",
         connection.protocol or "",
+        connection.source_ip or "",
+        connection.source_port or "",
     )
 
 
@@ -381,7 +415,9 @@ def select_connections(
     """Return the EID 3 records opened by exactly this process on this host.
 
     A record whose host differs, or whose ProcessGuid differs, is not linked.
-    One process may hold several connections; they come back in a fixed order.
+    One process may hold several connections; they come back in the order of
+    `_connection_sort_key`, which the order of the lines in the file changes
+    only for records that key cannot tell apart.
     """
     matched = [connection for connection in connections if connection.key == key]
     return tuple(sorted(matched, key=_connection_sort_key))
@@ -406,8 +442,11 @@ def verify_r1_lineage(
     caller states the links R1 requires (r1.md section 8-1 S-3). Leaving it out
     reports the chain as a fact instead.
 
-    Passing a destination requires at least one linked EID 3 to match it
-    (S-5, S-6). Leaving both out reports the linked connections as a fact.
+    At least one EID 3 must carry the anchor host and ProcessGuid (S-4), whether
+    or not a destination is given. A lineage with no linked connection is not the
+    EID 1 -> EID 3 link, so it fails instead of being reported as a count of 0.
+    Passing a destination additionally requires one of the linked records to
+    match it (S-5, S-6).
     """
     report = R1LineageReport()
 
@@ -511,10 +550,16 @@ def _check_connections(
     expected_destination_port: str | None,
 ) -> None:
     linked = select_connections(connections, anchor)
-    report.passed(
-        f"{len(linked)} EID {SYSMON_NETWORK_CONNECTION_EVENT_ID} record(s) carry the anchor "
-        "host and ProcessGuid"
-    )
+    if linked:
+        report.passed(
+            f"{len(linked)} EID {SYSMON_NETWORK_CONNECTION_EVENT_ID} record(s) carry the anchor "
+            "host and ProcessGuid"
+        )
+    else:
+        report.fail(
+            f"no EID {SYSMON_NETWORK_CONNECTION_EVENT_ID} record carries the anchor host and "
+            f"ProcessGuid: host={anchor.host} ProcessGuid={anchor.process_guid}"
+        )
 
     if expected_destination_ip is None and expected_destination_port is None:
         return

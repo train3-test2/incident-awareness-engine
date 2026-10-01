@@ -39,6 +39,7 @@ TOOL_IMAGE = r"C:\synthetic\admin_tool.exe"
 
 DESTINATION_IP = "10.0.0.9"
 DESTINATION_PORT = "443"
+SOURCE_IP = "10.0.0.5"
 
 
 def process_event(
@@ -69,27 +70,42 @@ def process_event(
 
 def connection_event(
     *,
-    record_id: int,
+    record_id: int | None,
     guid: str,
     host: str = HOST,
     destination_ip: str = DESTINATION_IP,
     destination_port: str = DESTINATION_PORT,
+    source_port: str | None = None,
 ) -> dict:
-    """One synthetic Sysmon EID 3 shaped like the collected JSONL."""
-    return {
+    """One synthetic Sysmon EID 3 shaped like the collected JSONL.
+
+    `record_id=None` leaves RecordId out and `source_port` adds the source
+    endpoint. Both exist for the ordering test; without them the event keeps the
+    shape every other test uses.
+    """
+    event_data: dict[str, object] = {
+        "ProcessGuid": guid,
+        "Image": TOOL_IMAGE,
+        "UtcTime": "2026-09-28 10:02:00.000",
+        "Protocol": "tcp",
+        "DestinationIp": destination_ip,
+        "DestinationPort": destination_port,
+    }
+    if source_port is not None:
+        event_data["SourceIp"] = SOURCE_IP
+        event_data["SourcePort"] = source_port
+
+    event: dict[str, object] = {
         "RecordId": record_id,
         "EventId": 3,
         "TimeCreated": "2026-09-28T10:02:00.000Z",
         "Computer": host,
-        "EventData": {
-            "ProcessGuid": guid,
-            "Image": TOOL_IMAGE,
-            "UtcTime": "2026-09-28 10:02:00.000",
-            "Protocol": "tcp",
-            "DestinationIp": destination_ip,
-            "DestinationPort": destination_port,
-        },
+        "EventData": event_data,
     }
+    if record_id is None:
+        del event["RecordId"]
+
+    return event
 
 
 def write_jsonl(path: Path, events: list[dict]) -> Path:
@@ -299,10 +315,13 @@ def test_required_parent_link_missing_is_detected(tmp_path: Path) -> None:
 
 
 def test_parent_outside_the_capture_is_not_a_failure_on_its_own(tmp_path: Path) -> None:
+    # The linked connection keeps S-4 satisfied, so the truncated parent is the
+    # only thing this capture could be failed for.
     events = [
         process_event(
             record_id=1, guid=NORMAL_TOOL_GUID, parent_guid=UNSEEN_GUID, image=TOOL_IMAGE
         ),
+        connection_event(record_id=2, guid=NORMAL_TOOL_GUID),
     ]
     path = write_jsonl(tmp_path / "truncated.jsonl", events)
 
@@ -349,6 +368,46 @@ def test_connection_with_another_process_guid_is_not_linked(tmp_path: Path) -> N
     assert not report.ok
 
 
+def test_anchor_without_a_linked_connection_fails_without_a_destination(tmp_path: Path) -> None:
+    # r1.md section 8-1 S-4 does not depend on the caller pinning a destination.
+    anchor = ProcessKey(host=HOST, process_guid=NORMAL_TOOL_GUID)
+    lineage_only = normal_candidate_events()[:3]
+    cases = {
+        "no-eid3": lineage_only,
+        "eid3-of-the-parent": [*lineage_only, connection_event(record_id=4, guid=WRAPPER_GUID)],
+        "eid3-on-another-host": [
+            *lineage_only,
+            connection_event(record_id=4, guid=NORMAL_TOOL_GUID, host=OTHER_HOST),
+        ],
+    }
+
+    for name, events in cases.items():
+        path = write_jsonl(tmp_path / f"{name}.jsonl", events)
+        report = verify_r1_lineage(
+            path,
+            anchor=anchor,
+            expected_parent_process_guids=[WRAPPER_GUID, SESSION_GUID],
+        )
+
+        assert not report.ok, name
+        assert len(report.errors) == 1, name
+        assert "no EID 3 record carries the anchor" in report.errors[0], name
+        assert not any("record(s) carry the anchor" in check for check in report.checks), name
+
+
+def test_anchor_with_a_linked_connection_passes_without_a_destination(tmp_path: Path) -> None:
+    path = write_jsonl(tmp_path / "linked.jsonl", normal_candidate_events())
+
+    report = verify_r1_lineage(
+        path,
+        anchor=ProcessKey(host=HOST, process_guid=NORMAL_TOOL_GUID),
+        expected_parent_process_guids=[WRAPPER_GUID, SESSION_GUID],
+    )
+
+    assert report.ok, report.errors
+    assert any("1 EID 3 record(s) carry the anchor" in check for check in report.checks)
+
+
 def test_several_connections_from_one_process_keep_a_fixed_order(tmp_path: Path) -> None:
     events = normal_candidate_events()[:3]
     events.extend(
@@ -370,6 +429,29 @@ def test_several_connections_from_one_process_keep_a_fixed_order(tmp_path: Path)
         shuffled_connections, ProcessKey(host=HOST, process_guid=NORMAL_TOOL_GUID)
     )
     assert [connection.record_id for connection in shuffled] == ["9", "10", "12"]
+
+
+def test_connections_without_a_record_id_do_not_follow_the_file_order(tmp_path: Path) -> None:
+    # Same destination, port and protocol, and no RecordId: the source endpoint
+    # is what still separates the records, not their position in the file.
+    anchor = ProcessKey(host=HOST, process_guid=NORMAL_TOOL_GUID)
+    events = normal_candidate_events()[:3]
+    events.extend(
+        [
+            connection_event(record_id=None, guid=NORMAL_TOOL_GUID, source_port="50003"),
+            connection_event(record_id=7, guid=NORMAL_TOOL_GUID, source_port="50009"),
+            connection_event(record_id=None, guid=NORMAL_TOOL_GUID, source_port="50001"),
+            connection_event(record_id=None, guid=NORMAL_TOOL_GUID, source_port="50002"),
+        ]
+    )
+    expected = [("7", "50009"), (None, "50001"), (None, "50002"), (None, "50003")]
+
+    for name, ordered in {"forward": events, "reverse": list(reversed(events))}.items():
+        path = write_jsonl(tmp_path / f"{name}.jsonl", ordered)
+        _, _, connections = load_tree(path)
+        linked = select_connections(connections, anchor)
+
+        assert [(item.record_id, item.source_port) for item in linked] == expected, name
 
 
 def test_record_order_does_not_change_the_result(tmp_path: Path) -> None:
