@@ -31,8 +31,10 @@ for this capture. It never means the Pilot passed.
 Time ordering is deliberately not checked. A raw record carries two candidate
 times, `TimeCreated` and `EventData.UtcTime`, and the repository has no settled
 contract saying which one orders raw lineage records. Both are kept on the
-extracted records so the check can be added once that is decided, but no
-comparison is made.
+extracted records so the check can be added once that is decided. Until then
+neither is read as a time. Their raw strings only close `_connection_sort_key`
+as opaque text, so the order of otherwise identical connections does not depend
+on the order of the lines in the file.
 """
 
 from collections.abc import Iterable, Sequence
@@ -380,31 +382,39 @@ def _connection_sort_key(connection: ConnectionRecord) -> tuple[object, ...]:
     RecordId comes first. It belongs to the event, so shuffling the JSONL lines
     does not change the order. A record without one sorts after the ones that
     have it, and a numeric RecordId sorts numerically so 9 comes before 10.
+    RecordIds that are equal as numbers but written differently are ordered by
+    their text.
 
-    The rest of the key is the connection's own destination, protocol and source
-    endpoint. Records that share a RecordId, or have none, therefore still come
-    back in one order as long as they are different connections.
+    Records that share a RecordId, or have none, are then ordered by the stored
+    fields of the connection: Image, destination, protocol and source endpoint.
 
-    Neither time field is in the key. Which of the two orders raw records is not
-    settled (see the module docstring), so none is picked here. Records that tie
-    on the whole key keep their file order: without a RecordId only a time could
-    separate them.
+    The two raw time strings close the key. Here they are opaque text, compared
+    only so the output does not depend on the line order. Neither is chosen as
+    the canonical timestamp, nothing is parsed, and no difference or
+    before/after relation between records is checked (see the module docstring).
+
+    `record_no` is left out because it is the position in the file. Records that
+    are equal on every field of the key are the same connection as far as this
+    module can tell, so nothing separates them further.
     """
     record_id = connection.record_id
     if record_id is None:
         ranked: tuple[int, int, str] = (2, 0, "")
     elif record_id.isdigit():
-        ranked = (0, int(record_id), "")
+        ranked = (0, int(record_id), record_id)
     else:
         ranked = (1, 0, record_id)
 
     return (
         ranked,
+        connection.image or "",
         connection.destination_ip or "",
         connection.destination_port or "",
         connection.protocol or "",
         connection.source_ip or "",
         connection.source_port or "",
+        connection.time_created or "",
+        connection.event_utc_time or "",
     )
 
 
@@ -416,8 +426,8 @@ def select_connections(
 
     A record whose host differs, or whose ProcessGuid differs, is not linked.
     One process may hold several connections; they come back in the order of
-    `_connection_sort_key`, which the order of the lines in the file changes
-    only for records that key cannot tell apart.
+    `_connection_sort_key`, which does not depend on the order of the lines in
+    the file. Records that key cannot tell apart differ only in `record_no`.
     """
     matched = [connection for connection in connections if connection.key == key]
     return tuple(sorted(matched, key=_connection_sort_key))

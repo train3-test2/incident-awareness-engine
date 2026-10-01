@@ -10,6 +10,7 @@ show that two equally deep chains still come back as different recorded facts.
 """
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from incident_awareness.collection.r1_lineage import (
@@ -76,17 +77,20 @@ def connection_event(
     destination_ip: str = DESTINATION_IP,
     destination_port: str = DESTINATION_PORT,
     source_port: str | None = None,
+    time_created: str = "2026-09-28T10:02:00.000Z",
+    utc_time: str = "2026-09-28 10:02:00.000",
 ) -> dict:
     """One synthetic Sysmon EID 3 shaped like the collected JSONL.
 
-    `record_id=None` leaves RecordId out and `source_port` adds the source
-    endpoint. Both exist for the ordering test; without them the event keeps the
-    shape every other test uses.
+    `record_id=None` leaves RecordId out, `source_port` adds the source endpoint
+    and the two time arguments replace the default strings. They exist for the
+    ordering tests; without them the event keeps the shape every other test
+    uses.
     """
     event_data: dict[str, object] = {
         "ProcessGuid": guid,
         "Image": TOOL_IMAGE,
-        "UtcTime": "2026-09-28 10:02:00.000",
+        "UtcTime": utc_time,
         "Protocol": "tcp",
         "DestinationIp": destination_ip,
         "DestinationPort": destination_port,
@@ -98,7 +102,7 @@ def connection_event(
     event: dict[str, object] = {
         "RecordId": record_id,
         "EventId": 3,
-        "TimeCreated": "2026-09-28T10:02:00.000Z",
+        "TimeCreated": time_created,
         "Computer": host,
         "EventData": event_data,
     }
@@ -452,6 +456,63 @@ def test_connections_without_a_record_id_do_not_follow_the_file_order(tmp_path: 
         linked = select_connections(connections, anchor)
 
         assert [(item.record_id, item.source_port) for item in linked] == expected, name
+
+
+def test_time_strings_fix_the_order_of_otherwise_equal_connections(tmp_path: Path) -> None:
+    # No RecordId, and the same Image, destination, protocol and source endpoint:
+    # only the two raw time strings are left to tell the records apart. They are
+    # compared as text to keep the output stable, so this test compares the
+    # forward and the reversed capture with each other. It does not say which
+    # time is canonical, which record came first or whether one is in a window.
+    anchor = ProcessKey(host=HOST, process_guid=NORMAL_TOOL_GUID)
+    same = {"record_id": None, "guid": NORMAL_TOOL_GUID, "source_port": "50000"}
+    events = normal_candidate_events()[:3]
+    events.extend(
+        [
+            connection_event(**same, time_created="2026-09-28T10:02:00.300Z"),
+            connection_event(**same, utc_time="2026-09-28 10:02:00.200"),
+            connection_event(**same, time_created="2026-09-28T10:02:00.100Z"),
+            connection_event(**same, utc_time="2026-09-28 10:02:00.400"),
+            # Not a timestamp at all: the strings are never parsed.
+            connection_event(**same, utc_time="not a timestamp"),
+            # Equal on every stored field: the same connection twice.
+            connection_event(**same),
+            connection_event(**same),
+        ]
+    )
+
+    semantic_orders = []
+    for name, ordered in {"forward": events, "reverse": list(reversed(events))}.items():
+        path = write_jsonl(tmp_path / f"{name}.jsonl", ordered)
+        _, _, connections = load_tree(path)
+        linked = select_connections(connections, anchor)
+        # record_no is the position in the file, which the reversal always changes.
+        semantic_orders.append([replace(item, record_no=0) for item in linked])
+
+    forward, reverse = semantic_orders
+    assert len(forward) == 7
+    assert len(set(forward)) == 6
+    assert forward == reverse
+
+
+def test_record_ids_equal_as_numbers_are_ordered_by_their_text(tmp_path: Path) -> None:
+    # "7" and "007" rank as the same number. Their own text separates them, so
+    # two otherwise equal records do not fall back to the file order either.
+    anchor = ProcessKey(host=HOST, process_guid=NORMAL_TOOL_GUID)
+    padded = connection_event(record_id=7, guid=NORMAL_TOOL_GUID)
+    padded["RecordId"] = "007"
+    events = [
+        *normal_candidate_events()[:3],
+        connection_event(record_id=7, guid=NORMAL_TOOL_GUID),
+        padded,
+    ]
+
+    for name, ordered in {"forward": events, "reverse": list(reversed(events))}.items():
+        path = write_jsonl(tmp_path / f"{name}.jsonl", ordered)
+        _, _, connections = load_tree(path)
+        linked = select_connections(connections, anchor)
+
+        assert [item.record_id for item in linked] == ["007", "7"], name
 
 
 def test_record_order_does_not_change_the_result(tmp_path: Path) -> None:
