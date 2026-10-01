@@ -16,7 +16,6 @@ from incident_awareness.common.models.result import (
 from incident_awareness.storage.repositories.result_repository import (
     _INSERT_DECISION,
     _SELECT_CURRENT_DECISION_HEADS,
-    _SELECT_DECISION_IN_SCOPE,
     _SELECT_DECISION_PAYLOAD,
     _SELECT_DETECTION_RESULT_PAYLOAD,
     _SELECT_FUSION_RESULT_PAYLOAD,
@@ -189,7 +188,7 @@ def test_decision_repository_inserts_and_rebuilds_immutable_result(
 
 def test_decision_repository_returns_none_when_current_head_does_not_exist() -> None:
     # Given
-    connection = FakeConnection(rows=[])
+    connection = FakeConnection(rows=[(False, None)])
     repository = DecisionRepository(connection)
 
     # When
@@ -201,17 +200,13 @@ def test_decision_repository_returns_none_when_current_head_does_not_exist() -> 
         (
             _SELECT_CURRENT_DECISION_HEADS,
             ("RUN-20260912-001", "WIN-01"),
-        ),
-        (
-            _SELECT_DECISION_IN_SCOPE,
-            ("RUN-20260912-001", "WIN-01"),
-        ),
+        )
     ]
 
 
 def test_decision_repository_rejects_missing_current_head_when_scope_has_decision() -> None:
     # Given
-    connection = FakeConnection(row=(1,), rows=[])
+    connection = FakeConnection(rows=[(True, None)])
     repository = DecisionRepository(connection)
 
     # When
@@ -224,11 +219,7 @@ def test_decision_repository_rejects_missing_current_head_when_scope_has_decisio
         (
             _SELECT_CURRENT_DECISION_HEADS,
             ("RUN-20260912-001", "WIN-01"),
-        ),
-        (
-            _SELECT_DECISION_IN_SCOPE,
-            ("RUN-20260912-001", "WIN-01"),
-        ),
+        )
     ]
 
 
@@ -242,7 +233,7 @@ def test_decision_repository_rebuilds_single_current_head(
             "supersedes_decision_id": "DEC-001",
         }
     )
-    connection = FakeConnection(rows=[(expected_head.model_dump(mode="json"),)])
+    connection = FakeConnection(rows=[(True, expected_head.model_dump(mode="json"))])
     repository = DecisionRepository(connection)
 
     # When
@@ -253,6 +244,12 @@ def test_decision_repository_rebuilds_single_current_head(
 
     # Then
     assert current_head == expected_head
+    assert connection.statements == [
+        (
+            _SELECT_CURRENT_DECISION_HEADS,
+            (expected_head.run_id, expected_head.entity_id),
+        )
+    ]
 
 
 def test_decision_repository_rejects_multiple_current_heads(
@@ -263,8 +260,8 @@ def test_decision_repository_rejects_multiple_current_heads(
     second_head = decision_result.model_copy(update={"decision_id": "DEC-003"})
     connection = FakeConnection(
         rows=[
-            (first_head.model_dump(mode="json"),),
-            (second_head.model_dump(mode="json"),),
+            (True, first_head.model_dump(mode="json")),
+            (True, second_head.model_dump(mode="json")),
         ]
     )
     repository = DecisionRepository(connection)
@@ -275,6 +272,12 @@ def test_decision_repository_rejects_multiple_current_heads(
 
     # Then
     assert "multiple current Decision heads" in str(exc_info.value)
+    assert connection.statements == [
+        (
+            _SELECT_CURRENT_DECISION_HEADS,
+            (decision_result.run_id, decision_result.entity_id),
+        )
+    ]
 
 
 @pytest.mark.parametrize(

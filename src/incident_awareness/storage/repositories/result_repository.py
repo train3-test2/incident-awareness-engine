@@ -82,25 +82,26 @@ _SELECT_DECISION_PAYLOAD = "SELECT payload FROM decisions WHERE decision_id = %s
 
 
 _SELECT_CURRENT_DECISION_HEADS = """
-SELECT candidate.payload
-FROM decisions AS candidate
-WHERE candidate.run_id = %s
-  AND candidate.entity_id = %s
-  AND NOT EXISTS (
-      SELECT 1
-      FROM decisions AS successor
-      WHERE successor.run_id = candidate.run_id
-        AND successor.entity_id = candidate.entity_id
-        AND successor.payload ->> 'supersedes_decision_id' = candidate.decision_id
-  )
-LIMIT 2
-"""
-
-_SELECT_DECISION_IN_SCOPE = """
-SELECT 1
-FROM decisions
-WHERE run_id = %s AND entity_id = %s
-LIMIT 1
+WITH scope_decisions AS (
+    SELECT decision_id, payload
+    FROM decisions
+    WHERE run_id = %s AND entity_id = %s
+),
+current_heads AS (
+    SELECT candidate.payload
+    FROM scope_decisions AS candidate
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM scope_decisions AS successor
+        WHERE successor.payload ->> 'supersedes_decision_id' = candidate.decision_id
+    )
+    LIMIT 2
+)
+SELECT
+    EXISTS (SELECT 1 FROM scope_decisions) AS scope_has_decisions,
+    current_heads.payload
+FROM (SELECT 1) AS singleton
+LEFT JOIN current_heads ON TRUE
 """
 
 
@@ -206,21 +207,44 @@ class DecisionRepository:
             (run_id, entity_id),
         ).fetchall()
         if not rows:
-            row = self._connection.execute(
-                _SELECT_DECISION_IN_SCOPE,
-                (run_id, entity_id),
-            ).fetchone()
-            if row is None:
+            raise RuntimeError("current Decision head query returned no rows")
+
+        scope_has_decisions = _scope_has_decisions_from_head_row(rows[0])
+        head_payloads = [
+            payload for row in rows if (payload := _payload_from_head_row(row)) is not None
+        ]
+        if not head_payloads:
+            if not scope_has_decisions:
                 return None
             raise DecisionIntegrityError(
                 f"no current Decision head for run_id={run_id!r}, entity_id={entity_id!r}"
             )
-        if len(rows) > 1:
+        if len(head_payloads) > 1:
             raise DecisionIntegrityError(
                 f"multiple current Decision heads for run_id={run_id!r}, entity_id={entity_id!r}"
             )
 
-        return DecisionResult.model_validate(_payload_from_row(rows[0], table_name="decisions"))
+        return DecisionResult.model_validate(head_payloads[0])
+
+
+def _scope_has_decisions_from_head_row(
+    row: tuple[object, ...] | Mapping[str, object],
+) -> bool:
+    value = row[0] if isinstance(row, tuple) else row["scope_has_decisions"]
+    if not isinstance(value, bool):
+        raise TypeError("current Decision head query must return a boolean scope flag")
+    return value
+
+
+def _payload_from_head_row(
+    row: tuple[object, ...] | Mapping[str, object],
+) -> Mapping[str, object] | None:
+    payload = row[1] if isinstance(row, tuple) else row["payload"]
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise TypeError("decisions.payload must be a JSON object")
+    return payload
 
 
 def _payload_from_row(

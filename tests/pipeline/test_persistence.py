@@ -12,7 +12,9 @@ from incident_awareness.integration.fast_hit_handoff import FastDetectionAdapter
 from incident_awareness.normalization.sysmon import SysmonNormalizationContext
 from incident_awareness.pipeline.event_evidence import NormalizedEvidenceArtifacts
 from incident_awareness.pipeline.persistence import (
+    _ACQUIRE_DECISION_ID_LOCK,
     _ACQUIRE_DECISION_SCOPE_LOCK,
+    _SHOW_TRANSACTION_ISOLATION,
     DecisionConflictError,
     persist_s0_results,
     resolve_expected_supersedes_decision_id,
@@ -20,7 +22,6 @@ from incident_awareness.pipeline.persistence import (
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
 from incident_awareness.storage.repositories.result_repository import (
     _SELECT_CURRENT_DECISION_HEADS,
-    _SELECT_DECISION_IN_SCOPE,
     _SELECT_DECISION_PAYLOAD,
     DecisionIntegrityError,
 )
@@ -55,6 +56,8 @@ class _Connection:
         existing_decision: DecisionResult | None = None,
         current_heads: tuple[DecisionResult, ...] = (),
         decision_in_scope: bool | None = None,
+        autocommit: bool = False,
+        transaction_isolation: str = "read committed",
     ) -> None:
         self.statements: list[tuple[str, tuple[object, ...]]] = []
         self.commits = 0
@@ -64,12 +67,16 @@ class _Connection:
         self._existing_decision = existing_decision
         self._current_heads = current_heads
         self._decision_in_scope = decision_in_scope
+        self.autocommit = autocommit
+        self._transaction_isolation = transaction_isolation
 
     def execute(self, query: str, params: tuple[object, ...]) -> _Cursor:
         self.statements.append((query, params))
         if self._fail_on_statement == len(self.statements):
             raise RuntimeError("database write failed")
 
+        if query == _SHOW_TRANSACTION_ISOLATION:
+            return _Cursor(row=(self._transaction_isolation,))
         if query == _SELECT_DECISION_PAYLOAD:
             if (
                 self._existing_decision is not None
@@ -78,14 +85,15 @@ class _Connection:
                 return _Cursor(row=(self._existing_decision.model_dump(mode="json"),))
             return _Cursor()
         if query == _SELECT_CURRENT_DECISION_HEADS:
-            return _Cursor(rows=[(head.model_dump(mode="json"),) for head in self._current_heads])
-        if query == _SELECT_DECISION_IN_SCOPE:
             decision_in_scope = (
                 bool(self._current_heads)
                 if self._decision_in_scope is None
                 else self._decision_in_scope
             )
-            return _Cursor(row=(1,) if decision_in_scope else None)
+            rows = [
+                (decision_in_scope, head.model_dump(mode="json")) for head in self._current_heads
+            ]
+            return _Cursor(rows=rows or [(decision_in_scope, None)])
         return _Cursor()
 
     def commit(self) -> None:
@@ -127,11 +135,16 @@ def test_persists_first_cycle_contracts_in_dependency_order() -> None:
         ["INSERT", "INTO", "detection_results"],
         ["INSERT", "INTO", "decisions"],
     ]
-    assert connection.statements[0] == (
-        _ACQUIRE_DECISION_SCOPE_LOCK,
-        (RUN_ID, ENTITY_ID),
-    )
-    assert connection.statements[1][0] == _SELECT_DECISION_PAYLOAD
+    assert connection.statements[:5] == [
+        (_SHOW_TRANSACTION_ISOLATION, ()),
+        (_ACQUIRE_DECISION_ID_LOCK, ("D-001",)),
+        (
+            _ACQUIRE_DECISION_SCOPE_LOCK,
+            (RUN_ID, ENTITY_ID),
+        ),
+        (_SELECT_DECISION_PAYLOAD, ("D-001",)),
+        (_SELECT_CURRENT_DECISION_HEADS, (RUN_ID, ENTITY_ID)),
+    ]
     assert connection.commits == 1
     assert connection.rollbacks == 0
 
@@ -152,6 +165,85 @@ def test_resolves_no_expected_supersedes_when_scope_has_no_decision() -> None:
     assert supersedes_decision_id is None
     assert connection.commits == 0
     assert connection.rollbacks == 0
+
+
+def test_rejects_autocommit_connection_before_lifecycle_database_operation() -> None:
+    # Given
+    connection = _Connection(autocommit=True)
+
+    # When
+    with pytest.raises(RuntimeError, match="Decision lifecycle requires autocommit disabled"):
+        resolve_expected_supersedes_decision_id(
+            decision_id="D-001",
+            run_id=RUN_ID,
+            entity_id=ENTITY_ID,
+            connection=connection,
+        )
+
+    # Then
+    assert connection.statements == []
+    assert connection.rollbacks == 1
+
+
+def test_accepts_read_committed_transaction_isolation() -> None:
+    # Given
+    connection = _Connection(transaction_isolation="read committed")
+
+    # When
+    supersedes_decision_id = resolve_expected_supersedes_decision_id(
+        decision_id="D-001",
+        run_id=RUN_ID,
+        entity_id=ENTITY_ID,
+        connection=connection,
+    )
+
+    # Then
+    assert supersedes_decision_id is None
+    assert connection.statements[0] == (_SHOW_TRANSACTION_ISOLATION, ())
+    assert connection.rollbacks == 0
+
+
+def test_rejects_unsupported_transaction_isolation_before_lifecycle_reads() -> None:
+    # Given
+    connection = _Connection(transaction_isolation="repeatable read")
+
+    # When
+    with pytest.raises(
+        RuntimeError,
+        match="Decision lifecycle requires READ COMMITTED isolation",
+    ):
+        resolve_expected_supersedes_decision_id(
+            decision_id="D-001",
+            run_id=RUN_ID,
+            entity_id=ENTITY_ID,
+            connection=connection,
+        )
+
+    # Then
+    assert connection.statements == [(_SHOW_TRANSACTION_ISOLATION, ())]
+    assert connection.rollbacks == 1
+
+
+def test_rejects_unsafe_connection_before_persistence_writes() -> None:
+    # Given
+    fusion_result, fast_result, decision_result = _results()
+    connection = _Connection(autocommit=True)
+
+    # When
+    with pytest.raises(RuntimeError, match="Decision lifecycle requires autocommit disabled"):
+        persist_s0_results(
+            _artifacts(),
+            NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
+            fusion_result,
+            fast_result,
+            decision_result,
+            connection=connection,
+        )
+
+    # Then
+    assert connection.statements == []
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
 
 
 def test_resolves_current_head_for_new_decision_id() -> None:
@@ -187,7 +279,10 @@ def test_resolves_stored_supersedes_for_existing_decision_id() -> None:
 
     # Then
     assert supersedes_decision_id == "D-000"
-    assert [query for query, _ in connection.statements] == [_SELECT_DECISION_PAYLOAD]
+    assert [query for query, _ in connection.statements] == [
+        _SHOW_TRANSACTION_ISOLATION,
+        _SELECT_DECISION_PAYLOAD,
+    ]
 
 
 def test_rejects_existing_decision_in_different_scope_during_resolution() -> None:
@@ -205,7 +300,10 @@ def test_rejects_existing_decision_in_different_scope_during_resolution() -> Non
         )
 
     # Then
-    assert [query for query, _ in connection.statements] == [_SELECT_DECISION_PAYLOAD]
+    assert [query for query, _ in connection.statements] == [
+        _SHOW_TRANSACTION_ISOLATION,
+        _SELECT_DECISION_PAYLOAD,
+    ]
     assert connection.rollbacks == 1
 
 

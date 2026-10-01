@@ -1,6 +1,7 @@
 """Persist completed First Cycle pipeline contracts through PostgreSQL repositories."""
 
 import logging
+from collections.abc import Mapping
 from typing import Protocol
 
 import psycopg
@@ -22,6 +23,12 @@ from incident_awareness.storage.repositories.run_repository import RunRepository
 
 _LOGGER = logging.getLogger(__name__)
 
+_SHOW_TRANSACTION_ISOLATION = "SHOW transaction_isolation"
+
+_ACQUIRE_DECISION_ID_LOCK = """
+SELECT pg_advisory_xact_lock(hashtext(%s)::bigint)
+"""
+
 _ACQUIRE_DECISION_SCOPE_LOCK = """
 SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))
 """
@@ -31,10 +38,17 @@ class DecisionConflictError(RuntimeError):
     """Decision head가 사전 조회 이후 변경되어 저장할 수 없다."""
 
 
+class DatabaseCursor(Protocol):
+    def fetchone(self) -> tuple[object, ...] | Mapping[str, object] | None: ...
+
+
 class DatabaseConnection(Protocol):
     """Repository operations needed to persist one First Cycle result set."""
 
-    def execute(self, query: str, params: tuple[object, ...]) -> object: ...
+    @property
+    def autocommit(self) -> bool: ...
+
+    def execute(self, query: str, params: tuple[object, ...]) -> DatabaseCursor: ...
 
     def commit(self) -> None: ...
 
@@ -59,6 +73,8 @@ def persist_s0_results(
             fast_result,
             decision_result,
         )
+        if connection is not None:
+            _validate_decision_transaction_contract(connection)
     except Exception:
         if connection is not None:
             try:
@@ -75,6 +91,7 @@ def persist_s0_results(
 
     database_config = DatabaseConfig.from_environment()
     with psycopg.connect(database_config.url) as database_connection:
+        _validate_decision_transaction_contract(database_connection)
         _persist(
             database_connection,
             artifacts,
@@ -95,6 +112,7 @@ def resolve_expected_supersedes_decision_id(
     """Hybrid 실행 전에 candidate가 기대할 현재 Decision head를 반환한다."""
     if connection is not None:
         try:
+            _validate_decision_transaction_contract(connection)
             return _resolve_expected_supersedes_decision_id(
                 connection,
                 decision_id=decision_id,
@@ -110,6 +128,7 @@ def resolve_expected_supersedes_decision_id(
 
     database_config = DatabaseConfig.from_environment()
     with psycopg.connect(database_config.url) as database_connection:
+        _validate_decision_transaction_contract(database_connection)
         return _resolve_expected_supersedes_decision_id(
             database_connection,
             decision_id=decision_id,
@@ -148,6 +167,10 @@ def _persist(
     decision_result: DecisionResult,
 ) -> None:
     try:
+        connection.execute(
+            _ACQUIRE_DECISION_ID_LOCK,
+            (decision_result.decision_id,),
+        )
         connection.execute(
             _ACQUIRE_DECISION_SCOPE_LOCK,
             (decision_result.run_id, decision_result.entity_id),
@@ -194,6 +217,21 @@ def _persist(
         except Exception:
             _LOGGER.exception("First Cycle persistence rollback failed")
         raise
+
+
+def _validate_decision_transaction_contract(connection: DatabaseConnection) -> None:
+    if connection.autocommit:
+        raise RuntimeError("Decision lifecycle requires autocommit disabled")
+
+    row = connection.execute(_SHOW_TRANSACTION_ISOLATION, ()).fetchone()
+    if isinstance(row, tuple):
+        isolation = row[0]
+    elif row:
+        isolation = row["transaction_isolation"]
+    else:
+        isolation = None
+    if not isinstance(isolation, str) or isolation.lower().replace("_", " ") != "read committed":
+        raise RuntimeError("Decision lifecycle requires READ COMMITTED isolation")
 
 
 def _validate_existing_decision_scope(
