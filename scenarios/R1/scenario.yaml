@@ -1,0 +1,195 @@
+# R1-V02 Pilot scenario definition - values the runner reads.
+#
+# The scenario itself (why the pair is built this way, what the Pilot verifies,
+# open items) is defined in docs/scenarios/r1.md. Do not restate reasoning here:
+# docs/data-contract-v0.2.md section 10 forbids redefining the same content in
+# two documents. Field formats follow docs/schema/run-id.md.
+
+scenario_version: v1
+scenario_id: R1
+family_id: remote_management          # PoC start guide v1.1 section 5-1 (kept outside the repository)
+variation_id: V02
+
+# Gate character - issue #73, integrated standard 3.0 section 7-2. The Pilot
+# itself claims no performance (docs/scenarios/r1.md section 1).
+gate_type: feasibility
+ambiguity_required: true
+performance_claim_allowed: true
+decisive_comparator:
+  required: true
+  frozen_version: null                # no frozen version is recorded in the repository yet (role5-fast-detector-policy.md)
+
+# Values written into RunMetadata for both runs.
+run_metadata:
+  # Target-A computer name. Injected when the JSON is rendered
+  # (tools/r1_scenario_to_json.py --target-host); a real host name is never
+  # committed.
+  target_host: null
+  sysmon_config_version: sysmonconfig-sample-v0.1
+  detector_set_version: null
+  reference_policy_version: null      # no reference action is decided yet (r1.md section 11-5)
+  schema_versions:
+    run_metadata: v0.2
+    event: v0.3
+    evidence: v0.2
+    fast_hit: v0.2
+    detection_result: v0.2
+    fusion_result: v0.3
+    decision_result: v0.2
+    execution_record: v0.1
+    evaluation_input: v0.1
+
+telemetry:
+  observed_host: Target-A             # the only observed host of R1-V02 (r1.md section 2)
+  channels:
+    - sysmon
+  sysmon_event_ids:
+    - 1
+    - 3
+
+# The observation length is a run input (-ObservationSec), not a scenario value:
+# r1.md section 11-4 leaves the evaluation horizon to role 5. The runner only
+# requires the window to cover the last action below.
+run_length:
+  observation_sec: null
+
+# Destination of the internal connection made by the final management tool. Both
+# values and the lab network are injected when the JSON is rendered
+# (--internal-target, --internal-port, --lab-cidr) and are never committed. Only
+# an RFC 1918 address inside the lab network is accepted; a globally routable
+# address is refused by the renderer, by the runner and by the task itself.
+internal_connection:
+  required: true
+  target: null
+  port: null
+  protocol: TCP
+  lab_cidr: null
+  max_attempts: 1
+  decision_reference: "docs/scenarios/r1.md section 11-10"
+
+# Process lineage of the first Pilot. The tool names are the combination role 2
+# approved for the first Pilot only; a later family must not leave one
+# intermediate tied to one run type. The values are data so that a later family
+# changes this file, not the runner.
+#
+#   normal   session host -> approved wrapper     -> final management tool
+#   attack   session host -> other intermediate   -> the same final management tool
+#
+# {task_script} and {channel_dir} are replaced with paths under the work
+# directory, {launcher} with the launcher file of that intermediate. The final
+# tool is started without an encoded command option in both runs.
+lineage:
+  session_host:
+    image: wsmprovhost.exe            # an assumption until rehearsal telemetry confirms it (r1.md section 11-7)
+  final_tool:
+    image: powershell.exe
+    arguments:
+      - "-NoProfile"
+      - "-NonInteractive"
+      - "-ExecutionPolicy"
+      - "Bypass"
+      - "-File"
+      - "{task_script}"
+      - "-ChannelDir"
+      - "{channel_dir}"
+  intermediate:
+    normal:
+      image: cmd.exe
+      launcher_kind: batch
+      launcher_file: r1_launch.cmd
+      arguments:
+        - "/d"
+        - "/c"
+        - "{launcher}"
+    attack:
+      image: cscript.exe
+      launcher_kind: jscript
+      launcher_file: r1_launch.js
+      arguments:
+        - "//NoLogo"
+        - "//B"
+        - "{launcher}"
+
+# Shortcut controls - r1.md section 7. Both runs use one account, one work
+# directory, one final tool and the same five actions.
+shortcut_controls:
+  same_account: true
+  same_host: true
+  same_working_directory: true
+  filename_prefix: r1_                # no run type in a file name
+  actions_per_run: 5
+  same_vm_snapshot: true
+  same_sysmon_config: true
+
+# Artifact layout - the same four artifacts as S0 (docs/scenarios/s0.md section 9).
+outputs:
+  raw_dir: data/raw/{run_id}/telemetry
+  manifest: data/raw/{run_id}/manifest.json
+  ground_truth_dir: data/ground_truth/{run_id}
+  time_format: utc_iso8601_milliseconds
+
+# Action lists - r1.md section 4-1. offset_sec mirrors t+0 / t+2 / t+5 / t+8 /
+# t+10 there. The recorded execution_record timestamps are the authoritative
+# times; these offsets are the design values only. `step` tells the runner what
+# to do and is the same sequence in both runs; action_type is a provisional
+# value until the vocabulary is decided (s0.md section 11, open item 3).
+runs:
+  normal:
+    run_type: normal
+    reference_action_id: null
+    actions:
+      - action_id: N01
+        offset_sec: 0
+        step: session_begin
+        action_type: remote_session
+        description: Controller 에서 Target-A 로 원격 세션 수립
+      - action_id: N02
+        offset_sec: 120
+        step: prepare
+        action_type: file_operation
+        description: 원격 세션에서 결과 저장 위치 준비와 로컬 파일 기록
+      - action_id: N03
+        offset_sec: 300
+        step: launch
+        action_type: process_create
+        description: 원격 세션 host 가 승인된 wrapper 를 거쳐 최종 관리 도구 실행
+      - action_id: N04
+        offset_sec: 480
+        step: connect
+        action_type: network_connection
+        description: N03 의 최종 관리 도구 인스턴스가 승인 목적지로 내부 연결
+      - action_id: N05
+        offset_sec: 600
+        step: session_end
+        action_type: remote_session
+        description: 원격 세션 종료
+
+  attack:
+    run_type: attack
+    reference_action_id: null         # undecided (r1.md sections 4-2 and 11-5)
+    actions:
+      - action_id: A01
+        offset_sec: 0
+        step: session_begin
+        action_type: remote_session
+        description: Controller 에서 Target-A 로 원격 세션 수립
+      - action_id: A02
+        offset_sec: 120
+        step: prepare
+        action_type: file_operation
+        description: 원격 세션에서 결과 저장 위치 준비와 로컬 파일 기록
+      - action_id: A03
+        offset_sec: 300
+        step: launch
+        action_type: process_create
+        description: 원격 세션 host 가 승인 경로와 다른 중간 프로세스를 거쳐 같은 최종 관리 도구 실행
+      - action_id: A04
+        offset_sec: 480
+        step: connect
+        action_type: network_connection
+        description: A03 의 최종 관리 도구 인스턴스가 같은 목적지로 내부 연결
+      - action_id: A05
+        offset_sec: 600
+        step: session_end
+        action_type: remote_session
+        description: 원격 세션 종료
