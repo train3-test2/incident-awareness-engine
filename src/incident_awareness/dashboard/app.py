@@ -50,6 +50,7 @@ def error(code, status, headers=None):
         "INVALID_QUERY": "요청값을 확인해 주세요.",
         "RUN_NOT_FOUND": "Run을 찾을 수 없습니다.",
         "DECISION_NOT_FOUND": "Decision을 찾을 수 없습니다.",
+        "EVENT_NOT_FOUND": "Event를 찾을 수 없습니다.",
         "DATA_SOURCE_UNAVAILABLE": "결과를 조회할 수 없습니다.",
     }
     return JSONResponse(
@@ -118,6 +119,15 @@ def decision_history(
     offset: Annotated[int, Query(ge=0)] = 0,
 ):
     return queries.decisions(run_id, limit, offset)
+
+
+@app.get("/api/runs/{run_id}/events/{event_id}")
+def event_detail(
+    run_id: str,
+    event_id: str,
+    queries: Annotated[DashboardQueries, Depends(get_queries)],
+):
+    return queries.event(run_id, event_id)
 
 
 @app.get("/api/runs/{run_id}")

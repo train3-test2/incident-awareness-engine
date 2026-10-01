@@ -83,7 +83,7 @@ EventSummary: event_id, timestamp, host_id, event_type. payload는 목록 응답
 TimelineItem: {key:string, kind:run_start|event|fast_detection|fusion_detection|system_decision|run_end, timestamp:UTC datetime, source_id:string}.
 Run 시작/종료 + 선택 Decision의 detector_time/fusion_time/t_e + 반환된 Event 페이지를 사용한다. null 시각은 항목을 만들지 않는다. timestamp ASC,key ASC로 안정 정렬. 페이지 일부 이벤트임을 명시한다. 시각이 같아도 항목을 유실하지 않고 화면에서 그룹화할 수 있다. 담당자 인지시각/DB 저장 시각으로 해석하지 않는다. 연결이 검증되지 않은 현재 Fusion episode는 이 타임라인에 섞지 않는다.
 
-## 이력 API 및 이벤트 상세 후속 API
+## 이력 및 이벤트 상세 API
 
 - GET /api/runs/{run_id}/decisions?limit=20&offset=0: DecisionSummary 목록, created_at DESC,decision_id DESC. total 포함. supersedes_decision_id는 실제 저장 링크만 표시하며 단순 시간순을 대체 관계로 추론하지 않는다.
 - GET /api/runs/{run_id}/events/{event_id}: Run 소속 검사 및 서버 측 허용 필드 필터 적용. raw payload 전체/비밀값을 그대로 노출하지 않는다.
@@ -113,7 +113,7 @@ DB 조회는 요청별 read-only/repeatable-read 트랜잭션이며 SQL 실행 �
 DB 연결 오류 및 저장된 결과의 계약 위반은 세부 접속정보 없이 503으로 반환합니다.
 
 이번 구현은 `GET /api/runs`와 `GET /api/runs/{run_id}`입니다.
-Event 상세, Report 생성·수정 API는
+Report 생성·수정 API는
 후속 구현 대상입니다. 현재 결과와 과거 Decision의 연관성은 `unverified`로 유지합니다.
 
 ## Overview 전체 집계
@@ -142,3 +142,17 @@ items는 기존 DecisionSummary이며 total/limit/offset을 함께 반환합니�
 전체 Entity의 결과를 포함하므로 각 항목의 entity_id를 함께 표시합니다.
 선택은 상세 API의 decision_id로 전달하며, Event 페이지 이동에서도 그 선택을 유지합니다.
 이 API는 과거 Fast/Fusion 결과 스냅샷을 복구하지 않습니다.
+
+## Event 상세 허용 필드
+
+`GET /api/runs/{run_id}/events/{event_id}`는 Run 존재 여부와 Event 소속을 검사합니다.
+Run 미존재는 RUN_NOT_FOUND, Event 미존재 또는 다른 Run 소속은 EVENT_NOT_FOUND(404)입니다.
+
+응답 필드: event_id, run_id, timestamp(UTC), host_id, event_type, provenance.
+provenance는 source, source_layer, source_event_id, timestamp_source와 raw_ref를 포함합니다.
+raw_ref의 허용 필드는 raw_log_id, source_record_id, segment_no, record_no, parser_id,
+parser_version입니다. 누락된 출처 값은 null을 유지합니다.
+
+SQL에서 허용 필드를 투영하여 원본 payload 전체를 조회·반환하지 않습니다. 사용자,
+명령행, 프로세스 경로, 네트워크 주소는 이 API 범위에 포함하지 않습니다.
+이 참조는 원본 로그의 위치 추적용이며 Evidence/Decision과의 인과 관계를 보장하지 않습니다.

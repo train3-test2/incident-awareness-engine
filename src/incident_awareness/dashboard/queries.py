@@ -141,6 +141,31 @@ class DashboardQueries:
             "offset": offset,
         }
 
+    def event(self, run_id, event_id):
+        exists = self.db.execute("SELECT run_id FROM runs WHERE run_id = %s", (run_id,)).fetchone()
+        if exists is None:
+            raise MissingResource("RUN_NOT_FOUND")
+        row = self.db.execute(
+            "SELECT event_id, run_id, timestamp, host_id, event_type, "
+            "jsonb_build_object("
+            "'source', payload->'source', "
+            "'source_layer', payload->'source_layer', "
+            "'source_event_id', payload->'source_event_id', "
+            "'timestamp_source', payload->'timestamp_source', "
+            "'raw_ref', jsonb_build_object("
+            "'raw_log_id', payload->'raw_ref'->'raw_log_id', "
+            "'source_record_id', payload->'raw_ref'->'source_record_id', "
+            "'segment_no', payload->'raw_ref'->'segment_no', "
+            "'record_no', payload->'raw_ref'->'record_no', "
+            "'parser_id', payload->'raw_ref'->'parser_id', "
+            "'parser_version', payload->'raw_ref'->'parser_version')) AS provenance "
+            "FROM events WHERE run_id = %s AND event_id = %s",
+            (run_id, event_id),
+        ).fetchone()
+        if row is None:
+            raise MissingResource("EVENT_NOT_FOUND")
+        return serialized(row)
+
     def detail(self, run_id, decision_id, event_limit, event_offset):
         row = self.db.execute(
             f"SELECT {RUN_COLUMNS} FROM runs WHERE run_id = %s",

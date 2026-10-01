@@ -15,7 +15,9 @@ HTML/CSS/JavaScript를 제공합니다. PR #121의 API 계약과 구현에 의�
 
 Overview는 전체 Run·Decision 유무·Event 수 및 최신 Decision 기준 경로별 상태를 표시합니다.
 상세의 Decision 이력 버튼으로 저장된 결과를 선택할 수 있습니다.
-후속 범위는 Event 상세와 Report/LLM 연동입니다.
+Event ID를 누르면 수집 출처·원본 로그 참조를 확인할 수 있습니다.
+상세로 돌아갈 때 선택한 Decision과 Event 페이지를 유지합니다.
+후속 범위는 Report/LLM 연동입니다.
 실제 RDS 및 브라우저 E2E 검증은 별도 환경에서 필요합니다. 공유 운영자 토큰 방식은
 개인별 감사·권한 분리를 제공하지 않으므로 배포 인증 방식과 별도로 연결해야 합니다.
 
