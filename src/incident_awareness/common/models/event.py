@@ -45,11 +45,21 @@ class ProcessInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     pid: int | None = None
+    process_guid: StrictStr | None = Field(default=None, min_length=1)
     name: str | None = None
     path: str | None = None
     command_line: str | None = None
     parent_pid: int | None = None
+    parent_process_guid: StrictStr | None = Field(default=None, min_length=1)
     parent_name: str | None = None
+
+    @field_validator("process_guid", "parent_process_guid")
+    @classmethod
+    def validate_process_guid(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("Process GUID는 비어 있거나 공백만으로 구성될 수 없습니다.")
+
+        return value
 
 
 class NetworkInfo(BaseModel):
