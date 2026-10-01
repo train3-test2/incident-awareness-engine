@@ -9,15 +9,27 @@ FIXTURE_ROOT = Path(__file__).parents[1] / "fixtures" / "pipeline" / "first_cycl
 FUSION_CONFIG_PATH = Path("configs/fusion/fusion_config_s0_pair_v0.1.yaml")
 
 
+class _Cursor:
+    def fetchone(self) -> None:
+        return None
+
+    def fetchall(self) -> list[tuple[object, ...]]:
+        return []
+
+
 class _Connection:
     def __init__(self) -> None:
         self.commits = 0
+        self.rollbacks = 0
 
-    def execute(self, query: str, params: tuple[object, ...]) -> None:
-        return None
+    def execute(self, query: str, params: tuple[object, ...]) -> _Cursor:
+        return _Cursor()
 
     def commit(self) -> None:
         self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
 
 
 def test_first_cycle_fixture_runs_through_the_assembled_pipeline(tmp_path: Path) -> None:
@@ -60,6 +72,7 @@ def test_first_cycle_fixture_runs_through_the_assembled_pipeline(tmp_path: Path)
     assert summary.detector_status == "detected"
     assert summary.decision_path == "fast_and_fusion"
     assert connection.commits == 1
+    assert connection.rollbacks == 0
 
 
 def _rewrite_trace_paths_for_local_fixture(fixture_root: Path) -> None:
