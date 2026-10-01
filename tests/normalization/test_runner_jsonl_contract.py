@@ -76,6 +76,7 @@ NETWORK_CONNECTION_RECORD = {
         "ProcessId": "4",
         "Image": "System",
         "User": "NT AUTHORITY\\SYSTEM",
+        "ParentProcessGuid": "{c1ae1b3a-0300-6aa8-6402-000000000899}",
         "Protocol": "udp",
         "Initiated": "true",
         "SourceIp": "192.168.9.129",
@@ -155,6 +156,7 @@ def test_runner_network_connection_record_normalizes_to_event_v0(runner_jsonl: P
     assert event.network.dst_port == 137
     assert event.process is not None
     assert event.process.process_guid == "{c1ae1b3a-0300-6aa8-6402-000000000900}"
+    # EID 3 ParentProcessGuid는 source drift가 있어도 Event Contract에 보존하지 않는다.
     assert event.process.parent_process_guid is None
     assert event.raw_ref.source_record_id == "7808"
     assert event.raw_ref.record_no == 1

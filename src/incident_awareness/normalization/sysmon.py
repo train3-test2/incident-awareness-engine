@@ -112,7 +112,7 @@ def normalize_sysmon_network_connection(
             "path": image,
             "command_line": _optional_string(event_data, "CommandLine"),
             "parent_pid": _optional_integer(event_data, "ParentProcessId"),
-            "parent_process_guid": _optional_string(event_data, "ParentProcessGuid"),
+            "parent_process_guid": None,
             "parent_name": _path_name(_optional_string(event_data, "ParentImage")),
         },
         network={
