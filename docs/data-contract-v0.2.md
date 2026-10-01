@@ -25,7 +25,7 @@
 | Contract        | 최초 버전 | 현재 적용 버전 | 비고                                               |
 | --------------- | ------------------- | -------------- | -------------------------------------------------- |
 | RunMetadata     | `v0.1`              | `v0.2`         | `schema_versions`, `reference_policy_version` 반영 |
-| NormalizedEvent | `v0.1`              | `v0.2`         | 시간축·Provenance drift 복구                       |
+| NormalizedEvent | `v0.1`              | `v0.3`         | 시간축·Provenance drift 복구, Sysmon Process GUID 보존 |
 | EvidenceResult  | `v0.1`              | `v0.2`         | `source_event_ids`에서 `event_ids`로 공식 전환     |
 | FusionResult    | `v0.1`              | `v0.3`         | `fusion_episodes[]`, `replay_end` 종료 사유 반영       |
 | DetectionResult | `v0.1`              | `v0.2`         | Result 참조·상태 규칙 정렬                         |
@@ -77,7 +77,7 @@
 
 `start_time`, `end_time`, `reference_time`은 UTC ISO 8601 밀리초 표기를 사용한다. timezone 정보가 없는 값과 UTC offset이 0이 아닌 값은 허용하지 않는다. 정수·실수 또는 숫자 문자열로 표현한 Unix epoch 값은 초·밀리초 단위 모두 시각 입력으로 허용하지 않는다. 세부 규칙은 `docs/schema/run-id.md` §11-1을 따른다.
 
-## 5. NormalizedEvent v0.2
+## 5. NormalizedEvent v0.3
 
 ### 5-1. 식별자와 시간
 
@@ -109,13 +109,19 @@ Normalizer는 원본 Source의 고정밀도 시각을 먼저 UTC로 변환한 �
 | `source_event_id` | String |    O |    X | 원본 Source의 Event 또는 Record 식별자                                                                    |
 | `event_type`      | String |    O |    X | 관리 어휘 파일에 정의된 Event 유형                                                                        |
 | `user`            | String |    X |    O | 행위 사용자                                                                                               |
-| `process`         | Object |    X |    O | `pid`, `name`, `path`, `command_line`, `parent_pid`, `parent_name`                                        |
+| `process`         | Object |    X |    O | `pid`, `process_guid`, `name`, `path`, `command_line`, `parent_pid`, `parent_process_guid`, `parent_name` |
 | `network`         | Object |    X |    O | `protocol`, `src_ip`, `src_port`, `dst_ip`, `dst_port`                                                    |
 | `raw_ref`         | Object |    O |    X | 원본 추적 정보                                                                                            |
 
 v0.2 First Cycle은 Raw Log에서 정규화한 Event만 다루므로 `raw_ref`는 반드시 채운다. Synthetic Event는 현재 범위에 포함하지 않는다. 이후 Synthetic Event를 도입하는 경우에는 `event_origin`과 `raw_ref` 예외 조건을 새 Schema 버전에서 명시한다.
 
 `network.src_port`, `network.dst_port`는 포트 번호로서 `0` 이상 `65535` 이하의 정수만 허용한다.
+
+`process.process_guid`, `process.parent_process_guid`는 Sysmon 원본의 `ProcessGuid`,
+`ParentProcessGuid`를 문자열 그대로 보존하는 선택 필드다. Sysmon EID 1은 두 값을 기록하며,
+EID 3은 `ProcessGuid`만 기록한다. 동일 `host_id` 안에서 EID 1과 EID 3의
+`process_guid`가 같은 경우에만 같은 프로세스 인스턴스의 연결로 해석할 수 있다. PID는 재사용될 수
+있으므로 이 연결의 대체 식별자로 사용하지 않는다.
 
 `source`는 telemetry origin·record producer·detector 표현 중 무엇을 의미하는지 팀 결정이 필요하다. 결정 전에는 현재 값 목록을 최종 taxonomy로 고정하지 않는다. 선택지는 (A) `source`와 `source_layer`를 유지하고 조합별 Pydantic 검증을 추가하는 방식, (B) `RawTelemetryEvent`와 `DetectorOutput`을 discriminated union으로 분리하는 방식이다. 역할 3이 초안을 제시하고 역할 2·5가 검토한다.
 
