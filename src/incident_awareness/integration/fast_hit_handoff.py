@@ -299,6 +299,7 @@ def combine_fast_adapter_result(
     decision_id: str,
     config_version: str,
     parallel_required: bool,
+    supersedes_decision_id: str | None = None,
 ) -> DecisionResult:
     """Call Hybrid while carrying validated FastHitRecord provenance forward."""
     return combine_results(
@@ -309,6 +310,7 @@ def combine_fast_adapter_result(
         parallel_required=parallel_required,
         source_hit_ids=fast.source_hit_ids,
         selected_source_hit_id=fast.selected_source_hit_id,
+        supersedes_decision_id=supersedes_decision_id,
     )
 
 
