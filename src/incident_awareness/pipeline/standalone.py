@@ -20,6 +20,11 @@ _STANDALONE_MANIFEST_ROOT = "generated/raw"
 _SYSMON_JSONL_FILENAME = "sysmon-0001.jsonl"
 _SYSMON_EVTX_FILENAME = "sysmon-0001.evtx"
 _SYSMON_SEGMENT_NO = 1
+_SYSMON_PROCESS_CREATE_EVENT_ID = 1
+_SYSMON_NETWORK_CONNECTION_EVENT_ID = 3
+_SUPPORTED_SYSMON_EVENT_IDS = frozenset(
+    {_SYSMON_PROCESS_CREATE_EVENT_ID, _SYSMON_NETWORK_CONNECTION_EVENT_ID}
+)
 
 DEFAULT_STANDALONE_SCHEMA_VERSIONS = SchemaVersions(
     run_metadata="v0.2",
@@ -54,11 +59,10 @@ def build_run_metadata_from_sysmon_jsonl(
     """Build RunMetadata from the minimum and maximum Sysmon event times.
 
     ``EventData.UtcTime`` is the event-time source used by the Sysmon
-    normalizer, so it owns the standalone Run window as well.  Input ordering
-    and supported Event IDs are intentionally validated by later standalone
-    preparation stages; this function only establishes the time range.
+    normalizer, so it owns the standalone Run window as well.  Validate the
+    Normalizer boundary before deriving any runnable artifacts from the input.
     """
-    records = _read_records(path)
+    records = validate_standalone_sysmon_jsonl(path)
     event_times = tuple(_event_time(record) for record in records)
 
     return RunMetadata(
@@ -85,6 +89,7 @@ def build_sysmon_artifacts_from_jsonl(
     the caller's local source path.  This keeps the later materialized input
     directory portable while binding its JSONL bytes by SHA-256.
     """
+    validate_standalone_sysmon_jsonl(path)
     sha256 = _sha256(path)
     raw_log_id = f"RAW-{run_id}-SYSMON-001"
     evtx_raw_log_id = f"RAW-{run_id}-EVTX-001"
@@ -121,6 +126,14 @@ def build_sysmon_artifacts_from_jsonl(
     )
 
 
+def validate_standalone_sysmon_jsonl(path: Path) -> tuple[SysmonJsonlRecord, ...]:
+    """Read one standalone JSONL and validate the current Normalizer boundary."""
+    records = _read_records(path)
+    for record in records:
+        _validate_record_shape(record)
+    return records
+
+
 def _read_records(path: Path) -> tuple[SysmonJsonlRecord, ...]:
     try:
         records = tuple(read_sysmon_jsonl(path))
@@ -154,6 +167,96 @@ def _event_time(record: SysmonJsonlRecord) -> datetime:
     return parsed.astimezone(UTC).replace(microsecond=parsed.microsecond // 1000 * 1000)
 
 
+def _validate_record_shape(record: SysmonJsonlRecord) -> None:
+    event_id = record.data.get("EventId")
+    if isinstance(event_id, bool) or not isinstance(event_id, int):
+        raise TypeError(f"Sysmon record {record.record_no} EventId must be an integer")
+    if event_id not in _SUPPORTED_SYSMON_EVENT_IDS:
+        raise ValueError(
+            f"Sysmon record {record.record_no} EventId {event_id} is unsupported; "
+            "only EventId 1 and 3 are supported"
+        )
+
+    record_id = record.data.get("RecordId")
+    if isinstance(record_id, bool) or not isinstance(record_id, int):
+        raise TypeError(f"Sysmon record {record.record_no} RecordId must be an integer")
+
+    _required_string(record.data, "Computer", record_no=record.record_no)
+    _record_time(record)
+    event_data = _event_data(record)
+    _event_time(record)
+
+    if event_id == _SYSMON_PROCESS_CREATE_EVENT_ID:
+        _required_string(event_data, "Image", record_no=record.record_no)
+    else:
+        _optional_string(event_data, "Image", record_no=record.record_no)
+
+    for field in ("User", "ProcessGuid", "CommandLine", "ParentImage", "ParentProcessGuid"):
+        _optional_string(event_data, field, record_no=record.record_no)
+    for field in ("ProcessId", "ParentProcessId"):
+        _optional_decimal(event_data, field, record_no=record.record_no)
+
+    if event_id == _SYSMON_NETWORK_CONNECTION_EVENT_ID:
+        for field in ("Protocol", "SourceIp", "DestinationIp"):
+            _optional_string(event_data, field, record_no=record.record_no)
+        for field in ("SourcePort", "DestinationPort"):
+            _optional_port(event_data, field, record_no=record.record_no)
+
+
+def _event_data(record: SysmonJsonlRecord) -> dict[str, object]:
+    event_data = record.data.get("EventData")
+    if not isinstance(event_data, dict):
+        raise TypeError(f"Sysmon record {record.record_no} EventData must be a JSON object")
+    return event_data
+
+
+def _record_time(record: SysmonJsonlRecord) -> datetime:
+    value = _required_string(record.data, "TimeCreated", record_no=record.record_no)
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError(
+            f"Sysmon record {record.record_no} TimeCreated must be an ISO 8601 datetime"
+        ) from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"Sysmon record {record.record_no} TimeCreated must include timezone")
+    return parsed.astimezone(UTC)
+
+
+def _required_string(payload: dict[str, object], field: str, *, record_no: int) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Sysmon record {record_no} {field} must be a non-blank string")
+    return value
+
+
+def _optional_string(payload: dict[str, object], field: str, *, record_no: int) -> str | None:
+    value = payload.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"Sysmon record {record_no} {field} must be a string when present")
+    return value
+
+
+def _optional_decimal(payload: dict[str, object], field: str, *, record_no: int) -> int | None:
+    value = payload.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.isdecimal():
+        raise ValueError(
+            f"Sysmon record {record_no} {field} must be a decimal integer when present"
+        )
+    return int(value)
+
+
+def _optional_port(payload: dict[str, object], field: str, *, record_no: int) -> int | None:
+    value = _optional_decimal(payload, field, record_no=record_no)
+    if value is not None and not 0 <= value <= 65535:
+        raise ValueError(f"Sysmon record {record_no} {field} must be between 0 and 65535")
+    return value
+
+
 def _sha256(path: Path) -> str:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -166,4 +269,5 @@ __all__ = [
     "StandaloneSysmonArtifacts",
     "build_run_metadata_from_sysmon_jsonl",
     "build_sysmon_artifacts_from_jsonl",
+    "validate_standalone_sysmon_jsonl",
 ]

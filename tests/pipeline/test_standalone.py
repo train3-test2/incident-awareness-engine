@@ -9,7 +9,21 @@ from incident_awareness.common.models.run import RunType
 from incident_awareness.pipeline.standalone import (
     build_run_metadata_from_sysmon_jsonl,
     build_sysmon_artifacts_from_jsonl,
+    validate_standalone_sysmon_jsonl,
 )
+
+
+def _record(utc_time: str, *, time_created: str) -> dict[str, object]:
+    return {
+        "RecordId": 1,
+        "EventId": 1,
+        "TimeCreated": time_created,
+        "Computer": "WIN-01",
+        "EventData": {
+            "UtcTime": utc_time,
+            "Image": "C:\\Windows\\System32\\cmd.exe",
+        },
+    }
 
 
 def test_builds_run_metadata_from_sysmon_event_time_range(tmp_path: Path) -> None:
@@ -52,7 +66,18 @@ def test_rejects_empty_sysmon_jsonl(tmp_path: Path) -> None:
 
 def test_rejects_missing_sysmon_event_time(tmp_path: Path) -> None:
     jsonl_path = tmp_path / "sysmon.jsonl"
-    _write_jsonl(jsonl_path, [{"EventData": {}}])
+    _write_jsonl(
+        jsonl_path,
+        [
+            {
+                **_record(
+                    "2026-10-03 00:00:00.000",
+                    time_created="2026-10-03T00:00:00Z",
+                ),
+                "EventData": {"Image": "C:\\Windows\\System32\\cmd.exe"},
+            }
+        ],
+    )
 
     with pytest.raises(ValueError, match="EventData.UtcTime must be non-blank"):
         build_run_metadata_from_sysmon_jsonl(
@@ -87,14 +112,109 @@ def test_builds_manifest_sha256_and_raw_log_provenance(tmp_path: Path) -> None:
     assert artifacts.normalization_context.segment_no == 1
 
 
-def _record(utc_time: str, *, time_created: str) -> dict[str, object]:
-    return {
-        "RecordId": 1,
-        "EventId": 1,
-        "TimeCreated": time_created,
-        "Computer": "WIN-01",
-        "EventData": {"UtcTime": utc_time},
-    }
+def test_accepts_supported_sysmon_event_ids(tmp_path: Path) -> None:
+    jsonl_path = tmp_path / "sysmon.jsonl"
+    _write_jsonl(
+        jsonl_path,
+        [
+            _record("2026-10-03 00:00:00.000", time_created="2026-10-03T00:00:00Z"),
+            {
+                "RecordId": 2,
+                "EventId": 3,
+                "TimeCreated": "2026-10-03T00:00:10Z",
+                "Computer": "WIN-01",
+                "EventData": {
+                    "UtcTime": "2026-10-03 00:00:10.000",
+                    "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                    "ProcessId": "4242",
+                    "DestinationPort": "443",
+                },
+            },
+        ],
+    )
+
+    records = validate_standalone_sysmon_jsonl(jsonl_path)
+
+    assert [record.data["EventId"] for record in records] == [1, 3]
+
+
+@pytest.mark.parametrize(
+    ("record", "message"),
+    [
+        (
+            {
+                **_record(
+                    "2026-10-03 00:00:00.000",
+                    time_created="2026-10-03T00:00:00Z",
+                ),
+                "EventId": 7,
+            },
+            "unsupported",
+        ),
+        (
+            {
+                **_record(
+                    "2026-10-03 00:00:00.000",
+                    time_created="2026-10-03T00:00:00Z",
+                ),
+                "EventId": True,
+            },
+            "EventId must be an integer",
+        ),
+        (
+            {
+                **_record(
+                    "2026-10-03 00:00:00.000",
+                    time_created="2026-10-03T00:00:00Z",
+                ),
+                "TimeCreated": "2026-10-03T00:00:00",
+            },
+            "must include timezone",
+        ),
+        (
+            {
+                **_record(
+                    "2026-10-03 00:00:00.000",
+                    time_created="2026-10-03T00:00:00Z",
+                ),
+                "EventData": {"UtcTime": "2026-10-03 00:00:00.000"},
+            },
+            "Image must be a non-blank string",
+        ),
+    ],
+)
+def test_rejects_unsupported_or_malformed_sysmon_input(
+    tmp_path: Path,
+    record: dict[str, object],
+    message: str,
+) -> None:
+    jsonl_path = tmp_path / "sysmon.jsonl"
+    _write_jsonl(jsonl_path, [record])
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        validate_standalone_sysmon_jsonl(jsonl_path)
+
+
+def test_rejects_network_port_outside_contract_range(tmp_path: Path) -> None:
+    jsonl_path = tmp_path / "sysmon.jsonl"
+    _write_jsonl(
+        jsonl_path,
+        [
+            {
+                "RecordId": 1,
+                "EventId": 3,
+                "TimeCreated": "2026-10-03T00:00:00Z",
+                "Computer": "WIN-01",
+                "EventData": {
+                    "UtcTime": "2026-10-03 00:00:00.000",
+                    "DestinationPort": "65536",
+                },
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="between 0 and 65535"):
+        validate_standalone_sysmon_jsonl(jsonl_path)
 
 
 def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
