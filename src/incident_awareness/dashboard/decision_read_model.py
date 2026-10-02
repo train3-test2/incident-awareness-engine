@@ -12,6 +12,12 @@ from incident_awareness.storage.repositories.result_repository import (
     FusionStoppingTraceRepository,
 )
 
+_CURRENT_READ_MAX_ATTEMPTS = 3
+
+
+class DashboardReadConsistencyError(RuntimeError):
+    """A stable Current Decision and Runtime view could not be read."""
+
 
 @dataclass(frozen=True, slots=True)
 class CurrentDecisionReadModel:
@@ -48,24 +54,33 @@ class DashboardDecisionReader:
         run_id: str,
         entity_id: str,
     ) -> CurrentDecisionReadModel | None:
-        decision = self._decision_repository.get_current_head(run_id, entity_id)
-        if decision is None:
-            return None
+        for _ in range(_CURRENT_READ_MAX_ATTEMPTS):
+            head_before = self._decision_repository.get_current_head(run_id, entity_id)
+            if head_before is None:
+                return None
 
-        return CurrentDecisionReadModel(
-            decision=decision,
-            latest_detection_result=self._detection_repository.get(run_id, entity_id),
-            latest_fusion_result=self._fusion_repository.get(run_id, entity_id),
-            latest_fusion_stopping_trace=self._stopping_trace_repository.get(
-                run_id,
-                entity_id,
-            ),
+            detection_result = self._detection_repository.get(run_id, entity_id)
+            fusion_result = self._fusion_repository.get(run_id, entity_id)
+            stopping_trace = self._stopping_trace_repository.get(run_id, entity_id)
+            head_after = self._decision_repository.get_current_head(run_id, entity_id)
+
+            if head_after is not None and head_before.decision_id == head_after.decision_id:
+                return CurrentDecisionReadModel(
+                    decision=head_before,
+                    latest_detection_result=detection_result,
+                    latest_fusion_result=fusion_result,
+                    latest_fusion_stopping_trace=stopping_trace,
+                )
+
+        raise DashboardReadConsistencyError(
+            "unable to read a stable Current Decision and Runtime view after "
+            f"{_CURRENT_READ_MAX_ATTEMPTS} attempts for "
+            f"run_id={run_id!r}, entity_id={entity_id!r}"
         )
 
     def list_history(self, run_id: str, entity_id: str) -> list[DecisionResult]:
         decisions = self._decision_repository.list_by_scope(run_id, entity_id)
-        current_head = self._decision_repository.get_current_head(run_id, entity_id)
-        return build_decision_history(decisions, current_head)
+        return build_decision_history(decisions)
 
     def get_historical(self, decision_id: str) -> HistoricalDecisionReadModel | None:
         decision = self._decision_repository.get(decision_id)

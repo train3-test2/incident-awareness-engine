@@ -42,7 +42,7 @@ def test_build_decision_history_returns_empty_history() -> None:
     decisions: list[DecisionResult] = []
 
     # When
-    history = build_decision_history(decisions, None)
+    history = build_decision_history(decisions)
 
     # Then
     assert history == []
@@ -53,7 +53,7 @@ def test_build_decision_history_returns_single_decision() -> None:
     decision = make_decision("DEC-001")
 
     # When
-    history = build_decision_history([decision], decision)
+    history = build_decision_history([decision])
 
     # Then
     assert history == [decision]
@@ -66,7 +66,7 @@ def test_build_decision_history_orders_shuffled_chain_from_current_head() -> Non
     third = make_decision("DEC-003", supersedes_decision_id="DEC-002")
 
     # When
-    history = build_decision_history([first, third, second], third)
+    history = build_decision_history([first, third, second])
 
     # Then
     assert history == [third, second, first]
@@ -79,35 +79,10 @@ def test_build_decision_history_rejects_scope_mismatch() -> None:
 
     # When
     with pytest.raises(DecisionIntegrityError) as exc_info:
-        build_decision_history([mismatched, head], head)
+        build_decision_history([mismatched, head])
 
     # Then
     assert "scope mismatch" in str(exc_info.value)
-
-
-def test_build_decision_history_rejects_stored_decisions_without_head() -> None:
-    # Given
-    decision = make_decision("DEC-001")
-
-    # When
-    with pytest.raises(DecisionIntegrityError) as exc_info:
-        build_decision_history([decision], None)
-
-    # Then
-    assert "no current Decision head" in str(exc_info.value)
-
-
-def test_build_decision_history_rejects_head_missing_from_decisions() -> None:
-    # Given
-    stored = make_decision("DEC-001")
-    missing_head = make_decision("DEC-002", supersedes_decision_id="DEC-001")
-
-    # When
-    with pytest.raises(DecisionIntegrityError) as exc_info:
-        build_decision_history([stored], missing_head)
-
-    # Then
-    assert "missing from stored decisions" in str(exc_info.value)
 
 
 def test_build_decision_history_rejects_missing_predecessor() -> None:
@@ -116,21 +91,35 @@ def test_build_decision_history_rejects_missing_predecessor() -> None:
 
     # When
     with pytest.raises(DecisionIntegrityError) as exc_info:
-        build_decision_history([head], head)
+        build_decision_history([head])
 
     # Then
     assert "DEC-002" in str(exc_info.value)
     assert "DEC-001" in str(exc_info.value)
 
 
-def test_build_decision_history_rejects_cycle() -> None:
+def test_build_decision_history_rejects_graph_without_inferred_head() -> None:
     # Given
     second = make_decision("DEC-002", supersedes_decision_id="DEC-003")
     third = make_decision("DEC-003", supersedes_decision_id="DEC-002")
 
     # When
     with pytest.raises(DecisionIntegrityError) as exc_info:
-        build_decision_history([second, third], third)
+        build_decision_history([second, third])
+
+    # Then
+    assert "no current Decision head" in str(exc_info.value)
+
+
+def test_build_decision_history_rejects_cycle_reachable_from_inferred_head() -> None:
+    # Given
+    head = make_decision("DEC-004", supersedes_decision_id="DEC-002")
+    second = make_decision("DEC-002", supersedes_decision_id="DEC-003")
+    third = make_decision("DEC-003", supersedes_decision_id="DEC-002")
+
+    # When
+    with pytest.raises(DecisionIntegrityError) as exc_info:
+        build_decision_history([second, head, third])
 
     # Then
     assert "cycle" in str(exc_info.value)
@@ -143,7 +132,7 @@ def test_build_decision_history_rejects_multiple_heads() -> None:
 
     # When
     with pytest.raises(DecisionIntegrityError) as exc_info:
-        build_decision_history([first, second], second)
+        build_decision_history([first, second])
 
     # Then
     assert "multiple current Decision heads" in str(exc_info.value)
@@ -160,7 +149,6 @@ def test_build_decision_history_rejects_disconnected_component() -> None:
     with pytest.raises(DecisionIntegrityError) as exc_info:
         build_decision_history(
             [first, disconnected_first, head, disconnected_second],
-            head,
         )
 
     # Then
@@ -174,7 +162,7 @@ def test_build_decision_history_rejects_duplicate_decision_id() -> None:
 
     # When
     with pytest.raises(DecisionIntegrityError) as exc_info:
-        build_decision_history([first, duplicate], first)
+        build_decision_history([first, duplicate])
 
     # Then
     assert "duplicate Decision" in str(exc_info.value)
