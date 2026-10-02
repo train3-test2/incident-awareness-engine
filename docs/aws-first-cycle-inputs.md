@@ -38,6 +38,38 @@ Cycle CLI는 EVTX 바이트를 직접 읽지 않고 지정된 Sysmon JSONL의 �
 `derived_from` 관계를 검증한다. 따라서 `sysmon-0001.evtx`는 이 태스크의 필수 입력이
 아니며, 원본 보관 경로에 별도로 유지한다.
 
+## 원클릭 데모 Seed Artifact
+
+원클릭 First Cycle 데모의 정본 Seed Artifact는 저장소의
+`tests/fixtures/pipeline/first_cycle/`에 보관한다. 이 Seed는 S0 공격 실행을 재현하는
+**합성 검증 데이터**이며, 실제 Raw telemetry, Ground Truth, 인증 정보는 포함하지 않는다.
+Seed 자체를 S3의 실행 prefix에 영구 보관하지 않는다.
+
+데모 실행은 Seed를 그대로 재사용하지 않고, 실행 시점에 새 `run_id` 전용 입력 묶음을
+생성한 뒤 아래 실행 prefix에만 업로드한다.
+
+```text
+s3://<bucket>/first-cycle/<new-run_id>/
+```
+
+생성 과정은 `run_metadata.json`, `manifest.json`, Sysmon JSONL, Fast handoff의 Run
+식별자와 시간 값을 함께 갱신하고, 변경된 Sysmon JSONL·Fast Artifact의 SHA-256을 다시
+계산해야 한다. 기존 `first-cycle/<run_id>/` 입력은 재사용하거나 덮어쓰지 않는다. 이는
+RDS의 Run 및 Decision 식별자 충돌과 provenance 혼합을 막기 위한 규칙이다.
+
+현재 Seed 식별자는 `s0-attack-fixture-v1`이다. Seed 내용 또는 적용 Contract 버전을
+바꿔야 하면 기존 Seed를 수정하는 대신 새 식별자(예: `s0-attack-fixture-v2`)와 새
+디렉터리를 추가한다. 새 Seed는 다음을 모두 만족한 뒤에만 원클릭 데모의 기본값으로
+승격한다.
+
+- 이 문서의 8개 입력 Artifact 계약과 SHA-256 정합성 검증을 통과한다.
+- 로컬 First Cycle fixture 통합 테스트와 컨테이너 통합 테스트를 통과한다.
+- `run_metadata.json`의 `schema_versions`가 현재 적용 Contract 버전과 일치한다.
+
+Seed 버전은 Git commit으로 추적한다. 원클릭 실행 Summary에는 Seed 식별자와 실행한
+Git commit SHA를 함께 기록해, 생성된 S3 입력과 코드·계약 버전을 나중에 확인할 수 있게
+한다.
+
 ## 정합성 규칙
 
 - `run_metadata.json`, `manifest.json`, `fast/hits.jsonl`, `fast/trace.json`의
