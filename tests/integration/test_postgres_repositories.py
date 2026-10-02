@@ -173,8 +173,8 @@ def test_postgres_repositories_store_and_restore_first_cycle_contracts(database_
 def test_postgres_serializes_same_decision_id_across_scopes(database_url: str) -> None:
     suffix = uuid4().hex
     decision_id = f"DEC-{suffix}"
-    first_run_id = f"RUN-A-{suffix}"
-    second_run_id = f"RUN-B-{suffix}"
+    first_run_id = "RUN-20260912-997"
+    second_run_id = "RUN-20260912-998"
     cases = (
         _persistence_case(first_run_id, "WIN-A", decision_id),
         _persistence_case(second_run_id, "WIN-B", decision_id),
@@ -208,7 +208,7 @@ def test_postgres_serializes_same_decision_id_across_scopes(database_url: str) -
 
 def test_postgres_serializes_competing_decisions_in_same_scope(database_url: str) -> None:
     suffix = uuid4().hex
-    run_id = f"RUN-{suffix}"
+    run_id = "RUN-20260912-996"
     entity_id = f"WIN-{suffix}"
     base_decision_id = f"DEC-D1-{suffix}"
     candidate_decision_ids = (f"DEC-D2-{suffix}", f"DEC-D3-{suffix}")
