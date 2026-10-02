@@ -10,7 +10,7 @@ from uuid import uuid4
 import psycopg
 import pytest
 from psycopg import sql
-from psycopg.errors import CheckViolation
+from psycopg.errors import CheckViolation, ForeignKeyViolation
 from psycopg.types.json import Jsonb
 
 from incident_awareness.storage.config import DATABASE_URL_ENV, DatabaseConfig
@@ -517,6 +517,50 @@ def test_decision_runtime_snapshots_reject_invalid_payload_identifiers(
 
     # Then
     assert exc_info.type is CheckViolation
+
+
+@pytest.mark.parametrize(
+    ("snapshot_run_id", "snapshot_entity_id"),
+    [
+        ("RUN-20260912-997", ENTITY_ID),
+        (RUN_ID, "WIN-02"),
+    ],
+    ids=("run-id-mismatch", "entity-id-mismatch"),
+)
+def test_decision_runtime_snapshots_reject_decision_scope_mismatch(
+    migration_connection: psycopg.Connection[tuple[object, ...]],
+    snapshot_run_id: str,
+    snapshot_entity_id: str,
+) -> None:
+    # Given
+    payload = {
+        "decision_id": SNAPSHOT_DECISION_ID,
+        "run_id": snapshot_run_id,
+        "entity_id": snapshot_entity_id,
+    }
+
+    # When
+    with pytest.raises(ForeignKeyViolation) as exc_info, migration_connection.transaction():
+        migration_connection.execute(
+            """
+            INSERT INTO decision_runtime_snapshots (
+                decision_id,
+                run_id,
+                entity_id,
+                payload
+            )
+            VALUES (%s, %s, %s, %s)
+            """,
+            (
+                SNAPSHOT_DECISION_ID,
+                snapshot_run_id,
+                snapshot_entity_id,
+                Jsonb(payload),
+            ),
+        )
+
+    # Then
+    assert exc_info.value.diag.constraint_name == ("decision_runtime_snapshots_decision_scope_fk")
 
 
 @pytest.mark.parametrize(
