@@ -12,6 +12,7 @@ from psycopg.errors import ForeignKeyViolation, UniqueViolation
 from incident_awareness.collection.collector.sysmon_jsonl import SysmonJsonlRecord
 from incident_awareness.common.models.event import NormalizedEvent, RawLogReference
 from incident_awareness.common.models.fusion import (
+    FusionEpisodeResult,
     FusionResult,
     FusionStoppingTrace,
     FusionStoppingTracePoint,
@@ -415,6 +416,75 @@ def test_postgres_deleting_run_cascades_runtime_snapshot(database_url: str) -> N
         assert snapshot_repository.get(snapshot.decision_id) is None
 
 
+def test_postgres_preserves_historical_runtime_snapshot_after_reprocessing(
+    database_url: str,
+) -> None:
+    # Given
+    suffix = uuid4().hex
+    run_id = "RUN-20261003-906"
+    entity_id = f"WIN-{suffix}"
+    d1_id = f"DEC-D1-{suffix}"
+    d2_id = f"DEC-D2-{suffix}"
+    d1_case, d2_case = _historical_persistence_cases(
+        run_id,
+        entity_id,
+        d1_id,
+        d2_id,
+    )
+    _, _, d1_fusion, d1_trace, d1_fast, d1_decision = d1_case
+    _, _, d2_fusion, d2_trace, d2_fast, d2_decision = d2_case
+
+    with psycopg.connect(database_url) as connection:
+        apply_migrations(connection)
+        snapshot_repository = DecisionRuntimeSnapshotRepository(connection)
+        fusion_repository = FusionResultRepository(connection)
+        trace_repository = FusionStoppingTraceRepository(connection)
+        detection_repository = DetectionResultRepository(connection)
+        decision_repository = DecisionRepository(connection)
+
+        try:
+            persist_s0_results(*d1_case, connection=connection)
+            snapshot_d1 = snapshot_repository.get(d1_id)
+
+            # When
+            persist_s0_results(*d2_case, connection=connection)
+            snapshot_d2 = snapshot_repository.get(d2_id)
+            latest_fusion = fusion_repository.get(run_id, entity_id)
+            latest_trace = trace_repository.get(run_id, entity_id)
+            latest_detection = detection_repository.get(run_id, entity_id)
+            current_head = decision_repository.get_current_head(run_id, entity_id)
+            snapshot_d1_after_reprocessing = snapshot_repository.get(d1_id)
+
+            # Then
+            assert snapshot_d1 is not None
+            assert snapshot_d1.decision_id == d1_id
+            assert snapshot_d1.run_id == run_id
+            assert snapshot_d1.entity_id == entity_id
+            assert snapshot_d1.detection_result == d1_fast.detection_result
+            assert snapshot_d1.fusion_result == d1_fusion
+            assert snapshot_d1.fusion_stopping_trace == d1_trace
+
+            assert snapshot_d2 is not None
+            assert snapshot_d2.decision_id == d2_id
+            assert snapshot_d2.detection_result == d2_fast.detection_result
+            assert snapshot_d2.fusion_result == d2_fusion
+            assert snapshot_d2.fusion_stopping_trace == d2_trace
+            assert snapshot_d1 != snapshot_d2
+
+            assert latest_fusion == d2_fusion
+            assert latest_trace == d2_trace
+            assert latest_detection == d2_fast.detection_result
+            assert decision_repository.get(d1_id) == d1_decision
+            assert decision_repository.get(d2_id) == d2_decision
+            assert current_head is not None
+            assert current_head.decision_id == d2_id
+            assert current_head.supersedes_decision_id == d1_id
+            assert snapshot_d1_after_reprocessing == snapshot_d1
+        finally:
+            connection.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
+            connection.commit()
+
+
 def test_postgres_idempotent_decision_retry_preserves_first_stopping_trace(
     database_url: str,
 ) -> None:
@@ -424,6 +494,12 @@ def test_postgres_idempotent_decision_retry_preserves_first_stopping_trace(
     decision_id = f"DEC-{uuid4().hex}"
     case = _persistence_case(run_id, entity_id, decision_id)
     artifacts, normalized_artifacts, fusion_result, first_trace, fast_result, decision_result = case
+    retry_fast_result = _detected_fast_result(
+        run_id,
+        entity_id,
+        datetime(2026, 9, 12, 1, 0, 10, tzinfo=UTC),
+        hit_id=f"hit-{uuid4().hex}",
+    )
     second_trace = first_trace.model_copy(
         update={
             "points": [
@@ -439,9 +515,13 @@ def test_postgres_idempotent_decision_retry_preserves_first_stopping_trace(
 
     with psycopg.connect(database_url) as connection:
         trace_repository = FusionStoppingTraceRepository(connection)
+        detection_repository = DetectionResultRepository(connection)
+        fusion_repository = FusionResultRepository(connection)
+        snapshot_repository = DecisionRuntimeSnapshotRepository(connection)
         try:
             apply_migrations(connection)
             persist_s0_results(*case, connection=connection)
+            first_snapshot = snapshot_repository.get(decision_id)
 
             # When
             persist_s0_results(
@@ -449,15 +529,28 @@ def test_postgres_idempotent_decision_retry_preserves_first_stopping_trace(
                 normalized_artifacts,
                 fusion_result,
                 second_trace,
-                fast_result,
+                retry_fast_result,
                 decision_result,
                 connection=connection,
             )
             stored_trace = trace_repository.get(run_id, entity_id)
+            stored_detection = detection_repository.get(run_id, entity_id)
+            stored_fusion = fusion_repository.get(run_id, entity_id)
+            stored_snapshot = snapshot_repository.get(decision_id)
+            snapshot_count = connection.execute(
+                "SELECT count(*) FROM decision_runtime_snapshots WHERE decision_id = %s",
+                (decision_id,),
+            ).fetchone()
 
             # Then
             assert second_trace != first_trace
+            assert retry_fast_result.detection_result != fast_result.detection_result
             assert stored_trace == first_trace
+            assert stored_detection == fast_result.detection_result
+            assert stored_fusion == fusion_result
+            assert first_snapshot is not None
+            assert stored_snapshot == first_snapshot
+            assert snapshot_count == (1,)
         finally:
             connection.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
             connection.commit()
@@ -737,3 +830,214 @@ def _runtime_snapshot_case(
         fusion_stopping_trace=fusion_stopping_trace,
     )
     return run, decision_result, snapshot
+
+
+def _historical_persistence_cases(
+    run_id: str,
+    entity_id: str,
+    d1_id: str,
+    d2_id: str,
+) -> tuple[_PersistenceCase, _PersistenceCase]:
+    d1_time = datetime(2026, 10, 3, 1, tzinfo=UTC)
+    d2_detector_time = datetime(2026, 10, 3, 1, 0, 10, tzinfo=UTC)
+    d2_fusion_time = datetime(2026, 10, 3, 1, 0, 20, tzinfo=UTC)
+    artifacts = S0PipelineArtifacts(
+        run_metadata=RunMetadata(
+            run_id=run_id,
+            scenario_id="postgres-historical-runtime-snapshot",
+            run_type=RunType.ATTACK,
+            target_host=entity_id,
+            start_time=d1_time,
+            schema_versions=SchemaVersions(
+                run_metadata="v0.2",
+                event="v0.2",
+                evidence="v0.2",
+                fast_hit="v0.2",
+                detection_result="v0.2",
+                fusion_result="v0.3",
+                decision_result="v0.2",
+                execution_record="v0.1",
+                evaluation_input="v0.1",
+            ),
+        ),
+        sysmon_records=(SysmonJsonlRecord(record_no=1, data={}),),
+        normalization_context=SysmonNormalizationContext(
+            run_id=run_id,
+            raw_log_id="RAW-HISTORICAL",
+            segment_no=1,
+        ),
+    )
+    normalized_artifacts = NormalizedEvidenceArtifacts(events=(), evidences=())
+
+    d1_fusion = FusionResult(
+        run_id=run_id,
+        entity_id=entity_id,
+        fusion_time=None,
+        fusion_status="miss",
+        score_at_decision=None,
+        contributing_evidence_ids=[],
+        scoring_config_version="historical-v1",
+        scoring_profile_id="historical-profile-v1",
+        scoring_method="temporal_fusion",
+        scorer_version="historical-scorer-v1",
+        fusion_episodes=[],
+    )
+    d1_trace = FusionStoppingTrace(
+        run_id=run_id,
+        entity_id=entity_id,
+        scoring_config_version=d1_fusion.scoring_config_version,
+        points=[
+            FusionStoppingTracePoint(
+                timestamp=d1_time,
+                score=0.1,
+                persistence_count=None,
+                policy_state="off",
+            )
+        ],
+    )
+    d1_detection = DetectionResult(
+        run_id=run_id,
+        entity_id=entity_id,
+        detector_time=None,
+        detector_status=DetectorStatus.MISS,
+        detector_id=None,
+        rule_id=None,
+        rule_version=None,
+        severity=None,
+    )
+    d1_fast = FastDetectionAdapterResult(
+        detection_result=d1_detection,
+        source_hit_ids=(),
+        selected_source_hit_id=None,
+    )
+    d1_decision = DecisionResult(
+        run_id=run_id,
+        decision_id=d1_id,
+        entity_id=entity_id,
+        fast_status=DetectorStatus.MISS,
+        fusion_status=DetectorStatus.MISS,
+        fusion_time=None,
+        detector_time=None,
+        t_e=None,
+        decision_path=DecisionPath.NONE,
+        winning_path=WinningPath.NONE,
+        decision_reason="D1 Runtime paths missed",
+        config_version="parallel-v0.2",
+        contributing_evidence_ids=[],
+        source_hit_ids=[],
+        supersedes_decision_id=None,
+    )
+
+    d2_evidence_ids = [f"evidence-{uuid4().hex}"]
+    d2_hit_id = f"hit-{uuid4().hex}"
+    d2_fast = _detected_fast_result(
+        run_id,
+        entity_id,
+        d2_detector_time,
+        hit_id=d2_hit_id,
+    )
+    d2_fusion = FusionResult(
+        run_id=run_id,
+        entity_id=entity_id,
+        fusion_time=d2_fusion_time,
+        fusion_status="detected",
+        score_at_decision=0.8,
+        contributing_evidence_ids=d2_evidence_ids,
+        scoring_config_version="historical-v2",
+        scoring_profile_id="historical-profile-v2",
+        scoring_method="temporal_fusion",
+        scorer_version="historical-scorer-v2",
+        fusion_episodes=[
+            FusionEpisodeResult(
+                episode_id=f"episode-{uuid4().hex}",
+                run_id=run_id,
+                entity_id=entity_id,
+                start_time=d2_fusion_time,
+                end_time=None,
+                end_reason=None,
+                score_at_start=0.8,
+                peak_score=0.9,
+                contributing_evidence_ids=d2_evidence_ids,
+            )
+        ],
+    )
+    d2_trace = FusionStoppingTrace(
+        run_id=run_id,
+        entity_id=entity_id,
+        scoring_config_version=d2_fusion.scoring_config_version,
+        points=[
+            FusionStoppingTracePoint(
+                timestamp=d2_detector_time,
+                score=0.4,
+                persistence_count=None,
+                policy_state="off",
+            ),
+            FusionStoppingTracePoint(
+                timestamp=d2_fusion_time,
+                score=0.8,
+                persistence_count=2,
+                policy_state="on",
+            ),
+        ],
+    )
+    d2_decision = DecisionResult(
+        run_id=run_id,
+        decision_id=d2_id,
+        entity_id=entity_id,
+        fast_status=DetectorStatus.DETECTED,
+        fusion_status=DetectorStatus.DETECTED,
+        fusion_time=d2_fusion_time,
+        detector_time=d2_detector_time,
+        t_e=d2_detector_time,
+        decision_path=DecisionPath.FAST_AND_FUSION,
+        winning_path=WinningPath.FAST,
+        decision_reason="D2 Fast and Fusion paths detected",
+        config_version="parallel-v0.2",
+        contributing_evidence_ids=d2_evidence_ids,
+        rule_version=d2_fast.detection_result.rule_version,
+        source_hit_ids=list(d2_fast.source_hit_ids),
+        selected_source_hit_id=d2_fast.selected_source_hit_id,
+        supersedes_decision_id=d1_id,
+    )
+
+    d1_case: _PersistenceCase = (
+        artifacts,
+        normalized_artifacts,
+        d1_fusion,
+        d1_trace,
+        d1_fast,
+        d1_decision,
+    )
+    d2_case: _PersistenceCase = (
+        artifacts,
+        normalized_artifacts,
+        d2_fusion,
+        d2_trace,
+        d2_fast,
+        d2_decision,
+    )
+    return d1_case, d2_case
+
+
+def _detected_fast_result(
+    run_id: str,
+    entity_id: str,
+    detector_time: datetime,
+    *,
+    hit_id: str,
+) -> FastDetectionAdapterResult:
+    detection_result = DetectionResult(
+        run_id=run_id,
+        entity_id=entity_id,
+        detector_time=detector_time,
+        detector_status=DetectorStatus.DETECTED,
+        detector_id="hayabusa",
+        rule_id="RULE-HISTORICAL",
+        rule_version="v0.2",
+        severity=Severity.HIGH,
+    )
+    return FastDetectionAdapterResult(
+        detection_result=detection_result,
+        source_hit_ids=(hit_id,),
+        selected_source_hit_id=hit_id,
+    )
