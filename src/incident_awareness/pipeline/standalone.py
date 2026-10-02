@@ -14,6 +14,10 @@ from incident_awareness.collection.collector.sysmon_jsonl import (
 )
 from incident_awareness.common.models.event import NORMALIZED_EVENT_SCHEMA_VERSION
 from incident_awareness.common.models.run import RunMetadata, RunType, SchemaVersions
+from incident_awareness.integration.fast_hit_handoff import (
+    FastDetectionAdapterResult,
+    build_not_evaluated_detection_result,
+)
 from incident_awareness.normalization.sysmon import SysmonNormalizationContext
 
 _STANDALONE_MANIFEST_ROOT = "generated/raw"
@@ -25,6 +29,7 @@ _SYSMON_NETWORK_CONNECTION_EVENT_ID = 3
 _SUPPORTED_SYSMON_EVENT_IDS = frozenset(
     {_SYSMON_PROCESS_CREATE_EVENT_ID, _SYSMON_NETWORK_CONNECTION_EVENT_ID}
 )
+DEFAULT_STANDALONE_FAST_MODE = "not_evaluated"
 
 DEFAULT_STANDALONE_SCHEMA_VERSIONS = SchemaVersions(
     run_metadata="v0.2",
@@ -45,6 +50,20 @@ class StandaloneSysmonArtifacts:
 
     manifest: dict[str, object]
     normalization_context: SysmonNormalizationContext
+
+
+def build_default_standalone_fast_detection(
+    *,
+    run_id: str,
+    entity_id: str,
+) -> FastDetectionAdapterResult:
+    """Build the standalone profile's explicitly unexecuted Fast result.
+
+    A standalone Sysmon JSONL cannot establish that a Fast Runner was invoked,
+    so this profile must not fabricate a handoff, hit, or Fast ``miss``.  Fast
+    Runner execution remains a separately versioned integration contract.
+    """
+    return build_not_evaluated_detection_result(run_id=run_id, entity_id=entity_id)
 
 
 def build_run_metadata_from_sysmon_jsonl(
@@ -265,8 +284,10 @@ def _sha256(path: Path) -> str:
 
 
 __all__ = [
+    "DEFAULT_STANDALONE_FAST_MODE",
     "DEFAULT_STANDALONE_SCHEMA_VERSIONS",
     "StandaloneSysmonArtifacts",
+    "build_default_standalone_fast_detection",
     "build_run_metadata_from_sysmon_jsonl",
     "build_sysmon_artifacts_from_jsonl",
     "validate_standalone_sysmon_jsonl",

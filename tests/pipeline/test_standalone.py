@@ -7,6 +7,8 @@ import pytest
 
 from incident_awareness.common.models.run import RunType
 from incident_awareness.pipeline.standalone import (
+    DEFAULT_STANDALONE_FAST_MODE,
+    build_default_standalone_fast_detection,
     build_run_metadata_from_sysmon_jsonl,
     build_sysmon_artifacts_from_jsonl,
     validate_standalone_sysmon_jsonl,
@@ -110,6 +112,21 @@ def test_builds_manifest_sha256_and_raw_log_provenance(tmp_path: Path) -> None:
     assert artifacts.normalization_context.run_id == "RUN-20261003-001"
     assert artifacts.normalization_context.raw_log_id == jsonl_item["raw_log_id"]
     assert artifacts.normalization_context.segment_no == 1
+
+
+def test_builds_not_evaluated_fast_result_without_fast_artifacts() -> None:
+    result = build_default_standalone_fast_detection(
+        run_id="RUN-20261003-001",
+        entity_id="WIN-01",
+    )
+
+    assert DEFAULT_STANDALONE_FAST_MODE == "not_evaluated"
+    assert result.detection_result.run_id == "RUN-20261003-001"
+    assert result.detection_result.entity_id == "WIN-01"
+    assert result.detection_result.detector_status == "not_evaluated"
+    assert result.detection_result.detector_time is None
+    assert result.source_hit_ids == ()
+    assert result.selected_source_hit_id is None
 
 
 def test_accepts_supported_sysmon_event_ids(tmp_path: Path) -> None:
