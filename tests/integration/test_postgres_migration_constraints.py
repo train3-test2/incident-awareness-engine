@@ -10,13 +10,21 @@ from psycopg.errors import CheckViolation
 from psycopg.types.json import Jsonb
 
 from incident_awareness.storage.config import DATABASE_URL_ENV, DatabaseConfig
+from incident_awareness.storage.migrate import apply_migrations
 
-MIGRATION_PATH = (
+FIRST_MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
     / "infra"
     / "postgres"
     / "migrations"
     / "001_first_cycle.sql"
+)
+SECOND_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "infra"
+    / "postgres"
+    / "migrations"
+    / "002_fusion_stopping_trace.sql"
 )
 RUN_ID = "RUN-20260912-998"
 EVENT_ID = "evt-001"
@@ -42,7 +50,8 @@ def migration_connection(database_url: str) -> psycopg.Connection[tuple[object, 
     try:
         connection.execute(sql.SQL("CREATE SCHEMA {} ").format(schema))
         connection.execute(sql.SQL("SET search_path TO {} ").format(schema))
-        connection.execute(MIGRATION_PATH.read_text(encoding="utf-8"))
+        connection.execute(FIRST_MIGRATION_PATH.read_text(encoding="utf-8"))
+        connection.execute(SECOND_MIGRATION_PATH.read_text(encoding="utf-8"))
         connection.execute(
             """
             INSERT INTO runs (
@@ -70,6 +79,52 @@ def migration_connection(database_url: str) -> psycopg.Connection[tuple[object, 
         connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(schema))
         connection.commit()
         connection.close()
+
+
+def test_baselines_migrations_applied_by_docker_initdb(
+    migration_connection: psycopg.Connection[tuple[object, ...]],
+) -> None:
+    # Given
+    assert migration_connection.execute("SELECT to_regclass('schema_migrations')").fetchone() == (
+        None,
+    )
+
+    # When
+    applied = apply_migrations(migration_connection)
+
+    # Then
+    assert applied == ("001_first_cycle", "002_fusion_stopping_trace")
+    migration_ids = migration_connection.execute(
+        "SELECT migration_id FROM schema_migrations ORDER BY migration_id"
+    ).fetchall()
+    assert migration_ids == [
+        ("001_first_cycle",),
+        ("002_fusion_stopping_trace",),
+    ]
+    existing_tables = migration_connection.execute(
+        """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = current_schema()
+          AND table_name IN (
+              'runs',
+              'events',
+              'fusion_results',
+              'detection_results',
+              'decisions',
+              'fusion_stopping_traces'
+          )
+        ORDER BY table_name
+        """
+    ).fetchall()
+    assert existing_tables == [
+        ("decisions",),
+        ("detection_results",),
+        ("events",),
+        ("fusion_results",),
+        ("fusion_stopping_traces",),
+        ("runs",),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -175,6 +230,46 @@ def test_detection_results_reject_invalid_payload_identifiers(
         VALUES (%s, %s, %s, %s, %s, %s)
         """,
         (RUN_ID, ENTITY_ID, "detected", TIMESTAMP, "hayabusa", Jsonb(payload)),
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "run_id": "RUN-20260912-997",
+            "entity_id": ENTITY_ID,
+            "scoring_config_version": "v1",
+        },
+        {
+            "run_id": RUN_ID,
+            "entity_id": "WIN-02",
+            "scoring_config_version": "v1",
+        },
+        {
+            "run_id": RUN_ID,
+            "entity_id": ENTITY_ID,
+            "scoring_config_version": "v2",
+        },
+    ],
+    ids=("run-id-mismatch", "entity-id-mismatch", "config-version-mismatch"),
+)
+def test_fusion_stopping_traces_reject_payload_identifier_mismatch(
+    migration_connection: psycopg.Connection[tuple[object, ...]],
+    payload: dict[str, str],
+) -> None:
+    _assert_check_violation(
+        migration_connection,
+        """
+        INSERT INTO fusion_stopping_traces (
+            run_id,
+            entity_id,
+            scoring_config_version,
+            payload
+        )
+        VALUES (%s, %s, %s, %s)
+        """,
+        (RUN_ID, ENTITY_ID, "v1", Jsonb(payload)),
     )
 
 

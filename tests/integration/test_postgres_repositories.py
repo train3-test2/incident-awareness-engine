@@ -10,7 +10,11 @@ import pytest
 
 from incident_awareness.collection.collector.sysmon_jsonl import SysmonJsonlRecord
 from incident_awareness.common.models.event import NormalizedEvent, RawLogReference
-from incident_awareness.common.models.fusion import FusionResult
+from incident_awareness.common.models.fusion import (
+    FusionResult,
+    FusionStoppingTrace,
+    FusionStoppingTracePoint,
+)
 from incident_awareness.common.models.result import (
     DecisionPath,
     DecisionResult,
@@ -26,12 +30,14 @@ from incident_awareness.pipeline.event_evidence import NormalizedEvidenceArtifac
 from incident_awareness.pipeline.persistence import DecisionConflictError, persist_s0_results
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
 from incident_awareness.storage.config import DATABASE_URL_ENV, DatabaseConfig
+from incident_awareness.storage.migrate import apply_migrations
 from incident_awareness.storage.repositories.event_repository import EventRepository
 from incident_awareness.storage.repositories.result_repository import (
     DecisionIntegrityError,
     DecisionRepository,
     DetectionResultRepository,
     FusionResultRepository,
+    FusionStoppingTraceRepository,
 )
 from incident_awareness.storage.repositories.run_repository import RunRepository
 
@@ -165,6 +171,89 @@ def test_postgres_repositories_store_and_restore_first_cycle_contracts(database_
             assert detection_repository.get(run_id, "WIN-01") == detection_result
             assert decision_repository.get(decision_id) == decision_result
             assert decision_repository.get_current_head(run_id, "WIN-01") == decision_result
+        finally:
+            connection.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
+            connection.commit()
+
+
+def test_postgres_stores_updates_and_cascades_fusion_stopping_trace(
+    database_url: str,
+) -> None:
+    # Given
+    run_id = "RUN-20260912-995"
+    entity_id = "WIN-01"
+    timestamp = datetime(2026, 9, 12, 1, tzinfo=UTC)
+    run = RunMetadata(
+        run_id=run_id,
+        scenario_id="postgres-stopping-trace",
+        run_type=RunType.ATTACK,
+        target_host=entity_id,
+        start_time=timestamp,
+        schema_versions=SchemaVersions(
+            run_metadata="v0.2",
+            event="v0.2",
+            evidence="v0.2",
+            fast_hit="v0.2",
+            detection_result="v0.2",
+            fusion_result="v0.3",
+            decision_result="v0.2",
+            execution_record="v0.1",
+            evaluation_input="v0.1",
+        ),
+    )
+    first_trace = FusionStoppingTrace(
+        run_id=run_id,
+        entity_id=entity_id,
+        scoring_config_version="v1",
+        points=[
+            FusionStoppingTracePoint(
+                timestamp=timestamp,
+                score=0.8,
+                persistence_count=1,
+                policy_state="off",
+            )
+        ],
+    )
+    second_trace = FusionStoppingTrace(
+        run_id=run_id,
+        entity_id=entity_id,
+        scoring_config_version="v2",
+        points=[
+            FusionStoppingTracePoint(
+                timestamp=timestamp,
+                score=0.9,
+                persistence_count=1,
+                policy_state="off",
+            ),
+            FusionStoppingTracePoint(
+                timestamp=timestamp.replace(second=10),
+                score=1.0,
+                persistence_count=2,
+                policy_state="on",
+            ),
+        ],
+    )
+
+    with psycopg.connect(database_url) as connection:
+        run_repository = RunRepository(connection)
+        trace_repository = FusionStoppingTraceRepository(connection)
+
+        try:
+            # When
+            apply_migrations(connection)
+            run_repository.save(run)
+            trace_repository.save(first_trace)
+            stored_first_trace = trace_repository.get(run_id, entity_id)
+            trace_repository.save(second_trace)
+            stored_second_trace = trace_repository.get(run_id, entity_id)
+
+            # Then
+            assert stored_first_trace == first_trace
+            assert stored_second_trace == second_trace
+            assert stored_second_trace.scoring_config_version == "v2"
+
+            connection.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
+            assert trace_repository.get(run_id, entity_id) is None
         finally:
             connection.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
             connection.commit()
