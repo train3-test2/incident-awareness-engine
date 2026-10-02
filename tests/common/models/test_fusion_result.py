@@ -1,11 +1,14 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
+from math import inf, nan
 
 import pytest
 
 from incident_awareness.common.models.fusion import (
     FusionEpisodeResult,
     FusionResult,
+    FusionStoppingTrace,
+    FusionStoppingTracePoint,
 )
 
 
@@ -900,3 +903,308 @@ def test_accepts_iso_8601_string_timestamp() -> None:
         123000,
         tzinfo=UTC,
     )
+
+
+@pytest.mark.parametrize(
+    ("policy_state", "persistence_count"),
+    [
+        ("off", 1),
+        ("on", 2),
+        ("on", None),
+        ("off", None),
+    ],
+)
+def test_accepts_stopping_trace_point_state_and_persistence_combinations(
+    policy_state: str,
+    persistence_count: int | None,
+) -> None:
+    # Given
+    timestamp = datetime(2026, 9, 9, 1, 0, tzinfo=UTC)
+
+    # When
+    point = FusionStoppingTracePoint(
+        timestamp=timestamp,
+        score=0.8,
+        persistence_count=persistence_count,
+        policy_state=policy_state,
+    )
+
+    # Then
+    assert point.timestamp == timestamp
+    assert point.persistence_count == persistence_count
+    assert point.policy_state == policy_state
+
+
+@pytest.mark.parametrize("score", [-0.1, 1.1, nan, inf, -inf])
+def test_rejects_invalid_stopping_trace_point_score(score: float) -> None:
+    # Given
+    timestamp = datetime(2026, 9, 9, 1, 0, tzinfo=UTC)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionStoppingTracePoint(
+            timestamp=timestamp,
+            score=score,
+            persistence_count=None,
+            policy_state="off",
+        )
+
+    # Then
+    assert "score" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("persistence_count", [0, -1])
+def test_rejects_invalid_stopping_trace_point_persistence_count(
+    persistence_count: int,
+) -> None:
+    # Given
+    timestamp = datetime(2026, 9, 9, 1, 0, tzinfo=UTC)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionStoppingTracePoint(
+            timestamp=timestamp,
+            score=0.8,
+            persistence_count=persistence_count,
+            policy_state="off",
+        )
+
+    # Then
+    assert "persistence_count" in str(exc_info.value)
+
+
+def test_rejects_invalid_stopping_trace_point_policy_state() -> None:
+    # Given
+    timestamp = datetime(2026, 9, 9, 1, 0, tzinfo=UTC)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionStoppingTracePoint(
+            timestamp=timestamp,
+            score=0.8,
+            persistence_count=None,
+            policy_state="active",
+        )
+
+    # Then
+    assert "policy_state" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "expected_message"),
+    [
+        (
+            datetime(2026, 9, 9, 1, 0, tzinfo=UTC).replace(tzinfo=None),
+            "FusionStoppingTracePoint timestamp must include timezone information",
+        ),
+        (
+            datetime(2026, 9, 9, 10, 0, tzinfo=timezone(timedelta(hours=9))),
+            "FusionStoppingTracePoint timestamp must be UTC",
+        ),
+    ],
+)
+def test_rejects_invalid_stopping_trace_point_datetime(
+    timestamp: datetime,
+    expected_message: str,
+) -> None:
+    # Given
+    expected_error = expected_message
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionStoppingTracePoint(
+            timestamp=timestamp,
+            score=0.8,
+            persistence_count=None,
+            policy_state="off",
+        )
+
+    # Then
+    assert expected_error in str(exc_info.value)
+
+
+@pytest.mark.parametrize("timestamp", [1234567890, 1234567890.0, True])
+def test_rejects_numeric_stopping_trace_point_timestamp(timestamp: object) -> None:
+    # Given
+    expected_message = (
+        "FusionStoppingTracePoint timestamp must be an ISO 8601 datetime, not a numeric timestamp"
+    )
+
+    # When
+    with pytest.raises(TypeError) as exc_info:
+        FusionStoppingTracePoint(
+            timestamp=timestamp,
+            score=0.8,
+            persistence_count=None,
+            policy_state="off",
+        )
+
+    # Then
+    assert expected_message in str(exc_info.value)
+
+
+def test_rejects_numeric_string_stopping_trace_point_timestamp() -> None:
+    # Given
+    expected_message = (
+        "FusionStoppingTracePoint timestamp must be an ISO 8601 datetime, not a numeric timestamp"
+    )
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionStoppingTracePoint(
+            timestamp="1234567890",
+            score=0.8,
+            persistence_count=None,
+            policy_state="off",
+        )
+
+    # Then
+    assert expected_message in str(exc_info.value)
+
+
+def test_accepts_and_serializes_iso_8601_stopping_trace_point_timestamp() -> None:
+    # Given
+    timestamp = "2026-09-09T01:00:20.123456Z"
+
+    # When
+    point = FusionStoppingTracePoint(
+        timestamp=timestamp,
+        score=0.8,
+        persistence_count=1,
+        policy_state="off",
+    )
+    payload = json.loads(point.model_dump_json())
+
+    # Then
+    assert point.timestamp == datetime(2026, 9, 9, 1, 0, 20, 123456, tzinfo=UTC)
+    assert payload["timestamp"] == "2026-09-09T01:00:20.123Z"
+
+
+def test_accepts_ordered_stopping_trace_points() -> None:
+    # Given
+    first_timestamp = datetime(2026, 9, 9, 1, 0, tzinfo=UTC)
+    points = [
+        FusionStoppingTracePoint(
+            timestamp=first_timestamp,
+            score=0.8,
+            persistence_count=1,
+            policy_state="off",
+        ),
+        FusionStoppingTracePoint(
+            timestamp=first_timestamp + timedelta(seconds=10),
+            score=0.9,
+            persistence_count=2,
+            policy_state="on",
+        ),
+    ]
+
+    # When
+    trace = FusionStoppingTrace(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        scoring_config_version="fusion-config-v0.1",
+        points=points,
+    )
+
+    # Then
+    assert trace.points == points
+
+
+def test_accepts_empty_stopping_trace_points() -> None:
+    # Given
+    points: list[FusionStoppingTracePoint] = []
+
+    # When
+    trace = FusionStoppingTrace(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        scoring_config_version="fusion-config-v0.1",
+        points=points,
+    )
+
+    # Then
+    assert trace.points == []
+
+
+@pytest.mark.parametrize("timestamp_offsets", [(0, 0), (10, 0)])
+def test_rejects_non_increasing_stopping_trace_timestamps(
+    timestamp_offsets: tuple[int, int],
+) -> None:
+    # Given
+    start = datetime(2026, 9, 9, 1, 0, tzinfo=UTC)
+    points = [
+        FusionStoppingTracePoint(
+            timestamp=start + timedelta(seconds=offset),
+            score=0.8,
+            persistence_count=None,
+            policy_state="off",
+        )
+        for offset in timestamp_offsets
+    ]
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionStoppingTrace(
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            scoring_config_version="fusion-config-v0.1",
+            points=points,
+        )
+
+    # Then
+    assert "point timestamps must be strictly increasing" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("field_name", ["run_id", "entity_id", "scoring_config_version"])
+def test_rejects_empty_stopping_trace_identifiers(field_name: str) -> None:
+    # Given
+    values = {
+        "run_id": "RUN-01",
+        "entity_id": "HOST-01",
+        "scoring_config_version": "fusion-config-v0.1",
+        "points": [],
+    }
+    values[field_name] = ""
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionStoppingTrace(**values)
+
+    # Then
+    assert field_name in str(exc_info.value)
+
+
+def test_rejects_extra_stopping_trace_point_fields() -> None:
+    # Given
+    timestamp = datetime(2026, 9, 9, 1, 0, tzinfo=UTC)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionStoppingTracePoint(
+            timestamp=timestamp,
+            score=0.8,
+            persistence_count=None,
+            policy_state="off",
+            unexpected="value",
+        )
+
+    # Then
+    assert "unexpected" in str(exc_info.value)
+
+
+def test_rejects_extra_stopping_trace_fields() -> None:
+    # Given
+    points: list[FusionStoppingTracePoint] = []
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionStoppingTrace(
+            run_id="RUN-01",
+            entity_id="HOST-01",
+            scoring_config_version="fusion-config-v0.1",
+            points=points,
+            unexpected="value",
+        )
+
+    # Then
+    assert "unexpected" in str(exc_info.value)
