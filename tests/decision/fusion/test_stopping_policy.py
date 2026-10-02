@@ -869,3 +869,42 @@ def test_observer_resets_persistence_after_score_falls_below_threshold_on() -> N
         "off",
         "on",
     ]
+
+
+def test_observer_preserves_miss_result_when_persistence_resets() -> None:
+    # Given
+    policy = ThresholdStoppingPolicy(
+        threshold_on=0.8,
+        threshold_off=0.4,
+        persistence_k=2,
+    )
+    trajectory = [
+        make_point(0, 0.9),
+        make_point(10, 0.5),
+        make_point(20, 0.9),
+    ]
+    run_end = make_point(30, 0.0).timestamp
+    trace: list[StoppingTracePoint] = []
+
+    expected_without_observer = policy.evaluate(
+        trajectory,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_end=run_end,
+    )
+
+    # When
+    result = policy.evaluate(
+        trajectory,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_end=run_end,
+        observer=trace.append,
+    )
+
+    # Then
+    assert result == expected_without_observer
+    assert result.fusion_status == "miss"
+    assert result.fusion_episodes == ()
+    assert [point.persistence_count for point in trace] == [1, None, 1]
+    assert [point.policy_state for point in trace] == ["off", "off", "off"]
