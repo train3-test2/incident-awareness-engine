@@ -239,6 +239,75 @@ jobs:
           echo "task_arn=$task_arn" >> "$GITHUB_OUTPUT"
           echo "task_id=${task_arn##*/}" >> "$GITHUB_OUTPUT"
 
+      - name: Wait for task completion
+        shell: bash
+        timeout-minutes: 60
+        env:
+          TASK_ARN: ${{ steps.run_task.outputs.task_arn }}
+        run: |
+          set -euo pipefail
+
+          deadline=$((SECONDS + 55 * 60))
+          while (( SECONDS < deadline )); do
+            status="$(
+              aws ecs describe-tasks \
+                --cluster "$ECS_CLUSTER" \
+                --tasks "$TASK_ARN" \
+                --query 'tasks[0].lastStatus' \
+                --output text \
+                --cli-connect-timeout 10 \
+                --cli-read-timeout 10
+            )"
+            if [[ "$status" == "STOPPED" ]]; then
+              exit 0
+            fi
+            sleep 15
+          done
+
+          echo "Timed out waiting for ECS task to stop after 55 minutes."
+          exit 1
+
+      - name: Summarize task result
+        if: always() && steps.run_task.outputs.task_arn != ''
+        shell: bash
+        env:
+          TASK_ARN: ${{ steps.run_task.outputs.task_arn }}
+          TASK_ID: ${{ steps.run_task.outputs.task_id }}
+        run: |
+          set -euo pipefail
+
+          task="$(
+            aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks "$TASK_ARN"
+          )"
+          container="$(jq '.tasks[0].containers[] | select(.name == "incident-awareness-engine-first-cycle")' <<< "$task")"
+          exit_code="$(jq -r '.exitCode // "missing"' <<< "$container")"
+          stop_code="$(jq -r '.tasks[0].stopCode // ""' <<< "$task")"
+          stopped_reason="$(jq -r '.tasks[0].stoppedReason // ""' <<< "$task")"
+          log_group="/ecs/incident-awareness-engine-dev"
+          log_stream="ecs/incident-awareness-engine-first-cycle/$TASK_ID"
+          encoded_group="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$log_group")"
+          encoded_stream="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$log_stream")"
+          log_url="https://${AWS_REGION}.console.aws.amazon.com/cloudwatch/home?region=${AWS_REGION}#logsV2:log-groups/log-group/${encoded_group}/log-events/${encoded_stream}"
+
+          {
+            echo "## First Cycle demo task result"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Task ARN | \`$TASK_ARN\` |"
+            echo "| Exit code | \`$exit_code\` |"
+            echo "| Stop code | $stop_code |"
+            echo "| Stopped reason | $stopped_reason |"
+            echo "| CloudWatch Logs | [Open log stream]($log_url) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$exit_code" != "0" ]]; then
+            echo "First Cycle task failed with exit code $exit_code."
+            exit 1
+          fi
+
       - name: Write demo input summary
         shell: bash
         env:
