@@ -1064,7 +1064,7 @@ def test_rejects_numeric_string_stopping_trace_point_timestamp() -> None:
 
 def test_accepts_and_serializes_iso_8601_stopping_trace_point_timestamp() -> None:
     # Given
-    timestamp = "2026-09-09T01:00:20.123456Z"
+    timestamp = "2026-09-09T01:00:20.123Z"
 
     # When
     point = FusionStoppingTracePoint(
@@ -1076,8 +1076,74 @@ def test_accepts_and_serializes_iso_8601_stopping_trace_point_timestamp() -> Non
     payload = json.loads(point.model_dump_json())
 
     # Then
-    assert point.timestamp == datetime(2026, 9, 9, 1, 0, 20, 123456, tzinfo=UTC)
+    assert point.timestamp == datetime(2026, 9, 9, 1, 0, 20, 123000, tzinfo=UTC)
     assert payload["timestamp"] == "2026-09-09T01:00:20.123Z"
+
+
+def test_rejects_sub_millisecond_stopping_trace_point_datetime() -> None:
+    # Given
+    timestamp = datetime(2026, 9, 9, 1, 0, 20, 123456, tzinfo=UTC)
+    expected_message = "must be aligned to millisecond precision"
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionStoppingTracePoint(
+            timestamp=timestamp,
+            score=0.8,
+            persistence_count=1,
+            policy_state="off",
+        )
+
+    # Then
+    assert expected_message in str(exc_info.value)
+
+
+def test_rejects_sub_millisecond_stopping_trace_point_iso_string() -> None:
+    # Given
+    timestamp = "2026-09-09T01:00:20.123456Z"
+    expected_message = "must be aligned to millisecond precision"
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        FusionStoppingTracePoint(
+            timestamp=timestamp,
+            score=0.8,
+            persistence_count=1,
+            policy_state="off",
+        )
+
+    # Then
+    assert expected_message in str(exc_info.value)
+
+
+def test_round_trips_stopping_trace_with_distinct_millisecond_timestamps() -> None:
+    # Given
+    timestamps = (
+        datetime(2026, 9, 9, 1, 0, 20, 123000, tzinfo=UTC),
+        datetime(2026, 9, 9, 1, 0, 20, 124000, tzinfo=UTC),
+    )
+    trace = FusionStoppingTrace(
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        scoring_config_version="fusion-config-v0.1",
+        points=[
+            FusionStoppingTracePoint(
+                timestamp=timestamp,
+                score=score,
+                persistence_count=None,
+                policy_state="off",
+            )
+            for timestamp, score in zip(timestamps, (0.7, 0.8), strict=True)
+        ],
+    )
+
+    # When
+    serialized = trace.model_dump_json()
+    restored = FusionStoppingTrace.model_validate_json(serialized)
+
+    # Then
+    assert restored == trace
+    assert tuple(point.timestamp for point in restored.points) == timestamps
 
 
 def test_accepts_ordered_stopping_trace_points() -> None:

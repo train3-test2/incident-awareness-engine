@@ -92,6 +92,10 @@ class FusionStoppingTracePoint(BaseModel):
             field_name="FusionStoppingTracePoint timestamp",
         )
         assert validated is not None
+        if validated.microsecond % 1000 != 0:
+            raise ValueError(
+                "FusionStoppingTracePoint timestamp must be aligned to millisecond precision"
+            )
         return validated
 
     @field_serializer("timestamp", when_used="json")
