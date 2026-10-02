@@ -10,6 +10,10 @@ Sysmon JSONL 하나에서 이 입력 Artifact를 자동 생성하는 개발용 C
 [Sysmon JSONL 단독 입력 First Cycle CLI 계약](sysmon-jsonl-standalone-input.md)을 따른다.
 해당 CLI도 생성 후에는 이 문서의 Artifact·정합성 규칙을 그대로 적용한다.
 
+> 현재 ECS entrypoint는 이 문서의 완성된 First Cycle Artifact 묶음만 실행한다. standalone
+> CLI/Artifact writer가 구현되기 전에는 Sysmon JSONL 하나만 S3 prefix에 업로드해 실행할 수
+> 없다. `fast/` Artifact를 생략하면 기존 entrypoint의 Fast handoff 검증에서 실패한다.
+
 Fargate는 S3를 파일시스템으로 직접 마운트하지 않는다. 태스크 시작 시 entrypoint가
 S3 객체를 `/inputs`에 내려받고, 파이프라인 프로세스는 그 디렉터리를 읽기 전용으로
 취급한다. `/inputs`는 실행 중 생성한 출력이나 임시 파일의 저장 위치가 아니다.
@@ -91,6 +95,21 @@ python -m incident_awareness.pipeline \
 S3 객체를 모두 내려받기 전에 CLI를 실행하거나, 임의의 호스트 경로를 CLI 인자로
 전달해서는 안 된다. 이 계약의 파일 목록 또는 경로를 변경하면 Fast trace와 Manifest
 검증 규칙, ECS entrypoint, Task Definition을 같은 변경 단위로 갱신한다.
+
+## 단독 JSONL 경로의 AWS 적용 순서
+
+standalone CLI가 구현된 뒤에는 다음 순서로 AWS 실행 경로를 추가한다.
+
+1. 단독 CLI가 JSONL을 검증하고 `run_metadata.json`, `manifest.json`, telemetry JSONL을 생성한다.
+2. 기본 Fast mode가 `not_evaluated`이면 Fast handoff를 요구하지 않는 전용 entrypoint 또는
+   Task Definition revision을 사용한다. 기존 First Cycle Task Definition을 임의로 재사용하지 않는다.
+3. 생성 Artifact를 `s3://<bucket>/first-cycle/<run_id>/`에 업로드하고, 해당 revision으로
+   Fargate 태스크를 실행한다.
+4. CloudWatch Logs의 종료 코드와 PostgreSQL의 Run·Event·Fusion·Detection·Decision 저장 결과를
+   함께 확인한다.
+
+이 단계는 아직 구현 전이다. 현재 AWS에서 검증 가능한 경로는 Fast Artifact를 모두 포함한
+기존 First Cycle 입력 실행뿐이다.
 
 ## ECS Task Definition과 실행 override
 
