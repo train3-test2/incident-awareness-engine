@@ -1,3 +1,4 @@
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -5,7 +6,10 @@ from pathlib import Path
 import pytest
 
 from incident_awareness.common.models.run import RunType
-from incident_awareness.pipeline.standalone import build_run_metadata_from_sysmon_jsonl
+from incident_awareness.pipeline.standalone import (
+    build_run_metadata_from_sysmon_jsonl,
+    build_sysmon_artifacts_from_jsonl,
+)
 
 
 def test_builds_run_metadata_from_sysmon_event_time_range(tmp_path: Path) -> None:
@@ -60,6 +64,29 @@ def test_rejects_missing_sysmon_event_time(tmp_path: Path) -> None:
         )
 
 
+def test_builds_manifest_sha256_and_raw_log_provenance(tmp_path: Path) -> None:
+    jsonl_path = tmp_path / "uploaded-sysmon.jsonl"
+    _write_jsonl(
+        jsonl_path, [_record("2026-10-03 00:00:00.000", time_created="2026-10-03T00:00:00Z")]
+    )
+
+    artifacts = build_sysmon_artifacts_from_jsonl(jsonl_path, run_id="RUN-20261003-001")
+
+    jsonl_item = artifacts.manifest["items"][1]
+    assert artifacts.manifest["run_id"] == "RUN-20261003-001"
+    assert jsonl_item == {
+        "raw_log_id": "RAW-RUN-20261003-001-SYSMON-001",
+        "path": "generated/raw/RUN-20261003-001/telemetry/sysmon-0001.jsonl",
+        "sha256": _sha256(jsonl_path),
+        "layer": "raw_telemetry",
+        "source": "sysmon",
+        "derived_from": "generated/raw/RUN-20261003-001/telemetry/sysmon-0001.evtx",
+    }
+    assert artifacts.normalization_context.run_id == "RUN-20261003-001"
+    assert artifacts.normalization_context.raw_log_id == jsonl_item["raw_log_id"]
+    assert artifacts.normalization_context.segment_no == 1
+
+
 def _record(utc_time: str, *, time_created: str) -> dict[str, object]:
     return {
         "RecordId": 1,
@@ -75,3 +102,7 @@ def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
         "\n".join(json.dumps(record) for record in records) + "\n",
         encoding="utf-8",
     )
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -12,6 +14,12 @@ from incident_awareness.collection.collector.sysmon_jsonl import (
 )
 from incident_awareness.common.models.event import NORMALIZED_EVENT_SCHEMA_VERSION
 from incident_awareness.common.models.run import RunMetadata, RunType, SchemaVersions
+from incident_awareness.normalization.sysmon import SysmonNormalizationContext
+
+_STANDALONE_MANIFEST_ROOT = "generated/raw"
+_SYSMON_JSONL_FILENAME = "sysmon-0001.jsonl"
+_SYSMON_EVTX_FILENAME = "sysmon-0001.evtx"
+_SYSMON_SEGMENT_NO = 1
 
 DEFAULT_STANDALONE_SCHEMA_VERSIONS = SchemaVersions(
     run_metadata="v0.2",
@@ -24,6 +32,14 @@ DEFAULT_STANDALONE_SCHEMA_VERSIONS = SchemaVersions(
     execution_record="v0.1",
     evaluation_input="v0.1",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class StandaloneSysmonArtifacts:
+    """Generated Manifest and provenance context for one standalone JSONL."""
+
+    manifest: dict[str, object]
+    normalization_context: SysmonNormalizationContext
 
 
 def build_run_metadata_from_sysmon_jsonl(
@@ -54,6 +70,53 @@ def build_run_metadata_from_sysmon_jsonl(
         end_time=max(event_times),
         schema_versions=(schema_versions or DEFAULT_STANDALONE_SCHEMA_VERSIONS).model_copy(
             deep=True
+        ),
+    )
+
+
+def build_sysmon_artifacts_from_jsonl(
+    path: Path,
+    *,
+    run_id: str,
+) -> StandaloneSysmonArtifacts:
+    """Build the manifest and Raw Log Provenance context for one JSONL source.
+
+    The generated manifest records the expected First Cycle telemetry tail, not
+    the caller's local source path.  This keeps the later materialized input
+    directory portable while binding its JSONL bytes by SHA-256.
+    """
+    sha256 = _sha256(path)
+    raw_log_id = f"RAW-{run_id}-SYSMON-001"
+    evtx_raw_log_id = f"RAW-{run_id}-EVTX-001"
+    telemetry_root = f"{_STANDALONE_MANIFEST_ROOT}/{run_id}/telemetry"
+    evtx_path = f"{telemetry_root}/{_SYSMON_EVTX_FILENAME}"
+    jsonl_path = f"{telemetry_root}/{_SYSMON_JSONL_FILENAME}"
+
+    return StandaloneSysmonArtifacts(
+        manifest={
+            "run_id": run_id,
+            "items": [
+                {
+                    "raw_log_id": evtx_raw_log_id,
+                    "path": evtx_path,
+                    "sha256": "0" * 64,
+                    "layer": "raw_telemetry",
+                    "source": "sysmon",
+                },
+                {
+                    "raw_log_id": raw_log_id,
+                    "path": jsonl_path,
+                    "sha256": sha256,
+                    "layer": "raw_telemetry",
+                    "source": "sysmon",
+                    "derived_from": evtx_path,
+                },
+            ],
+        },
+        normalization_context=SysmonNormalizationContext(
+            run_id=run_id,
+            raw_log_id=raw_log_id,
+            segment_no=_SYSMON_SEGMENT_NO,
         ),
     )
 
@@ -91,4 +154,16 @@ def _event_time(record: SysmonJsonlRecord) -> datetime:
     return parsed.astimezone(UTC).replace(microsecond=parsed.microsecond // 1000 * 1000)
 
 
-__all__ = ["DEFAULT_STANDALONE_SCHEMA_VERSIONS", "build_run_metadata_from_sysmon_jsonl"]
+def _sha256(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as error:
+        raise ValueError(f"standalone Sysmon JSONL is not readable: {path}") from error
+
+
+__all__ = [
+    "DEFAULT_STANDALONE_SCHEMA_VERSIONS",
+    "StandaloneSysmonArtifacts",
+    "build_run_metadata_from_sysmon_jsonl",
+    "build_sysmon_artifacts_from_jsonl",
+]
