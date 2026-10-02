@@ -140,6 +140,7 @@ def test_extracted_evidence_runs_through_temporal_fusion() -> None:
 
     replay_result = pipeline_result.replay_result
     fusion_result = pipeline_result.fusion_result
+    stopping_trace = pipeline_result.stopping_trace
 
     # Then
     assert len(evidences) == 2
@@ -155,6 +156,27 @@ def test_extracted_evidence_runs_through_temporal_fusion() -> None:
     assert len(replay_result.stopping_trace) == len(replay_result.trajectory)
     assert [(point.timestamp, point.score) for point in replay_result.stopping_trace] == [
         (point.timestamp, point.score) for point in replay_result.trajectory
+    ]
+    assert stopping_trace.run_id == run_id
+    assert stopping_trace.entity_id == entity_id
+    assert stopping_trace.scoring_config_version == "fusion-config-v0.1"
+    assert len(stopping_trace.points) == len(replay_result.stopping_trace)
+    assert [
+        (
+            point.timestamp,
+            point.score,
+            point.persistence_count,
+            point.policy_state,
+        )
+        for point in stopping_trace.points
+    ] == [
+        (
+            point.timestamp,
+            point.score,
+            point.persistence_count,
+            point.policy_state,
+        )
+        for point in replay_result.stopping_trace
     ]
 
     expected_evidence_ids = tuple(sorted(evidence.evidence_id for evidence in evidences))
