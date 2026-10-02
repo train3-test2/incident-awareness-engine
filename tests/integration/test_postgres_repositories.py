@@ -48,6 +48,7 @@ type _PersistenceCase = tuple[
     S0PipelineArtifacts,
     NormalizedEvidenceArtifacts,
     FusionResult,
+    FusionStoppingTrace,
     FastDetectionAdapterResult,
     DecisionResult,
 ]
@@ -259,6 +260,54 @@ def test_postgres_stores_updates_and_cascades_fusion_stopping_trace(
             connection.commit()
 
 
+def test_postgres_idempotent_decision_retry_preserves_first_stopping_trace(
+    database_url: str,
+) -> None:
+    # Given
+    run_id = "RUN-20260912-994"
+    entity_id = f"WIN-{uuid4().hex}"
+    decision_id = f"DEC-{uuid4().hex}"
+    case = _persistence_case(run_id, entity_id, decision_id)
+    artifacts, normalized_artifacts, fusion_result, first_trace, fast_result, decision_result = case
+    second_trace = first_trace.model_copy(
+        update={
+            "points": [
+                FusionStoppingTracePoint(
+                    timestamp=datetime(2026, 9, 12, 1, tzinfo=UTC),
+                    score=0.9,
+                    persistence_count=1,
+                    policy_state="off",
+                )
+            ]
+        }
+    )
+
+    with psycopg.connect(database_url) as connection:
+        trace_repository = FusionStoppingTraceRepository(connection)
+        try:
+            apply_migrations(connection)
+            persist_s0_results(*case, connection=connection)
+
+            # When
+            persist_s0_results(
+                artifacts,
+                normalized_artifacts,
+                fusion_result,
+                second_trace,
+                fast_result,
+                decision_result,
+                connection=connection,
+            )
+            stored_trace = trace_repository.get(run_id, entity_id)
+
+            # Then
+            assert second_trace != first_trace
+            assert stored_trace == first_trace
+        finally:
+            connection.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
+            connection.commit()
+
+
 def test_postgres_serializes_same_decision_id_across_scopes(database_url: str) -> None:
     suffix = uuid4().hex
     decision_id = f"DEC-{suffix}"
@@ -397,6 +446,19 @@ def _persistence_case(
         scorer_version="v0.2",
         fusion_episodes=[],
     )
+    stopping_trace = FusionStoppingTrace(
+        run_id=run_id,
+        entity_id=entity_id,
+        scoring_config_version=fusion_result.scoring_config_version,
+        points=[
+            FusionStoppingTracePoint(
+                timestamp=timestamp,
+                score=0.0,
+                persistence_count=None,
+                policy_state="off",
+            )
+        ],
+    )
     detection_result = DetectionResult(
         run_id=run_id,
         entity_id=entity_id,
@@ -431,6 +493,7 @@ def _persistence_case(
         artifacts,
         NormalizedEvidenceArtifacts(events=(), evidences=()),
         fusion_result,
+        stopping_trace,
         fast_result,
         decision_result,
     )
