@@ -6,6 +6,10 @@
 컨테이너 내부 경로를 정의한다. 실행 결과는 PostgreSQL에 저장하며, 실행 및 migration
 태스크 정의는 `infra/ecs/`에서 관리한다.
 
+Sysmon JSONL 하나에서 이 입력 Artifact를 자동 생성하는 개발용 CLI 계약은
+[Sysmon JSONL 단독 입력 First Cycle CLI 계약](sysmon-jsonl-standalone-input.md)을 따른다.
+해당 CLI도 생성 후에는 이 문서의 Artifact·정합성 규칙을 그대로 적용한다.
+
 Fargate는 S3를 파일시스템으로 직접 마운트하지 않는다. 태스크 시작 시 entrypoint가
 S3 객체를 `/inputs`에 내려받고, 파이프라인 프로세스는 그 디렉터리를 읽기 전용으로
 취급한다. `/inputs`는 실행 중 생성한 출력이나 임시 파일의 저장 위치가 아니다.
