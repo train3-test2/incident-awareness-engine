@@ -56,9 +56,23 @@ Dockerfile은 다음 환경 변수를 설정한다.
 
 ## 로컬 PostgreSQL
 
-`docker-compose.yml`은 PostgreSQL 18.6과 First Cycle migration을 제공한다. DB는
-호스트의 `127.0.0.1`에서만 접근 가능하며, 컨테이너를 처음 초기화할 때
-`infra/postgres/migrations/001_first_cycle.sql`을 적용한다.
+`docker-compose.yml`은 PostgreSQL 18.6과 versioned migration을 제공한다. DB는
+호스트의 `127.0.0.1`에서만 접근 가능하다. 빈 named volume에서 PostgreSQL을 최초
+초기화하면 `infra/postgres/migrations/` 디렉터리가
+`/docker-entrypoint-initdb.d`에 mount되고, SQL 파일이 filename 순서대로 실행된다.
+현재 초기화 대상은 `001_first_cycle.sql`과 `002_fusion_stopping_trace.sql`이다.
+
+이미 초기화된 named volume에는 PostgreSQL initdb script가 자동으로 다시 실행되지 않는다.
+새 migration이 추가된 뒤 기존 volume을 유지하려면 DB 연결 환경 변수
+`INCIDENT_AWARENESS_DATABASE_URL`을 설정하고 versioned migration runner를 별도로
+실행한다.
+
+```text
+python -m incident_awareness.storage.migrate
+```
+
+`docker compose down -v`는 PostgreSQL 데이터가 저장된 volume까지 삭제하므로 migration
+적용 절차로 사용하지 않는다.
 
 먼저 예시 파일을 복사해 로컬 `.env`를 만들고 `POSTGRES_PASSWORD`를 설정한다.
 

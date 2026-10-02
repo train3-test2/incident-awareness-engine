@@ -9,11 +9,12 @@ from incident_awareness.common.models.event import (
     ProcessInfo,
     RawLogReference,
 )
+from incident_awareness.common.models.fusion import FusionResult
 from incident_awareness.common.models.run import RunMetadata
 from incident_awareness.normalization.sysmon import SysmonNormalizationContext
 from incident_awareness.pipeline.cli import PipelineInputs
 from incident_awareness.pipeline.event_evidence import NormalizedEvidenceArtifacts
-from incident_awareness.pipeline.fusion import run_s0_fusion
+from incident_awareness.pipeline.fusion import run_s0_fusion, run_s0_fusion_with_trace
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
 
 RUN_ID = "RUN-20260920-001"
@@ -39,6 +40,65 @@ def test_runs_existing_fusion_pipeline_and_returns_fusion_result() -> None:
     assert fusion_result.fusion_status == "detected"
     assert fusion_result.fusion_time == start_time + timedelta(seconds=20)
     assert len(fusion_result.contributing_evidence_ids) == 2
+
+
+def test_returns_detected_fusion_result_with_runtime_stopping_trace() -> None:
+    # Given
+    start_time = datetime(2026, 9, 20, tzinfo=UTC)
+    artifacts = _artifacts(start_time=start_time, end_time=start_time + timedelta(seconds=660))
+    normalized_artifacts = NormalizedEvidenceArtifacts(
+        events=(
+            _encoded_command_event("evt-001", start_time),
+            _network_event("evt-002", start_time + timedelta(seconds=10)),
+        ),
+        evidences=(),
+    )
+
+    # When
+    result = run_s0_fusion_with_trace(_inputs(), artifacts, normalized_artifacts)
+
+    # Then
+    assert result.fusion_result.fusion_status == "detected"
+    assert result.stopping_trace.run_id == RUN_ID
+    assert result.stopping_trace.entity_id == ENTITY_ID
+    assert (
+        result.stopping_trace.scoring_config_version == result.fusion_result.scoring_config_version
+    )
+    assert result.stopping_trace.points
+
+
+def test_returns_not_evaluated_fusion_result_with_empty_stopping_trace() -> None:
+    # Given
+    start_time = datetime(2026, 9, 20, tzinfo=UTC)
+    artifacts = _artifacts(
+        start_time=start_time,
+        end_time=start_time + timedelta(seconds=659, milliseconds=999),
+    )
+    normalized_artifacts = NormalizedEvidenceArtifacts(events=(), evidences=())
+
+    # When
+    result = run_s0_fusion_with_trace(_inputs(), artifacts, normalized_artifacts)
+
+    # Then
+    assert result.fusion_result.fusion_status == "not_evaluated"
+    assert result.stopping_trace.points == []
+
+
+def test_run_s0_fusion_remains_fusion_result_compatibility_wrapper() -> None:
+    # Given
+    start_time = datetime(2026, 9, 20, tzinfo=UTC)
+    artifacts = _artifacts(start_time=start_time, end_time=start_time + timedelta(seconds=660))
+    normalized_artifacts = NormalizedEvidenceArtifacts(events=(), evidences=())
+
+    # When
+    fusion_result = run_s0_fusion(_inputs(), artifacts, normalized_artifacts)
+
+    # Then
+    assert isinstance(fusion_result, FusionResult)
+    assert (
+        fusion_result
+        == run_s0_fusion_with_trace(_inputs(), artifacts, normalized_artifacts).fusion_result
+    )
 
 
 def test_rejects_fusion_for_run_that_has_not_ended() -> None:

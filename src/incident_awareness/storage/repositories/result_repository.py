@@ -3,7 +3,7 @@ from typing import Protocol
 
 from psycopg.types.json import Jsonb
 
-from incident_awareness.common.models.fusion import FusionResult
+from incident_awareness.common.models.fusion import FusionResult, FusionStoppingTrace
 from incident_awareness.common.models.result import DecisionResult, DetectionResult
 
 
@@ -35,6 +35,25 @@ ON CONFLICT (run_id, entity_id) DO UPDATE SET
 _SELECT_FUSION_RESULT_PAYLOAD = """
 SELECT payload
 FROM fusion_results
+WHERE run_id = %s AND entity_id = %s
+"""
+
+_UPSERT_FUSION_STOPPING_TRACE = """
+INSERT INTO fusion_stopping_traces (
+    run_id,
+    entity_id,
+    scoring_config_version,
+    payload
+)
+VALUES (%s, %s, %s, %s)
+ON CONFLICT (run_id, entity_id) DO UPDATE SET
+    scoring_config_version = EXCLUDED.scoring_config_version,
+    payload = EXCLUDED.payload
+"""
+
+_SELECT_FUSION_STOPPING_TRACE_PAYLOAD = """
+SELECT payload
+FROM fusion_stopping_traces
 WHERE run_id = %s AND entity_id = %s
 """
 
@@ -136,6 +155,36 @@ class FusionResultRepository:
             return None
 
         return FusionResult.model_validate(_payload_from_row(row, table_name="fusion_results"))
+
+
+class FusionStoppingTraceRepository:
+    """FusionStoppingTrace Contract를 최신 Runtime trace로 저장하고 복원한다."""
+
+    def __init__(self, connection: _Connection) -> None:
+        self._connection = connection
+
+    def save(self, trace: FusionStoppingTrace) -> None:
+        self._connection.execute(
+            _UPSERT_FUSION_STOPPING_TRACE,
+            (
+                trace.run_id,
+                trace.entity_id,
+                trace.scoring_config_version,
+                Jsonb(trace.model_dump(mode="json")),
+            ),
+        )
+
+    def get(self, run_id: str, entity_id: str) -> FusionStoppingTrace | None:
+        row = self._connection.execute(
+            _SELECT_FUSION_STOPPING_TRACE_PAYLOAD,
+            (run_id, entity_id),
+        ).fetchone()
+        if row is None:
+            return None
+
+        return FusionStoppingTrace.model_validate(
+            _payload_from_row(row, table_name="fusion_stopping_traces")
+        )
 
 
 class DetectionResultRepository:

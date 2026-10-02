@@ -6,6 +6,7 @@ import pytest
 
 from incident_awareness.pipeline import runner
 from incident_awareness.pipeline.cli import PipelineInputs
+from incident_awareness.pipeline.fusion import S0FusionPipelineResult
 from incident_awareness.pipeline.reporting import PipelineExecutionSummary
 from incident_awareness.pipeline.runner import run_first_cycle_pipeline
 from incident_awareness.storage.repositories.result_repository import DecisionIntegrityError
@@ -29,6 +30,11 @@ def test_runs_each_first_cycle_stage_in_order(monkeypatch: pytest.MonkeyPatch) -
     artifacts = SimpleNamespace(run_metadata=SimpleNamespace(run_id="RUN-20260920-001"))
     normalized_artifacts = object()
     fusion_result = object()
+    stopping_trace = object()
+    fusion_output = S0FusionPipelineResult(
+        fusion_result=fusion_result,
+        stopping_trace=stopping_trace,
+    )
     fast_result = object()
     decision_result = object()
     summary = PipelineExecutionSummary(
@@ -53,8 +59,8 @@ def test_runs_each_first_cycle_stage_in_order(monkeypatch: pytest.MonkeyPatch) -
     )
     monkeypatch.setattr(
         runner,
-        "run_s0_fusion",
-        lambda inputs, value, normalized: _record(calls, "fusion", fusion_result),
+        "run_s0_fusion_with_trace",
+        lambda inputs, value, normalized: _record(calls, "fusion", fusion_output),
     )
     monkeypatch.setattr(
         runner,
@@ -85,11 +91,20 @@ def test_runs_each_first_cycle_stage_in_order(monkeypatch: pytest.MonkeyPatch) -
         "combine_parallel_decision",
         combine_decision,
     )
-    monkeypatch.setattr(
-        runner,
-        "persist_s0_results",
-        lambda *args, **kwargs: _record(calls, "persistence", None),
-    )
+
+    def persist_results(*args, **kwargs) -> None:
+        assert args == (
+            artifacts,
+            normalized_artifacts,
+            fusion_result,
+            stopping_trace,
+            fast_result,
+            decision_result,
+        )
+        assert kwargs == {"connection": connection}
+        _record(calls, "persistence", None)
+
+    monkeypatch.setattr(runner, "persist_s0_results", persist_results)
     monkeypatch.setattr(runner, "build_execution_summary", lambda *args: summary)
     monkeypatch.setattr(runner, "log_execution_summary", lambda value: calls.append("summary"))
 
@@ -210,6 +225,11 @@ def _configure_successful_stages(
     artifacts = SimpleNamespace(run_metadata=SimpleNamespace(run_id="RUN-20260920-001"))
     normalized_artifacts = object()
     fusion_result = object()
+    stopping_trace = object()
+    fusion_output = S0FusionPipelineResult(
+        fusion_result=fusion_result,
+        stopping_trace=stopping_trace,
+    )
     fast_result = object()
     decision_result = object()
 
@@ -225,8 +245,8 @@ def _configure_successful_stages(
     )
     monkeypatch.setattr(
         runner,
-        "run_s0_fusion",
-        _raise_or_return(failing_stage, "fusion", error, fusion_result),
+        "run_s0_fusion_with_trace",
+        _raise_or_return(failing_stage, "fusion", error, fusion_output),
     )
     monkeypatch.setattr(
         runner,

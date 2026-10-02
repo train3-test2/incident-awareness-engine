@@ -7,6 +7,7 @@ from incident_awareness.decision.fusion.simple_score import SimpleScorer
 from incident_awareness.decision.fusion.stopping_policy import (
     ScorePoint,
     StoppingResult,
+    StoppingTracePoint,
     ThresholdStoppingPolicy,
 )
 from incident_awareness.decision.fusion.window_engine import WindowEngine
@@ -23,6 +24,7 @@ class TemporalReplayResult:
     trajectory: tuple[ScorePoint, ...]
     evidence_snapshots: tuple[ReplayEvidenceSnapshot, ...]
     stopping_result: StoppingResult
+    stopping_trace: tuple[StoppingTracePoint, ...] = ()
 
 
 class TemporalReplayRunner:
@@ -116,6 +118,7 @@ class TemporalReplayRunner:
 
         trajectory: list[ScorePoint] = []
         evidence_snapshots: list[ReplayEvidenceSnapshot] = []
+        stopping_trace: list[StoppingTracePoint] = []
         evidence_index = 0
         current_time = run_start
 
@@ -164,12 +167,14 @@ class TemporalReplayRunner:
             entity_id=entity_id,
             run_end=effective_end,
             boundary_end_reason=boundary_end_reason,
+            observer=stopping_trace.append,
         )
 
         return TemporalReplayResult(
             trajectory=tuple(trajectory),
             evidence_snapshots=tuple(evidence_snapshots),
             stopping_result=stopping_result,
+            stopping_trace=tuple(stopping_trace),
         )
 
     @staticmethod

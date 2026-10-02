@@ -1,10 +1,14 @@
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from psycopg.types.json import Jsonb
 
-from incident_awareness.common.models.fusion import FusionResult
+from incident_awareness.common.models.fusion import (
+    FusionResult,
+    FusionStoppingTrace,
+    FusionStoppingTracePoint,
+)
 from incident_awareness.common.models.result import (
     DecisionPath,
     DecisionResult,
@@ -19,12 +23,15 @@ from incident_awareness.storage.repositories.result_repository import (
     _SELECT_DECISION_PAYLOAD,
     _SELECT_DETECTION_RESULT_PAYLOAD,
     _SELECT_FUSION_RESULT_PAYLOAD,
+    _SELECT_FUSION_STOPPING_TRACE_PAYLOAD,
     _UPSERT_DETECTION_RESULT,
     _UPSERT_FUSION_RESULT,
+    _UPSERT_FUSION_STOPPING_TRACE,
     DecisionIntegrityError,
     DecisionRepository,
     DetectionResultRepository,
     FusionResultRepository,
+    FusionStoppingTraceRepository,
 )
 
 
@@ -77,6 +84,30 @@ def fusion_result() -> FusionResult:
         scoring_method="temporal_fusion",
         scorer_version="v0.2",
         fusion_episodes=[],
+    )
+
+
+@pytest.fixture
+def fusion_stopping_trace() -> FusionStoppingTrace:
+    timestamp = datetime(2026, 9, 12, 1, tzinfo=UTC)
+    return FusionStoppingTrace(
+        run_id="RUN-20260912-001",
+        entity_id="WIN-01",
+        scoring_config_version="fusion-config-v0.1",
+        points=[
+            FusionStoppingTracePoint(
+                timestamp=timestamp,
+                score=0.8,
+                persistence_count=1,
+                policy_state="off",
+            ),
+            FusionStoppingTracePoint(
+                timestamp=timestamp + timedelta(seconds=10),
+                score=0.9,
+                persistence_count=2,
+                policy_state="on",
+            ),
+        ],
     )
 
 
@@ -134,6 +165,36 @@ def test_fusion_repository_saves_and_rebuilds_result(fusion_result: FusionResult
         (fusion_result.run_id, fusion_result.entity_id),
     )
     assert stored_result == fusion_result
+
+
+def test_fusion_stopping_trace_repository_saves_and_rebuilds_trace(
+    fusion_stopping_trace: FusionStoppingTrace,
+) -> None:
+    # Given
+    connection = FakeConnection((fusion_stopping_trace.model_dump(mode="json"),))
+    repository = FusionStoppingTraceRepository(connection)
+
+    # When
+    repository.save(fusion_stopping_trace)
+    stored_trace = repository.get(
+        fusion_stopping_trace.run_id,
+        fusion_stopping_trace.entity_id,
+    )
+
+    # Then
+    assert connection.commits == 0
+    assert connection.statements[0][0] == _UPSERT_FUSION_STOPPING_TRACE
+    assert connection.statements[0][1][:3] == (
+        fusion_stopping_trace.run_id,
+        fusion_stopping_trace.entity_id,
+        fusion_stopping_trace.scoring_config_version,
+    )
+    assert isinstance(connection.statements[0][1][3], Jsonb)
+    assert connection.statements[1] == (
+        _SELECT_FUSION_STOPPING_TRACE_PAYLOAD,
+        (fusion_stopping_trace.run_id, fusion_stopping_trace.entity_id),
+    )
+    assert stored_trace == fusion_stopping_trace
 
 
 def test_detection_repository_saves_and_rebuilds_result(
@@ -284,12 +345,21 @@ def test_decision_repository_rejects_multiple_current_heads(
     ("repository", "arguments"),
     [
         (FusionResultRepository(FakeConnection()), ("RUN-20260912-001", "WIN-01")),
+        (
+            FusionStoppingTraceRepository(FakeConnection()),
+            ("RUN-20260912-001", "WIN-01"),
+        ),
         (DetectionResultRepository(FakeConnection()), ("RUN-20260912-001", "WIN-01")),
         (DecisionRepository(FakeConnection()), ("DEC-001",)),
     ],
 )
 def test_result_repositories_return_none_when_result_does_not_exist(
-    repository: FusionResultRepository | DetectionResultRepository | DecisionRepository,
+    repository: (
+        FusionResultRepository
+        | FusionStoppingTraceRepository
+        | DetectionResultRepository
+        | DecisionRepository
+    ),
     arguments: tuple[str, ...],
 ) -> None:
     assert repository.get(*arguments) is None
@@ -304,6 +374,11 @@ def test_result_repositories_return_none_when_result_does_not_exist(
             "fusion_results",
         ),
         (
+            FusionStoppingTraceRepository(FakeConnection(("invalid",))),
+            ("RUN-20260912-001", "WIN-01"),
+            "fusion_stopping_traces",
+        ),
+        (
             DetectionResultRepository(FakeConnection(("invalid",))),
             ("RUN-20260912-001", "WIN-01"),
             "detection_results",
@@ -312,7 +387,12 @@ def test_result_repositories_return_none_when_result_does_not_exist(
     ],
 )
 def test_result_repositories_reject_non_object_payloads(
-    repository: FusionResultRepository | DetectionResultRepository | DecisionRepository,
+    repository: (
+        FusionResultRepository
+        | FusionStoppingTraceRepository
+        | DetectionResultRepository
+        | DecisionRepository
+    ),
     arguments: tuple[str, ...],
     table_name: str,
 ) -> None:
