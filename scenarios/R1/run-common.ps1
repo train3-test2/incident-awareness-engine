@@ -18,10 +18,10 @@
         differs, and which one a run uses comes from the scenario file, not from
         this code (scenario.yaml, planned_lineage).
 
-        The planned lineage is what a run executes. The scenario also carries the
-        approved lineage policy of its family, which is a different thing: the
-        runner checks that it is present and belongs to the family, and never
-        uses it to plan, to judge or to label a run.
+        The planned lineage is what a run executes and what its collection is
+        checked against. Whether a lineage is approved is not decided here: the
+        approved lineage policy of a family is not part of the scenario, and the
+        runner reads none.
 
         The rendered scenario is the only source of what a run does and records.
         The family, the variation and the repetition of the Pair are read from it
@@ -71,7 +71,6 @@ $R1_RUN_TYPES = @("normal", "attack")
 # argument or a file name on Target-A (docs/scenarios/r1.md section 7), or the
 # family and variation both runs of a Pair record.
 $R1_LABEL_WORDS = @("normal", "attack", "benign", "malicious")
-$R1_POLICY_STATUSES = @("provisional", "frozen")
 
 $R1_READY_TIMEOUT_SEC = 60
 $R1_STATUS_TIMEOUT_SEC = 60
@@ -185,8 +184,7 @@ function Get-R1LaunchPlan {
             "without spaces, found '" + $WorkDir + "'")
     }
 
-    # Only the planned lineage is read. The approved lineage policy of the family
-    # plays no part in what a run starts.
+    # What a run starts comes from the planned lineage of the scenario alone.
     $lineage = Get-R1Value $Scenario "planned_lineage"
     if ($null -eq $lineage) { throw "planned_lineage is missing from the scenario" }
     $sessionHostImage = [string](Get-R1Value (Get-R1Value $lineage "session_host") "image")
@@ -373,16 +371,12 @@ function Get-R1ConnectionApproval {
 function Get-R1PairIdentity {
     <#
         The family, the variation and the repetition a rendered scenario states
-        for its Pair, with the approved lineage policy they belong to.
+        for its Pair.
 
         The scenario is the only source. The runner has no parameter for any of
         them, so both runs of a Pair, which read one rendered file, record the
         same three values. A value that is missing, of the wrong type or named
-        after a run type throws, and so does a family that is not the one the
-        approved lineage policy of the scenario was approved for.
-
-        Only the identity of the policy is read here. The runner executes the
-        planned lineage; it does not plan, judge or label a run by the policy.
+        after a run type throws.
     #>
     param([Parameter(Mandatory = $true)]$Scenario)
 
@@ -414,29 +408,6 @@ function Get-R1PairIdentity {
     }
     $identity["repetition"] = $repetition
 
-    $policy = Get-R1Value $Scenario "approved_lineage_policy"
-    if ($null -eq $policy) { throw "approved_lineage_policy is missing from the scenario" }
-    foreach ($name in @("policy_id", "policy_version", "family_id", "status")) {
-        $value = Get-R1Value $policy $name
-        if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) {
-            throw ("approved_lineage_policy." + $name + " must be a non-empty string")
-        }
-    }
-    $status = [string](Get-R1Value $policy "status")
-    if (-not ($R1_POLICY_STATUSES -ccontains $status)) {
-        throw ("approved_lineage_policy.status must be one of " + ($R1_POLICY_STATUSES -join ", ") +
-            ", found '" + $status + "'")
-    }
-    $policyFamily = [string](Get-R1Value $policy "family_id")
-    if ($policyFamily -cne $identity["family_id"]) {
-        throw ("family_id is '" + $identity["family_id"] + "', but the approved lineage policy '" +
-            [string](Get-R1Value $policy "policy_id") + "' was approved for family '" + $policyFamily +
-            "'; a family runs with its own policy")
-    }
-
-    $identity["policy_id"] = [string](Get-R1Value $policy "policy_id")
-    $identity["policy_version"] = [string](Get-R1Value $policy "policy_version")
-    $identity["policy_status"] = $status
     return $identity
 }
 
@@ -1018,15 +989,12 @@ function Invoke-R1PilotRun {
 
     $pairLine = ("pair: family_id=" + $identity.family_id + " variation_id=" + $identity.variation_id +
         " repetition=" + $identity.repetition)
-    $policyLine = ("approved lineage policy: " + $identity.policy_id + " " + $identity.policy_version +
-        " (" + $identity.policy_status + ")")
 
     if ($DryRun) {
         Write-Ok ("dry run: " + $RunId + " (" + $RunType + ") would start " +
             $plan.intermediate.executable + " " + ($plan.intermediate.arguments -join " "))
         Write-Ok ("dry run: the final tool command is " + $plan.final.command_line)
         Write-Ok ("dry run: " + $pairLine)
-        Write-Ok ("dry run: " + $policyLine)
         return [ordered]@{
             mode       = "dry_run"
             run_id     = $RunId
@@ -1060,11 +1028,6 @@ function Invoke-R1PilotRun {
         Write-Fail "rehearsal mode: offsets and the observation window are skipped. Artifacts are not a valid R1 run."
     }
     Write-Ok $pairLine
-    Write-Ok $policyLine
-    if ($identity.policy_status -cne "frozen") {
-        # Not a refusal: a Pilot run is made before the freeze on purpose.
-        Write-Fail "the approved lineage policy is not frozen: this run is not one of the formal runs"
-    }
 
     $session = $null
     try {

@@ -7,7 +7,7 @@
 
 ```text
 scenarios/R1/
-├── scenario.yaml          실행기가 읽는 값 (Pair 식별자·실행 계보·승인 계보 정책·행위 목록·게이트 값)
+├── scenario.yaml          실행기가 읽는 값 (Pair 식별자·실행 계보·행위 목록·게이트 값)
 ├── run-common.ps1         Controller 쪽 공통 함수 (입력 검증·launch plan·원격 단계·계보 확인)
 ├── normal/run.ps1         정상 Run (N01 ~ N05)
 ├── attack/run.ps1         공격 Run (A01 ~ A05)
@@ -32,10 +32,10 @@ scenarios/R1/
 | Normal | `wsmprovhost.exe` → `cmd.exe` → `powershell.exe` |
 | Attack | `wsmprovhost.exe` → `cscript.exe` → `powershell.exe` |
 
-- 이 조합은 **첫 Pilot 에만 쓰는 조건부 승인안**이다. 이후 family 에서는 특정 프로세스 이름이
-  한 라벨에만 대응하지 않도록 교차 설계한다. 그래서 도구 이름은 코드가 아니라 `scenario.yaml` 의
-  `planned_lineage` 와 `approved_lineage_policy` 에만 있고, 실행기와 검증기는 이름을 하나도
-  고정하지 않는다.
+- 이 조합은 **첫 Pilot 에만 쓰는 조건부 승인안**이며, 실제 telemetry 로 Pilot 을 검증하기 전까지는
+  후보다. 이후 family 에서는 특정 프로세스 이름이 한 라벨에만 대응하지 않도록 교차 설계한다. 그래서
+  도구 이름은 코드가 아니라 `scenario.yaml` 의 `planned_lineage` 에만 있고, 실행기와 검증기는 이름을
+  하나도 고정하지 않는다.
 - 최종 관리 도구의 실행 파일·인자·작업 내용은 두 Run 에서 같다. 두 Run 모두 중간 프로세스를
   한 단계 거치므로 계보 깊이도 같다.
 - 첫 Pilot 은 `-enc` · `-EncodedCommand` 를 쓰지 않는다. 그 옵션으로 읽힐 수 있는 토큰이 계획에
@@ -51,45 +51,23 @@ scenarios/R1/
 
 ### 1-1. 실행 계보와 승인 계보 정책은 서로 다른 것이다
 
-`scenario.yaml` 은 계보에 대해 두 가지를 따로 적는다. 둘은 블록도, 읽는 쪽도, 쓰임도 다르다.
-
-| | `planned_lineage` (실행 계보) | `approved_lineage_policy` (승인 계보 정책) |
-| --- | --- | --- |
-| 뜻 | 각 Run 이 실제로 실행해 Target-A 에 남기도록 계획한 계보 | 그 family 에서 Run 을 평가하기 전에 승인해 둔 계보 |
-| 고르는 기준 | `run_type` 으로 실행 계획을 고른다 | `run_type` 도 라벨도 쓰지 않는다. family 마다 하나다 |
-| 쓰는 곳 | 실행기의 launch plan, 수집 검증기의 "계획한 계보가 실제로 남았는가" | 이후 역할 2 Extractor 가 실제 ProcessGuid 계보와 비교 |
-| 이 폴더에서의 판단 | 수집 적합성만 본다 | **아무 판단도 하지 않는다** |
-
-첫 Pilot 의 값은 다음과 같다.
+`scenario.yaml` 의 `planned_lineage` 는 **실행 계보**다. 각 Run 이 실제로 실행해 Target-A 에 남기도록
+계획한 계보이며 `run_type` 으로 고른다. 실행기의 launch plan 과, 수집 검증기의 "계획한 계보가 실제로
+남았는가" 확인에만 쓴다. Evidence · Fusion · 공격 판정에는 쓰지 않는다.
 
 ```text
-승인 계보 정책      wsmprovhost.exe -> cmd.exe     -> powershell.exe
 Normal 실행 계보    wsmprovhost.exe -> cmd.exe     -> powershell.exe
 Attack 실행 계보    wsmprovhost.exe -> cscript.exe -> powershell.exe
 ```
 
-- 정책은 `policy_id` · `policy_version` · `family_id` · `status` · `frozen_at` · `approved_chains`
-  만 갖는다. 그 밖의 키는 거부하므로 정책 안에 `normal` · `attack` 처럼 Run 종류로 나뉜 값을
-  넣을 자리가 없다. 읽는 함수(`r1_lineage_policy.read_approved_lineage_policy`)도 scenario 하나만
-  받는다.
-- `status` 는 동결 전 `provisional`, 동결 후 `frozen` 이다. `frozen` 이면 `frozen_at` 에 동결 시각을
-  UTC 문자열로 적는다. 렌더러와 검증기는 정책 블록의 SHA-256 을 함께 출력해, Run 을 만든 뒤 정책이
-  바뀌었는지 추적할 수 있게 한다.
-- **실행기와 수집 검증기는 정책으로 Run 을 판정하지 않는다.** 실행기는 정책이 있고 그 family 의
-  것인지만 확인한다. 검증기는 Run 이 **자기 실행 계보**를 남겼는지만 보고, 정책은 식별자만 기록한다.
-  공격 판단, Evidence 생성, Fusion 입력 생성은 여기서 하지 않는다.
-- 렌더러는 두 블록을 서로 비교하지 않는다. 승인 계보와 실행 계보의 관계는 시나리오 설계가 정한다.
+**승인 계보 정책(approved lineage policy)은 이 폴더에 없다.** scenario 에 넣지 않으며, 렌더러 ·
+실행기 · 검증기는 정책을 읽지 않는다. 첫 Pilot 의 raw telemetry 검증은 `planned_lineage` 만으로 할 수
+있으므로 정책 config 가 정해지기를 기다리지 않는다. 정책을 연결할 때 지켜야 할 조건만 적어 둔다.
 
-역할 사이의 경계는 다음과 같다(역할 1 결정).
-
-- Extractor 는 Attack / Normal 라벨을 입력으로 쓰지 않는다.
-- 역할 2 가 승인 계보와 실제 ProcessGuid 계보를 비교해 일반화된 Semantic Evidence 를 만든다.
-- 역할 1 Fusion 에는 `family_id` 나 `cmd.exe` · `cscript.exe` 같은 literal 을 넘기지 않는다. Fusion 은
-  일반화된 Evidence 의 시간 관계만 쓴다.
-
-역할 2 Extractor 가 정책을 읽을 config 형식은 아직 정해지지 않았다. 이 블록은 그 정책을 scenario
-쪽에 적어 둔 것이며, 형식이 정해지면 `policy_id` · `policy_version` · SHA-256 으로 같은 정책인지
-대조할 수 있다.
+- 정본은 역할 2 의 **별도 versioned config** 가 될 예정이다(PR #136).
+- 구체 형식은 PR #136 의 후속 결정 전까지 `TBD` 다.
+- 연결할 때는 scenario 의 `family_id` 와 정책의 `family_id` 가 다르면 fail-closed 로 거부해야 한다.
+- `run_type` 이나 Ground Truth 라벨은 정책 선택과 Evidence 추출의 입력으로 쓰지 않는다.
 
 ### 1-2. family · variation · repetition
 
@@ -99,15 +77,17 @@ Attack 실행 계보    wsmprovhost.exe -> cscript.exe -> powershell.exe
 
 | 값 | 규칙 |
 | --- | --- |
-| `family_id` | 비어 있지 않은 문자열. **scenario 의 승인 계보 정책이 승인된 family 와 같아야 한다** |
+| `family_id` | 비어 있지 않은 문자열 |
 | `variation_id` | 비어 있지 않은 문자열 |
 | `repetition` | 1 이상의 정수. 그 family 의 몇 번째 Pair 인지다. 정본 YAML 에는 없고 렌더링할 때 준다 |
 
-- 세 값에 `normal` · `attack` · `benign` · `malicious` 가 들어 있으면 거부한다(대소문자 무시,
-  부분 문자열 포함). 그래서 `abnormal` 이 들어간 이름도 거부된다.
-- family 를 정책에 묶어 둔 이유는 분할 단위가 family 이기 때문이다. 정책 없이 family 이름만 바꿔
-  렌더링하면 같은 설계가 다른 family 인 것처럼 기록된다. 다른 family 를 실행하려면 그 family 의
-  실행 계보와 승인 정책을 담은 scenario 가 먼저 있어야 한다(variation matrix 구현은 이 변경 밖이다).
+- `family_id` 와 `variation_id` 에 `normal` · `attack` · `benign` · `malicious` 가 들어 있으면
+  거부한다(대소문자 무시, 부분 문자열 포함). 그래서 `abnormal` 이 들어간 이름도 거부된다.
+- 세 값은 Ground Truth 기록이다. Evidence 추출이나 Fusion 의 입력으로 넘기지 않는다.
+- 지금은 `family_id` 를 승인 계보 정책과 대조하지 않는다. 정책 config 가 연결되면 정책의
+  `family_id` 와 다를 때 거부해야 한다(§1-1). 그 전에는 `--family-id` 로 이름만 바꿔 렌더링해도
+  막지 않으므로, 다른 family 는 그 family 의 실행 계보를 담은 scenario 로 실행한다(variation matrix
+  구현은 이 변경 밖이다).
 - S0 는 `repetition` 을 적지 않으며 지금까지처럼 `1` 이 기록된다.
 
 ### 1-3. 데이터 계획과 정식 Run 의 조건
@@ -128,9 +108,8 @@ Attack 실행 계보    wsmprovhost.exe -> cscript.exe -> powershell.exe
   보기 전에 승인 계보 정책이 있어야 한다.
 
 **승인 계보 정책, Evidence 조건, 평가 구간이 동결되기 전에 만든 Run 은 정식 38 Run 에 포함하지
-않는다.** rehearsal 과 Pilot Run 이 여기에 해당한다. 실행기는 정책이 `frozen` 이 아니면 그 사실을
-출력하고, 검증기는 결과에 `not a formal run` 을 적는다. 둘 다 Run 을 막지는 않는다. Pilot 은 동결
-전에 실행하는 것이 목적이기 때문이다.
+않는다.** rehearsal 과 Pilot Run 이 여기에 해당한다. 실행기와 검증기는 그 동결 여부를 알지 못하므로
+이 구분을 출력하거나 강제하지 않는다.
 
 `performance_claim_allowed: true` 는 R1 gate 가 이후 성능 주장을 허용한다는 뜻이다. 첫 Pilot 자체는
 성능을 입증하지 않는다(`r1.md` §1).
@@ -152,7 +131,7 @@ Pair 식별자는 렌더링할 때 적는다(§1-2).
 
 | 옵션 | 뜻 | 없으면 |
 | --- | --- | --- |
-| `--family-id` | Pair 의 family. scenario 의 승인 계보 정책이 승인된 family 와 같아야 한다 | 정본 YAML 의 값 |
+| `--family-id` | Pair 의 family | 정본 YAML 의 값 |
 | `--variation-id` | Pair 의 variation | 정본 YAML 의 값 |
 | `--repetition` | 그 family 의 몇 번째 Pair 인지. 1 이상의 정수 | **렌더링하지 않는다** |
 
@@ -234,8 +213,8 @@ Target-A 에는 아무것도 미리 복사하지 않는다. 작업 파일과 lau
 | 수집 모드 (옵션 없음) | 엶 | offset · 관측 창 준수 | 반드시 1 회 | `<DataRoot>\raw\` · `<DataRoot>\ground_truth\` |
 
 dry-run 은 어디서나 실행할 수 있다. Target-A 이름이나 목적지 없이도 된다. launch plan 과 함께 Pair
-식별자(`pair: family_id=... variation_id=... repetition=...`)와 승인 계보 정책의 식별자 · 상태를
-출력하므로, 실제 Run 전에 어느 Pair 로 기록될지 확인할 수 있다.
+식별자(`pair: family_id=... variation_id=... repetition=...`)를 출력하므로, 실제 Run 전에 어느 Pair 로
+기록될지 확인할 수 있다.
 
 ```powershell
 Set-Location C:\Tools\scenarios\R1\normal
@@ -272,7 +251,6 @@ $credential = Get-Credential
 | --- | --- |
 | `run_id` 형식 오류, 시나리오 JSON 없음, `scenario_id` 가 `R1` 이 아님 | |
 | `family_id` · `variation_id` 가 비었거나 라벨 문자열을 담음, `repetition` 이 1 이상의 정수가 아님 | dry-run · rehearsal 에서도 거부(§1-2) |
-| 승인 계보 정책이 없거나 `family_id` 가 그 정책의 family 와 다름 | 정책의 내용으로 Run 을 판정하지는 않는다 |
 | `runs.<run_type>` 가 식별자를 따로 적음 | Pair 는 식별자를 한 번만 적는다 |
 | `WorkDir` 가 안전한 경로가 아님 | 공백·따옴표가 명령줄에 들어가지 않게 한다 |
 | 행위 단계 순서가 설계와 다름, offset 이 뒤로 감 | |
@@ -305,8 +283,8 @@ Manifest 가 없으므로 유효한 Run 으로 읽히지 않으며, 그 `run_id`
 도구)가 `ParentProcessGuid` 로 이어지고, 각 단계의 Image 가 그 Run 의 `planned_lineage` 와 같고,
 최종 도구의 `ProcessGuid` 를 가진 EID 3 이 승인 목적지로 향하는지를 본다. 레코드 사이의 시각은
 비교하지 않는다. **이 확인은 Run 이 계획대로 실행됐는지를 보는 것이지, Run 이 정상인지 공격인지를
-판정하지 않는다.** 두 Run 모두 자기 실행 계보로 같은 검사를 통과하며, 승인 계보 정책은 이 확인에
-쓰이지 않는다.
+판정하지 않는다.** 두 Run 모두 자기 실행 계보로 같은 검사를 통과한다. 그 계보가 승인된 것인지는
+여기서 보지 않는다(§1-1).
 
 ## 6. 무엇을 어디에 기록하는가
 
@@ -328,9 +306,8 @@ Manifest 가 없으므로 유효한 Run 으로 읽히지 않으며, 그 `run_id`
 | 계획 시각 | `scenario.yaml` 의 `offset_sec` (설계값) |
 | 실제 실행 시각 | `execution_record.csv` 의 `timestamp` |
 | 각 Run 이 남기도록 계획한 부모-자식 계보 | `scenario.yaml` 의 `planned_lineage` — `scenario_version` · `run_type` 으로 찾는다 |
-| family 의 승인 계보 | `scenario.yaml` 의 `approved_lineage_policy` — `run_type` 없이 읽는다 |
-| Normal 은 승인 계보, Attack 은 상이한 계보라는 시나리오 정답 | `run_metadata.json` 의 `run_type` + 위 두 블록 |
-| 어느 정책 아래에서 만든 Run 인지 | 렌더링한 `scenario.json` 과 lineage record 의 `policy` 줄(식별자 · version · 상태 · SHA-256) |
+| Run 이 Normal 인지 Attack 인지와 그 Run 의 실행 계보 | `run_metadata.json` 의 `run_type` + `scenario.yaml` 의 `planned_lineage.intermediate.<run_type>` |
+| 어느 계보가 승인된 것인지 | 여기에 기록하지 않는다. 설계상의 뜻은 `r1.md` §4-1, 정책은 역할 2 의 별도 config 가 정본이 될 예정이다(§1-1) |
 | 연결해야 할 내부 목적지와 포트 | 그 Pair 를 위해 렌더링한 `scenario.json` (저장소 밖) |
 | 산출물 경로와 해시 | `manifest.json` |
 | 관측된 계보(ProcessGuid · Image)와 연결 | 호스트 검증기의 lineage record (§7, 저장소 밖) |
@@ -356,8 +333,8 @@ Manifest 가 없으므로 유효한 Run 으로 읽히지 않으며, 그 `run_id`
 - reference 세 필드 — `r1.md` §11-5 미결. 두 Run 모두 `null` 이다.
 - Controller · Target 시계 차이, 감사 정책(`auditpol`), Pair 제작 시간 — issue #73 항목이나 계약에
   자리가 없다.
-- 승인 계보 정책의 식별자 · version · 상태 · SHA-256 — `RunMetadata` 에 자리가 없다. 렌더링한
-  `scenario.json` 과 lineage record 로만 남긴다.
+- 어느 승인 계보 정책 아래에서 만든 Run 인지 — 정책 config 의 형식이 아직 없다(§1-1). 지금은
+  어디에도 기록하지 않는다.
 
 `action_type` 값(`remote_session` 등)은 어휘가 정해지기 전의 잠정값이다(`s0.md` §11).
 
@@ -378,7 +355,7 @@ uv run python tools/validate_r1_run.py --artifact-root <rehearsal-root> --run-id
 | `run_id` 일치 | CLI 인자 · `run_metadata.json` · CSV 모든 행 · `manifest.json` 과 그 항목 경로 |
 | Ground Truth | `scenario_id` 가 `R1`, `target_host` 가 렌더링 값과 같음, reference 세 필드가 모두 `null`, `vm_snapshot` · `end_time` 기록, action 순서와 `action_type` 이 시나리오와 같음, 시각이 순서대로이고 Run 구간 안 |
 | Pair 식별자 | `run_metadata.json` 의 `family_id` · `variation_id` · `repetition` 이 scenario 가 적은 값과 같은지. 하나라도 다르거나 비어 있으면 실패다 |
-| 시나리오 | 목적지가 내부 주소 규칙을 지키는지, 식별자 세 값이 유효한지, 승인 계보 정책이 있고 그 family 의 것인지 다시 검사한다. 어긴 시나리오로는 통과할 수 없다 |
+| 시나리오 | 목적지가 내부 주소 규칙을 지키는지, 식별자 세 값이 유효한지 다시 검사한다. 어긴 시나리오로는 통과할 수 없다 |
 | 계보 | Target-A 에서 최종 관리 도구 Image 의 EID 1 중 **그 Run 이 계획한 3 단계 계보(`planned_lineage`)를 가진 인스턴스가 정확히 하나**인지 찾고, 그 host · ProcessGuid 를 `r1_lineage.verify_r1_lineage` 에 넘긴다 |
 | 연결 | 같은 host · ProcessGuid 의 EID 3 이 승인 목적지 · 포트로 향하는지 (`verify_r1_lineage`) |
 
@@ -387,11 +364,8 @@ uv run python tools/validate_r1_run.py --artifact-root <rehearsal-root> --run-id
 - 검증기는 프로세스 이름 하나로 Run 을 판정하지 않는다. `run_type` 은 Ground Truth 에서 읽고,
   telemetry 의 계보가 **그 Run 의 실행 계보와 같은지**만 비교한다. 같은 Image 의 다른 인스턴스가
   있어도 계획한 계보가 아니면 그 Run 의 인스턴스로 보지 않는다.
-- **승인 계보 정책은 판정에 쓰지 않는다.** 정책이 어떤 체인을 승인하든 검증 결과는 같다. Attack Run
-  이 승인 체인을 남겼더라도 자기 실행 계보가 아니면 실패하고, Normal Run 은 정책이 다른 체인만
-  승인하더라도 자기 실행 계보를 남겼으면 통과한다. 출력에는 `pair` 줄과 `policy` 줄(식별자 ·
-  version · 상태 · SHA-256), 그리고 승인 여부를 판단하지 않았다는 `not judged here` 를 적는다.
-- 정책이 `frozen` 이 아니면 `not a formal run` 을 적는다(§1-3). 실패로 보지는 않는다.
+- **계보가 승인된 것인지는 판정하지 않는다.** 검증기는 승인 계보 정책을 읽지 않는다(§1-1). 출력에는
+  `pair` 줄과, 승인 여부를 판단하지 않았다는 `not judged here` 를 적는다.
 - 레코드 사이의 시각은 비교하지 않는다. 계획 시각과 기록 시각은 판정 없이 나란히 출력한다.
 - lineage-only rehearsal(목적지 없이 렌더링)은 연결 action 과 EID 1 → EID 3 연결을 검사하지
   않고, 결과에 그렇게 적는다.
@@ -428,9 +402,8 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
   ```
 
 - `tests/tools/test_r1_scenario_to_json.py` · `tests/collection/test_r1_destination.py` ·
-  `tests/collection/test_r1_pair_identity.py` · `tests/collection/test_r1_lineage_policy.py` ·
-  `tests/collection/test_r1_pilot_validation.py` · `tests/tools/test_validate_r1_run.py` — 합성
-  산출물만 쓴다.
+  `tests/collection/test_r1_pair_identity.py` · `tests/collection/test_r1_pilot_validation.py` ·
+  `tests/tools/test_validate_r1_run.py` — 합성 산출물만 쓴다.
 - `scenarios/S0/tests/Test-RunCommonGuards.ps1` — S0 와 함께 쓰는 `Write-RunMetadata` 가 `repetition`
   을 적지 않은 scenario 에는 계속 `1` 을, 적은 scenario 에는 그 값을 기록하는지 확인한다.
 
@@ -438,7 +411,7 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
 
 | 가정 | 틀리면 |
 | --- | --- |
-| 원격 세션 host 의 Image 가 `wsmprovhost.exe` 다 (`r1.md` §11-7) | `scenario.yaml` 의 `planned_lineage.session_host.image` 와 승인 계보 정책의 체인을 함께 고친다 |
+| 원격 세션 host 의 Image 가 `wsmprovhost.exe` 다 (`r1.md` §11-7) | `scenario.yaml` 의 `planned_lineage.session_host.image` 를 고친다 |
 | 세션 host → 중간 프로세스 → 최종 관리 도구가 두 Run 모두 **직접 부모-자식**으로 기록된다 | 계보가 3 단계가 아니게 되므로 launcher 방식을 다시 정한다 |
 | Target-A 의 보안 설정이 두 중간 프로세스의 최종 관리 도구 실행을 막지 않는다 | 최종 도구가 준비 신호를 내지 못해 Run 이 중단된다. 실험 VM 정책은 역할 4 가 확인한다(§10) |
 | 최종 관리 도구의 내부 연결이 같은 `ProcessGuid` 의 EID 3 으로 남는다 (`r1.md` §11-9) | 연결 방식 또는 수집 설정을 역할 4 가 다시 확인한다(§10) |
@@ -452,10 +425,11 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
 아래는 첫 Pilot 범위에서 **의도적으로 남겨 둔 gap** 이다.
 
 - **다른 family · variation matrix** — 지금 scenario 는 첫 Pilot family 하나다. 다른 family 를
-  실행하려면 그 family 의 실행 계보와 승인 계보 정책을 담은 scenario 가 필요하다. 전체 variation
-  matrix 는 구현하지 않았다.
-- **승인 계보 정책의 동결** — 첫 Pilot 정책은 `provisional` 이다. Test Run 결과를 보기 전에 `status`
-  와 `frozen_at` 을 갱신해 동결한다. 역할 2 Extractor 가 읽을 config 형식은 아직 정해지지 않았다.
+  실행하려면 그 family 의 실행 계보를 담은 scenario 가 필요하다. 전체 variation matrix 는 구현하지
+  않았다.
+- **승인 계보 정책 연결** — 정책은 이 폴더에 없다(§1-1). 역할 2 의 config 형식이 정해지면 scenario 의
+  `family_id` 와 정책의 `family_id` 를 fail-closed 로 대조하고, 어느 정책 아래에서 만든 Run 인지 남기는
+  방법을 정한다.
 - **Evidence type · R1 Fusion profile** — 각각 역할 2 · 역할 1 의 작업이다. 이 폴더는 Evidence 를
   만들지 않고 Fusion 입력을 내지 않는다.
 - **S0 · R1 공통 부분** — 지금은 R1 이 S0 의 `run-common.ps1` 과 `s0_validation` 의 검사를 그대로
@@ -488,5 +462,3 @@ R1 의 로컬 실험 환경과 수집은 역할 4 가, AWS 쪽 입력 · 실행 
   그 값이다. 실제 값은 저장소에 두지 않는다.
 - §8 의 rehearsal 과 거기서 확인하는 가정(실험 VM 정책, Sysmon 수집, 내부 연결)도 역할 4 가 맡는다.
 - 이 폴더의 스크립트는 AWS 를 호출하지 않으며, 역할 3 이 맡는 항목을 입력으로 받지 않는다.
-- `docs/scenarios/r1.md` §11 의 미결 사항 표는 1 · 2 · 3 · 9 · 10 번의 확인 대상을 아직 역할 3 으로
-  적고 있다. 그 표는 이 변경에서 고치지 않았다.

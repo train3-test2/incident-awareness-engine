@@ -25,9 +25,7 @@
         6. the identity of a Pair (Get-R1PairIdentity): family, variation and
            repetition are read from the scenario, refused when missing, malformed
            or named after a run type, and written to RunMetadata unchanged by
-           both runs,
-        7. the planned lineage and the approved lineage policy are separate: the
-           plan and the lineage check never read the policy.
+           both runs.
 
         The repository has no PowerShell test harness, so this script is a plain
         runner: it prints one line per case and exits non-zero when any case fails.
@@ -142,14 +140,6 @@ $script:BaseScenarioText = @'
                   "arguments": ["//NoLogo", "//B", "{launcher}"] }
     }
   },
-  "approved_lineage_policy": {
-    "policy_id": "r1-remote-management-approved-lineage",
-    "policy_version": "v0.1",
-    "family_id": "remote_management",
-    "status": "provisional",
-    "frozen_at": null,
-    "approved_chains": [["wsmprovhost.exe", "cmd.exe", "powershell.exe"]]
-  },
   "shortcut_controls": { "actions_per_run": 5 },
   "runs": {
     "normal": {
@@ -191,11 +181,7 @@ $TEST_VARIATION = "V02"
 $TEST_REPETITION = 1
 
 function New-ScenarioObject {
-    <#
-        The fixture with the run inputs a renderer would inject. A $null value
-        leaves the field null. The family is given to the scenario and to its
-        approved lineage policy, the way a family is rendered with its own policy.
-    #>
+    <# The fixture with the run inputs a renderer would inject. A $null value leaves the field null. #>
     param(
         [AllowNull()][string]$TargetHost = $TEST_HOST,
         [AllowNull()][string]$Target = $TEST_TARGET,
@@ -210,7 +196,6 @@ function New-ScenarioObject {
     $scenario.family_id = $FamilyId
     $scenario.variation_id = $VariationId
     $scenario.repetition = $Repetition
-    $scenario.approved_lineage_policy.family_id = $FamilyId
     $scenario.run_metadata.target_host = $null
     if (-not [string]::IsNullOrEmpty($TargetHost)) { $scenario.run_metadata.target_host = $TargetHost }
     $scenario.internal_connection.target = $null
@@ -691,23 +676,10 @@ foreach ($bad in @("C:\R1 work", "R1\work", "C:\R1\work;x", 'C:\R1\"work"', "\\s
     } "*WorkDir must be*"
 }
 
- # The plan is built from planned_lineage alone. The approved lineage policy of
- # the family is a separate block and changing it changes nothing a run starts.
-$otherPolicy = New-ScenarioObject
-$otherPolicy.approved_lineage_policy.approved_chains = @(, @($sessionImage, $attackImage, $finalImage))
-$noPolicy = New-ScenarioObject
-$noPolicy.PSObject.Properties.Remove("approved_lineage_policy")
-foreach ($type in @("normal", "attack")) {
-    $basePlan = (Get-R1LaunchPlan -Scenario (New-ScenarioObject) -RunType $type -WorkDir $TEST_WORK) |
-        ConvertTo-Json -Depth 6
-    Assert-True ($type + ": another approved policy does not change what the run starts") (
-        ((Get-R1LaunchPlan -Scenario $otherPolicy -RunType $type -WorkDir $TEST_WORK) | ConvertTo-Json -Depth 6) -ceq $basePlan)
-    Assert-True ($type + ": the plan is built without reading the approved policy") (
-        ((Get-R1LaunchPlan -Scenario $noPolicy -RunType $type -WorkDir $TEST_WORK) | ConvertTo-Json -Depth 6) -ceq $basePlan)
-}
+ # Without a planned lineage there is nothing to start.
 $noPlanned = New-ScenarioObject
 $noPlanned.PSObject.Properties.Remove("planned_lineage")
-Assert-Throws "a scenario with a policy but no planned lineage cannot be planned" {
+Assert-Throws "a scenario without a planned lineage cannot be planned" {
     Get-R1LaunchPlan -Scenario $noPlanned -RunType "normal" -WorkDir $TEST_WORK
 } "*planned_lineage is missing*"
 
@@ -727,10 +699,8 @@ $stated = Get-R1PairIdentity -Scenario (ConvertTo-RenderedScenario (New-Scenario
 Assert-True "the identity of the Pair is read from the scenario" (
     $stated.family_id -ceq $TEST_FAMILY -and $stated.variation_id -ceq $TEST_VARIATION -and
     $stated.repetition -eq $TEST_REPETITION)
-Assert-True "the approved lineage policy of the family is identified with it" (
-    -not [string]::IsNullOrWhiteSpace($stated.policy_id) -and
-    -not [string]::IsNullOrWhiteSpace($stated.policy_version) -and
-    ($R1_POLICY_STATUSES -ccontains $stated.policy_status))
+Assert-True "the identity is the three values and nothing else" (
+    (@($stated.Keys) -join ",") -ceq "family_id,variation_id,repetition")
 
 $anotherPair = Get-R1PairIdentity -Scenario (ConvertTo-RenderedScenario (
     New-ScenarioObject -FamilyId "family_x7" -VariationId "V09" -Repetition 4))
@@ -767,19 +737,6 @@ foreach ($bad in @(0, -1, 1.5, "1", $true, $null)) {
     Assert-IdentityRefused ("a repetition that is not an integer of 1 or more is refused: '" + [string]$bad + "'") {
         param($s) $s.repetition = $bad } "*repetition must be an integer of 1 or more*"
 }
-
-Assert-IdentityRefused "a scenario without an approved lineage policy is refused" {
-    param($s) $s.PSObject.Properties.Remove("approved_lineage_policy") } "*approved_lineage_policy is missing*"
-Assert-IdentityRefused "a family other than the one the policy was approved for is refused" {
-    param($s) $s.approved_lineage_policy.family_id = "family_b" } "*was approved for family 'family_b'*"
-Assert-IdentityRefused "the family is compared with the policy by its exact spelling" {
-    param($s) $s.family_id = "Remote_Management" } "*was approved for family*"
-Assert-IdentityRefused "a policy with an unknown status is refused" {
-    param($s) $s.approved_lineage_policy.status = "draft" } "*approved_lineage_policy.status must be one of*"
-Assert-IdentityRefused "a policy without an identifier is refused" {
-    param($s) $s.approved_lineage_policy.policy_id = "" } "*approved_lineage_policy.policy_id must be a non-empty string*"
-Assert-IdentityRefused "a policy without a version is refused" {
-    param($s) $s.approved_lineage_policy.policy_version = $null } "*approved_lineage_policy.policy_version must be a non-empty string*"
 
  # ---------------------------------------------------------------------------
  # 4. Fail-closed inputs: a refused run opens no session and starts nothing
@@ -900,12 +857,6 @@ Assert-RefusedBeforeAnyCall "a family named after a run type" {
     Invoke-FakeRun -RunType "attack" -ScenarioPath (Save-Scenario $labelledFamily) -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
 } "*family_id would expose the run type*"
 
-$foreignPolicy = New-ScenarioObject
-$foreignPolicy.approved_lineage_policy.family_id = "family_b"
-Assert-RefusedBeforeAnyCall "a family that runs without its own approved lineage policy" {
-    Invoke-FakeRun -ScenarioPath (Save-Scenario $foreignPolicy) -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
-} "*a family runs with its own policy*"
-
 $ownRepetition = New-ScenarioObject
 $ownRepetition.runs.attack | Add-Member -NotePropertyName "repetition" -NotePropertyValue 2
 Assert-RefusedBeforeAnyCall "a run that states a repetition of its own" {
@@ -953,8 +904,6 @@ $dryLines = @(& {
     } 6>&1 | ForEach-Object { [string]$_ })
 Assert-True "a dry run shows the family, the variation and the repetition" (
     @($dryLines | Where-Object { $_ -like "*pair: family_id=family_x7 variation_id=V09 repetition=4*" }).Count -eq 1)
-Assert-True "a dry run shows which approved lineage policy the scenario carries" (
-    @($dryLines | Where-Object { $_ -like "*approved lineage policy: *" }).Count -eq 1)
 
 Reset-Fakes
 $dryNoTarget = Invoke-FakeRun -ScenarioPath (Save-Scenario (New-ScenarioObject -Target $null -TargetHost $null)) `
@@ -1104,20 +1053,6 @@ foreach ($case in @(
 Assert-True "another family, variation and repetition are recorded as the scenario states them" (
     $pairIdentities[0] -ceq "family_x7|V09|4")
 Assert-True "both runs of that Pair record the same three values" ($pairIdentities[0] -ceq $pairIdentities[1])
-
- # The lineage a run is checked against is the one it was planned to leave. A
- # scenario whose approved policy names the other chain changes neither run.
-$otherPolicyScenario = Save-Scenario $otherPolicy
-foreach ($case in @(
-    @{ type = "normal"; run_id = "RUN-20300101-032" },
-    @{ type = "attack"; run_id = "RUN-20300101-033" })) {
-
-    Reset-Fakes
-    $policyRun = Invoke-FakeRun -RunType $case.type -RunId $case.run_id -ScenarioPath $otherPolicyScenario `
-        -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
-    Assert-True ($case.type + ": the run is checked against its planned lineage, whatever the policy approves") (
-        $policyRun.mode -eq "collection" -and $policyRun.lineage.status -eq "matched")
-}
 
  # Observation window boundary on the fake clock.
 Reset-Fakes

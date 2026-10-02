@@ -11,8 +11,8 @@ in that module so they can be tested without going through a subprocess.
 `--scenario` is the JSON `tools/r1_scenario_to_json.py` rendered for the Pair this
 run belongs to. It carries the planned lineage, the family, variation and
 repetition of the Pair, the Target-A name and the internal destination. The run
-is checked against its planned lineage; the approved lineage policy the scenario
-also carries is recorded in the report and never used to judge the run.
+is checked against its planned lineage only. Whether that lineage is approved is
+not judged here: no approved lineage policy is part of the scenario.
 
 `--record-out` also stores the printed report as the lineage record of the run
 (`docs/scenarios/r1.md` section 6). It is operator evidence: keep it next to the

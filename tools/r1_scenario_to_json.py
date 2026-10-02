@@ -15,8 +15,7 @@ what the rendered file says.
 
 The identity of the Pair is stated when the JSON is rendered:
 
-    --family-id      family the Pair belongs to; has to be the family the approved
-                     lineage policy of the scenario was approved for
+    --family-id      family the Pair belongs to
     --variation-id   variation the Pair belongs to
     --repetition     which Pair of the family this is, 1 or more
 
@@ -45,11 +44,10 @@ intermediate each, the same steps at the same offsets - and refuses a scenario
 that would carry an encoded command option or the run type in a file name or an
 argument. The runner repeats the last two checks on the plan it builds.
 
-A scenario says two separate things about lineage. `planned_lineage` is what
-each run is planned to execute, selected by run type. `approved_lineage_policy`
-is the lineage approved for the family and is not keyed by run type at all
-(`incident_awareness.collection.r1_lineage_policy`). The loader requires both
-and compares neither with the other.
+The lineage a scenario states is `planned_lineage`: what each run is planned to
+execute, selected by run type. It is a collection plan. The approved lineage
+policy of a family is not part of a scenario and is not read here
+(`scenarios/R1/README.md` section 1-1).
 """
 
 import argparse
@@ -67,11 +65,6 @@ from incident_awareness.collection.r1_destination import (
     validate_internal_port,
     validate_internal_target,
     validate_lab_cidr,
-)
-from incident_awareness.collection.r1_lineage_policy import (
-    POLICY_KEY,
-    ApprovedLineagePolicy,
-    read_approved_lineage_policy,
 )
 from incident_awareness.collection.r1_pair_identity import (
     R1PairIdentity,
@@ -98,7 +91,6 @@ _REQUIRED_TOP_LEVEL = (
     "run_metadata",
     "internal_connection",
     PLANNED_LINEAGE_KEY,
-    POLICY_KEY,
     "shortcut_controls",
     "runs",
 )
@@ -159,7 +151,7 @@ def _reject_label_words(value: str, label: str) -> None:
 
 
 def _check_planned_lineage(lineage: object) -> None:
-    """Check what each run is planned to execute. This is not the approved policy."""
+    """Check what each run is planned to execute."""
     if not isinstance(lineage, dict):
         raise TypeError(f"{PLANNED_LINEAGE_KEY} must be a mapping")
 
@@ -279,26 +271,16 @@ def _check_runs(scenario: dict) -> None:
         )
 
 
-def _check_identity_and_policy(scenario: dict) -> ApprovedLineagePolicy:
-    """Check the Pair identity a scenario states and the policy of its family.
+def _check_identity(scenario: dict) -> None:
+    """Check the Pair identity a scenario states.
 
     A repetition may still be missing: the canonical YAML states none. A stated
-    value has to be valid, and the family has to be the one the approved lineage
-    policy was approved for, so a family cannot be rendered without its policy.
+    value has to be valid.
     """
-    family_id = validate_family_id(scenario.get("family_id"))
+    validate_family_id(scenario.get("family_id"))
     validate_variation_id(scenario.get("variation_id"))
     if scenario.get("repetition") is not None:
         validate_repetition(scenario["repetition"])
-
-    policy = read_approved_lineage_policy(scenario)
-    if policy.family_id != family_id:
-        raise R1PairIdentityError(
-            f"family_id is {family_id!r}, but {POLICY_KEY} {policy.policy_id!r} was approved "
-            f"for family {policy.family_id!r}; a family is rendered with its own policy"
-        )
-
-    return policy
 
 
 def load_r1_scenario(path: Path) -> dict:
@@ -318,7 +300,7 @@ def load_r1_scenario(path: Path) -> dict:
 
     _check_planned_lineage(scenario[PLANNED_LINEAGE_KEY])
     _check_runs(scenario)
-    _check_identity_and_policy(scenario)
+    _check_identity(scenario)
     return scenario
 
 
@@ -351,9 +333,8 @@ def apply_run_inputs(
     identically to normal and attack. The destination, its port and the lab
     network are given together or not at all.
 
-    A family, a variation or a repetition that is given replaces what the
-    scenario states. Whatever the result states is checked again, so a family
-    without its own approved lineage policy is refused here as well.
+    A family, a variation or a repetition that is given is validated and
+    replaces what the scenario states.
     """
     rendered = copy.deepcopy(scenario)
 
@@ -379,7 +360,6 @@ def apply_run_inputs(
         rendered["variation_id"] = validate_variation_id(variation_id)
     if repetition is not None:
         rendered["repetition"] = validate_repetition(repetition)
-    _check_identity_and_policy(rendered)
 
     return rendered
 
@@ -402,7 +382,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scenario", type=Path, help="path to scenarios/R1/scenario.yaml")
     parser.add_argument("--out", type=Path, required=True, help="path of the JSON to write")
-    parser.add_argument("--family-id", help="family of the Pair; has to match the approved policy")
+    parser.add_argument("--family-id", help="family of the Pair")
     parser.add_argument("--variation-id", help="variation of the Pair")
     parser.add_argument("--repetition", type=int, help="which Pair of the family this is, from 1")
     parser.add_argument("--target-host", help="Target-A computer name; omit for a dry run")
@@ -425,17 +405,12 @@ def main() -> int:
         repetition=args.repetition,
     )
     identity = require_pair_identity(scenario)
-    policy = read_approved_lineage_policy(scenario)
 
     destination = render_json(scenario, args.out)
     print(f"[+] {args.scenario} -> {destination}")
     print(
         f"[+] pair: family_id={identity.family_id} variation_id={identity.variation_id} "
         f"repetition={identity.repetition}"
-    )
-    print(
-        f"[+] approved lineage policy: {policy.policy_id} {policy.policy_version} "
-        f"({policy.status}) sha256={policy.sha256}"
     )
     return 0
 

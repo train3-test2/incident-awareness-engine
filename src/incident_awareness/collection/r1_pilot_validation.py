@@ -31,12 +31,10 @@ lineages this run was meant to leave. An Image name is compared with the plan
 of that run, in a full three step chain tied together by ProcessGuid; it is
 never used to decide what a run is.
 
-The scenario also carries the approved lineage policy of the family
-(`r1_lineage_policy`). Whether a lineage is approved is a question for Evidence
-extraction, not for collection, so nothing here is judged by that policy. The
-block has to be a well-formed policy of the family of the run, and only its
-identity is used: the identifier, version, status and SHA-256 are written into
-the report so that the policy a run was made under can be found.
+Whether a lineage is approved is a question for Evidence extraction, not for
+collection. The approved lineage policy of a family is not part of the scenario
+and is not read here (`scenarios/R1/README.md` section 1-1), so nothing in this
+module judges a run by it.
 
 `R1PilotValidationReport.ok` means the contract files and the planned lineage
 held for this one run. It is not the Pilot verdict of `docs/scenarios/r1.md`
@@ -73,11 +71,6 @@ from incident_awareness.collection.r1_lineage import (
     resolve_lineage,
     select_connections,
     verify_r1_lineage,
-)
-from incident_awareness.collection.r1_lineage_policy import (
-    ApprovedLineagePolicy,
-    R1LineagePolicyError,
-    read_approved_lineage_policy,
 )
 from incident_awareness.collection.r1_pair_identity import (
     R1PairIdentity,
@@ -132,9 +125,7 @@ class R1ScenarioAction:
 class R1PilotExpectation:
     """What one run type was planned to leave on Target-A, and for which Pair.
 
-    The three Images are the planned lineage of that run type. `policy` is the
-    approved lineage policy the scenario carries; it is kept to be recorded, not
-    to be compared with anything.
+    The three Images are the planned lineage of that run type.
     """
 
     target_host: str
@@ -145,7 +136,6 @@ class R1PilotExpectation:
     destination_ip: str | None
     destination_port: str | None
     identity: R1PairIdentity
-    policy: ApprovedLineagePolicy
 
     @property
     def images(self) -> tuple[str, ...]:
@@ -180,8 +170,8 @@ class R1PilotValidationReport:
 
     `errors` is the verdict: an empty list means the contract files and the
     planned lineage held for this run. `checks` records what was verified;
-    `action_times`, `lineage`, `identity` and `policy` are recorded facts with no
-    verdict of their own.
+    `action_times`, `lineage` and `identity` are recorded facts with no verdict
+    of their own.
     """
 
     run_id: str
@@ -192,7 +182,6 @@ class R1PilotValidationReport:
     action_times: list[str] = field(default_factory=list)
     lineage: R1ObservedLineage | None = None
     identity: R1PairIdentity | None = None
-    policy: ApprovedLineagePolicy | None = None
 
     @property
     def ok(self) -> bool:
@@ -274,26 +263,12 @@ def _load_destination(internal: dict) -> tuple[str | None, str | None]:
         ) from error
 
 
-def _load_identity_and_policy(scenario: dict) -> tuple[R1PairIdentity, ApprovedLineagePolicy]:
-    """The Pair a scenario was rendered for and the policy of its family.
-
-    The policy is read for what it is called, not for what it approves. A family
-    that is not the family of the policy means the scenario was put together from
-    two families, and a run cannot be validated against that.
-    """
+def _load_identity(scenario: dict) -> R1PairIdentity:
+    """The Pair a scenario was rendered for: its family, variation and repetition."""
     try:
-        identity = read_pair_identity(scenario)
-        policy = read_approved_lineage_policy(scenario)
-    except (R1PairIdentityError, R1LineagePolicyError) as error:
+        return read_pair_identity(scenario)
+    except R1PairIdentityError as error:
         raise R1ScenarioError(str(error)) from error
-
-    if policy.family_id != identity.family_id:
-        raise R1ScenarioError(
-            f"family_id is {identity.family_id!r}, but the approved lineage policy "
-            f"{policy.policy_id!r} was approved for family {policy.family_id!r}"
-        )
-
-    return identity, policy
 
 
 def load_r1_pilot_expectation(scenario_path: Path, run_type: str) -> R1PilotExpectation:
@@ -313,7 +288,6 @@ def load_r1_pilot_expectation(scenario_path: Path, run_type: str) -> R1PilotExpe
         )
 
     # The lineage a run is checked against is the planned one of its run type.
-    # The approved lineage policy is not consulted for it.
     key = PLANNED_LINEAGE_KEY
     lineage = _mapping(scenario.get(key), key)
     intermediate = _mapping(
@@ -324,7 +298,7 @@ def load_r1_pilot_expectation(scenario_path: Path, run_type: str) -> R1PilotExpe
     destination_ip, destination_port = _load_destination(
         _mapping(scenario.get("internal_connection"), "internal_connection")
     )
-    identity, policy = _load_identity_and_policy(scenario)
+    identity = _load_identity(scenario)
 
     return R1PilotExpectation(
         target_host=_text(
@@ -344,7 +318,6 @@ def load_r1_pilot_expectation(scenario_path: Path, run_type: str) -> R1PilotExpe
         destination_ip=destination_ip,
         destination_port=destination_port,
         identity=identity,
-        policy=policy,
     )
 
 
@@ -752,7 +725,6 @@ def validate_r1_pilot_run(
         return report
 
     report.identity = expectation.identity
-    report.policy = expectation.policy
 
     _check_run_metadata(metadata, expectation, report)
     _check_actions(metadata, records, expectation, rehearsal, report)
@@ -793,11 +765,6 @@ def format_report(report: R1PilotValidationReport) -> str:
             f"pair        : family_id={report.identity.family_id} "
             f"variation_id={report.identity.variation_id} repetition={report.identity.repetition}"
         )
-    if report.policy is not None:
-        lines.append(
-            f"policy      : {report.policy.policy_id} {report.policy.policy_version} "
-            f"({report.policy.status}) sha256={report.policy.sha256}"
-        )
     lines.append("")
 
     for check in report.checks:
@@ -823,14 +790,8 @@ def format_report(report: R1PilotValidationReport) -> str:
     )
     lines.append(
         "not judged here: whether the lineage is approved. The run was checked against its "
-        "planned lineage; the approved lineage policy is recorded above, not applied"
+        "planned lineage; no approved lineage policy is read here"
     )
-    if report.policy is not None and not report.policy.frozen:
-        lines.append(
-            "not a formal run: the approved lineage policy of this scenario is not frozen. "
-            "Runs made before the policy, the Evidence conditions and the evaluation windows "
-            "are frozen are not counted (scenarios/R1/README.md)"
-        )
     lines.append("")
     if report.ok:
         verdict = "PASS (one run: contract files and planned lineage; not the Pilot verdict)"

@@ -18,7 +18,6 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from incident_awareness.collection.r1_lineage_policy import read_approved_lineage_policy
 from incident_awareness.collection.r1_pair_identity import (
     LABEL_WORDS,
     R1PairIdentity,
@@ -574,14 +573,6 @@ def test_cli_writes_nothing_for_a_global_destination(
 # ---------------------------------------------------------------------------
 
 
-def _scenario_of_family(family_id: str) -> dict:
-    """The canonical design as the scenario of another family, with its own policy."""
-    scenario = copy.deepcopy(_load_canonical())
-    scenario["family_id"] = family_id
-    scenario["approved_lineage_policy"]["family_id"] = family_id
-    return scenario
-
-
 def test_canonical_scenario_states_its_family_and_variation_but_no_repetition() -> None:
     scenario = _load_canonical()
 
@@ -597,9 +588,9 @@ def test_canonical_scenario_states_its_family_and_variation_but_no_repetition() 
 def test_any_valid_identity_is_written_to_the_rendered_json(
     tmp_path: Path, family_id: str, variation_id: str, repetition: int
 ) -> None:
-    # Given: the scenario of that family, rendered for one Pair
+    # Given: the scenario rendered for one Pair of that family
     rendered = apply_run_inputs(
-        _scenario_of_family(family_id),
+        _load_canonical(),
         family_id=family_id,
         variation_id=variation_id,
         repetition=repetition,
@@ -646,20 +637,6 @@ def test_repetition_that_is_not_an_integer_of_one_or_more_is_refused(repetition:
         apply_run_inputs(_load_canonical(), repetition=repetition)
 
 
-def test_family_without_its_own_approved_policy_is_not_rendered() -> None:
-    # Given: the canonical scenario, whose policy was approved for its own family
-    with pytest.raises(R1PairIdentityError, match="a family is rendered with its own policy"):
-        apply_run_inputs(_load_canonical(), family_id="family_b", repetition=1)
-
-
-def test_scenario_stating_another_family_than_its_policy_is_refused(tmp_path: Path) -> None:
-    def mutate(scenario: dict) -> None:
-        scenario["approved_lineage_policy"]["family_id"] = "family_b"
-
-    with pytest.raises(R1PairIdentityError, match="was approved for family 'family_b'"):
-        _load_mutated(tmp_path, mutate)
-
-
 def _run_with_its_own_family(scenario: dict) -> None:
     scenario["runs"]["attack"]["family_id"] = "family_b"
 
@@ -687,7 +664,7 @@ def test_run_cannot_state_an_identity_of_its_own(
 def test_both_runs_of_a_pair_read_the_same_identity(tmp_path: Path) -> None:
     # Given: one JSON rendered for the Pair
     rendered = apply_run_inputs(
-        _scenario_of_family("family_x7"),
+        _load_canonical(),
         target_host=TARGET_HOST,
         family_id="family_x7",
         variation_id="V09",
@@ -771,7 +748,7 @@ def test_cli_renders_the_identity_it_was_given(
             "--out",
             str(out),
             "--family-id",
-            "remote_management",
+            "family_x7",
             "--variation-id",
             "V09",
             "--repetition",
@@ -783,141 +760,48 @@ def test_cli_renders_the_identity_it_was_given(
 
     rendered = json.loads(out.read_text(encoding="utf-8"))
     assert (rendered["family_id"], rendered["variation_id"], rendered["repetition"]) == (
-        "remote_management",
+        "family_x7",
         "V09",
         3,
     )
     printed = capsys.readouterr().out
-    assert "pair: family_id=remote_management variation_id=V09 repetition=3" in printed
-    assert "approved lineage policy: " in printed
-
-
-def test_cli_writes_nothing_for_a_family_without_its_policy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    out = tmp_path / "build" / "scenario.json"
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "r1_scenario_to_json.py",
-            str(CANONICAL_SCENARIO),
-            "--out",
-            str(out),
-            "--family-id",
-            "family_b",
-            "--repetition",
-            "1",
-        ],
-    )
-
-    with pytest.raises(R1PairIdentityError, match="its own policy"):
-        renderer.main()
-
-    assert not out.exists()
+    assert "pair: family_id=family_x7 variation_id=V09 repetition=3" in printed
 
 
 # ---------------------------------------------------------------------------
-# Planned lineage and approved lineage policy
+# Planned lineage: what each run is planned to execute
 # ---------------------------------------------------------------------------
 
 
-def test_rendered_scenario_carries_both_plans_and_one_family_policy(tmp_path: Path) -> None:
-    # Given
+def test_rendered_scenario_carries_the_plan_of_each_run_type(tmp_path: Path) -> None:
+    # Given: the canonical scenario as it is in the repository, and one rendering of it
+    canonical = yaml.safe_load(CANONICAL_SCENARIO.read_text(encoding="utf-8"))
     rendered = apply_run_inputs(_load_canonical(), repetition=1)
     out = render_json(rendered, tmp_path / "scenario.json")
     written = json.loads(out.read_text(encoding="utf-8"))
 
-    # Then: a plan for each run type, and a single policy that names its family
-    assert set(written["planned_lineage"]["intermediate"]) == set(RUN_TYPES)
-    policy = read_approved_lineage_policy(written)
-    assert policy.family_id == written["family_id"]
-    assert isinstance(written["approved_lineage_policy"], dict)
-    assert "lineage" not in written
+    # Then: one planned lineage block, keyed by run type, and no other lineage key
+    for scenario in (canonical, written):
+        assert set(scenario["planned_lineage"]["intermediate"]) == set(RUN_TYPES)
+        assert "lineage" not in scenario
+    assert written["planned_lineage"] == canonical["planned_lineage"]
 
 
-def test_first_pilot_approves_the_cmd_lineage_and_plans_cscript_for_the_attack_run() -> None:
-    scenario = _load_canonical()
-    policy = read_approved_lineage_policy(scenario)
+def test_attack_planned_lineage_of_the_first_pilot_is_the_cscript_lineage() -> None:
+    # The canonical scenario is read as it is in the repository, not through the loader.
+    scenario = yaml.safe_load(CANONICAL_SCENARIO.read_text(encoding="utf-8"))
 
-    assert policy.approved_chains == (("wsmprovhost.exe", "cmd.exe", "powershell.exe"),)
     assert _designed_lineage(scenario, "attack") == (
         "wsmprovhost.exe",
         "cscript.exe",
         "powershell.exe",
     )
-
-
-def test_approved_policy_is_read_from_a_rendered_scenario_without_a_run_type(
-    tmp_path: Path,
-) -> None:
-    # Given: the rendered scenario, and the same file with every run removed
-    rendered = apply_run_inputs(_load_canonical(), repetition=1)
-    without_runs = {key: value for key, value in rendered.items() if key != "runs"}
-    without_plan = {key: value for key, value in without_runs.items() if key != "planned_lineage"}
-
-    # Then: the policy is the same; nothing about a run type was needed to read it
-    policy = read_approved_lineage_policy(rendered)
-    assert read_approved_lineage_policy(without_runs) == policy
-    assert read_approved_lineage_policy(without_plan) == policy
-
-
-def test_plan_and_policy_are_checked_separately(tmp_path: Path) -> None:
-    # Given: a policy that approves the chain the attack run is planned to leave
-    def mutate(scenario: dict) -> None:
-        scenario["approved_lineage_policy"]["approved_chains"] = [
-            ["wsmprovhost.exe", "cscript.exe", "powershell.exe"]
-        ]
-
-    scenario = _load_mutated(tmp_path, mutate)
-
-    # Then: the scenario loads and both plans are what they were; the loader
-    # compares neither block with the other
     assert _designed_lineage(scenario, "normal") == ("wsmprovhost.exe", "cmd.exe", "powershell.exe")
-    assert _designed_lineage(scenario, "attack") == (
-        "wsmprovhost.exe",
-        "cscript.exe",
-        "powershell.exe",
-    )
 
 
-def _no_policy(scenario: dict) -> None:
-    del scenario["approved_lineage_policy"]
+def test_scenario_that_still_uses_the_old_lineage_key_is_refused(tmp_path: Path) -> None:
+    def mutate(scenario: dict) -> None:
+        scenario["lineage"] = scenario.pop("planned_lineage")
 
-
-def _policy_keyed_by_run_type(scenario: dict) -> None:
-    scenario["approved_lineage_policy"]["normal"] = [["wsmprovhost.exe", "cmd.exe"]]
-
-
-def _policy_without_version(scenario: dict) -> None:
-    del scenario["approved_lineage_policy"]["policy_version"]
-
-
-def _policy_with_unknown_status(scenario: dict) -> None:
-    scenario["approved_lineage_policy"]["status"] = "draft"
-
-
-def _policy_without_chains(scenario: dict) -> None:
-    scenario["approved_lineage_policy"]["approved_chains"] = []
-
-
-def _old_lineage_key(scenario: dict) -> None:
-    scenario["lineage"] = scenario.pop("planned_lineage")
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        _no_policy,
-        _policy_keyed_by_run_type,
-        _policy_without_version,
-        _policy_with_unknown_status,
-        _policy_without_chains,
-        _old_lineage_key,
-    ],
-)
-def test_scenario_without_a_plan_or_a_usable_policy_is_refused(
-    tmp_path: Path, mutate: Callable[[dict], None]
-) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="planned_lineage"):
         _load_mutated(tmp_path, mutate)
