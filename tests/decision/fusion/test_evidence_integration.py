@@ -152,6 +152,10 @@ def test_extracted_evidence_runs_through_temporal_fusion() -> None:
         1.0,
         1.0,
     ]
+    assert len(replay_result.stopping_trace) == len(replay_result.trajectory)
+    assert [(point.timestamp, point.score) for point in replay_result.stopping_trace] == [
+        (point.timestamp, point.score) for point in replay_result.trajectory
+    ]
 
     expected_evidence_ids = tuple(sorted(evidence.evidence_id for evidence in evidences))
 
@@ -256,6 +260,10 @@ def test_extracted_evidence_can_produce_miss_fusion_result() -> None:
         0.5,
         0.5,
         0.5,
+    ]
+    assert len(replay_result.stopping_trace) == len(replay_result.trajectory)
+    assert [(point.timestamp, point.score) for point in replay_result.stopping_trace] == [
+        (point.timestamp, point.score) for point in replay_result.trajectory
     ]
 
     assert replay_result.stopping_result.fusion_status == "miss"
