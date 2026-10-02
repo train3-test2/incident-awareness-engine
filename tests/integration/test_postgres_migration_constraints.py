@@ -34,10 +34,18 @@ SECOND_MIGRATION_PATH = (
     / "migrations"
     / "002_fusion_stopping_trace.sql"
 )
+THIRD_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "infra"
+    / "postgres"
+    / "migrations"
+    / "003_decision_runtime_snapshot.sql"
+)
 RUN_ID = "RUN-20260912-998"
 EVENT_ID = "evt-001"
 ENTITY_ID = "WIN-01"
 DECISION_ID = "DEC-001"
+SNAPSHOT_DECISION_ID = "DEC-SNAPSHOT-001"
 TIMESTAMP = datetime(2026, 9, 12, 1, tzinfo=UTC)
 
 
@@ -60,6 +68,7 @@ def migration_connection(database_url: str) -> psycopg.Connection[tuple[object, 
         connection.execute(sql.SQL("SET search_path TO {} ").format(schema))
         connection.execute(FIRST_MIGRATION_PATH.read_text(encoding="utf-8"))
         connection.execute(SECOND_MIGRATION_PATH.read_text(encoding="utf-8"))
+        connection.execute(THIRD_MIGRATION_PATH.read_text(encoding="utf-8"))
         connection.execute(
             """
             INSERT INTO runs (
@@ -79,6 +88,33 @@ def migration_connection(database_url: str) -> psycopg.Connection[tuple[object, 
                 "WIN-01",
                 TIMESTAMP,
                 Jsonb({"run_id": RUN_ID}),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO decisions (
+                decision_id,
+                run_id,
+                entity_id,
+                fast_status,
+                fusion_status,
+                payload
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                SNAPSHOT_DECISION_ID,
+                RUN_ID,
+                ENTITY_ID,
+                "miss",
+                "miss",
+                Jsonb(
+                    {
+                        "decision_id": SNAPSHOT_DECISION_ID,
+                        "run_id": RUN_ID,
+                        "entity_id": ENTITY_ID,
+                    }
+                ),
             ),
         )
         connection.commit()
@@ -101,13 +137,18 @@ def test_baselines_migrations_applied_by_docker_initdb(
     applied = apply_migrations(migration_connection)
 
     # Then
-    assert applied == ("001_first_cycle", "002_fusion_stopping_trace")
+    assert applied == (
+        "001_first_cycle",
+        "002_fusion_stopping_trace",
+        "003_decision_runtime_snapshot",
+    )
     migration_ids = migration_connection.execute(
         "SELECT migration_id FROM schema_migrations ORDER BY migration_id"
     ).fetchall()
     assert migration_ids == [
         ("001_first_cycle",),
         ("002_fusion_stopping_trace",),
+        ("003_decision_runtime_snapshot",),
     ]
     existing_tables = migration_connection.execute(
         """
@@ -120,12 +161,14 @@ def test_baselines_migrations_applied_by_docker_initdb(
               'fusion_results',
               'detection_results',
               'decisions',
-              'fusion_stopping_traces'
+              'fusion_stopping_traces',
+              'decision_runtime_snapshots'
           )
         ORDER BY table_name
         """
     ).fetchall()
     assert existing_tables == [
+        ("decision_runtime_snapshots",),
         ("decisions",),
         ("detection_results",),
         ("events",),
@@ -228,29 +271,48 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
         # Then
         assert sorted(applied_results, key=len) == [
             (),
-            ("002_fusion_stopping_trace",),
+            (
+                "002_fusion_stopping_trace",
+                "003_decision_runtime_snapshot",
+            ),
         ]
         with psycopg.connect(database_url) as verification_connection:
             verification_connection.execute(sql.SQL("SET search_path TO {}").format(schema))
-            table_count = verification_connection.execute(
+            table_counts = verification_connection.execute(
                 """
-                SELECT count(*)
+                SELECT table_name, count(*)
                 FROM information_schema.tables
                 WHERE table_schema = current_schema()
-                  AND table_name = 'fusion_stopping_traces'
+                  AND table_name IN (
+                      'fusion_stopping_traces',
+                      'decision_runtime_snapshots'
+                  )
+                GROUP BY table_name
+                ORDER BY table_name
                 """
-            ).fetchone()
-            migration_count = verification_connection.execute(
+            ).fetchall()
+            migration_counts = verification_connection.execute(
                 """
-                SELECT count(*)
+                SELECT migration_id, count(*)
                 FROM schema_migrations
-                WHERE migration_id = %s
+                WHERE migration_id IN (%s, %s)
+                GROUP BY migration_id
+                ORDER BY migration_id
                 """,
-                ("002_fusion_stopping_trace",),
-            ).fetchone()
+                (
+                    "002_fusion_stopping_trace",
+                    "003_decision_runtime_snapshot",
+                ),
+            ).fetchall()
 
-        assert table_count == (1,)
-        assert migration_count == (1,)
+        assert table_counts == [
+            ("decision_runtime_snapshots", 1),
+            ("fusion_stopping_traces", 1),
+        ]
+        assert migration_counts == [
+            ("002_fusion_stopping_trace", 1),
+            ("003_decision_runtime_snapshot", 1),
+        ]
     finally:
         setup_connection.rollback()
         setup_connection.close()
@@ -402,6 +464,59 @@ def test_fusion_stopping_traces_reject_payload_identifier_mismatch(
         """,
         (RUN_ID, ENTITY_ID, "v1", Jsonb(payload)),
     )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"run_id": RUN_ID, "entity_id": ENTITY_ID},
+        {"decision_id": None, "run_id": RUN_ID, "entity_id": ENTITY_ID},
+        {"decision_id": "DEC-OTHER", "run_id": RUN_ID, "entity_id": ENTITY_ID},
+        {"decision_id": SNAPSHOT_DECISION_ID, "entity_id": ENTITY_ID},
+        {"decision_id": SNAPSHOT_DECISION_ID, "run_id": None, "entity_id": ENTITY_ID},
+        {
+            "decision_id": SNAPSHOT_DECISION_ID,
+            "run_id": "RUN-20260912-997",
+            "entity_id": ENTITY_ID,
+        },
+        {"decision_id": SNAPSHOT_DECISION_ID, "run_id": RUN_ID},
+        {"decision_id": SNAPSHOT_DECISION_ID, "run_id": RUN_ID, "entity_id": None},
+        {"decision_id": SNAPSHOT_DECISION_ID, "run_id": RUN_ID, "entity_id": "WIN-02"},
+    ],
+    ids=(
+        "decision-id-missing",
+        "decision-id-null",
+        "decision-id-mismatch",
+        "run-id-missing",
+        "run-id-null",
+        "run-id-mismatch",
+        "entity-id-missing",
+        "entity-id-null",
+        "entity-id-mismatch",
+    ),
+)
+def test_decision_runtime_snapshots_reject_invalid_payload_identifiers(
+    migration_connection: psycopg.Connection[tuple[object, ...]],
+    payload: dict[str, str | None],
+) -> None:
+    # Given
+    statement = """
+        INSERT INTO decision_runtime_snapshots (
+            decision_id,
+            run_id,
+            entity_id,
+            payload
+        )
+        VALUES (%s, %s, %s, %s)
+        """
+    parameters = (SNAPSHOT_DECISION_ID, RUN_ID, ENTITY_ID, Jsonb(payload))
+
+    # When
+    with pytest.raises(CheckViolation) as exc_info, migration_connection.transaction():
+        migration_connection.execute(statement, parameters)
+
+    # Then
+    assert exc_info.type is CheckViolation
 
 
 @pytest.mark.parametrize(

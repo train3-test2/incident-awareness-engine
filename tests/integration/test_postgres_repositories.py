@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import psycopg
 import pytest
+from psycopg.errors import ForeignKeyViolation, UniqueViolation
 
 from incident_awareness.collection.collector.sysmon_jsonl import SysmonJsonlRecord
 from incident_awareness.common.models.event import NormalizedEvent, RawLogReference
@@ -24,6 +25,10 @@ from incident_awareness.common.models.result import (
     WinningPath,
 )
 from incident_awareness.common.models.run import RunMetadata, RunType, SchemaVersions
+from incident_awareness.common.models.runtime_snapshot import (
+    DecisionRuntimeSnapshot,
+    build_decision_runtime_snapshot,
+)
 from incident_awareness.integration.fast_hit_handoff import FastDetectionAdapterResult
 from incident_awareness.normalization.sysmon import SysmonNormalizationContext
 from incident_awareness.pipeline.event_evidence import NormalizedEvidenceArtifacts
@@ -35,6 +40,7 @@ from incident_awareness.storage.repositories.event_repository import EventReposi
 from incident_awareness.storage.repositories.result_repository import (
     DecisionIntegrityError,
     DecisionRepository,
+    DecisionRuntimeSnapshotRepository,
     DetectionResultRepository,
     FusionResultRepository,
     FusionStoppingTraceRepository,
@@ -258,6 +264,155 @@ def test_postgres_stores_updates_and_cascades_fusion_stopping_trace(
         finally:
             connection.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
             connection.commit()
+
+
+def test_postgres_decision_runtime_snapshot_round_trip(database_url: str) -> None:
+    # Given
+    run, decision, snapshot = _runtime_snapshot_case(
+        "RUN-20261003-901",
+        f"WIN-{uuid4().hex}",
+        f"DEC-{uuid4().hex}",
+    )
+
+    with psycopg.connect(database_url) as connection:
+        apply_migrations(connection)
+        connection.commit()
+        run_repository = RunRepository(connection)
+        decision_repository = DecisionRepository(connection)
+        snapshot_repository = DecisionRuntimeSnapshotRepository(connection)
+
+        try:
+            run_repository.save(run)
+            decision_repository.save(decision)
+
+            # When
+            snapshot_repository.save(snapshot)
+            stored_snapshot = snapshot_repository.get(snapshot.decision_id)
+
+            # Then
+            assert stored_snapshot == snapshot
+            assert stored_snapshot is not None
+            assert stored_snapshot.detection_result == snapshot.detection_result
+            assert stored_snapshot.fusion_result == snapshot.fusion_result
+            assert stored_snapshot.fusion_stopping_trace == snapshot.fusion_stopping_trace
+        finally:
+            connection.execute("DELETE FROM runs WHERE run_id = %s", (run.run_id,))
+            connection.commit()
+
+
+def test_postgres_rejects_overwriting_decision_runtime_snapshot(database_url: str) -> None:
+    # Given
+    run_id = "RUN-20261003-902"
+    entity_id = f"WIN-{uuid4().hex}"
+    decision_id = f"DEC-{uuid4().hex}"
+    run, decision, first_snapshot = _runtime_snapshot_case(run_id, entity_id, decision_id)
+    _, _, second_snapshot = _runtime_snapshot_case(
+        run_id,
+        entity_id,
+        decision_id,
+        trace_score=0.5,
+    )
+
+    with psycopg.connect(database_url) as connection:
+        apply_migrations(connection)
+        connection.commit()
+        run_repository = RunRepository(connection)
+        decision_repository = DecisionRepository(connection)
+        snapshot_repository = DecisionRuntimeSnapshotRepository(connection)
+
+        try:
+            run_repository.save(run)
+            decision_repository.save(decision)
+            snapshot_repository.save(first_snapshot)
+            connection.commit()
+
+            # When
+            with pytest.raises(UniqueViolation):
+                snapshot_repository.save(second_snapshot)
+            connection.rollback()
+
+            # Then
+            assert second_snapshot != first_snapshot
+            assert snapshot_repository.get(decision_id) == first_snapshot
+        finally:
+            connection.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
+            connection.commit()
+
+
+def test_postgres_rejects_snapshot_for_missing_decision(database_url: str) -> None:
+    # Given
+    _, _, snapshot = _runtime_snapshot_case(
+        "RUN-20261003-903",
+        f"WIN-{uuid4().hex}",
+        f"DEC-{uuid4().hex}",
+    )
+
+    with psycopg.connect(database_url) as connection:
+        apply_migrations(connection)
+        connection.commit()
+        repository = DecisionRuntimeSnapshotRepository(connection)
+
+        # When
+        with pytest.raises(ForeignKeyViolation):
+            repository.save(snapshot)
+        connection.rollback()
+
+        # Then
+        assert repository.get(snapshot.decision_id) is None
+
+
+def test_postgres_deleting_decision_cascades_runtime_snapshot(database_url: str) -> None:
+    # Given
+    run, decision, snapshot = _runtime_snapshot_case(
+        "RUN-20261003-904",
+        f"WIN-{uuid4().hex}",
+        f"DEC-{uuid4().hex}",
+    )
+
+    with psycopg.connect(database_url) as connection:
+        apply_migrations(connection)
+        connection.commit()
+        snapshot_repository = DecisionRuntimeSnapshotRepository(connection)
+
+        try:
+            RunRepository(connection).save(run)
+            DecisionRepository(connection).save(decision)
+            snapshot_repository.save(snapshot)
+
+            # When
+            connection.execute(
+                "DELETE FROM decisions WHERE decision_id = %s",
+                (decision.decision_id,),
+            )
+
+            # Then
+            assert snapshot_repository.get(snapshot.decision_id) is None
+        finally:
+            connection.execute("DELETE FROM runs WHERE run_id = %s", (run.run_id,))
+            connection.commit()
+
+
+def test_postgres_deleting_run_cascades_runtime_snapshot(database_url: str) -> None:
+    # Given
+    run, decision, snapshot = _runtime_snapshot_case(
+        "RUN-20261003-905",
+        f"WIN-{uuid4().hex}",
+        f"DEC-{uuid4().hex}",
+    )
+
+    with psycopg.connect(database_url) as connection:
+        apply_migrations(connection)
+        connection.commit()
+        snapshot_repository = DecisionRuntimeSnapshotRepository(connection)
+        RunRepository(connection).save(run)
+        DecisionRepository(connection).save(decision)
+        snapshot_repository.save(snapshot)
+
+        # When
+        connection.execute("DELETE FROM runs WHERE run_id = %s", (run.run_id,))
+
+        # Then
+        assert snapshot_repository.get(snapshot.decision_id) is None
 
 
 def test_postgres_idempotent_decision_retry_preserves_first_stopping_trace(
@@ -497,3 +652,88 @@ def _persistence_case(
         fast_result,
         decision_result,
     )
+
+
+def _runtime_snapshot_case(
+    run_id: str,
+    entity_id: str,
+    decision_id: str,
+    *,
+    trace_score: float = 0.0,
+) -> tuple[RunMetadata, DecisionResult, DecisionRuntimeSnapshot]:
+    timestamp = datetime(2026, 10, 3, 1, tzinfo=UTC)
+    run = RunMetadata(
+        run_id=run_id,
+        scenario_id="postgres-runtime-snapshot",
+        run_type=RunType.ATTACK,
+        target_host=entity_id,
+        start_time=timestamp,
+        schema_versions=SchemaVersions(
+            run_metadata="v0.2",
+            event="v0.2",
+            evidence="v0.2",
+            fast_hit="v0.2",
+            detection_result="v0.2",
+            fusion_result="v0.3",
+            decision_result="v0.2",
+            execution_record="v0.1",
+            evaluation_input="v0.1",
+        ),
+    )
+    detection_result = DetectionResult(
+        run_id=run_id,
+        entity_id=entity_id,
+        detector_time=None,
+        detector_status=DetectorStatus.MISS,
+        detector_id=None,
+        rule_id=None,
+        rule_version=None,
+        severity=None,
+    )
+    fusion_result = FusionResult(
+        run_id=run_id,
+        entity_id=entity_id,
+        fusion_time=None,
+        fusion_status="miss",
+        score_at_decision=None,
+        contributing_evidence_ids=[],
+        scoring_config_version="snapshot-v0.1",
+        scoring_profile_id="S0",
+        scoring_method="temporal_fusion",
+        scorer_version="v0.2",
+        fusion_episodes=[],
+    )
+    fusion_stopping_trace = FusionStoppingTrace(
+        run_id=run_id,
+        entity_id=entity_id,
+        scoring_config_version=fusion_result.scoring_config_version,
+        points=[
+            FusionStoppingTracePoint(
+                timestamp=timestamp,
+                score=trace_score,
+                persistence_count=None,
+                policy_state="off",
+            )
+        ],
+    )
+    decision_result = DecisionResult(
+        run_id=run_id,
+        decision_id=decision_id,
+        entity_id=entity_id,
+        fast_status=DetectorStatus.MISS,
+        fusion_status=DetectorStatus.MISS,
+        fusion_time=None,
+        detector_time=None,
+        t_e=None,
+        decision_path=DecisionPath.NONE,
+        winning_path=WinningPath.NONE,
+        decision_reason="Both evaluated paths missed",
+        config_version="parallel-v0.2",
+    )
+    snapshot = build_decision_runtime_snapshot(
+        decision_result=decision_result,
+        detection_result=detection_result,
+        fusion_result=fusion_result,
+        fusion_stopping_trace=fusion_stopping_trace,
+    )
+    return run, decision_result, snapshot

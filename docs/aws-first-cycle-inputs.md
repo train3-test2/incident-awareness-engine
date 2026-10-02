@@ -130,7 +130,8 @@ aws ecs run-task `
 
 First Cycle schema의 versioned migration은 이미지에 포함된
 `/app/infra/postgres/migrations/` 디렉터리에서 관리한다. 현재 migration은
-`001_first_cycle.sql`과 `002_fusion_stopping_trace.sql`이다. DB 연결 환경 변수
+`001_first_cycle.sql`, `002_fusion_stopping_trace.sql`,
+`003_decision_runtime_snapshot.sql`이다. DB 연결 환경 변수
 `INCIDENT_AWARENESS_DATABASE_URL`이 주입된 별도 Fargate 일회성 태스크에서 아래 명령을
 실행한다.
 
