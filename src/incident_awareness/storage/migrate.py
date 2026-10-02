@@ -12,6 +12,8 @@ from incident_awareness.storage.config import DatabaseConfig
 
 _LOGGER = logging.getLogger(__name__)
 _FIRST_CYCLE_MIGRATION_ID = "001_first_cycle"
+_MIGRATION_ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
+_MIGRATION_ADVISORY_LOCK_KEY = "incident_awareness_engine:migrations"
 _MIGRATION_BASELINE_TABLES = {
     _FIRST_CYCLE_MIGRATION_ID: frozenset(
         {
@@ -53,6 +55,10 @@ def _apply_migration_paths(
     connection: MigrationConnection,
     paths: tuple[Path, ...],
 ) -> tuple[str, ...]:
+    connection.execute(
+        _MIGRATION_ADVISORY_LOCK_SQL,
+        (_MIGRATION_ADVISORY_LOCK_KEY,),
+    )
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (

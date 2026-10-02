@@ -1,6 +1,8 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Barrier
 from uuid import uuid4
 
 import psycopg
@@ -125,6 +127,72 @@ def test_baselines_migrations_applied_by_docker_initdb(
         ("fusion_stopping_traces",),
         ("runs",),
     ]
+
+
+def test_serializes_concurrent_migration_runners(database_url: str) -> None:
+    # Given
+    schema_name = f"migration_concurrency_{uuid4().hex}"
+    schema = sql.Identifier(schema_name)
+    start_barrier = Barrier(2)
+
+    with psycopg.connect(database_url) as setup_connection:
+        setup_connection.execute(sql.SQL("CREATE SCHEMA {}").format(schema))
+        setup_connection.execute(sql.SQL("SET search_path TO {}").format(schema))
+        setup_connection.execute(FIRST_MIGRATION_PATH.read_text(encoding="utf-8"))
+        setup_connection.execute(
+            """
+            CREATE TABLE schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        setup_connection.execute(
+            "INSERT INTO schema_migrations (migration_id) VALUES (%s)",
+            ("001_first_cycle",),
+        )
+
+    def run_migrations() -> tuple[str, ...]:
+        with psycopg.connect(database_url) as connection:
+            connection.execute(sql.SQL("SET search_path TO {}").format(schema))
+            start_barrier.wait(timeout=10)
+            return apply_migrations(connection)
+
+    try:
+        # When
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(run_migrations) for _ in range(2)]
+            applied_results = [future.result() for future in futures]
+
+        # Then
+        assert sorted(applied_results, key=len) == [
+            (),
+            ("002_fusion_stopping_trace",),
+        ]
+        with psycopg.connect(database_url) as verification_connection:
+            verification_connection.execute(sql.SQL("SET search_path TO {}").format(schema))
+            table_count = verification_connection.execute(
+                """
+                SELECT count(*)
+                FROM information_schema.tables
+                WHERE table_schema = current_schema()
+                  AND table_name = 'fusion_stopping_traces'
+                """
+            ).fetchone()
+            migration_count = verification_connection.execute(
+                """
+                SELECT count(*)
+                FROM schema_migrations
+                WHERE migration_id = %s
+                """,
+                ("002_fusion_stopping_trace",),
+            ).fetchone()
+
+        assert table_count == (1,)
+        assert migration_count == (1,)
+    finally:
+        with psycopg.connect(database_url) as cleanup_connection:
+            cleanup_connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(schema))
 
 
 @pytest.mark.parametrize(

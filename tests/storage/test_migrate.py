@@ -83,6 +83,7 @@ def test_applies_all_migrations_in_filename_order() -> None:
         "001_first_cycle",
         "002_fusion_stopping_trace",
     }
+    _assert_migration_lock_precedes_history_table(connection)
     first_index = next(
         index for index, (query, _) in enumerate(connection.queries) if "CREATE TABLE runs" in query
     )
@@ -191,6 +192,7 @@ def test_first_cycle_compatibility_entry_point_only_applies_first_migration() ->
     # Then
     assert applied is True
     assert connection.applied_migrations == {"001_first_cycle"}
+    _assert_migration_lock_precedes_history_table(connection)
     assert not any(
         "CREATE TABLE fusion_stopping_traces" in query for query, _ in connection.queries
     )
@@ -225,3 +227,11 @@ def test_main_uses_connection_managed_transaction(
         "url": "postgresql://user:password@host/database",
         "autocommit": False,
     }
+
+
+def _assert_migration_lock_precedes_history_table(connection: _Connection) -> None:
+    assert connection.queries[0] == (
+        migrate._MIGRATION_ADVISORY_LOCK_SQL,
+        (migrate._MIGRATION_ADVISORY_LOCK_KEY,),
+    )
+    assert "CREATE TABLE IF NOT EXISTS schema_migrations" in connection.queries[1][0]
