@@ -5,6 +5,11 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+
+concurrency:
+  group: first-cycle-demo-input-upload
+  cancel-in-progress: false
 
 jobs:
   prepare-demo-inputs:
@@ -15,6 +20,9 @@ jobs:
       entity_id: ${{ steps.identifiers.outputs.entity_id }}
       decision_id: ${{ steps.identifiers.outputs.decision_id }}
       decision_config_version: ${{ steps.identifiers.outputs.decision_config_version }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      FIRST_CYCLE_S3_BUCKET: ${{ vars.FIRST_CYCLE_S3_BUCKET }}
     steps:
       - uses: actions/checkout@v6
 
@@ -24,6 +32,26 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Validate S3 upload configuration
+        shell: bash
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+
+          for value in AWS_ROLE_ARN AWS_REGION FIRST_CYCLE_S3_BUCKET; do
+            if [[ -z "${!value//[[:space:]]/}" ]]; then
+              echo "GitHub Actions variable $value must be configured."
+              exit 1
+            fi
+          done
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
       - name: Allocate demo identifiers
         id: identifiers
         shell: bash
@@ -31,8 +59,30 @@ jobs:
           set -euo pipefail
 
           run_date="$(date -u +%Y%m%d)"
-          sequence="$(( (GITHUB_RUN_NUMBER - 1) % 999 + 1 ))"
-          run_id="RUN-${run_date}-$(printf '%03d' "$sequence")"
+          initial_sequence="$(( (GITHUB_RUN_NUMBER - 1) % 999 + 1 ))"
+          run_id=""
+
+          for ((offset = 0; offset < 999; offset++)); do
+            sequence="$(( (initial_sequence + offset - 1) % 999 + 1 ))"
+            candidate="RUN-${run_date}-$(printf '%03d' "$sequence")"
+            key_count="$(
+              aws s3api list-objects-v2 \
+                --bucket "$FIRST_CYCLE_S3_BUCKET" \
+                --prefix "first-cycle/$candidate/" \
+                --max-keys 1 \
+                --query 'KeyCount' \
+                --output text
+            )"
+            if [[ "$key_count" == "0" ]]; then
+              run_id="$candidate"
+              break
+            fi
+          done
+
+          if [[ -z "$run_id" ]]; then
+            echo "No unused First Cycle run_id remains for UTC date $run_date."
+            exit 1
+          fi
 
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
           echo "entity_id=WIN-01" >> "$GITHUB_OUTPUT"
@@ -51,6 +101,34 @@ jobs:
             --seed-root tests/fixtures/pipeline/first_cycle \
             --destination "$RUNNER_TEMP/first-cycle-demo-inputs" \
             --run-id "$RUN_ID"
+
+      - name: Upload demo inputs to S3
+        shell: bash
+        env:
+          RUN_ID: ${{ steps.identifiers.outputs.run_id }}
+        run: |
+          set -euo pipefail
+
+          prefix="first-cycle/$RUN_ID"
+          aws s3 cp \
+            "$RUNNER_TEMP/first-cycle-demo-inputs/" \
+            "s3://$FIRST_CYCLE_S3_BUCKET/$prefix/" \
+            --recursive \
+            --only-show-errors
+
+          required_keys=(
+            "$prefix/run_metadata.json"
+            "$prefix/manifest.json"
+            "$prefix/sysmon-0001.jsonl"
+            "$prefix/fast/hits.jsonl"
+            "$prefix/fast/trace.json"
+            "$prefix/fast/selection.json"
+            "$prefix/fast/handoff.csv"
+            "$prefix/fast/config.json"
+          )
+          for key in "${required_keys[@]}"; do
+            aws s3api head-object --bucket "$FIRST_CYCLE_S3_BUCKET" --key "$key" > /dev/null
+          done
 
       - name: Upload prepared demo inputs
         uses: actions/upload-artifact@v4
@@ -78,6 +156,7 @@ jobs:
             echo "| Entity ID | \`$ENTITY_ID\` |"
             echo "| Decision ID | \`$DECISION_ID\` |"
             echo "| Decision config version | \`$DECISION_CONFIG_VERSION\` |"
+            echo "| S3 input | \`s3://$FIRST_CYCLE_S3_BUCKET/first-cycle/$RUN_ID/\` |"
             echo
-            echo "The next workflow stage uploads this Artifact to S3 and starts ECS."
+            echo "The next workflow stage registers the First Cycle task definition and starts ECS."
           } >> "$GITHUB_STEP_SUMMARY"

@@ -94,6 +94,12 @@ Access Key, Session Token을 GitHub Secrets 또는 저장소에 등록하지 않
 현재 신뢰 정책은 `develop` 브랜치만 허용한다. 따라서 수동 First Cycle 워크플로도
 `develop`에 병합된 뒤 해당 브랜치에서 실행한다.
 
+원클릭 데모 워크플로는 새 입력 묶음을 `first-cycle/<run_id>/`에 업로드하므로, 같은
+역할에 해당 prefix의 `s3:PutObject` 권한도 필요하다. 이 권한은 새 prefix에 생성한
+데모 입력을 올리기 위한 것이며, 워크플로는 기존 prefix를 선택하거나 덮어쓰지 않는다.
+저장소의 `infra/iam/github-actions-smoke-deploy-policy.json`을 변경한 뒤에는 AWS IAM
+역할에 연결된 실제 정책에도 같은 변경을 반영해야 한다.
+
 ## GitHub Actions variables
 
 GitHub 저장소의 **Settings → Secrets and variables → Actions → Variables**에 다음 값을 등록한다. 모두 식별자이므로 GitHub Secret이 아닌 Variable로 관리한다.
