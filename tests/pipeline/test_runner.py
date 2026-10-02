@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -7,11 +8,25 @@ from incident_awareness.pipeline import runner
 from incident_awareness.pipeline.cli import PipelineInputs
 from incident_awareness.pipeline.reporting import PipelineExecutionSummary
 from incident_awareness.pipeline.runner import run_first_cycle_pipeline
+from incident_awareness.storage.repositories.result_repository import DecisionIntegrityError
+
+
+class _Connection:
+    def __init__(self, *, fail_rollback: bool = False) -> None:
+        self.rollbacks = 0
+        self._fail_rollback = fail_rollback
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+        if self._fail_rollback:
+            raise RuntimeError("database rollback failed")
 
 
 def test_runs_each_first_cycle_stage_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
     calls: list[str] = []
-    artifacts = object()
+    connection = object()
+    artifacts = SimpleNamespace(run_metadata=SimpleNamespace(run_id="RUN-20260920-001"))
     normalized_artifacts = object()
     fusion_result = object()
     fast_result = object()
@@ -46,10 +61,29 @@ def test_runs_each_first_cycle_stage_in_order(monkeypatch: pytest.MonkeyPatch) -
         "load_s0_fast_detection",
         lambda inputs, value: _record(calls, "fast_handoff", fast_result),
     )
+
+    def resolve_expected_supersedes(**kwargs) -> str:
+        assert kwargs == {
+            "decision_id": "D-001",
+            "run_id": "RUN-20260920-001",
+            "entity_id": "WIN-01",
+            "connection": connection,
+        }
+        return _record(calls, "lifecycle_resolution", "D-000")
+
+    def combine_decision(inputs, fast, fusion, *, supersedes_decision_id):
+        assert supersedes_decision_id == "D-000"
+        return _record(calls, "hybrid", decision_result)
+
+    monkeypatch.setattr(
+        runner,
+        "resolve_expected_supersedes_decision_id",
+        resolve_expected_supersedes,
+    )
     monkeypatch.setattr(
         runner,
         "combine_parallel_decision",
-        lambda inputs, fast, fusion: _record(calls, "hybrid", decision_result),
+        combine_decision,
     )
     monkeypatch.setattr(
         runner,
@@ -59,18 +93,84 @@ def test_runs_each_first_cycle_stage_in_order(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(runner, "build_execution_summary", lambda *args: summary)
     monkeypatch.setattr(runner, "log_execution_summary", lambda value: calls.append("summary"))
 
-    actual_summary = run_first_cycle_pipeline(_inputs(), connection=object())
+    # When
+    actual_summary = run_first_cycle_pipeline(_inputs(), connection=connection)
 
+    # Then
     assert actual_summary == summary
     assert calls == [
         "artifact_validation",
         "normalization",
         "fusion",
         "fast_handoff",
+        "lifecycle_resolution",
         "hybrid",
         "persistence",
         "summary",
     ]
+
+
+def test_rolls_back_caller_connection_when_combine_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    connection = _Connection()
+    error = RuntimeError("Decision combination failed")
+    persistence_calls: list[object] = []
+    _configure_successful_stages(
+        monkeypatch,
+        runner,
+        failing_stage="none",
+        error=error,
+    )
+    monkeypatch.setattr(
+        runner,
+        "combine_parallel_decision",
+        _raise_or_return("combine", "combine", error, None),
+    )
+    monkeypatch.setattr(
+        runner,
+        "persist_s0_results",
+        lambda *args, **kwargs: persistence_calls.append(None),
+    )
+
+    # When
+    with pytest.raises(RuntimeError) as exc_info:
+        run_first_cycle_pipeline(_inputs(), connection=connection)
+
+    # Then
+    assert exc_info.value is error
+    assert connection.rollbacks == 1
+    assert persistence_calls == []
+
+
+def test_preserves_combine_error_when_rollback_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Given
+    connection = _Connection(fail_rollback=True)
+    error = RuntimeError("Decision combination failed")
+    _configure_successful_stages(
+        monkeypatch,
+        runner,
+        failing_stage="none",
+        error=error,
+    )
+    monkeypatch.setattr(
+        runner,
+        "combine_parallel_decision",
+        _raise_or_return("combine", "combine", error, None),
+    )
+
+    # When
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError) as exc_info:
+        run_first_cycle_pipeline(_inputs(), connection=connection)
+
+    # Then
+    assert exc_info.value is error
+    assert connection.rollbacks == 1
+    assert "Hybrid Decision rollback failed" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -78,6 +178,7 @@ def test_runs_each_first_cycle_stage_in_order(monkeypatch: pytest.MonkeyPatch) -
     [
         ("artifact_validation", ValueError("manifest run_id mismatch")),
         ("fast_handoff", ValueError("FastHit trace run_id mismatch")),
+        ("hybrid", DecisionIntegrityError("Decision lifecycle is invalid")),
         ("persistence", RuntimeError("database connection lost")),
     ],
 )
@@ -106,7 +207,7 @@ def _configure_successful_stages(
     failing_stage: str,
     error: Exception,
 ) -> None:
-    artifacts = object()
+    artifacts = SimpleNamespace(run_metadata=SimpleNamespace(run_id="RUN-20260920-001"))
     normalized_artifacts = object()
     fusion_result = object()
     fast_result = object()
@@ -134,8 +235,13 @@ def _configure_successful_stages(
     )
     monkeypatch.setattr(
         runner,
+        "resolve_expected_supersedes_decision_id",
+        _raise_or_return(failing_stage, "hybrid", error, None),
+    )
+    monkeypatch.setattr(
+        runner,
         "combine_parallel_decision",
-        _raise_or_return(failing_stage, "hybrid", error, decision_result),
+        lambda *args, **kwargs: decision_result,
     )
     monkeypatch.setattr(
         runner,
