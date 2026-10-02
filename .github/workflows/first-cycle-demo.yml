@@ -1,0 +1,83 @@
+name: Prepare First Cycle demo inputs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-demo-inputs:
+    name: Prepare versioned demo inputs
+    runs-on: ubuntu-latest
+    outputs:
+      run_id: ${{ steps.identifiers.outputs.run_id }}
+      entity_id: ${{ steps.identifiers.outputs.entity_id }}
+      decision_id: ${{ steps.identifiers.outputs.decision_id }}
+      decision_config_version: ${{ steps.identifiers.outputs.decision_config_version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Allocate demo identifiers
+        id: identifiers
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          run_date="$(date -u +%Y%m%d)"
+          sequence="$(( (GITHUB_RUN_NUMBER - 1) % 999 + 1 ))"
+          run_id="RUN-${run_date}-$(printf '%03d' "$sequence")"
+
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "entity_id=WIN-01" >> "$GITHUB_OUTPUT"
+          echo "decision_id=DEC-$run_id" >> "$GITHUB_OUTPUT"
+          echo "decision_config_version=parallel-v0.2" >> "$GITHUB_OUTPUT"
+
+      - name: Materialize First Cycle demo inputs
+        shell: bash
+        env:
+          RUN_ID: ${{ steps.identifiers.outputs.run_id }}
+        run: |
+          set -euo pipefail
+
+          uv sync --all-groups --locked
+          uv run python -m incident_awareness.pipeline.demo_seed \
+            --seed-root tests/fixtures/pipeline/first_cycle \
+            --destination "$RUNNER_TEMP/first-cycle-demo-inputs" \
+            --run-id "$RUN_ID"
+
+      - name: Upload prepared demo inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: first-cycle-demo-inputs-${{ steps.identifiers.outputs.run_id }}
+          path: ${{ runner.temp }}/first-cycle-demo-inputs
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Write demo input summary
+        shell: bash
+        env:
+          RUN_ID: ${{ steps.identifiers.outputs.run_id }}
+          ENTITY_ID: ${{ steps.identifiers.outputs.entity_id }}
+          DECISION_ID: ${{ steps.identifiers.outputs.decision_id }}
+          DECISION_CONFIG_VERSION: ${{ steps.identifiers.outputs.decision_config_version }}
+        run: |
+          {
+            echo "## First Cycle demo inputs prepared"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Seed | s0-attack-fixture-v1 |"
+            echo "| Run ID | \`$RUN_ID\` |"
+            echo "| Entity ID | \`$ENTITY_ID\` |"
+            echo "| Decision ID | \`$DECISION_ID\` |"
+            echo "| Decision config version | \`$DECISION_CONFIG_VERSION\` |"
+            echo
+            echo "The next workflow stage uploads this Artifact to S3 and starts ECS."
+          } >> "$GITHUB_STEP_SUMMARY"
