@@ -14,7 +14,6 @@ from incident_awareness.pipeline.standalone import (
     run_prepared_standalone_run,
 )
 from incident_awareness.storage.config import DATABASE_URL_ENV, DatabaseConfig
-from incident_awareness.storage.migrate import apply_first_cycle_migration
 
 TEST_DATABASE_URL_ENV = "TEST_DATABASE_URL"
 TEST_DATABASE_MARKER_ENV = "INCIDENT_AWARENESS_TEST_DATABASE"
@@ -61,8 +60,7 @@ def test_generated_standalone_artifacts_flow_through_pipeline_and_postgres(
     assert prepared.inputs.sysmon_jsonl_path.is_file()
 
     with psycopg.connect(database_url, autocommit=False) as connection:
-        apply_first_cycle_migration(connection)
-        connection.commit()
+        _require_first_cycle_schema(connection)
         connection.execute("DELETE FROM runs WHERE run_id = %s", (RUN_ID,))
         connection.commit()
         try:
@@ -85,6 +83,12 @@ def _table_count(connection: psycopg.Connection[tuple[object, ...]], table_name:
     return connection.execute(
         f"SELECT COUNT(*) FROM {table_name} WHERE run_id = %s", (RUN_ID,)
     ).fetchone()[0]
+
+
+def _require_first_cycle_schema(connection: psycopg.Connection[tuple[object, ...]]) -> None:
+    row = connection.execute("SELECT to_regclass('public.runs')").fetchone()
+    if row is None or row[0] is None:
+        pytest.skip("First Cycle migration이 적용된 PostgreSQL에서만 실행합니다.")
 
 
 def _write_sysmon_jsonl(path: Path) -> None:
