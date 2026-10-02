@@ -6,7 +6,23 @@ and copies that file to the Controller together with the run scripts. The
 rendered file is a build artifact and is not committed; see
 `scenarios/R1/README.md`.
 
-    python tools/r1_scenario_to_json.py scenarios/R1/scenario.yaml --out build/R1/scenario.json
+    python tools/r1_scenario_to_json.py scenarios/R1/scenario.yaml --out build/R1/scenario.json \
+        --repetition 1
+
+One JSON is rendered for one Pair, and both runs of the Pair read it. It is the
+only place a run takes its values from: the runner has no option that overrides
+what the rendered file says.
+
+The identity of the Pair is stated when the JSON is rendered:
+
+    --family-id      family the Pair belongs to; has to be the family the approved
+                     lineage policy of the scenario was approved for
+    --variation-id   variation the Pair belongs to
+    --repetition     which Pair of the family this is, 1 or more
+
+The canonical YAML states the family and the variation it designs, and the
+options replace them when given. It states no repetition, so --repetition is
+always needed. The three values are written to RunMetadata for both runs.
 
 The canonical YAML keeps the Target-A host name, the internal destination and
 the lab network as null. They are injected only when the JSON is rendered for a
@@ -28,6 +44,12 @@ The loader also checks what both runs have to share - one final tool, one
 intermediate each, the same steps at the same offsets - and refuses a scenario
 that would carry an encoded command option or the run type in a file name or an
 argument. The runner repeats the last two checks on the plan it builds.
+
+A scenario says two separate things about lineage. `planned_lineage` is what
+each run is planned to execute, selected by run type. `approved_lineage_policy`
+is the lineage approved for the family and is not keyed by run type at all
+(`incident_awareness.collection.r1_lineage_policy`). The loader requires both
+and compares neither with the other.
 """
 
 import argparse
@@ -46,22 +68,37 @@ from incident_awareness.collection.r1_destination import (
     validate_internal_target,
     validate_lab_cidr,
 )
+from incident_awareness.collection.r1_lineage_policy import (
+    POLICY_KEY,
+    ApprovedLineagePolicy,
+    read_approved_lineage_policy,
+)
+from incident_awareness.collection.r1_pair_identity import (
+    R1PairIdentity,
+    R1PairIdentityError,
+    exposed_label_word,
+    read_pair_identity,
+    validate_family_id,
+    validate_repetition,
+    validate_variation_id,
+)
 from tools.scenario_to_json import render_json
 
 SCENARIO_ID = "R1"
 RUN_TYPES = ("normal", "attack")
 STEP_ORDER = ("session_begin", "prepare", "launch", "connect", "session_end")
 LAUNCHER_KINDS = ("batch", "jscript")
-
-# Words that would give the run type away in something Sysmon records on Target-A.
-LABEL_WORDS = ("normal", "attack", "benign", "malicious")
+PLANNED_LINEAGE_KEY = "planned_lineage"
+IDENTITY_KEYS = ("family_id", "variation_id", "repetition")
 
 _REQUIRED_TOP_LEVEL = (
     "scenario_version",
     "scenario_id",
+    *IDENTITY_KEYS,
     "run_metadata",
     "internal_connection",
-    "lineage",
+    PLANNED_LINEAGE_KEY,
+    POLICY_KEY,
     "shortcut_controls",
     "runs",
 )
@@ -117,29 +154,29 @@ def _require_arguments(value: object, label: str, placeholders: tuple[str, ...])
 
 
 def _reject_label_words(value: str, label: str) -> None:
-    lowered = value.lower()
-    for word in LABEL_WORDS:
-        if word in lowered:
-            raise ValueError(f"{label} would expose the run type on Target-A: {value!r}")
+    if exposed_label_word(value) is not None:
+        raise ValueError(f"{label} would expose the run type on Target-A: {value!r}")
 
 
-def _check_lineage(lineage: object) -> None:
+def _check_planned_lineage(lineage: object) -> None:
+    """Check what each run is planned to execute. This is not the approved policy."""
     if not isinstance(lineage, dict):
-        raise TypeError("lineage must be a mapping")
+        raise TypeError(f"{PLANNED_LINEAGE_KEY} must be a mapping")
 
     session_host = lineage.get("session_host") or {}
     final_tool = lineage.get("final_tool") or {}
     intermediate = lineage.get("intermediate") or {}
+    prefix = PLANNED_LINEAGE_KEY
 
     exposed = [
-        (_require_text(session_host.get("image"), "lineage.session_host.image"), "session host"),
-        (_require_text(final_tool.get("image"), "lineage.final_tool.image"), "final tool"),
+        (_require_text(session_host.get("image"), f"{prefix}.session_host.image"), "session host"),
+        (_require_text(final_tool.get("image"), f"{prefix}.final_tool.image"), "final tool"),
     ]
     exposed += [
-        (argument, "lineage.final_tool.arguments")
+        (argument, f"{prefix}.final_tool.arguments")
         for argument in _require_arguments(
             final_tool.get("arguments"),
-            "lineage.final_tool.arguments",
+            f"{prefix}.final_tool.arguments",
             ("{task_script}", "{channel_dir}"),
         )
     ]
@@ -147,7 +184,7 @@ def _check_lineage(lineage: object) -> None:
     images: dict[str, str] = {}
     launcher_files: dict[str, str] = {}
     for run_type in RUN_TYPES:
-        label = f"lineage.intermediate.{run_type}"
+        label = f"{prefix}.intermediate.{run_type}"
         entry = intermediate.get(run_type)
         if entry is None:
             raise ValueError(f"{label} is missing")
@@ -179,10 +216,11 @@ def _check_lineage(lineage: object) -> None:
     # tool. One intermediate each, and they have to differ.
     if images["normal"].lower() == images["attack"].lower():
         raise ValueError(
-            "lineage.intermediate.normal and .attack name the same image; the pair would not differ"
+            f"{prefix}.intermediate.normal and .attack name the same image; "
+            "the pair would not differ"
         )
     if launcher_files["normal"].lower() == launcher_files["attack"].lower():
-        raise ValueError("lineage.intermediate entries share one launcher file")
+        raise ValueError(f"{prefix}.intermediate entries share one launcher file")
 
     for value, label in exposed:
         _reject_label_words(value, label)
@@ -196,6 +234,14 @@ def _check_runs(scenario: dict) -> None:
     for run_type in RUN_TYPES:
         if run_type not in runs:
             raise ValueError(f"runs.{run_type} is missing")
+
+        # The identity of a Pair is stated once, for both runs. A run that could
+        # state its own would let the two runs of a Pair disagree.
+        stated = sorted(key for key in IDENTITY_KEYS if key in runs[run_type])
+        if stated:
+            raise ValueError(
+                f"runs.{run_type} states {stated}; a Pair states them once at the top level"
+            )
 
         actions = runs[run_type].get("actions") or []
         if len(actions) != expected:
@@ -233,6 +279,28 @@ def _check_runs(scenario: dict) -> None:
         )
 
 
+def _check_identity_and_policy(scenario: dict) -> ApprovedLineagePolicy:
+    """Check the Pair identity a scenario states and the policy of its family.
+
+    A repetition may still be missing: the canonical YAML states none. A stated
+    value has to be valid, and the family has to be the one the approved lineage
+    policy was approved for, so a family cannot be rendered without its policy.
+    """
+    family_id = validate_family_id(scenario.get("family_id"))
+    validate_variation_id(scenario.get("variation_id"))
+    if scenario.get("repetition") is not None:
+        validate_repetition(scenario["repetition"])
+
+    policy = read_approved_lineage_policy(scenario)
+    if policy.family_id != family_id:
+        raise R1PairIdentityError(
+            f"family_id is {family_id!r}, but {POLICY_KEY} {policy.policy_id!r} was approved "
+            f"for family {policy.family_id!r}; a family is rendered with its own policy"
+        )
+
+    return policy
+
+
 def load_r1_scenario(path: Path) -> dict:
     """Load the R1 scenario and check the rules the runner depends on."""
     with path.open(encoding="utf-8") as stream:
@@ -248,8 +316,9 @@ def load_r1_scenario(path: Path) -> dict:
     if scenario["scenario_id"] != SCENARIO_ID:
         raise ValueError(f"scenario_id must be {SCENARIO_ID!r}, found {scenario['scenario_id']!r}")
 
-    _check_lineage(scenario["lineage"])
+    _check_planned_lineage(scenario[PLANNED_LINEAGE_KEY])
     _check_runs(scenario)
+    _check_identity_and_policy(scenario)
     return scenario
 
 
@@ -271,6 +340,9 @@ def apply_run_inputs(
     internal_target: str | None = None,
     internal_port: int | None = None,
     lab_cidr: str | None = None,
+    family_id: str | None = None,
+    variation_id: str | None = None,
+    repetition: int | None = None,
 ) -> dict:
     """Return a copy with the run inputs injected.
 
@@ -278,6 +350,10 @@ def apply_run_inputs(
     rewritten. Both runs read the same blocks, so an injected value applies
     identically to normal and attack. The destination, its port and the lab
     network are given together or not at all.
+
+    A family, a variation or a repetition that is given replaces what the
+    scenario states. Whatever the result states is checked again, so a family
+    without its own approved lineage policy is refused here as well.
     """
     rendered = copy.deepcopy(scenario)
 
@@ -297,13 +373,38 @@ def apply_run_inputs(
         internal["port"] = validate_internal_port(internal_port)
         internal["lab_cidr"] = str(network)
 
+    if family_id is not None:
+        rendered["family_id"] = validate_family_id(family_id)
+    if variation_id is not None:
+        rendered["variation_id"] = validate_variation_id(variation_id)
+    if repetition is not None:
+        rendered["repetition"] = validate_repetition(repetition)
+    _check_identity_and_policy(rendered)
+
     return rendered
+
+
+def require_pair_identity(scenario: dict) -> R1PairIdentity:
+    """Return the identity a scenario states, or raise when a run could not record it.
+
+    This is what makes --repetition necessary: the canonical YAML states none,
+    and a rendered scenario is not written without one.
+    """
+    try:
+        return read_pair_identity(scenario)
+    except R1PairIdentityError as error:
+        raise R1PairIdentityError(
+            f"{error}. State it when rendering: --family-id, --variation-id, --repetition"
+        ) from error
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scenario", type=Path, help="path to scenarios/R1/scenario.yaml")
     parser.add_argument("--out", type=Path, required=True, help="path of the JSON to write")
+    parser.add_argument("--family-id", help="family of the Pair; has to match the approved policy")
+    parser.add_argument("--variation-id", help="variation of the Pair")
+    parser.add_argument("--repetition", type=int, help="which Pair of the family this is, from 1")
     parser.add_argument("--target-host", help="Target-A computer name; omit for a dry run")
     parser.add_argument(
         "--internal-target",
@@ -319,10 +420,23 @@ def main() -> int:
         internal_target=args.internal_target,
         internal_port=args.internal_port,
         lab_cidr=args.lab_cidr,
+        family_id=args.family_id,
+        variation_id=args.variation_id,
+        repetition=args.repetition,
     )
+    identity = require_pair_identity(scenario)
+    policy = read_approved_lineage_policy(scenario)
 
     destination = render_json(scenario, args.out)
     print(f"[+] {args.scenario} -> {destination}")
+    print(
+        f"[+] pair: family_id={identity.family_id} variation_id={identity.variation_id} "
+        f"repetition={identity.repetition}"
+    )
+    print(
+        f"[+] approved lineage policy: {policy.policy_id} {policy.policy_version} "
+        f"({policy.status}) sha256={policy.sha256}"
+    )
     return 0
 
 

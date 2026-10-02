@@ -9,7 +9,7 @@
 
             A01  remote_session      the Controller opens the session
             A02  file_operation      common preparation in the session
-            A03  process_create      session host -> other intermediate -> the same final tool
+            A03  process_create      session host -> planned intermediate -> the same final tool
             A04  network_connection  that final tool instance connects internally
             A05  remote_session      the session is closed
 
@@ -20,10 +20,14 @@
         access, no privilege change, no log clearing and no encoded command.
 
         Which intermediate and which final tool are started comes from
-        scenario.json (scenario.yaml, lineage); nothing in this file names them.
-        Both runs use one account, one work directory, the same final tool command
-        line and the same destination, and nothing on Target-A carries the run
-        type in a file name or an argument.
+        scenario.json (scenario.yaml, planned_lineage); nothing in this file names
+        them. Both runs use one account, one work directory, the same final tool
+        command line and the same destination, and nothing on Target-A carries the
+        run type in a file name or an argument.
+
+        The family, the variation and the repetition of the Pair are read from
+        scenario.json and written to RunMetadata. This script takes no parameter
+        for them: both runs of a Pair use one rendered scenario.json.
 
         -DryRun validates every input, builds the launch plan and prints it. It
         opens no session and starts nothing, so it can be run anywhere.

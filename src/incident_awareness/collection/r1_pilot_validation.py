@@ -19,18 +19,26 @@ Controller. It does two things.
    chain by host and ProcessGuid and the EID 3 carrying the same host and
    ProcessGuid to the approved destination.
 
-What the run was designed to look like - the three Images of the lineage, the
-internal destination and the Target-A name - is read from the scenario JSON that
-was rendered for the run (`tools/r1_scenario_to_json.py`), never from this code.
+What the run was planned to leave - the three Images of its planned lineage, the
+internal destination, the Target-A name and the family, variation and repetition
+of its Pair - is read from the scenario JSON that was rendered for the run
+(`tools/r1_scenario_to_json.py`), never from this code.
 
-This is a conformance check of one collected run against its own design. It
+This is a conformance check of one collected run against its own plan. It
 detects nothing, builds no Evidence and produces no Fusion input. `run_type` is
-read from Ground Truth for one purpose: to know which of the two designed
-lineages this run was meant to have. An Image name is compared with the design
+read from Ground Truth for one purpose: to know which of the two planned
+lineages this run was meant to leave. An Image name is compared with the plan
 of that run, in a full three step chain tied together by ProcessGuid; it is
 never used to decide what a run is.
 
-`R1PilotValidationReport.ok` means the contract files and the designed lineage
+The scenario also carries the approved lineage policy of the family
+(`r1_lineage_policy`). Whether a lineage is approved is a question for Evidence
+extraction, not for collection, so nothing here is judged by that policy. The
+block has to be a well-formed policy of the family of the run, and only its
+identity is used: the identifier, version, status and SHA-256 are written into
+the report so that the policy a run was made under can be found.
+
+`R1PilotValidationReport.ok` means the contract files and the planned lineage
 held for this one run. It is not the Pilot verdict of `docs/scenarios/r1.md`
 section 8-2: the comparison of the two runs of a pair (S-1, and the Image and
 lineage comparison of S-2 and S-3) and the t+5 and t+8 windows (S-7) are not
@@ -66,6 +74,16 @@ from incident_awareness.collection.r1_lineage import (
     select_connections,
     verify_r1_lineage,
 )
+from incident_awareness.collection.r1_lineage_policy import (
+    ApprovedLineagePolicy,
+    R1LineagePolicyError,
+    read_approved_lineage_policy,
+)
+from incident_awareness.collection.r1_pair_identity import (
+    R1PairIdentity,
+    R1PairIdentityError,
+    read_pair_identity,
+)
 
 # The contract checks below are the S0 ones, reused as issue #73 asks. They only
 # call `fail` and `passed` on the report they are given. Moving them to a shared
@@ -86,8 +104,10 @@ from incident_awareness.common.models.run import RunMetadata
 SCENARIO_ID = "R1"
 RUN_TYPES = ("normal", "attack")
 CONNECT_STEP = "connect"
+PLANNED_LINEAGE_KEY = "planned_lineage"
 LINEAGE_ROLES = ("final tool", "intermediate", "session host")
 REFERENCE_FIELDS = ("reference_time", "reference_action_id", "reference_source_event_id")
+IDENTITY_FIELDS = ("family_id", "variation_id", "repetition")
 
 
 class R1ScenarioError(ValueError):
@@ -110,7 +130,12 @@ class R1ScenarioAction:
 
 @dataclass(frozen=True)
 class R1PilotExpectation:
-    """What one run type was designed to leave on Target-A."""
+    """What one run type was planned to leave on Target-A, and for which Pair.
+
+    The three Images are the planned lineage of that run type. `policy` is the
+    approved lineage policy the scenario carries; it is kept to be recorded, not
+    to be compared with anything.
+    """
 
     target_host: str
     final_image: str
@@ -119,6 +144,8 @@ class R1PilotExpectation:
     actions: tuple[R1ScenarioAction, ...]
     destination_ip: str | None
     destination_port: str | None
+    identity: R1PairIdentity
+    policy: ApprovedLineagePolicy
 
     @property
     def images(self) -> tuple[str, ...]:
@@ -152,8 +179,9 @@ class R1PilotValidationReport:
     """Everything one validation run found.
 
     `errors` is the verdict: an empty list means the contract files and the
-    designed lineage held for this run. `checks` records what was verified;
-    `action_times` and `lineage` are recorded facts with no verdict of their own.
+    planned lineage held for this run. `checks` records what was verified;
+    `action_times`, `lineage`, `identity` and `policy` are recorded facts with no
+    verdict of their own.
     """
 
     run_id: str
@@ -163,6 +191,8 @@ class R1PilotValidationReport:
     checks: list[str] = field(default_factory=list)
     action_times: list[str] = field(default_factory=list)
     lineage: R1ObservedLineage | None = None
+    identity: R1PairIdentity | None = None
+    policy: ApprovedLineagePolicy | None = None
 
     @property
     def ok(self) -> bool:
@@ -244,8 +274,30 @@ def _load_destination(internal: dict) -> tuple[str | None, str | None]:
         ) from error
 
 
+def _load_identity_and_policy(scenario: dict) -> tuple[R1PairIdentity, ApprovedLineagePolicy]:
+    """The Pair a scenario was rendered for and the policy of its family.
+
+    The policy is read for what it is called, not for what it approves. A family
+    that is not the family of the policy means the scenario was put together from
+    two families, and a run cannot be validated against that.
+    """
+    try:
+        identity = read_pair_identity(scenario)
+        policy = read_approved_lineage_policy(scenario)
+    except (R1PairIdentityError, R1LineagePolicyError) as error:
+        raise R1ScenarioError(str(error)) from error
+
+    if policy.family_id != identity.family_id:
+        raise R1ScenarioError(
+            f"family_id is {identity.family_id!r}, but the approved lineage policy "
+            f"{policy.policy_id!r} was approved for family {policy.family_id!r}"
+        )
+
+    return identity, policy
+
+
 def load_r1_pilot_expectation(scenario_path: Path, run_type: str) -> R1PilotExpectation:
-    """Read the design of one run type from the scenario JSON rendered for the run."""
+    """Read the plan of one run type from the scenario JSON rendered for the run."""
     if run_type not in RUN_TYPES:
         raise R1ScenarioError(f"run_type must be one of {RUN_TYPES}, found {run_type!r}")
 
@@ -260,15 +312,19 @@ def load_r1_pilot_expectation(scenario_path: Path, run_type: str) -> R1PilotExpe
             f"scenario_id must be {SCENARIO_ID!r}, found {scenario.get('scenario_id')!r}"
         )
 
-    lineage = _mapping(scenario.get("lineage"), "lineage")
+    # The lineage a run is checked against is the planned one of its run type.
+    # The approved lineage policy is not consulted for it.
+    key = PLANNED_LINEAGE_KEY
+    lineage = _mapping(scenario.get(key), key)
     intermediate = _mapping(
-        _mapping(lineage.get("intermediate"), "lineage.intermediate").get(run_type),
-        f"lineage.intermediate.{run_type}",
+        _mapping(lineage.get("intermediate"), f"{key}.intermediate").get(run_type),
+        f"{key}.intermediate.{run_type}",
     )
     run = _mapping(_mapping(scenario.get("runs"), "runs").get(run_type), f"runs.{run_type}")
     destination_ip, destination_port = _load_destination(
         _mapping(scenario.get("internal_connection"), "internal_connection")
     )
+    identity, policy = _load_identity_and_policy(scenario)
 
     return R1PilotExpectation(
         target_host=_text(
@@ -276,19 +332,19 @@ def load_r1_pilot_expectation(scenario_path: Path, run_type: str) -> R1PilotExpe
             "run_metadata.target_host",
         ),
         final_image=_text(
-            _mapping(lineage.get("final_tool"), "lineage.final_tool").get("image"),
-            "lineage.final_tool.image",
+            _mapping(lineage.get("final_tool"), f"{key}.final_tool").get("image"),
+            f"{key}.final_tool.image",
         ),
-        intermediate_image=_text(
-            intermediate.get("image"), f"lineage.intermediate.{run_type}.image"
-        ),
+        intermediate_image=_text(intermediate.get("image"), f"{key}.intermediate.{run_type}.image"),
         session_host_image=_text(
-            _mapping(lineage.get("session_host"), "lineage.session_host").get("image"),
-            "lineage.session_host.image",
+            _mapping(lineage.get("session_host"), f"{key}.session_host").get("image"),
+            f"{key}.session_host.image",
         ),
         actions=_load_actions(run, f"runs.{run_type}"),
         destination_ip=destination_ip,
         destination_port=destination_port,
+        identity=identity,
+        policy=policy,
     )
 
 
@@ -328,6 +384,24 @@ def _check_run_metadata(
         report.fail(
             f"run_metadata.json target_host is {metadata.target_host!r}, the scenario rendered "
             f"for this run names {expectation.target_host!r}"
+        )
+
+    # Both runs of a Pair are rendered once and record what that scenario states.
+    # A run that records another family, variation or repetition was not made
+    # from it, and the family is what the data is split by.
+    stated = expectation.identity
+    differing = [
+        f"{name} is {getattr(metadata, name)!r}, the scenario states {getattr(stated, name)!r}"
+        for name in IDENTITY_FIELDS
+        if type(getattr(metadata, name)) is not type(getattr(stated, name))
+        or getattr(metadata, name) != getattr(stated, name)
+    ]
+    for message in differing:
+        report.fail(f"run_metadata.json does not record the Pair of the scenario: {message}")
+    if not differing:
+        report.passed(
+            f"run_metadata.json records the Pair the scenario states: family_id="
+            f"{stated.family_id} variation_id={stated.variation_id} repetition={stated.repetition}"
         )
 
     # A normal run has no reference by contract. An attack run of the Pilot has
@@ -677,6 +751,9 @@ def validate_r1_pilot_run(
         report.fail(f"scenario definition is not usable ({scenario_path}): {error}")
         return report
 
+    report.identity = expectation.identity
+    report.policy = expectation.policy
+
     _check_run_metadata(metadata, expectation, report)
     _check_actions(metadata, records, expectation, rehearsal, report)
     _check_lineage(jsonl_path, expectation, rehearsal, report)
@@ -711,6 +788,16 @@ def format_report(report: R1PilotValidationReport) -> str:
     lines = [f"run_id      : {report.run_id}"]
     lines.append(f"run_type    : {report.run_type or 'unknown'}")
     lines.append(f"mode        : {'REHEARSAL' if report.rehearsal else 'collection'}")
+    if report.identity is not None:
+        lines.append(
+            f"pair        : family_id={report.identity.family_id} "
+            f"variation_id={report.identity.variation_id} repetition={report.identity.repetition}"
+        )
+    if report.policy is not None:
+        lines.append(
+            f"policy      : {report.policy.policy_id} {report.policy.policy_version} "
+            f"({report.policy.status}) sha256={report.policy.sha256}"
+        )
     lines.append("")
 
     for check in report.checks:
@@ -734,9 +821,19 @@ def format_report(report: R1PilotValidationReport) -> str:
         "not checked here: the comparison of the two runs of a pair and the t+5 and t+8 "
         "windows (r1.md section 8-1: S-1, the pair part of S-2 and S-3, S-7)"
     )
+    lines.append(
+        "not judged here: whether the lineage is approved. The run was checked against its "
+        "planned lineage; the approved lineage policy is recorded above, not applied"
+    )
+    if report.policy is not None and not report.policy.frozen:
+        lines.append(
+            "not a formal run: the approved lineage policy of this scenario is not frozen. "
+            "Runs made before the policy, the Evidence conditions and the evaluation windows "
+            "are frozen are not counted (scenarios/R1/README.md)"
+        )
     lines.append("")
     if report.ok:
-        verdict = "PASS (one run: contract files and designed lineage; not the Pilot verdict)"
+        verdict = "PASS (one run: contract files and planned lineage; not the Pilot verdict)"
         if report.rehearsal:
             verdict += " (REHEARSAL - not a valid R1 collection, do not use as an R1 Pair)"
         lines.append(verdict)

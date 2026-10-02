@@ -8,16 +8,18 @@ in that module so they can be tested without going through a subprocess.
     uv run python tools/validate_r1_run.py --artifact-root <rehearsal-root> --run-id <run_id> \
         --scenario <scenario.json rendered for the run> --rehearsal
 
-`--scenario` is the JSON `tools/r1_scenario_to_json.py` rendered for this run. It
-carries the designed lineage, the Target-A name and the internal destination,
-none of which is stored in the repository.
+`--scenario` is the JSON `tools/r1_scenario_to_json.py` rendered for the Pair this
+run belongs to. It carries the planned lineage, the family, variation and
+repetition of the Pair, the Target-A name and the internal destination. The run
+is checked against its planned lineage; the approved lineage policy the scenario
+also carries is recorded in the report and never used to judge the run.
 
 `--record-out` also stores the printed report as the lineage record of the run
 (`docs/scenarios/r1.md` section 6). It is operator evidence: keep it next to the
 preserved copy of the run, outside `raw/` and `ground_truth/` and outside the
 repository. An existing file is never replaced.
 
-Exit code 0 means the contract files and the designed lineage held for this run
+Exit code 0 means the contract files and the planned lineage held for this run
 and, when asked for, the record was written. It is not the Pilot verdict of
 r1.md section 8-2, which also compares the two runs of a pair. Any other value
 means at least one check failed and the reason is printed.

@@ -755,6 +755,18 @@ function Write-RunMetadata {
     $referenceEventValue = if ([string]::IsNullOrEmpty([string]$ReferenceSourceEventId)) { $null } else { [string]$ReferenceSourceEventId }
 
     $scenario = $Context.scenario
+
+     # S0 states no repetition and has always recorded 1. A scenario that states
+     # one, as a rendered R1 scenario does, records the value it states.
+    $repetition = 1
+    $stated = $scenario.PSObject.Properties["repetition"]
+    if ($null -ne $stated -and $null -ne $stated.Value) {
+        if (($stated.Value -isnot [int] -and $stated.Value -isnot [long]) -or $stated.Value -lt 1) {
+            throw ("scenario repetition must be an integer of 1 or more, found '" + [string]$stated.Value + "'")
+        }
+        $repetition = $stated.Value
+    }
+
     $meta = [ordered]@{
         run_id                    = $Context.run_id
         scenario_id               = $scenario.scenario_id
@@ -764,7 +776,7 @@ function Write-RunMetadata {
         end_time                  = (Get-UtcStamp $EndTime)
         family_id                 = $scenario.family_id
         variation_id              = $scenario.variation_id
-        repetition                = 1
+        repetition                = $repetition
         reference_time            = $referenceTimeValue
         reference_action_id       = $referenceActionValue
         reference_source_event_id = $referenceEventValue

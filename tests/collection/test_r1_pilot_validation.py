@@ -10,6 +10,7 @@ The validator has to tell them apart only by comparing the recorded lineage with
 the design of the run type Ground Truth names, never by a process name alone.
 """
 
+import ast
 import hashlib
 import json
 from collections.abc import Callable
@@ -37,6 +38,14 @@ DESTINATION_PORT = 8443
 CONFIG_SHA256 = "5f" * 32
 START_TIME = "2030-01-02T00:00:00.000Z"
 END_TIME = "2030-01-02T00:11:00.000Z"
+
+FAMILY_ID = "remote_management"
+VARIATION_ID = "V02"
+REPETITION = 1
+POLICY_ID = "synthetic-approved-lineage"
+POLICY_VERSION = "v0.1"
+APPROVED_CHAIN = ("wsmprovhost.exe", "cmd.exe", "powershell.exe")
+OTHER_CHAIN = ("wsmprovhost.exe", "cscript.exe", "powershell.exe")
 
 SERVICE_GUID = "{00000000-0000-0000-0000-0000000000a0}"
 SESSION_GUID = "{00000000-0000-0000-0000-0000000000a1}"
@@ -96,11 +105,23 @@ def scenario(
     normal_image: str = "cmd.exe",
     attack_image: str = "cscript.exe",
     session_host_image: str = "wsmprovhost.exe",
+    family_id: str = FAMILY_ID,
+    variation_id: str = VARIATION_ID,
+    repetition: int = REPETITION,
+    approved_chains: list[list[str]] | None = None,
 ) -> dict:
-    """The part of a rendered R1 scenario the validator reads."""
+    """The part of a rendered R1 scenario the validator reads.
+
+    `planned_lineage` is what each run is planned to leave. The approved lineage
+    policy is the separate block of the family; by default it approves the chain
+    the first Pilot approves, whatever images the planned lineage is given.
+    """
     return {
         "scenario_version": "v1",
         "scenario_id": "R1",
+        "family_id": family_id,
+        "variation_id": variation_id,
+        "repetition": repetition,
         "run_metadata": {"target_host": target_host},
         "internal_connection": {
             "required": True,
@@ -110,13 +131,23 @@ def scenario(
             "lab_cidr": LAB_CIDR if destination else None,
             "max_attempts": 1,
         },
-        "lineage": {
+        "planned_lineage": {
             "session_host": {"image": session_host_image},
             "final_tool": {"image": final_image},
             "intermediate": {
                 "normal": {"image": normal_image},
                 "attack": {"image": attack_image},
             },
+        },
+        "approved_lineage_policy": {
+            "policy_id": POLICY_ID,
+            "policy_version": POLICY_VERSION,
+            "family_id": family_id,
+            "status": "provisional",
+            "frozen_at": None,
+            "approved_chains": (
+                [list(APPROVED_CHAIN)] if approved_chains is None else approved_chains
+            ),
         },
         "runs": {
             run_type: {
@@ -329,9 +360,9 @@ def build_run(
         "target_host": TARGET_HOST,
         "start_time": START_TIME,
         "end_time": END_TIME,
-        "family_id": "remote_management",
-        "variation_id": "V02",
-        "repetition": 1,
+        "family_id": FAMILY_ID,
+        "variation_id": VARIATION_ID,
+        "repetition": REPETITION,
         "reference_time": None,
         "reference_action_id": None,
         "reference_source_event_id": None,
@@ -968,11 +999,11 @@ def test_expectation_is_read_per_run_type(tmp_path: Path) -> None:
 
 
 def _drop_final_tool(body: dict) -> None:
-    del body["lineage"]["final_tool"]
+    del body["planned_lineage"]["final_tool"]
 
 
 def _blank_intermediate(body: dict) -> None:
-    body["lineage"]["intermediate"]["normal"]["image"] = " "
+    body["planned_lineage"]["intermediate"]["normal"]["image"] = " "
 
 
 def _other_scenario(body: dict) -> None:
@@ -1177,3 +1208,302 @@ def test_lineage_record_needs_an_existing_directory(tmp_path: Path) -> None:
         write_report(validate(run), tmp_path / "absent" / "record.txt", artifact_root=run[0])
 
     assert not (tmp_path / "absent").exists()
+
+
+# ---------------------------------------------------------------------------
+# The Pair a run belongs to: family, variation, repetition
+# ---------------------------------------------------------------------------
+
+
+def test_run_metadata_recording_the_pair_of_the_scenario_passes(tmp_path: Path) -> None:
+    # Given: a scenario rendered for another family, variation and repetition
+    body = scenario(family_id="family_x7", variation_id="V09", repetition=4)
+    recorded = {"family_id": "family_x7", "variation_id": "V09", "repetition": 4}
+
+    # When
+    report = validate(build_run(tmp_path, scenario_body=body, metadata=recorded))
+
+    # Then: nothing in the validator is tied to the values of the first Pilot
+    assert report.ok, report.errors
+    assert report.identity is not None
+    assert (report.identity.family_id, report.identity.variation_id) == ("family_x7", "V09")
+    assert report.identity.repetition == 4
+    assert (
+        "run_metadata.json records the Pair the scenario states: family_id=family_x7 "
+        "variation_id=V09 repetition=4"
+    ) in report.checks
+
+
+@pytest.mark.parametrize(
+    ("recorded", "problem"),
+    [
+        ({"family_id": "family_b"}, "family_id is 'family_b', the scenario states"),
+        ({"variation_id": "V03"}, "variation_id is 'V03', the scenario states 'V02'"),
+        ({"repetition": 2}, "repetition is 2, the scenario states 1"),
+        ({"family_id": None}, "family_id is None, the scenario states"),
+        ({"variation_id": None}, "variation_id is None, the scenario states 'V02'"),
+        ({"repetition": None}, "repetition is None, the scenario states 1"),
+    ],
+)
+def test_run_metadata_recording_another_pair_is_refused(
+    tmp_path: Path, recorded: dict, problem: str
+) -> None:
+    # Given: RunMetadata that does not record what the scenario of the Pair states
+    run = build_run(tmp_path, metadata=recorded)
+
+    report = validate(run)
+
+    # Then: the run is refused, even though its lineage and its files are intact
+    assert not report.ok
+    assert "run_metadata.json does not record the Pair of the scenario" in errors_of(report)
+    assert problem in errors_of(report)
+
+
+def test_both_runs_of_a_pair_are_validated_against_one_identity(tmp_path: Path) -> None:
+    # Given: one scenario rendered for the Pair and read by both runs
+    body = scenario(family_id="family_x7", variation_id="V09", repetition=4)
+    recorded = {"family_id": "family_x7", "variation_id": "V09", "repetition": 4}
+    normal = validate(
+        build_run(tmp_path / "normal", run_type="normal", scenario_body=body, metadata=recorded)
+    )
+    attack = validate(
+        build_run(tmp_path / "attack", run_type="attack", scenario_body=body, metadata=recorded)
+    )
+
+    # Then: both pass and neither run has an identity of its own
+    assert normal.ok and attack.ok
+    assert normal.identity == attack.identity
+    assert normal.policy == attack.policy
+
+
+def test_run_of_a_pair_recording_another_repetition_is_refused(tmp_path: Path) -> None:
+    # Given: the attack run of a Pair records repetition 2, its scenario states 1
+    normal = validate(build_run(tmp_path / "normal", run_type="normal"))
+    attack = validate(build_run(tmp_path / "attack", run_type="attack", metadata={"repetition": 2}))
+
+    assert normal.ok
+    assert not attack.ok
+    assert "repetition is 2, the scenario states 1" in errors_of(attack)
+
+
+def _no_repetition(body: dict) -> None:
+    body["repetition"] = None
+
+
+def _zero_repetition(body: dict) -> None:
+    body["repetition"] = 0
+
+
+def _text_repetition(body: dict) -> None:
+    body["repetition"] = "1"
+
+
+def _boolean_repetition(body: dict) -> None:
+    body["repetition"] = True
+
+
+def _empty_family(body: dict) -> None:
+    body["family_id"] = ""
+
+
+def _missing_variation(body: dict) -> None:
+    del body["variation_id"]
+
+
+def _labelled_family(body: dict) -> None:
+    body["family_id"] = "attack_family"
+    body["approved_lineage_policy"]["family_id"] = "attack_family"
+
+
+def _labelled_variation(body: dict) -> None:
+    body["variation_id"] = "V02-normal"
+
+
+def _no_policy(body: dict) -> None:
+    del body["approved_lineage_policy"]
+
+
+def _policy_of_another_family(body: dict) -> None:
+    body["approved_lineage_policy"]["family_id"] = "family_b"
+
+
+def _policy_keyed_by_run_type(body: dict) -> None:
+    body["approved_lineage_policy"]["attack"] = [list(OTHER_CHAIN)]
+
+
+def _policy_without_chains(body: dict) -> None:
+    body["approved_lineage_policy"]["approved_chains"] = []
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        _no_repetition,
+        _zero_repetition,
+        _text_repetition,
+        _boolean_repetition,
+        _empty_family,
+        _missing_variation,
+        _labelled_family,
+        _labelled_variation,
+        _no_policy,
+        _policy_of_another_family,
+        _policy_keyed_by_run_type,
+        _policy_without_chains,
+    ],
+)
+def test_scenario_without_a_usable_identity_or_policy_cannot_validate_a_run(
+    tmp_path: Path, mutate: Callable[[dict], None]
+) -> None:
+    # Given: a scenario whose Pair identity or approved policy is not usable
+    body = scenario()
+    mutate(body)
+
+    report = validate(build_run(tmp_path, scenario_body=body))
+
+    # Then: the scenario is refused before any lineage is looked at
+    assert not report.ok
+    assert "scenario definition is not usable" in errors_of(report)
+    assert report.lineage is None
+    assert report.identity is None
+
+
+# ---------------------------------------------------------------------------
+# Planned lineage and approved lineage policy
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("run_type", ["normal", "attack"])
+@pytest.mark.parametrize(
+    "approved_chains",
+    [
+        [list(APPROVED_CHAIN)],
+        [list(OTHER_CHAIN)],
+        [list(APPROVED_CHAIN), list(OTHER_CHAIN)],
+        [["session_host.exe", "some_wrapper.exe", "some_tool.exe"]],
+    ],
+)
+def test_run_is_checked_against_its_planned_lineage_whatever_the_policy_approves(
+    tmp_path: Path, run_type: str, approved_chains: list[list[str]]
+) -> None:
+    # Given: the same run validated under the default policy and under another one
+    baseline = validate(build_run(tmp_path / "baseline", run_type=run_type))
+    report = validate(
+        build_run(
+            tmp_path / "changed",
+            run_type=run_type,
+            scenario_body=scenario(approved_chains=approved_chains),
+        )
+    )
+
+    # Then: the verdict, every check and the recorded lineage are the same
+    assert report.ok, report.errors
+    assert report.errors == baseline.errors
+    assert report.checks == baseline.checks
+    assert report.lineage == baseline.lineage
+
+
+def test_attack_run_leaving_the_approved_lineage_does_not_meet_its_plan(tmp_path: Path) -> None:
+    # Given: an attack run whose telemetry holds exactly the chain the policy approves
+    run = build_run(tmp_path, run_type="attack", events=run_events("normal"))
+
+    report = validate(run)
+
+    # Then: it fails, because the collection check asks for the planned lineage
+    assert not report.ok
+    assert "no final tool instance has the lineage this run was designed with" in errors_of(report)
+
+
+def test_normal_run_meets_its_plan_even_when_the_policy_approves_another_chain(
+    tmp_path: Path,
+) -> None:
+    # Given: a policy that approves only the chain the attack run is planned to leave
+    body = scenario(approved_chains=[list(OTHER_CHAIN)])
+
+    report = validate(build_run(tmp_path, run_type="normal", scenario_body=body))
+
+    # Then: the normal run still passes; approval is not what is checked here
+    assert report.ok, report.errors
+
+
+def test_expectation_keeps_the_plan_and_the_policy_apart(tmp_path: Path) -> None:
+    scenario_path = tmp_path / "scenario.json"
+    scenario_path.write_text(json.dumps(scenario()), encoding="utf-8")
+
+    normal = load_r1_pilot_expectation(scenario_path, "normal")
+    attack = load_r1_pilot_expectation(scenario_path, "attack")
+
+    # The plan differs by run type; the policy and the identity do not.
+    assert normal.images != attack.images
+    assert normal.policy == attack.policy
+    assert normal.identity == attack.identity
+    assert normal.policy.approved_chains == (APPROVED_CHAIN,)
+    assert attack.images == ("powershell.exe", "cscript.exe", "wsmprovhost.exe")
+
+
+def test_report_records_the_pair_and_the_policy_without_applying_the_policy(
+    tmp_path: Path,
+) -> None:
+    report = validate(build_run(tmp_path, run_type="attack"))
+
+    text = format_report(report)
+
+    assert report.ok, report.errors
+    assert report.policy is not None
+    assert "pair        : family_id=remote_management variation_id=V02 repetition=1" in text
+    assert (
+        f"policy      : {POLICY_ID} {POLICY_VERSION} (provisional) sha256={report.policy.sha256}"
+        in text
+    )
+    assert len(report.policy.sha256) == 64
+    assert "not judged here: whether the lineage is approved" in text
+    assert "not a formal run: the approved lineage policy of this scenario is not frozen" in text
+
+
+def test_report_of_a_run_under_a_frozen_policy_carries_no_freeze_notice(tmp_path: Path) -> None:
+    body = scenario()
+    body["approved_lineage_policy"]["status"] = "frozen"
+    body["approved_lineage_policy"]["frozen_at"] = "2030-01-01T00:00:00Z"
+
+    report = validate(build_run(tmp_path, scenario_body=body))
+
+    assert report.ok, report.errors
+    assert report.policy is not None and report.policy.frozen
+    assert "not a formal run" not in format_report(report)
+    assert "(frozen)" in format_report(report)
+
+
+def test_collection_modules_call_no_evidence_or_fusion_code() -> None:
+    # Given: every module this change adds to or uses for collection and rendering
+    root = Path(__file__).resolve().parents[2]
+    modules = [
+        root / "src" / "incident_awareness" / "collection" / "r1_pilot_validation.py",
+        root / "src" / "incident_awareness" / "collection" / "r1_lineage_policy.py",
+        root / "src" / "incident_awareness" / "collection" / "r1_pair_identity.py",
+        root / "src" / "incident_awareness" / "collection" / "r1_destination.py",
+        root / "src" / "incident_awareness" / "collection" / "r1_lineage.py",
+        root / "src" / "incident_awareness" / "collection" / "s0_validation.py",
+        root / "tools" / "r1_scenario_to_json.py",
+        root / "tools" / "validate_r1_run.py",
+    ]
+    allowed = ("collection", "common")
+
+    # When: their imports are read from the source, without running anything
+    imported: set[str] = set()
+    for module in modules:
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module is not None:
+                imported.add(node.module)
+
+    # Then: collection reads telemetry and Ground Truth and nothing downstream of
+    # them - no Evidence extraction, no detection, no Fusion, no pipeline
+    reached = sorted(
+        name
+        for name in imported
+        if name.startswith("incident_awareness.") and name.split(".")[1] not in allowed
+    )
+    assert reached == []
+    assert "incident_awareness.collection.r1_lineage" in imported

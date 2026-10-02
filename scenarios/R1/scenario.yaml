@@ -7,8 +7,17 @@
 
 scenario_version: v1
 scenario_id: R1
+
+# Identity of the Pair a rendered scenario describes. It is stated once for both
+# runs of the Pair and written to RunMetadata unchanged; a run cannot state its
+# own. family_id and variation_id name the design in this file and may be stated
+# again when the JSON is rendered (--family-id, --variation-id). The family has
+# to be the one approved_lineage_policy below was approved for. repetition is
+# which Pair of the family this is: it has no default and is given for every
+# rendered scenario (--repetition).
 family_id: remote_management          # PoC start guide v1.1 section 5-1 (kept outside the repository)
 variation_id: V02
+repetition: null
 
 # Gate character - issue #73, integrated standard 3.0 section 7-2. The Pilot
 # itself claims no performance (docs/scenarios/r1.md section 1).
@@ -67,18 +76,22 @@ internal_connection:
   max_attempts: 1
   decision_reference: "docs/scenarios/r1.md section 11-10"
 
-# Process lineage of the first Pilot. The tool names are the combination role 2
-# approved for the first Pilot only; a later family must not leave one
-# intermediate tied to one run type. The values are data so that a later family
-# changes this file, not the runner.
+# What each run is planned to execute on Target-A, selected by run type. The
+# runner builds its launch plan from it, and the collection validator checks that
+# a run left the lineage it was planned to leave. It is a collection plan, not a
+# policy: nothing in this block says which lineage is approved.
 #
-#   normal   session host -> approved wrapper     -> final management tool
-#   attack   session host -> other intermediate   -> the same final management tool
+#   normal   session host -> one intermediate     -> final management tool
+#   attack   session host -> another intermediate -> the same final management tool
+#
+# The tool names are the combination of the first Pilot only; a later family
+# must not leave one intermediate tied to one run type. The values are data so
+# that a later family changes this file, not the runner.
 #
 # {task_script} and {channel_dir} are replaced with paths under the work
 # directory, {launcher} with the launcher file of that intermediate. The final
 # tool is started without an encoded command option in both runs.
-lineage:
+planned_lineage:
   session_host:
     image: wsmprovhost.exe            # an assumption until rehearsal telemetry confirms it (r1.md section 11-7)
   final_tool:
@@ -109,6 +122,31 @@ lineage:
         - "//NoLogo"
         - "//B"
         - "{launcher}"
+
+# The lineage approved for this family, decided before any run of the family is
+# evaluated. There is one policy per family. It is not keyed by run type or by
+# label, and reading it needs neither
+# (incident_awareness.collection.r1_lineage_policy). A later Evidence extractor
+# compares the lineage it observes with this policy; the runner and the
+# collection validator never judge a run by it.
+#
+# The chain below is the combination role 2 approved for the first Pilot. Each
+# chain lists Images from the session host down to the final tool.
+#
+# status stays provisional until the policy is frozen. It has to be frozen, with
+# frozen_at set to the UTC time of the freeze as quoted text, before any Test Run
+# of the family is looked at. A run made before the freeze is not one of the
+# formal runs (scenarios/R1/README.md).
+approved_lineage_policy:
+  policy_id: r1-remote-management-approved-lineage
+  policy_version: v0.1
+  family_id: remote_management
+  status: provisional
+  frozen_at: null
+  approved_chains:
+    - - wsmprovhost.exe
+      - cmd.exe
+      - powershell.exe
 
 # Shortcut controls - r1.md section 7. Both runs use one account, one work
 # directory, one final tool and the same five actions.
