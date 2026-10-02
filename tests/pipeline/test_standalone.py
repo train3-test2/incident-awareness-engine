@@ -36,8 +36,8 @@ def test_builds_run_metadata_from_sysmon_event_time_range(tmp_path: Path) -> Non
     _write_jsonl(
         jsonl_path,
         [
-            _record("2026-10-03 00:00:10.123456", time_created="2026-10-03T01:00:00.000Z"),
-            _record("2026-10-03 00:00:00.001", time_created="2026-10-03T00:00:00.000Z"),
+            _record("2026-10-03 00:00:00.001", time_created="2026-10-03T01:00:00.000Z"),
+            _record("2026-10-03 00:00:10.123456", time_created="2026-10-03T00:00:00.000Z"),
         ],
     )
 
@@ -247,6 +247,55 @@ def test_rejects_network_port_outside_contract_range(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="between 0 and 65535"):
+        validate_standalone_sysmon_jsonl(jsonl_path)
+
+
+def test_rejects_invalid_jsonl_syntax(tmp_path: Path) -> None:
+    jsonl_path = tmp_path / "sysmon.jsonl"
+    jsonl_path.write_text('{"EventId": 1\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="standalone Sysmon JSONL is not readable"):
+        validate_standalone_sysmon_jsonl(jsonl_path)
+
+
+def test_rejects_multiple_hosts(tmp_path: Path) -> None:
+    jsonl_path = tmp_path / "sysmon.jsonl"
+    _write_jsonl(
+        jsonl_path,
+        [
+            _record("2026-10-03 00:00:00.000", time_created="2026-10-03T00:00:00Z"),
+            {
+                **_record(
+                    "2026-10-03 00:00:10.000",
+                    time_created="2026-10-03T00:00:10Z",
+                ),
+                "RecordId": 2,
+                "Computer": "WIN-02",
+            },
+        ],
+    )
+
+    with pytest.raises(ValueError, match="exactly one Computer value"):
+        validate_standalone_sysmon_jsonl(jsonl_path)
+
+
+def test_rejects_event_time_reversal_in_jsonl_order(tmp_path: Path) -> None:
+    jsonl_path = tmp_path / "sysmon.jsonl"
+    _write_jsonl(
+        jsonl_path,
+        [
+            _record("2026-10-03 00:00:10.000", time_created="2026-10-03T00:00:10Z"),
+            {
+                **_record(
+                    "2026-10-03 00:00:00.000",
+                    time_created="2026-10-03T00:00:00Z",
+                ),
+                "RecordId": 2,
+            },
+        ],
+    )
+
+    with pytest.raises(ValueError, match="must be in non-decreasing order"):
         validate_standalone_sysmon_jsonl(jsonl_path)
 
 

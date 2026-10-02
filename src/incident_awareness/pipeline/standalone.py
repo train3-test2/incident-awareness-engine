@@ -190,8 +190,27 @@ def build_sysmon_artifacts_from_jsonl(
 def validate_standalone_sysmon_jsonl(path: Path) -> tuple[SysmonJsonlRecord, ...]:
     """Read one standalone JSONL and validate the current Normalizer boundary."""
     records = _read_records(path)
+    target_host: str | None = None
+    previous_event_time: datetime | None = None
     for record in records:
         _validate_record_shape(record)
+        host = _required_string(record.data, "Computer", record_no=record.record_no)
+        event_time = _event_time(record)
+
+        if target_host is None:
+            target_host = host
+        elif host != target_host:
+            raise ValueError(
+                "standalone Sysmon JSONL must contain exactly one Computer value; "
+                f"record {record.record_no} is {host!r}, expected {target_host!r}"
+            )
+
+        if previous_event_time is not None and event_time < previous_event_time:
+            raise ValueError(
+                "standalone Sysmon JSONL EventData.UtcTime must be in non-decreasing order; "
+                f"record {record.record_no} is earlier than record {record.record_no - 1}"
+            )
+        previous_event_time = event_time
     return records
 
 
