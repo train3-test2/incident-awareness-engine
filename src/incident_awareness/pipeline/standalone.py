@@ -14,6 +14,7 @@ from incident_awareness.collection.collector.sysmon_jsonl import (
 )
 from incident_awareness.common.models.event import NORMALIZED_EVENT_SCHEMA_VERSION
 from incident_awareness.common.models.run import RunMetadata, RunType, SchemaVersions
+from incident_awareness.decision.fusion.config import FusionConfig, load_fusion_config
 from incident_awareness.integration.fast_hit_handoff import (
     FastDetectionAdapterResult,
     build_not_evaluated_detection_result,
@@ -30,6 +31,8 @@ _SUPPORTED_SYSMON_EVENT_IDS = frozenset(
     {_SYSMON_PROCESS_CREATE_EVENT_ID, _SYSMON_NETWORK_CONNECTION_EVENT_ID}
 )
 DEFAULT_STANDALONE_FAST_MODE = "not_evaluated"
+DEFAULT_STANDALONE_FUSION_CONFIG_PATH = Path("configs/fusion/fusion_config_s0_pair_v0.1.yaml")
+DEFAULT_STANDALONE_DECISION_CONFIG_VERSION = "parallel-v0.2"
 
 DEFAULT_STANDALONE_SCHEMA_VERSIONS = SchemaVersions(
     run_metadata="v0.2",
@@ -52,6 +55,15 @@ class StandaloneSysmonArtifacts:
     normalization_context: SysmonNormalizationContext
 
 
+@dataclass(frozen=True, slots=True)
+class StandaloneExecutionConfig:
+    """Validated Fusion and Hybrid policy selection for one standalone run."""
+
+    fusion_config_path: Path
+    fusion_config: FusionConfig
+    decision_config_version: str
+
+
 def build_default_standalone_fast_detection(
     *,
     run_id: str,
@@ -64,6 +76,36 @@ def build_default_standalone_fast_detection(
     Runner execution remains a separately versioned integration contract.
     """
     return build_not_evaluated_detection_result(run_id=run_id, entity_id=entity_id)
+
+
+def select_standalone_execution_config(
+    *,
+    fusion_config_path: Path | None = None,
+    decision_config_version: str = DEFAULT_STANDALONE_DECISION_CONFIG_VERSION,
+) -> StandaloneExecutionConfig:
+    """Select the standalone Fusion profile and supported Hybrid policy.
+
+    A caller may choose another readable, valid Fusion configuration.  Hybrid
+    remains fixed to ``parallel-v0.2`` because the current Pipeline combiner
+    implements only ``parallel_required=true``.
+    """
+    if decision_config_version != DEFAULT_STANDALONE_DECISION_CONFIG_VERSION:
+        raise ValueError(
+            "standalone execution supports only decision config "
+            f"{DEFAULT_STANDALONE_DECISION_CONFIG_VERSION!r}"
+        )
+
+    selected_path = fusion_config_path or DEFAULT_STANDALONE_FUSION_CONFIG_PATH
+    try:
+        fusion_config = load_fusion_config(selected_path)
+    except OSError as error:
+        raise ValueError(f"standalone Fusion config is not readable: {selected_path}") from error
+
+    return StandaloneExecutionConfig(
+        fusion_config_path=selected_path,
+        fusion_config=fusion_config,
+        decision_config_version=decision_config_version,
+    )
 
 
 def build_run_metadata_from_sysmon_jsonl(
@@ -284,11 +326,15 @@ def _sha256(path: Path) -> str:
 
 
 __all__ = [
+    "DEFAULT_STANDALONE_DECISION_CONFIG_VERSION",
     "DEFAULT_STANDALONE_FAST_MODE",
+    "DEFAULT_STANDALONE_FUSION_CONFIG_PATH",
     "DEFAULT_STANDALONE_SCHEMA_VERSIONS",
+    "StandaloneExecutionConfig",
     "StandaloneSysmonArtifacts",
     "build_default_standalone_fast_detection",
     "build_run_metadata_from_sysmon_jsonl",
     "build_sysmon_artifacts_from_jsonl",
+    "select_standalone_execution_config",
     "validate_standalone_sysmon_jsonl",
 ]

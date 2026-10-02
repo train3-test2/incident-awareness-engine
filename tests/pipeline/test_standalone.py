@@ -7,10 +7,13 @@ import pytest
 
 from incident_awareness.common.models.run import RunType
 from incident_awareness.pipeline.standalone import (
+    DEFAULT_STANDALONE_DECISION_CONFIG_VERSION,
     DEFAULT_STANDALONE_FAST_MODE,
+    DEFAULT_STANDALONE_FUSION_CONFIG_PATH,
     build_default_standalone_fast_detection,
     build_run_metadata_from_sysmon_jsonl,
     build_sysmon_artifacts_from_jsonl,
+    select_standalone_execution_config,
     validate_standalone_sysmon_jsonl,
 )
 
@@ -127,6 +130,19 @@ def test_builds_not_evaluated_fast_result_without_fast_artifacts() -> None:
     assert result.detection_result.detector_time is None
     assert result.source_hit_ids == ()
     assert result.selected_source_hit_id is None
+
+
+def test_selects_default_s0_fusion_and_parallel_hybrid_config() -> None:
+    config = select_standalone_execution_config()
+
+    assert config.fusion_config_path == DEFAULT_STANDALONE_FUSION_CONFIG_PATH
+    assert config.fusion_config.config_version == "fusion-config-s0-pair-v0.1"
+    assert config.decision_config_version == DEFAULT_STANDALONE_DECISION_CONFIG_VERSION
+
+
+def test_rejects_unsupported_standalone_hybrid_config() -> None:
+    with pytest.raises(ValueError, match="supports only decision config"):
+        select_standalone_execution_config(decision_config_version="optional-v1")
 
 
 def test_accepts_supported_sysmon_event_ids(tmp_path: Path) -> None:

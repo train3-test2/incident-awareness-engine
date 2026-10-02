@@ -34,6 +34,11 @@ S0 공격 Run임을 주장하지 않는다.
 | Decision Config Version | `parallel-v0.2` | 현재 지원 Hybrid 정책을 따른다 |
 | Fast Mode | `not_evaluated` | Fast Runner를 자동 실행하지 않는다 |
 
+Fusion Config는 기본값 대신 `--fusion-config`로 읽을 수 있는 유효한 Fusion 설정 파일을
+명시할 수 있다. 다만 Hybrid Decision Config는 현재 `parallel-v0.2`만 허용한다. 현행
+combiner가 `parallel_required=true` 정책만 구현하므로, 다른 Decision Config version이나
+선택 경로 정책을 단독 입력 CLI가 추정해서 적용하지 않는다.
+
 명시적 설정이 필요한 호출은 아래 형식을 사용한다.
 
 ```text
