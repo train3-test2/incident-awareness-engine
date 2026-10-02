@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -6,6 +7,7 @@ from pydantic import ValidationError
 from incident_awareness.evaluation.baselines.provenance import (
     StatisticalConfig,
     StatisticalInput,
+    run_statistical_comparison,
 )
 
 
@@ -39,6 +41,29 @@ def config(**overrides):
     return StatisticalConfig.model_validate(data | overrides)
 
 
+def test_json_roundtrip_and_historical_reference():
+    first = run_statistical_comparison(source(), config())
+    encoded = json.loads(json.dumps(first))
+    second = run_statistical_comparison(
+        StatisticalInput.model_validate(encoded["input"]),
+        StatisticalConfig.model_validate(encoded["config"]),
+    )
+    assert first == second
+    assert [p["score"] for p in first["output"]] == [0.5, 0.25]
+    assert first["output"][1]["input_prefix_length"] == 2
+    assert first["input"]["points"][0]["evidence_ids"] == ["E1"]
+    assert first["input"]["points"][1]["evidence_ids"] == []
+
+
+def test_input_and_config_hashes_track_changes():
+    original = run_statistical_comparison(source(), config())
+    changed_input = run_statistical_comparison(source(entity_id="HOST-02"), config())
+    changed_config = run_statistical_comparison(source(), config(alpha=0.25))
+    assert original["input_sha256"] != changed_input["input_sha256"]
+    assert original["config_sha256"] == changed_input["config_sha256"]
+    assert original["config_sha256"] != changed_config["config_sha256"]
+
+
 @pytest.mark.parametrize(
     "changes",
     [
@@ -66,6 +91,18 @@ def test_invalid_source(changes):
 def test_invalid_config(changes):
     with pytest.raises(ValidationError):
         config(**changes)
+
+
+def test_cusum_execution():
+    result = run_statistical_comparison(
+        source(), config(method="cusum", alpha=None, allowance=0.0, scale=2.0)
+    )
+    assert [p["score"] for p in result["output"]] == [0.5, 0.5]
+
+
+def test_bad_cadence_is_rejected_at_execution():
+    with pytest.raises(ValueError, match="cadence"):
+        run_statistical_comparison(source(), config(step_seconds=20.0))
 
 
 @pytest.mark.parametrize(
