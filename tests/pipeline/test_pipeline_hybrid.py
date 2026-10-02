@@ -29,6 +29,7 @@ def test_combines_fast_and_fusion_results_into_validated_decision() -> None:
     assert decision.winning_path == "fast"
     assert decision.source_hit_ids == ["RUN-20260920-001-hit-1"]
     assert decision.selected_source_hit_id == "RUN-20260920-001-hit-1"
+    assert decision.supersedes_decision_id is None
 
 
 def test_rejects_hybrid_inputs_with_different_entity_scope() -> None:
@@ -38,6 +39,22 @@ def test_rejects_hybrid_inputs_with_different_entity_scope() -> None:
             _fast_result(datetime(2026, 9, 20, tzinfo=UTC)),
             _fusion_result(datetime(2026, 9, 20, tzinfo=UTC), entity_id="WIN-02"),
         )
+
+
+def test_passes_supersedes_decision_id_into_decision() -> None:
+    # Given
+    start_time = datetime(2026, 9, 20, tzinfo=UTC)
+
+    # When
+    decision = combine_parallel_decision(
+        _inputs(),
+        _fast_result(start_time + timedelta(seconds=10)),
+        _fusion_result(start_time + timedelta(seconds=20)),
+        supersedes_decision_id="D-000",
+    )
+
+    # Then
+    assert decision.supersedes_decision_id == "D-000"
 
 
 def _inputs() -> PipelineInputs:

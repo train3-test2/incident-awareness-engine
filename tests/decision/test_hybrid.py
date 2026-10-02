@@ -126,3 +126,29 @@ def test_rejects_blank_context(field):
     # Given / When / Then
     with pytest.raises(ValueError):
         combine(*inputs("miss", "miss"), **{field: " "})
+
+
+def test_preserves_supersedes_decision_id() -> None:
+    # Given
+    detection, fusion = inputs("miss", "miss")
+
+    # When
+    result = combine(
+        detection,
+        fusion,
+        supersedes_decision_id="D-000",
+    )
+
+    # Then
+    assert result.supersedes_decision_id == "D-000"
+
+
+def test_defaults_supersedes_decision_id_to_none() -> None:
+    # Given
+    detection, fusion = inputs("miss", "miss")
+
+    # When
+    result = combine(detection, fusion)
+
+    # Then
+    assert result.supersedes_decision_id is None

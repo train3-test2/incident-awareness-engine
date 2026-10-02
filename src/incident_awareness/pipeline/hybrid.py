@@ -13,6 +13,8 @@ def combine_parallel_decision(
     inputs: PipelineInputs,
     fast_result: FastDetectionAdapterResult,
     fusion_result: FusionResult,
+    *,
+    supersedes_decision_id: str | None = None,
 ) -> DecisionResult:
     """Combine Fast and Fusion results with the currently supported policy.
 
@@ -26,6 +28,7 @@ def combine_parallel_decision(
         decision_id=inputs.decision_id,
         config_version=inputs.decision_config_version,
         parallel_required=True,
+        supersedes_decision_id=supersedes_decision_id,
     )
     return DecisionResult.model_validate_json(decision.model_dump_json())
 
