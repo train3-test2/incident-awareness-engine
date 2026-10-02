@@ -27,6 +27,7 @@ from incident_awareness.storage.repositories.result_repository import (
     _SELECT_CURRENT_DECISION_HEADS,
     _SELECT_DECISION_PAYLOAD,
     _SELECT_DECISION_RUNTIME_SNAPSHOT_PAYLOAD,
+    _SELECT_DECISIONS_BY_SCOPE,
     _SELECT_DETECTION_RESULT_PAYLOAD,
     _SELECT_FUSION_RESULT_PAYLOAD,
     _SELECT_FUSION_STOPPING_TRACE_PAYLOAD,
@@ -316,6 +317,83 @@ def test_decision_repository_returns_none_when_current_head_does_not_exist() -> 
             ("RUN-20260912-001", "WIN-01"),
         )
     ]
+
+
+def test_decision_repository_lists_empty_scope() -> None:
+    # Given
+    connection = FakeConnection(rows=[])
+    repository = DecisionRepository(connection)
+
+    # When
+    decisions = repository.list_by_scope("RUN-20260912-001", "WIN-01")
+
+    # Then
+    assert decisions == []
+    assert connection.statements == [
+        (
+            _SELECT_DECISIONS_BY_SCOPE,
+            ("RUN-20260912-001", "WIN-01"),
+        )
+    ]
+    assert connection.commits == 0
+
+
+def test_decision_repository_lists_scope_in_database_row_order(
+    decision_result: DecisionResult,
+) -> None:
+    # Given
+    second = DecisionResult.model_validate(
+        decision_result.model_dump()
+        | {"decision_id": "DEC-002", "supersedes_decision_id": "DEC-001"}
+    )
+    first = decision_result
+    third = DecisionResult.model_validate(
+        decision_result.model_dump()
+        | {"decision_id": "DEC-003", "supersedes_decision_id": "DEC-002"}
+    )
+    connection = FakeConnection(
+        rows=[
+            (second.model_dump(mode="json"),),
+            (first.model_dump(mode="json"),),
+            (third.model_dump(mode="json"),),
+        ]
+    )
+    repository = DecisionRepository(connection)
+
+    # When
+    decisions = repository.list_by_scope(
+        decision_result.run_id,
+        decision_result.entity_id,
+    )
+
+    # Then
+    assert decisions == [second, first, third]
+    assert connection.statements == [
+        (
+            _SELECT_DECISIONS_BY_SCOPE,
+            (decision_result.run_id, decision_result.entity_id),
+        )
+    ]
+    assert connection.commits == 0
+
+
+def test_decision_repository_list_by_scope_rejects_non_object_payload() -> None:
+    # Given
+    connection = FakeConnection(rows=[("invalid",)])
+    repository = DecisionRepository(connection)
+
+    # When
+    with pytest.raises(TypeError, match="decisions"):
+        repository.list_by_scope("RUN-20260912-001", "WIN-01")
+
+    # Then
+    assert connection.statements == [
+        (
+            _SELECT_DECISIONS_BY_SCOPE,
+            ("RUN-20260912-001", "WIN-01"),
+        )
+    ]
+    assert connection.commits == 0
 
 
 def test_decision_repository_rejects_missing_current_head_when_scope_has_decision() -> None:

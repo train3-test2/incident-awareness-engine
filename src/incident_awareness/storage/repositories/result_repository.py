@@ -100,6 +100,13 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 
 _SELECT_DECISION_PAYLOAD = "SELECT payload FROM decisions WHERE decision_id = %s"
 
+_SELECT_DECISIONS_BY_SCOPE = """
+SELECT payload
+FROM decisions
+WHERE run_id = %s
+  AND entity_id = %s
+"""
+
 _INSERT_DECISION_RUNTIME_SNAPSHOT = """
 INSERT INTO decision_runtime_snapshots (
     decision_id,
@@ -266,6 +273,16 @@ class DecisionRepository:
             return None
 
         return DecisionResult.model_validate(_payload_from_row(row, table_name="decisions"))
+
+    def list_by_scope(self, run_id: str, entity_id: str) -> list[DecisionResult]:
+        rows = self._connection.execute(
+            _SELECT_DECISIONS_BY_SCOPE,
+            (run_id, entity_id),
+        ).fetchall()
+        return [
+            DecisionResult.model_validate(_payload_from_row(row, table_name="decisions"))
+            for row in rows
+        ]
 
     def get_current_head(self, run_id: str, entity_id: str) -> DecisionResult | None:
         rows = self._connection.execute(
