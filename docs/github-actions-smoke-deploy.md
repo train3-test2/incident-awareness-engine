@@ -59,6 +59,60 @@ s3://<FIRST_CYCLE_S3_BUCKET>/first-cycle/<run_id>/
 코드, 중지 사유, 해당 CloudWatch Logs stream 링크를 확인한다. 종료 코드 `0`과
 `First Cycle pipeline completed` 로그가 성공 기준이다.
 
+## 원클릭 데모 PostgreSQL 저장 결과 확인
+
+원클릭 데모가 Fargate 태스크 종료 코드 `0`으로 끝나면, Actions Summary의 `Run ID`와
+`Decision ID`를 사용해 PostgreSQL 저장 결과를 확인한다. First Cycle RDS는 private
+네트워크에 있으므로 인터넷에서 DB 포트로 직접 연결하지 않는다. 승인된 Bastion SSH
+tunnel 또는 같은 VPC 내부의 `psql`·DB 클라이언트를 사용한다. 접속 정보는 Secrets
+Manager의 DB URL Secret에서 승인된 방식으로만 조회하며, URL·비밀번호·Bastion 개인 키를
+Actions Summary, 쿼리 기록 또는 저장소에 남기지 않는다.
+
+연결한 뒤 아래처럼 `run_id`와 `decision_id`를 파라미터로 전달해 조회한다. 예시의
+`RUN-...`과 `DEC-...`는 Actions Summary에 표시된 실제 값으로 교체한다.
+
+```sql
+-- 해당 Run에 저장된 Contract별 행 수
+SELECT
+    (SELECT count(*) FROM runs WHERE run_id = :'run_id') AS runs,
+    (SELECT count(*) FROM events WHERE run_id = :'run_id') AS events,
+    (SELECT count(*) FROM fusion_results WHERE run_id = :'run_id') AS fusion_results,
+    (SELECT count(*) FROM detection_results WHERE run_id = :'run_id') AS detection_results,
+    (SELECT count(*) FROM decisions WHERE run_id = :'run_id') AS decisions;
+
+-- 이번 데모가 저장한 최종 Hybrid Decision
+SELECT
+    decision_id,
+    run_id,
+    entity_id,
+    fast_status,
+    fusion_status,
+    decision_path,
+    winning_path,
+    t_e,
+    created_at
+FROM decisions
+WHERE run_id = :'run_id'
+  AND decision_id = :'decision_id';
+```
+
+`psql`에서는 연결 후 아래처럼 변수를 지정한 뒤 위 쿼리를 실행한다.
+
+```text
+\set run_id 'RUN-YYYYMMDD-NNN'
+\set decision_id 'DEC-RUN-YYYYMMDD-NNN'
+```
+
+현재 `s0-attack-fixture-v1` Seed의 정상 결과는 `runs` 1건, `events` 2건,
+`fusion_results` 1건, `detection_results` 1건, `decisions` 1건이며 Decision 경로는
+`fast_and_fusion`이다. 이 값은 Seed의 기대 결과일 뿐, 실제 R1 또는 후속 Seed의 기준으로
+사용하지 않는다.
+
+ECS 종료 코드 `0`인데 해당 Run의 행이 없으면 먼저 Actions Summary의 `Run ID`를 확인한
+뒤, 태스크에 주입된 DB Secret 대상과 migration 적용 상태를 확인한다. 종료 코드가 `0`이
+아니면 PostgreSQL 조회 전에 Actions Summary의 stopped reason 및 CloudWatch Logs를 먼저
+확인한다.
+
 ## GitHub OIDC 역할
 
 AWS IAM에 GitHub OIDC provider `https://token.actions.githubusercontent.com`를 등록하고, 아래 조건으로 `github-actions-incident-awareness-smoke-deploy` 역할의 신뢰 정책을 제한한다.
