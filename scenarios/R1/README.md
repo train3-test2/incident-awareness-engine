@@ -157,7 +157,7 @@ Pair 식별자는 렌더링할 때 적는다(§1-2).
 | `--repetition` | 그 family 의 몇 번째 Pair 인지. 1 이상의 정수 | **렌더링하지 않는다** |
 
 정본 YAML 은 Target-A 이름, 내부 목적지, 포트, 실험망을 모두 `null` 로 둔다. **실제 값은 저장소에
-두지 않고** 렌더링할 때만 주입한다.
+두지 않고** 렌더링할 때만 주입한다. 값은 역할 4 가 정한다(§10).
 
 | 옵션 | 뜻 | 없으면 |
 | --- | --- | --- |
@@ -440,8 +440,8 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
 | --- | --- |
 | 원격 세션 host 의 Image 가 `wsmprovhost.exe` 다 (`r1.md` §11-7) | `scenario.yaml` 의 `planned_lineage.session_host.image` 와 승인 계보 정책의 체인을 함께 고친다 |
 | 세션 host → 중간 프로세스 → 최종 관리 도구가 두 Run 모두 **직접 부모-자식**으로 기록된다 | 계보가 3 단계가 아니게 되므로 launcher 방식을 다시 정한다 |
-| Target-A 의 보안 설정이 두 중간 프로세스의 최종 관리 도구 실행을 막지 않는다 | 최종 도구가 준비 신호를 내지 못해 Run 이 중단된다. 실험 VM 정책을 역할 3 과 확인한다 |
-| 최종 관리 도구의 내부 연결이 같은 `ProcessGuid` 의 EID 3 으로 남는다 (`r1.md` §11-9) | 연결 방식 또는 수집 설정을 역할 3 과 다시 확인한다 |
+| Target-A 의 보안 설정이 두 중간 프로세스의 최종 관리 도구 실행을 막지 않는다 | 최종 도구가 준비 신호를 내지 못해 Run 이 중단된다. 실험 VM 정책은 역할 4 가 확인한다(§10) |
+| 최종 관리 도구의 내부 연결이 같은 `ProcessGuid` 의 EID 3 으로 남는다 (`r1.md` §11-9) | 연결 방식 또는 수집 설정을 역할 4 가 다시 확인한다(§10) |
 | Sysmon `Computer` 값이 `target_host` 와 같다 (대소문자 무시) | 사전 세션이 먼저 비교해 바로 중단한다. 렌더링할 때 `--target-host` 를 그 값으로 준다 |
 | Controller 가 Sysmon 없이도 가져온 EVTX 를 읽어 JSONL 로 변환한다 | 변환을 Target-A 쪽 단계로 옮긴다 |
 | 세션을 닫으면 Target-A 에 남은 작업 프로세스가 끝난다 | 작업은 최대 1 시간 뒤 스스로 끝난다 |
@@ -472,3 +472,21 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
   수집 채널 확장, 감사 정책 기록, Manifest 의 `config_version` 은 이 Pilot 실행기에 넣지 않았다.
 - **decisive comparator** — 동결 버전이 저장소에 기록되면 `scenario.yaml` 의
   `decisive_comparator.frozen_version` 과 `detector_set_version` 에 반영한다.
+
+## 10. 담당 범위
+
+R1 의 로컬 실험 환경과 수집은 역할 4 가, AWS 쪽 입력 · 실행 · 결과는 역할 3 이 맡는다.
+
+| 역할 | 맡는 것 |
+| --- | --- |
+| 역할 4 | 로컬 R1 VM, VM 이름과 snapshot, Host-only 실험망과 CIDR, WinRM 주소 · 포트 · TLS 설정, 내부 연결 목적지와 포트, Sysmon 설치 · 설정 · 수집 확인, 로컬 rehearsal 과 Pair 수집 |
+| 역할 3 | AWS 입력 위치, AWS 실행 Config, runtime trace, AWS 결과 저장 위치와 실행 확인 |
+
+- 이 실행기에 주는 환경 값은 역할 4 가 정한다. 렌더링할 때 주는 `--target-host` · `--internal-target` ·
+  `--internal-port` · `--lab-cidr`(§2)와, 실행 입력 `-VmSnapshot` · `-TargetAddress` · `-WinRmPort` ·
+  `-UseSsl` · `-TargetSysmonBinary` · `-TargetSysmonConfigPath` · `-ExpectedSysmonConfigSha256`(§3)가
+  그 값이다. 실제 값은 저장소에 두지 않는다.
+- §8 의 rehearsal 과 거기서 확인하는 가정(실험 VM 정책, Sysmon 수집, 내부 연결)도 역할 4 가 맡는다.
+- 이 폴더의 스크립트는 AWS 를 호출하지 않으며, 역할 3 이 맡는 항목을 입력으로 받지 않는다.
+- `docs/scenarios/r1.md` §11 의 미결 사항 표는 1 · 2 · 3 · 9 · 10 번의 확인 대상을 아직 역할 3 으로
+  적고 있다. 그 표는 이 변경에서 고치지 않았다.
