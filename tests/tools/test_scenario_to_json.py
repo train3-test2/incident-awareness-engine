@@ -7,6 +7,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from incident_awareness.common.models.event import NORMALIZED_EVENT_SCHEMA_VERSION
 from tools.scenario_to_json import (
     apply_external_override,
     load_scenario,
@@ -21,6 +22,14 @@ CANONICAL_SCENARIO = Path("scenarios/S0/scenario.yaml")
 
 def _load_canonical() -> dict:
     return load_scenario(CANONICAL_SCENARIO)
+
+
+def test_canonical_s0_scenario_uses_current_normalized_event_schema_version() -> None:
+    # given & when: 실제 runner가 읽는 canonical S0 시나리오를 로드한다
+    scenario = _load_canonical()
+
+    # then: 새 RunMetadata에는 현재 NormalizedEvent Contract 버전이 기록된다
+    assert scenario["run_metadata"]["schema_versions"]["event"] == NORMALIZED_EVENT_SCHEMA_VERSION
 
 
 def test_rehearsal_render_keeps_target_null(tmp_path: Path) -> None:

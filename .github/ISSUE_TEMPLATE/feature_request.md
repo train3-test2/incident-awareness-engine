@@ -2,8 +2,9 @@
 name: Feature request
 about: Issue Feature request template
 title: ''
-labels: ''
+labels: feat
 assignees: ''
+type: Feature
 
 ---
 
