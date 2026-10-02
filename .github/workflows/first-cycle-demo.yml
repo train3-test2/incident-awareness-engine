@@ -20,9 +20,12 @@ jobs:
       entity_id: ${{ steps.identifiers.outputs.entity_id }}
       decision_id: ${{ steps.identifiers.outputs.decision_id }}
       decision_config_version: ${{ steps.identifiers.outputs.decision_config_version }}
+      image_tag: ${{ steps.image.outputs.image_tag }}
+      image_uri: ${{ steps.image.outputs.image_uri }}
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       FIRST_CYCLE_S3_BUCKET: ${{ vars.FIRST_CYCLE_S3_BUCKET }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
     steps:
       - uses: actions/checkout@v6
 
@@ -39,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          for value in AWS_ROLE_ARN AWS_REGION FIRST_CYCLE_S3_BUCKET; do
+          for value in AWS_ROLE_ARN AWS_REGION FIRST_CYCLE_S3_BUCKET ECR_REPOSITORY; do
             if [[ -z "${!value//[[:space:]]/}" ]]; then
               echo "GitHub Actions variable $value must be configured."
               exit 1
@@ -51,6 +54,23 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify commit image exists in ECR
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_tag="$GITHUB_SHA"
+          aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids "imageTag=$image_tag" \
+            > /dev/null
+
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          image_uri="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$image_tag"
+          echo "image_tag=$image_tag" >> "$GITHUB_OUTPUT"
+          echo "image_uri=$image_uri" >> "$GITHUB_OUTPUT"
 
       - name: Allocate demo identifiers
         id: identifiers
@@ -145,6 +165,7 @@ jobs:
           ENTITY_ID: ${{ steps.identifiers.outputs.entity_id }}
           DECISION_ID: ${{ steps.identifiers.outputs.decision_id }}
           DECISION_CONFIG_VERSION: ${{ steps.identifiers.outputs.decision_config_version }}
+          IMAGE_URI: ${{ steps.image.outputs.image_uri }}
         run: |
           {
             echo "## First Cycle demo inputs prepared"
@@ -156,6 +177,7 @@ jobs:
             echo "| Entity ID | \`$ENTITY_ID\` |"
             echo "| Decision ID | \`$DECISION_ID\` |"
             echo "| Decision config version | \`$DECISION_CONFIG_VERSION\` |"
+            echo "| ECR image | \`$IMAGE_URI\` |"
             echo "| S3 input | \`s3://$FIRST_CYCLE_S3_BUCKET/first-cycle/$RUN_ID/\` |"
             echo
             echo "The next workflow stage registers the First Cycle task definition and starts ECS."
