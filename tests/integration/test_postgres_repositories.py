@@ -23,7 +23,7 @@ from incident_awareness.common.models.run import RunMetadata, RunType, SchemaVer
 from incident_awareness.integration.fast_hit_handoff import FastDetectionAdapterResult
 from incident_awareness.normalization.sysmon import SysmonNormalizationContext
 from incident_awareness.pipeline.event_evidence import NormalizedEvidenceArtifacts
-from incident_awareness.pipeline.persistence import persist_s0_results
+from incident_awareness.pipeline.persistence import DecisionConflictError, persist_s0_results
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
 from incident_awareness.storage.config import DATABASE_URL_ENV, DatabaseConfig
 from incident_awareness.storage.repositories.event_repository import EventRepository
@@ -206,7 +206,67 @@ def test_postgres_serializes_same_decision_id_across_scopes(database_url: str) -
             )
 
 
-def _persistence_case(run_id: str, entity_id: str, decision_id: str) -> _PersistenceCase:
+def test_postgres_serializes_competing_decisions_in_same_scope(database_url: str) -> None:
+    suffix = uuid4().hex
+    run_id = f"RUN-{suffix}"
+    entity_id = f"WIN-{suffix}"
+    base_decision_id = f"DEC-D1-{suffix}"
+    candidate_decision_ids = (f"DEC-D2-{suffix}", f"DEC-D3-{suffix}")
+    base_case = _persistence_case(run_id, entity_id, base_decision_id)
+    cases = tuple(
+        _persistence_case(
+            run_id,
+            entity_id,
+            decision_id,
+            supersedes_decision_id=base_decision_id,
+        )
+        for decision_id in candidate_decision_ids
+    )
+    start_barrier = Barrier(len(cases))
+
+    def persist_case(case: _PersistenceCase) -> DecisionConflictError | None:
+        with psycopg.connect(database_url) as connection:
+            start_barrier.wait(timeout=10)
+            try:
+                persist_s0_results(*case, connection=connection)
+            except DecisionConflictError as error:
+                return error
+        return None
+
+    try:
+        with psycopg.connect(database_url) as connection:
+            persist_s0_results(*base_case, connection=connection)
+            head = DecisionRepository(connection).get_current_head(run_id, entity_id)
+            assert head is not None
+            assert head.decision_id == base_decision_id
+
+        with ThreadPoolExecutor(max_workers=len(cases)) as executor:
+            results = list(executor.map(persist_case, cases))
+
+        errors = [result for result in results if result is not None]
+        assert results.count(None) == 1
+        assert len(errors) == 1
+        assert isinstance(errors[0], DecisionConflictError)
+        assert "current Decision head changed" in str(errors[0])
+
+        with psycopg.connect(database_url) as connection:
+            head = DecisionRepository(connection).get_current_head(run_id, entity_id)
+            assert head is not None
+            assert head.decision_id in candidate_decision_ids
+            assert head.supersedes_decision_id == base_decision_id
+    finally:
+        with psycopg.connect(database_url) as connection:
+            connection.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
+            connection.commit()
+
+
+def _persistence_case(
+    run_id: str,
+    entity_id: str,
+    decision_id: str,
+    *,
+    supersedes_decision_id: str | None = None,
+) -> _PersistenceCase:
     timestamp = datetime(2026, 9, 12, 1, tzinfo=UTC)
     run = RunMetadata(
         run_id=run_id,
@@ -276,6 +336,7 @@ def _persistence_case(run_id: str, entity_id: str, decision_id: str) -> _Persist
         winning_path=WinningPath.NONE,
         decision_reason="Both evaluated paths missed",
         config_version="parallel-v0.2",
+        supersedes_decision_id=supersedes_decision_id,
     )
     return (
         artifacts,
