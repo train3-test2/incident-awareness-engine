@@ -181,21 +181,33 @@ Provenance 경로로 기록한다. 따라서 해당 fixture를 사용할 때 mou
 
 Sysmon JSONL 단독 입력의 계약과 현재 지원 Event ID·형식 검증은
 [Sysmon JSONL 단독 입력 First Cycle CLI 계약](sysmon-jsonl-standalone-input.md)을 따른다.
-현재 컨테이너에서는 아래처럼 단독 JSONL의 입력 검증만 실행할 수 있다.
+이미지 빌드와 로컬 PostgreSQL 준비를 완료한 뒤, 아래처럼 JSONL 하나만 read-only로
+마운트해 실행할 수 있다. 먼저 **First Cycle Pipeline 컨테이너 실행** 절의 `.env` 처리와
+같은 방식으로 `INCIDENT_AWARENESS_CONTAINER_DATABASE_URL`을 만든다.
 
 ```powershell
 $jsonlPath = (Resolve-Path ".\sample-sysmon.jsonl").Path
+$outputPath = Join-Path (Split-Path $jsonlPath -Parent) ".incident-awareness-output"
+New-Item -ItemType Directory -Force $outputPath | Out-Null
 
 docker run --rm `
   --mount "type=bind,source=$jsonlPath,target=/inputs/sysmon.jsonl,readonly" `
+  --mount "type=bind,source=$outputPath,target=/outputs" `
+  -e "INCIDENT_AWARENESS_DATABASE_URL=$env:INCIDENT_AWARENESS_CONTAINER_DATABASE_URL" `
   incident-awareness-engine:local `
-  python -c "from pathlib import Path; from incident_awareness.pipeline.standalone import validate_standalone_sysmon_jsonl; print(f'validated records={len(validate_standalone_sysmon_jsonl(Path(\"/inputs/sysmon.jsonl\")))}')"
+  python -m incident_awareness.pipeline.standalone `
+  --sysmon-jsonl /inputs/sysmon.jsonl `
+  --output-dir /outputs
 ```
 
-이 명령은 EID 1·3, 단일 Host, 시간순 JSONL 등 입력 경계만 검증한다. 아직 standalone
-CLI와 Artifact writer는 구현되지 않았으므로, 이 명령은 `RunMetadata`·Manifest를 파일로
-생성하거나 PostgreSQL에 결과를 저장하지 않는다. 결과까지 실행하려면 위의 **First Cycle
-Pipeline 컨테이너 실행**처럼 Fast Artifact를 포함한 기존 입력 묶음을 사용해야 한다.
+CLI는 EID 1·3, 단일 Host, 시간순 JSONL을 검증하고 `RunMetadata`, Manifest, telemetry
+JSONL을 `/outputs/<자동 생성 run_id>/`에 생성한다. 그 뒤 기존 정규화·Evidence·Fusion·Hybrid
+단계를 수행해 PostgreSQL에 Run·Event·Fusion·Detection·Decision 결과를 저장한다. 기본 Fast
+상태는 `not_evaluated`이며 FastHit Artifact를 만들거나 Fast Runner를 호출하지 않는다.
+
+성공 시 표준 출력의 JSON summary와 `/outputs/<run_id>/`의 생성 Artifact를 확인한다. 현재
+Hybrid 정책이 `parallel-v0.2`이므로 Fast가 `not_evaluated`인 결과의 `decision_path`와 `t_e`는
+`null`이다. 이는 Fusion 단독 판단으로 재해석하지 않는다.
 
 Docker E2E 테스트는 DB에 결과를 저장하므로 기본 pytest에서는 skip한다. 위 이미지와
 PostgreSQL이 준비된 뒤 다음처럼 명시적으로 실행한다.

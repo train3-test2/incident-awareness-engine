@@ -84,6 +84,24 @@ def test_first_cycle_task_overrides_supply_only_run_specific_inputs() -> None:
     }
 
 
+def test_standalone_task_override_selects_the_jsonl_only_entrypoint() -> None:
+    overrides = json.loads(
+        (ECS_DIRECTORY / "first-cycle-standalone-task-overrides.example.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    container = overrides["containerOverrides"][0]
+    assert container["name"] == "incident-awareness-engine-first-cycle"
+    assert container["environment"] == [
+        {
+            "name": "INCIDENT_AWARENESS_S3_INPUT_URI",
+            "value": "s3://<bucket>/first-cycle/<source-run-id>/",
+        },
+        {"name": "INCIDENT_AWARENESS_STANDALONE", "value": "true"},
+    ]
+
+
 def test_execution_role_secret_policy_is_scoped_to_first_cycle_database_url() -> None:
     policy = json.loads(
         (IAM_DIRECTORY / "ecs-task-execution-secrets-policy.json").read_text(encoding="utf-8")

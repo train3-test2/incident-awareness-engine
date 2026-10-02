@@ -8,11 +8,12 @@
 
 Sysmon JSONL 하나에서 이 입력 Artifact를 자동 생성하는 개발용 CLI 계약은
 [Sysmon JSONL 단독 입력 First Cycle CLI 계약](sysmon-jsonl-standalone-input.md)을 따른다.
-해당 CLI도 생성 후에는 이 문서의 Artifact·정합성 규칙을 그대로 적용한다.
+해당 CLI는 이 문서의 Artifact·정합성 규칙을 그대로 적용한다.
 
-> 현재 ECS entrypoint는 이 문서의 완성된 First Cycle Artifact 묶음만 실행한다. standalone
-> CLI/Artifact writer가 구현되기 전에는 Sysmon JSONL 하나만 S3 prefix에 업로드해 실행할 수
-> 없다. `fast/` Artifact를 생략하면 기존 entrypoint의 Fast handoff 검증에서 실패한다.
+> ECS entrypoint는 기본적으로 이 문서의 완성된 First Cycle Artifact 묶음을 실행한다.
+> `INCIDENT_AWARENESS_STANDALONE=true` override를 주면 `telemetry/sysmon-0001.jsonl`만
+> 읽는 standalone 모드로 전환한다. 이 모드는 Fast Artifact를 요구하지 않고 Fast 상태를
+> `not_evaluated`로 기록한다.
 
 Fargate는 S3를 파일시스템으로 직접 마운트하지 않는다. 태스크 시작 시 entrypoint가
 S3 객체를 `/inputs`에 내려받고, 파이프라인 프로세스는 그 디렉터리를 읽기 전용으로
@@ -98,18 +99,11 @@ S3 객체를 모두 내려받기 전에 CLI를 실행하거나, 임의의 호스
 
 ## 단독 JSONL 경로의 AWS 적용 순서
 
-standalone CLI가 구현된 뒤에는 다음 순서로 AWS 실행 경로를 추가한다.
-
-1. 단독 CLI가 JSONL을 검증하고 `run_metadata.json`, `manifest.json`, telemetry JSONL을 생성한다.
-2. 기본 Fast mode가 `not_evaluated`이면 Fast handoff를 요구하지 않는 전용 entrypoint 또는
-   Task Definition revision을 사용한다. 기존 First Cycle Task Definition을 임의로 재사용하지 않는다.
-3. 생성 Artifact를 `s3://<bucket>/first-cycle/<run_id>/`에 업로드하고, 해당 revision으로
-   Fargate 태스크를 실행한다.
-4. CloudWatch Logs의 종료 코드와 PostgreSQL의 Run·Event·Fusion·Detection·Decision 저장 결과를
-   함께 확인한다.
-
-이 단계는 아직 구현 전이다. 현재 AWS에서 검증 가능한 경로는 Fast Artifact를 모두 포함한
-기존 First Cycle 입력 실행뿐이다.
+1. source JSONL을 `s3://<bucket>/first-cycle/<source-run-id>/telemetry/sysmon-0001.jsonl`로
+   업로드한다.
+2. standalone override JSON에서 `INCIDENT_AWARENESS_S3_INPUT_URI`를 설정한다.
+3. Fargate 태스크를 실행하고 종료 코드 `0` 및 CloudWatch Logs의 JSON summary를 확인한다.
+4. summary의 새 `run_id`로 PostgreSQL의 Run·Event·Fusion·Detection·Decision 저장 결과를 조회한다.
 
 ## ECS Task Definition과 실행 override
 
@@ -130,6 +124,22 @@ Run마다 달라지는 입력은 Task Definition에 고정하지 않는다.
 - `INCIDENT_AWARENESS_ENTITY_ID`
 - `INCIDENT_AWARENESS_DECISION_ID`
 - `INCIDENT_AWARENESS_DECISION_CONFIG_VERSION`
+
+### Sysmon JSONL 단독 입력 override
+
+단독 입력은 source JSONL만 아래 prefix에 업로드한다. prefix 이름은 downloader의 경로 계약상
+`first-cycle/<source-run-id>/` 형식을 유지해야 하지만, 실제 저장되는 Run ID는 컨테이너가
+UTC 날짜와 PostgreSQL 중복 검사를 기준으로 새로 할당한다.
+
+```text
+s3://<bucket>/first-cycle/<source-run-id>/telemetry/sysmon-0001.jsonl
+```
+
+`infra/ecs/first-cycle-standalone-task-overrides.example.json`을 복사해 S3 URI만 채운 뒤,
+등록된 First Cycle Task Definition revision으로 실행한다. override의
+`INCIDENT_AWARENESS_STANDALONE=true`가 Fast handoff reader 대신 standalone CLI를 선택한다.
+생성 Artifact는 컨테이너의 임시 디렉터리에만 남고, 실행 결과는 CloudWatch Logs와 PostgreSQL에
+저장된다. Artifact를 S3에 보존해야 하면 별도의 업로드 정책을 추가해야 한다.
 
 예를 들어 AWS CLI에서는 등록된 revision을 지정하고 `--overrides`에 복사한 JSON 파일을
 전달한다. 네트워크 값은 RDS 접근이 허용된 First Cycle Task 보안 그룹과 같은 VPC subnet을

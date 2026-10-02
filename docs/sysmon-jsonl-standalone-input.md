@@ -13,7 +13,7 @@ CLI 계약을 정의한다. CLI는 입력 JSONL에서 RunMetadata, Manifest, Raw
 
 ## CLI 입력 계약
 
-구현 대상 명령은 다음과 같다.
+실행 명령은 다음과 같다.
 
 ```text
 python -m incident_awareness.pipeline.standalone \
@@ -135,10 +135,13 @@ AWS 실행은 이 CLI가 생성한 `<output-root>/<run_id>/` Artifact를
 방식을 사용한다. S3·ECS 실행 절차는 [AWS First Cycle 입력 Artifact 계약](aws-first-cycle-inputs.md)과
 [GitHub Actions AWS 실행 가이드](github-actions-smoke-deploy.md)를 따른다.
 
-## 구현 전제와 후속 작업
+## 실행 전제와 후속 작업
 
-- 이 문서는 실행 계약만 정의한다. CLI 구현, Artifact writer, DB 기반 식별자 할당은 후속
-  작업에서 추가한다.
+- CLI는 `INCIDENT_AWARENESS_DATABASE_URL`과 적용 완료된 First Cycle migration을 요구한다.
+  실행 시 PostgreSQL의 `runs`, `decisions`와 출력 경로를 함께 확인해 사용하지 않은 `run_id`,
+  `decision_id`를 할당한다.
+- 생성 Artifact는 기본 출력 경로 또는 `--output-dir` 아래에 보존한다. 기존 Run 출력 경로는
+  덮어쓰지 않는다.
 - `s0-standalone-v1` 외 시나리오를 기본값으로 제공하려면 해당 시나리오의 Evidence·Fusion·Fast
   Config와 입력 제한을 별도로 확정한다.
 - 다중 Host JSONL, 여러 JSONL segment, 실제 Fast Runner 자동 실행은 별도 실행 Config와

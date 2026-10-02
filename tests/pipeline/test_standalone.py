@@ -13,6 +13,7 @@ from incident_awareness.pipeline.standalone import (
     build_default_standalone_fast_detection,
     build_run_metadata_from_sysmon_jsonl,
     build_sysmon_artifacts_from_jsonl,
+    prepare_standalone_run,
     select_standalone_execution_config,
     validate_standalone_sysmon_jsonl,
 )
@@ -143,6 +144,54 @@ def test_selects_default_s0_fusion_and_parallel_hybrid_config() -> None:
 def test_rejects_unsupported_standalone_hybrid_config() -> None:
     with pytest.raises(ValueError, match="supports only decision config"):
         select_standalone_execution_config(decision_config_version="optional-v1")
+
+
+def test_materializes_runnable_standalone_artifacts(tmp_path: Path) -> None:
+    source_jsonl = tmp_path / "source.jsonl"
+    _write_jsonl(
+        source_jsonl,
+        [_record("2026-10-03 00:00:00.000", time_created="2026-10-03T00:00:00Z")],
+    )
+
+    prepared = prepare_standalone_run(
+        sysmon_jsonl_path=source_jsonl,
+        output_dir=tmp_path / "output" / "RUN-20261003-001",
+        run_id="RUN-20261003-001",
+        decision_id="DEC-RUN-20261003-001",
+    )
+
+    assert prepared.inputs.run_metadata_path.is_file()
+    assert prepared.inputs.manifest_path.is_file()
+    assert prepared.inputs.sysmon_jsonl_path.is_file()
+    assert prepared.inputs.sysmon_jsonl_path.read_bytes() == source_jsonl.read_bytes()
+    manifest = json.loads(prepared.inputs.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["run_id"] == "RUN-20261003-001"
+    assert manifest["items"][1]["path"] == "raw/RUN-20261003-001/telemetry/sysmon-0001.jsonl"
+
+
+def test_rejects_standalone_target_or_entity_outside_direct_host_mapping(tmp_path: Path) -> None:
+    source_jsonl = tmp_path / "source.jsonl"
+    _write_jsonl(
+        source_jsonl,
+        [_record("2026-10-03 00:00:00.000", time_created="2026-10-03T00:00:00Z")],
+    )
+
+    with pytest.raises(ValueError, match="target_host must match"):
+        prepare_standalone_run(
+            sysmon_jsonl_path=source_jsonl,
+            output_dir=tmp_path / "wrong-target",
+            run_id="RUN-20261003-001",
+            decision_id="DEC-RUN-20261003-001",
+            target_host="WIN-02",
+        )
+    with pytest.raises(ValueError, match="entity_id must match"):
+        prepare_standalone_run(
+            sysmon_jsonl_path=source_jsonl,
+            output_dir=tmp_path / "wrong-entity",
+            run_id="RUN-20261003-001",
+            decision_id="DEC-RUN-20261003-001",
+            entity_id="WIN-02",
+        )
 
 
 def test_accepts_supported_sysmon_event_ids(tmp_path: Path) -> None:

@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
-from dataclasses import dataclass
+import json
+import logging
+import shutil
+from collections.abc import Sequence
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+import psycopg
 
 from incident_awareness.collection.collector.sysmon_jsonl import (
     SysmonJsonlReadError,
@@ -20,6 +27,14 @@ from incident_awareness.integration.fast_hit_handoff import (
     build_not_evaluated_detection_result,
 )
 from incident_awareness.normalization.sysmon import SysmonNormalizationContext
+from incident_awareness.pipeline.cli import PipelineInputs
+from incident_awareness.pipeline.event_evidence import normalize_sysmon_and_extract_evidence
+from incident_awareness.pipeline.fusion import run_s0_fusion
+from incident_awareness.pipeline.hybrid import combine_parallel_decision
+from incident_awareness.pipeline.persistence import DatabaseConnection, persist_s0_results
+from incident_awareness.pipeline.reporting import PipelineExecutionSummary, build_execution_summary
+from incident_awareness.pipeline.s0_artifacts import load_s0_pipeline_artifacts
+from incident_awareness.storage.config import DatabaseConfig
 
 _STANDALONE_MANIFEST_ROOT = "raw"
 _SYSMON_JSONL_FILENAME = "sysmon-0001.jsonl"
@@ -33,6 +48,8 @@ _SUPPORTED_SYSMON_EVENT_IDS = frozenset(
 DEFAULT_STANDALONE_FAST_MODE = "not_evaluated"
 DEFAULT_STANDALONE_FUSION_CONFIG_PATH = Path("configs/fusion/fusion_config_s0_pair_v0.1.yaml")
 DEFAULT_STANDALONE_DECISION_CONFIG_VERSION = "parallel-v0.2"
+
+_LOGGER = logging.getLogger(__name__)
 
 DEFAULT_STANDALONE_SCHEMA_VERSIONS = SchemaVersions(
     run_metadata="v0.2",
@@ -62,6 +79,14 @@ class StandaloneExecutionConfig:
     fusion_config_path: Path
     fusion_config: FusionConfig
     decision_config_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class StandalonePreparedRun:
+    """Materialized standalone artifacts and their ready-to-run Pipeline inputs."""
+
+    output_dir: Path
+    inputs: PipelineInputs
 
 
 def build_default_standalone_fast_detection(
@@ -106,6 +131,182 @@ def select_standalone_execution_config(
         fusion_config=fusion_config,
         decision_config_version=decision_config_version,
     )
+
+
+def prepare_standalone_run(
+    *,
+    sysmon_jsonl_path: Path,
+    output_dir: Path,
+    run_id: str,
+    decision_id: str,
+    scenario_id: str = "S0",
+    run_type: RunType = RunType.ATTACK,
+    target_host: str | None = None,
+    entity_id: str | None = None,
+    fusion_config_path: Path | None = None,
+) -> StandalonePreparedRun:
+    """Validate JSONL and materialize the minimum runnable First Cycle inputs."""
+    records = validate_standalone_sysmon_jsonl(sysmon_jsonl_path)
+    inferred_host = _required_string(records[0].data, "Computer", record_no=records[0].record_no)
+    selected_target_host = target_host or inferred_host
+    if selected_target_host != inferred_host:
+        raise ValueError("target_host must match the single Computer value in the Sysmon JSONL")
+
+    selected_entity_id = entity_id or selected_target_host
+    if selected_entity_id != selected_target_host:
+        raise ValueError("entity_id must match target_host for the standalone direct host mapping")
+    _validate_identifier(decision_id, "decision_id")
+
+    if output_dir.exists():
+        raise ValueError(f"standalone output directory already exists: {output_dir}")
+
+    execution_config = select_standalone_execution_config(fusion_config_path=fusion_config_path)
+    telemetry_dir = output_dir / "telemetry"
+    destination_jsonl = telemetry_dir / _SYSMON_JSONL_FILENAME
+    try:
+        telemetry_dir.mkdir(parents=True)
+        shutil.copyfile(sysmon_jsonl_path, destination_jsonl)
+        metadata = build_run_metadata_from_sysmon_jsonl(
+            destination_jsonl,
+            run_id=run_id,
+            scenario_id=scenario_id,
+            run_type=run_type,
+            target_host=selected_target_host,
+        )
+        generated = build_sysmon_artifacts_from_jsonl(destination_jsonl, run_id=run_id)
+        run_metadata_path = output_dir / "run_metadata.json"
+        manifest_path = output_dir / "manifest.json"
+        run_metadata_path.write_text(metadata.model_dump_json(indent=2), encoding="utf-8")
+        manifest_path.write_text(json.dumps(generated.manifest, indent=2), encoding="utf-8")
+    except Exception:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        raise
+
+    return StandalonePreparedRun(
+        output_dir=output_dir,
+        inputs=PipelineInputs(
+            run_metadata_path=run_metadata_path,
+            manifest_path=manifest_path,
+            sysmon_jsonl_path=destination_jsonl,
+            # The standalone profile deliberately does not create Fast artifacts.
+            # These paths are never read because it bypasses load_s0_fast_detection().
+            fast_hits_path=output_dir / "fast" / "hits.jsonl",
+            fast_trace_path=output_dir / "fast" / "trace.json",
+            fast_selection_path=output_dir / "fast" / "selection.json",
+            fusion_config_path=execution_config.fusion_config_path,
+            entity_id=selected_entity_id,
+            decision_id=decision_id,
+            decision_config_version=execution_config.decision_config_version,
+        ),
+    )
+
+
+def run_prepared_standalone_run(
+    prepared: StandalonePreparedRun,
+    *,
+    connection: DatabaseConnection,
+) -> PipelineExecutionSummary:
+    """Run the existing First Cycle stages with standalone Fast semantics."""
+    artifacts = load_s0_pipeline_artifacts(prepared.inputs)
+    normalized_artifacts = normalize_sysmon_and_extract_evidence(artifacts)
+    fusion_result = run_s0_fusion(prepared.inputs, artifacts, normalized_artifacts)
+    fast_result = build_default_standalone_fast_detection(
+        run_id=artifacts.run_metadata.run_id,
+        entity_id=prepared.inputs.entity_id,
+    )
+    decision_result = combine_parallel_decision(
+        prepared.inputs,
+        fast_result,
+        fusion_result,
+    )
+    persist_s0_results(
+        artifacts,
+        normalized_artifacts,
+        fusion_result,
+        fast_result,
+        decision_result,
+        connection=connection,
+    )
+    return build_execution_summary(
+        artifacts,
+        normalized_artifacts,
+        fusion_result,
+        fast_result,
+        decision_result,
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the standalone Sysmon JSONL CLI contract."""
+    parser = argparse.ArgumentParser(
+        prog="incident-awareness-standalone",
+        description="Run First Cycle from one Sysmon JSONL file.",
+    )
+    parser.add_argument("--sysmon-jsonl", required=True, type=Path)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--scenario-id", default="S0")
+    parser.add_argument(
+        "--run-type", choices=[run_type.value for run_type in RunType], default="attack"
+    )
+    parser.add_argument("--target-host")
+    parser.add_argument("--entity-id")
+    parser.add_argument("--fusion-config", type=Path)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Create standalone artifacts and persist one First Cycle execution."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    namespace = build_parser().parse_args(argv)
+    sysmon_jsonl_path = namespace.sysmon_jsonl.resolve()
+    output_root = (
+        namespace.output_dir or sysmon_jsonl_path.parent / ".incident-awareness" / "first-cycle"
+    ).resolve()
+    database_config = DatabaseConfig.from_environment()
+
+    with psycopg.connect(database_config.url, autocommit=False) as connection:
+        run_id, decision_id = _allocate_identifiers(connection, output_root)
+        prepared = prepare_standalone_run(
+            sysmon_jsonl_path=sysmon_jsonl_path,
+            output_dir=output_root / run_id,
+            run_id=run_id,
+            decision_id=decision_id,
+            scenario_id=_validate_identifier(namespace.scenario_id, "scenario_id"),
+            run_type=RunType(namespace.run_type),
+            target_host=namespace.target_host,
+            entity_id=namespace.entity_id,
+            fusion_config_path=namespace.fusion_config,
+        )
+        summary = run_prepared_standalone_run(prepared, connection=connection)
+
+    _LOGGER.info("Standalone First Cycle output: %s", prepared.output_dir)
+    print(json.dumps(asdict(summary), sort_keys=True))
+    return 0
+
+
+def _allocate_identifiers(
+    connection: DatabaseConnection,
+    output_root: Path,
+    *,
+    now: datetime | None = None,
+) -> tuple[str, str]:
+    """Allocate the next unused UTC-date Run and Decision identifier."""
+    date_part = (now or datetime.now(UTC)).strftime("%Y%m%d")
+    for sequence in range(1, 1000):
+        run_id = f"RUN-{date_part}-{sequence:03d}"
+        decision_id = f"DEC-{run_id}"
+        if (output_root / run_id).exists():
+            continue
+        row = connection.execute(
+            "SELECT EXISTS (SELECT 1 FROM runs WHERE run_id = %s) "
+            "OR EXISTS (SELECT 1 FROM decisions WHERE decision_id = %s)",
+            (run_id, decision_id),
+        ).fetchone()
+        exists = row[0] if isinstance(row, tuple) else row["exists"] if row else None
+        if exists is False:
+            return run_id, decision_id
+
+    raise RuntimeError("no unused standalone run_id remains for the current UTC date")
 
 
 def build_run_metadata_from_sysmon_jsonl(
@@ -344,16 +545,30 @@ def _sha256(path: Path) -> str:
         raise ValueError(f"standalone Sysmon JSONL is not readable: {path}") from error
 
 
+def _validate_identifier(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise ValueError(f"{name} must be a non-blank identifier without surrounding whitespace")
+    return value
+
+
 __all__ = [
     "DEFAULT_STANDALONE_DECISION_CONFIG_VERSION",
     "DEFAULT_STANDALONE_FAST_MODE",
     "DEFAULT_STANDALONE_FUSION_CONFIG_PATH",
     "DEFAULT_STANDALONE_SCHEMA_VERSIONS",
     "StandaloneExecutionConfig",
+    "StandalonePreparedRun",
     "StandaloneSysmonArtifacts",
     "build_default_standalone_fast_detection",
+    "build_parser",
     "build_run_metadata_from_sysmon_jsonl",
     "build_sysmon_artifacts_from_jsonl",
+    "prepare_standalone_run",
+    "run_prepared_standalone_run",
     "select_standalone_execution_config",
     "validate_standalone_sysmon_jsonl",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
