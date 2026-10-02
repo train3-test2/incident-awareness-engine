@@ -65,8 +65,11 @@ Attack: wsmprovhost.exe -> cscript.exe -> powershell.exe
 
 여러 Event 기반 Evidence에는 다음 공통 규칙을 적용한다.
 
-- EID 1→EID 3 correlation은 동일한 `run_id`, `host_id`, `process.process_guid`를 기준으로 수행하며, 생성된 `Evidence.entity_id`는 해당 `host_id`를 사용
+- EID 1→EID 3 correlation은 두 Event의 `process.process_guid`가 모두 non-null이고, `run_id`와 `host_id`가 동일하며, 두 `process.process_guid` 값이 같을 때만 수행. 생성된 `Evidence.entity_id`는 해당 `host_id`를 사용
+- GUID가 없는 Event끼리 `None == None` 비교로 연결하지 않음
+- EID 1 부모-자식 edge는 child의 `process.parent_process_guid`와 parent 후보의 `process.process_guid`가 모두 non-null이고, `run_id`와 `host_id`가 동일하며, `child.process.parent_process_guid == parent.process.process_guid`일 때만 연결
 - PID는 Process GUID의 대체 연결 키로 사용하지 않음
+- GUID 누락 시 Evidence 생성 또는 진단 처리 정책은 TBD
 - `event_ids`에는 상관분석에 실제 사용한 모든 `NormalizedEvent.event_id`를 기록
 - timestamp는 조건을 확정하는 데 사용한 Event 중 가장 늦은 `NormalizedEvent.timestamp`를 사용
 - Evidence가 필요한 Event보다 먼저 성립한 것으로 기록되지 않도록 위 timestamp 규칙을 no-look-ahead 원칙으로 적용
@@ -88,7 +91,7 @@ raw `TimeCreated`와 `EventData.UtcTime` 중 무엇을 `NormalizedEvent.timestam
 
 PR #124는 부모가 없는 관측 완료 체인을 `complete`, 부모 GUID의 EID 1이 capture에 없는 체인을 `truncated`, 이미 방문한 프로세스로 돌아가는 체인을 `cycle`로 보고한다. 이 값은 Raw Pilot 진단 상태이며 현재 R1 Evidence 생성 정책으로 직접 매핑하지 않는다.
 
-승인 계보는 평가 대상 Run의 `run_type`이나 Ground Truth label을 참조해 만들지 않으며, 이 값들을 extractor 조건으로도 사용하지 않는다. label leakage를 방지하기 위해 평가 전에 별도 config로 동결된 기준만 사용한다.
+approved lineage policy는 평가 Run과 독립된 baseline 또는 사전 정의 운영 정책에서 생성하며, 평가 대상 Normal/Attack Run을 보고 만들지 않는다. 평가 전에 policy를 freeze하고 사용한 config의 version과 hash를 재현 가능하게 기록한다. 평가 대상 Run의 `run_type`이나 Ground Truth label은 extractor 조건으로 사용하지 않는다. 구체적인 config 형식은 이번 PR에서 정하지 않는다.
 
 ### 3.2 `remote_process_network_follow_on` (candidate)
 
@@ -97,6 +100,7 @@ PR #124는 부모가 없는 관측 완료 체인을 `complete`, 부모 GUID의 E
 | 의미 | Target-A에서 원격 실행 계보의 최종 프로세스가 후속 네트워크 연결을 생성한 사실을 나타내는 Semantic Evidence candidate |
 | Source Event | 최종 프로세스의 Sysmon EID 1 `process_create`와 동일한 `run_id`, `host_id`, `process.process_guid`를 가진 Sysmon EID 3 `network_connection` |
 | 필요한 NormalizedEvent 필드 | 공통으로 `event_id`, `run_id`, `timestamp`, `host_id`, `event_type`, `source`, `source_event_id`, `raw_ref`, `process.name`, `process.process_guid`; EID 3의 `network.protocol`, `network.dst_ip`, `network.dst_port`; `process.process_guid`는 v0.3 optional 필드 |
+| 시간 관계 조건 | `EID 3.timestamp >= EID 1.timestamp`. 이는 Evidence timestamp 계산 규칙과 별개의 관계 성립 조건 |
 | `event_ids` provenance | 최소한 연결 주체를 확정한 EID 1과 후속 연결 EID 3의 `NormalizedEvent.event_id`를 기록. 원격 계보의 조상 Event까지 포함할지는 후보 의미와 correlation 책임을 확정한 뒤 결정. `source_event_id`는 기록하지 않음 |
 | timestamp 후보 | 사용한 Event 중 가장 늦은 `NormalizedEvent.timestamp`를 사용 |
 | Normal에서도 발생 가능한지 | 예. R1 hard negative 성격상 Normal과 Attack 모두 같은 최종 프로세스와 목적지 연결을 가질 수 있음 |
@@ -111,6 +115,9 @@ PR #124는 부모가 없는 관측 완료 체인을 `complete`, 부모 GUID의 E
 
 - Role2가 담당할 NormalizedEvent lineage correlation의 구현 위치와 구조
 - PR #124의 `complete`, `truncated`, `cycle`을 Evidence 생성에서 처리하는 정책
+- GUID 누락 시 Evidence 생성 또는 진단 처리 정책
+- `event_ids` canonical ordering 또는 `evidence_id` 생성 시 canonical 정렬 규칙
+- 여러 `event_id`를 사용하는 deterministic `evidence_id` 생성 규칙. 같은 Event 집합은 입력 순서가 달라도 동일한 Evidence ID를 생성해야 함
 - 최종 Evidence type 이름
 - 실제 R1 telemetry를 이용한 v0.3 normalization 및 correlation 검증
 - R1 Fusion profile과 Evidence 소비 규칙
