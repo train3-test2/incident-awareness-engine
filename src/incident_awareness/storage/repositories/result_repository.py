@@ -5,6 +5,7 @@ from psycopg.types.json import Jsonb
 
 from incident_awareness.common.models.fusion import FusionResult, FusionStoppingTrace
 from incident_awareness.common.models.result import DecisionResult, DetectionResult
+from incident_awareness.common.models.runtime_snapshot import DecisionRuntimeSnapshot
 
 
 class _Cursor(Protocol):
@@ -98,6 +99,22 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 _SELECT_DECISION_PAYLOAD = "SELECT payload FROM decisions WHERE decision_id = %s"
+
+_INSERT_DECISION_RUNTIME_SNAPSHOT = """
+INSERT INTO decision_runtime_snapshots (
+    decision_id,
+    run_id,
+    entity_id,
+    payload
+)
+VALUES (%s, %s, %s, %s)
+"""
+
+_SELECT_DECISION_RUNTIME_SNAPSHOT_PAYLOAD = """
+SELECT payload
+FROM decision_runtime_snapshots
+WHERE decision_id = %s
+"""
 
 
 _SELECT_CURRENT_DECISION_HEADS = """
@@ -274,6 +291,36 @@ class DecisionRepository:
             )
 
         return DecisionResult.model_validate(head_payloads[0])
+
+
+class DecisionRuntimeSnapshotRepository:
+    """Store and restore the immutable Runtime snapshot for one Decision."""
+
+    def __init__(self, connection: _Connection) -> None:
+        self._connection = connection
+
+    def save(self, snapshot: DecisionRuntimeSnapshot) -> None:
+        self._connection.execute(
+            _INSERT_DECISION_RUNTIME_SNAPSHOT,
+            (
+                snapshot.decision_id,
+                snapshot.run_id,
+                snapshot.entity_id,
+                Jsonb(snapshot.model_dump(mode="json")),
+            ),
+        )
+
+    def get(self, decision_id: str) -> DecisionRuntimeSnapshot | None:
+        row = self._connection.execute(
+            _SELECT_DECISION_RUNTIME_SNAPSHOT_PAYLOAD,
+            (decision_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        return DecisionRuntimeSnapshot.model_validate(
+            _payload_from_row(row, table_name="decision_runtime_snapshots")
+        )
 
 
 def _scope_has_decisions_from_head_row(

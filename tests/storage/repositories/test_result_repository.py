@@ -17,10 +17,16 @@ from incident_awareness.common.models.result import (
     Severity,
     WinningPath,
 )
+from incident_awareness.common.models.runtime_snapshot import (
+    DecisionRuntimeSnapshot,
+    build_decision_runtime_snapshot,
+)
 from incident_awareness.storage.repositories.result_repository import (
     _INSERT_DECISION,
+    _INSERT_DECISION_RUNTIME_SNAPSHOT,
     _SELECT_CURRENT_DECISION_HEADS,
     _SELECT_DECISION_PAYLOAD,
+    _SELECT_DECISION_RUNTIME_SNAPSHOT_PAYLOAD,
     _SELECT_DETECTION_RESULT_PAYLOAD,
     _SELECT_FUSION_RESULT_PAYLOAD,
     _SELECT_FUSION_STOPPING_TRACE_PAYLOAD,
@@ -29,6 +35,7 @@ from incident_awareness.storage.repositories.result_repository import (
     _UPSERT_FUSION_STOPPING_TRACE,
     DecisionIntegrityError,
     DecisionRepository,
+    DecisionRuntimeSnapshotRepository,
     DetectionResultRepository,
     FusionResultRepository,
     FusionStoppingTraceRepository,
@@ -144,6 +151,24 @@ def decision_result() -> DecisionResult:
     )
 
 
+@pytest.fixture
+def decision_runtime_snapshot(
+    decision_result: DecisionResult,
+    detection_result: DetectionResult,
+    fusion_result: FusionResult,
+    fusion_stopping_trace: FusionStoppingTrace,
+) -> DecisionRuntimeSnapshot:
+    trace = fusion_stopping_trace.model_copy(
+        update={"scoring_config_version": fusion_result.scoring_config_version}
+    )
+    return build_decision_runtime_snapshot(
+        decision_result=decision_result,
+        detection_result=detection_result,
+        fusion_result=fusion_result,
+        fusion_stopping_trace=trace,
+    )
+
+
 def test_fusion_repository_saves_and_rebuilds_result(fusion_result: FusionResult) -> None:
     connection = FakeConnection((fusion_result.model_dump(mode="json"),))
     repository = FusionResultRepository(connection)
@@ -245,6 +270,34 @@ def test_decision_repository_inserts_and_rebuilds_immutable_result(
     assert isinstance(connection.statements[0][1][10], Jsonb)
     assert connection.statements[1] == (_SELECT_DECISION_PAYLOAD, ("DEC-001",))
     assert stored_result == decision_result
+
+
+def test_decision_runtime_snapshot_repository_inserts_and_rebuilds_snapshot(
+    decision_runtime_snapshot: DecisionRuntimeSnapshot,
+) -> None:
+    # Given
+    connection = FakeConnection((decision_runtime_snapshot.model_dump(mode="json"),))
+    repository = DecisionRuntimeSnapshotRepository(connection)
+
+    # When
+    repository.save(decision_runtime_snapshot)
+    stored_snapshot = repository.get(decision_runtime_snapshot.decision_id)
+
+    # Then
+    assert "ON CONFLICT" not in _INSERT_DECISION_RUNTIME_SNAPSHOT
+    assert connection.commits == 0
+    assert connection.statements[0][0] == _INSERT_DECISION_RUNTIME_SNAPSHOT
+    assert connection.statements[0][1][:3] == (
+        decision_runtime_snapshot.decision_id,
+        decision_runtime_snapshot.run_id,
+        decision_runtime_snapshot.entity_id,
+    )
+    assert isinstance(connection.statements[0][1][3], Jsonb)
+    assert connection.statements[1] == (
+        _SELECT_DECISION_RUNTIME_SNAPSHOT_PAYLOAD,
+        (decision_runtime_snapshot.decision_id,),
+    )
+    assert stored_snapshot == decision_runtime_snapshot
 
 
 def test_decision_repository_returns_none_when_current_head_does_not_exist() -> None:
@@ -351,6 +404,7 @@ def test_decision_repository_rejects_multiple_current_heads(
         ),
         (DetectionResultRepository(FakeConnection()), ("RUN-20260912-001", "WIN-01")),
         (DecisionRepository(FakeConnection()), ("DEC-001",)),
+        (DecisionRuntimeSnapshotRepository(FakeConnection()), ("DEC-001",)),
     ],
 )
 def test_result_repositories_return_none_when_result_does_not_exist(
@@ -359,6 +413,7 @@ def test_result_repositories_return_none_when_result_does_not_exist(
         | FusionStoppingTraceRepository
         | DetectionResultRepository
         | DecisionRepository
+        | DecisionRuntimeSnapshotRepository
     ),
     arguments: tuple[str, ...],
 ) -> None:
@@ -384,6 +439,11 @@ def test_result_repositories_return_none_when_result_does_not_exist(
             "detection_results",
         ),
         (DecisionRepository(FakeConnection(("invalid",))), ("DEC-001",), "decisions"),
+        (
+            DecisionRuntimeSnapshotRepository(FakeConnection(("invalid",))),
+            ("DEC-001",),
+            "decision_runtime_snapshots",
+        ),
     ],
 )
 def test_result_repositories_reject_non_object_payloads(
@@ -392,6 +452,7 @@ def test_result_repositories_reject_non_object_payloads(
         | FusionStoppingTraceRepository
         | DetectionResultRepository
         | DecisionRepository
+        | DecisionRuntimeSnapshotRepository
     ),
     arguments: tuple[str, ...],
     table_name: str,
