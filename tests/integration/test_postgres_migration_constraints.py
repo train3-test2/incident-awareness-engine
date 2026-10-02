@@ -2,7 +2,9 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from queue import Queue
 from threading import Barrier
+from time import monotonic, sleep
 from uuid import uuid4
 
 import psycopg
@@ -12,7 +14,11 @@ from psycopg.errors import CheckViolation
 from psycopg.types.json import Jsonb
 
 from incident_awareness.storage.config import DATABASE_URL_ENV, DatabaseConfig
-from incident_awareness.storage.migrate import apply_migrations
+from incident_awareness.storage.migrate import (
+    _MIGRATION_ADVISORY_LOCK_KEY,
+    _MIGRATION_ADVISORY_LOCK_SQL,
+    apply_migrations,
+)
 
 FIRST_MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -133,9 +139,11 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
     # Given
     schema_name = f"migration_concurrency_{uuid4().hex}"
     schema = sql.Identifier(schema_name)
-    start_barrier = Barrier(2)
+    worker_start = Barrier(3)
+    worker_pid_queue: Queue[int] = Queue()
+    setup_connection = psycopg.connect(database_url)
 
-    with psycopg.connect(database_url) as setup_connection:
+    try:
         setup_connection.execute(sql.SQL("CREATE SCHEMA {}").format(schema))
         setup_connection.execute(sql.SQL("SET search_path TO {}").format(schema))
         setup_connection.execute(FIRST_MIGRATION_PATH.read_text(encoding="utf-8"))
@@ -151,18 +159,71 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
             "INSERT INTO schema_migrations (migration_id) VALUES (%s)",
             ("001_first_cycle",),
         )
+        setup_connection.commit()
 
-    def run_migrations() -> tuple[str, ...]:
-        with psycopg.connect(database_url) as connection:
-            connection.execute(sql.SQL("SET search_path TO {}").format(schema))
-            start_barrier.wait(timeout=10)
-            return apply_migrations(connection)
+        setup_connection.execute(
+            _MIGRATION_ADVISORY_LOCK_SQL,
+            (_MIGRATION_ADVISORY_LOCK_KEY,),
+        )
+        holder_pid_row = setup_connection.execute("SELECT pg_backend_pid()").fetchone()
+        assert holder_pid_row is not None
+        holder_pid = holder_pid_row[0]
+        assert isinstance(holder_pid, int)
 
-    try:
+        def run_migrations() -> tuple[str, ...]:
+            with psycopg.connect(database_url) as connection:
+                connection.execute(sql.SQL("SET search_path TO {}").format(schema))
+                worker_pid_row = connection.execute("SELECT pg_backend_pid()").fetchone()
+                assert worker_pid_row is not None
+                worker_pid = worker_pid_row[0]
+                assert isinstance(worker_pid, int)
+                worker_pid_queue.put(worker_pid)
+                worker_start.wait(timeout=10)
+                return apply_migrations(connection)
+
         # When
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = [executor.submit(run_migrations) for _ in range(2)]
-            applied_results = [future.result() for future in futures]
+            try:
+                worker_start.wait(timeout=10)
+                worker_pids = {worker_pid_queue.get(timeout=1) for _ in range(2)}
+                assert len(worker_pids) == 2
+
+                deadline = monotonic() + 10
+                waiting_pids: set[int] = set()
+                with psycopg.connect(database_url) as monitoring_connection:
+                    while monotonic() < deadline:
+                        waiting_rows = monitoring_connection.execute(
+                            """
+                            SELECT DISTINCT waiter.pid
+                            FROM pg_locks AS holder
+                            JOIN pg_locks AS waiter
+                              ON waiter.locktype = holder.locktype
+                             AND waiter.database IS NOT DISTINCT FROM holder.database
+                             AND waiter.classid IS NOT DISTINCT FROM holder.classid
+                             AND waiter.objid IS NOT DISTINCT FROM holder.objid
+                             AND waiter.objsubid IS NOT DISTINCT FROM holder.objsubid
+                            WHERE holder.pid = %s
+                              AND holder.locktype = 'advisory'
+                              AND holder.granted
+                              AND waiter.pid IN (%s, %s)
+                              AND NOT waiter.granted
+                            """,
+                            (holder_pid, *sorted(worker_pids)),
+                        ).fetchall()
+                        waiting_pids = {int(row[0]) for row in waiting_rows}
+                        if waiting_pids == worker_pids:
+                            break
+                        sleep(0.05)
+                    else:
+                        pytest.fail(
+                            "both migration workers did not wait on the holder advisory lock; "
+                            f"expected={sorted(worker_pids)!r}, observed={sorted(waiting_pids)!r}"
+                        )
+            finally:
+                setup_connection.commit()
+
+            applied_results = [future.result(timeout=10) for future in futures]
 
         # Then
         assert sorted(applied_results, key=len) == [
@@ -191,6 +252,8 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
         assert table_count == (1,)
         assert migration_count == (1,)
     finally:
+        setup_connection.rollback()
+        setup_connection.close()
         with psycopg.connect(database_url) as cleanup_connection:
             cleanup_connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(schema))
 
