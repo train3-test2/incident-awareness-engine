@@ -21,7 +21,7 @@ from incident_awareness.integration.fast_hit_handoff import (
 )
 from incident_awareness.normalization.sysmon import SysmonNormalizationContext
 
-_STANDALONE_MANIFEST_ROOT = "generated/raw"
+_STANDALONE_MANIFEST_ROOT = "raw"
 _SYSMON_JSONL_FILENAME = "sysmon-0001.jsonl"
 _SYSMON_EVTX_FILENAME = "sysmon-0001.evtx"
 _SYSMON_SEGMENT_NO = 1

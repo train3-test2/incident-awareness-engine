@@ -106,11 +106,11 @@ def test_builds_manifest_sha256_and_raw_log_provenance(tmp_path: Path) -> None:
     assert artifacts.manifest["run_id"] == "RUN-20261003-001"
     assert jsonl_item == {
         "raw_log_id": "RAW-RUN-20261003-001-SYSMON-001",
-        "path": "generated/raw/RUN-20261003-001/telemetry/sysmon-0001.jsonl",
+        "path": "raw/RUN-20261003-001/telemetry/sysmon-0001.jsonl",
         "sha256": _sha256(jsonl_path),
         "layer": "raw_telemetry",
         "source": "sysmon",
-        "derived_from": "generated/raw/RUN-20261003-001/telemetry/sysmon-0001.evtx",
+        "derived_from": "raw/RUN-20261003-001/telemetry/sysmon-0001.evtx",
     }
     assert artifacts.normalization_context.run_id == "RUN-20261003-001"
     assert artifacts.normalization_context.raw_log_id == jsonl_item["raw_log_id"]
