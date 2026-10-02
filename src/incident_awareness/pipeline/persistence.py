@@ -8,6 +8,7 @@ import psycopg
 
 from incident_awareness.common.models.fusion import FusionResult, FusionStoppingTrace
 from incident_awareness.common.models.result import DecisionResult
+from incident_awareness.common.models.runtime_snapshot import build_decision_runtime_snapshot
 from incident_awareness.integration.fast_hit_handoff import FastDetectionAdapterResult
 from incident_awareness.pipeline.event_evidence import NormalizedEvidenceArtifacts
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
@@ -16,6 +17,7 @@ from incident_awareness.storage.repositories.event_repository import EventReposi
 from incident_awareness.storage.repositories.result_repository import (
     DecisionIntegrityError,
     DecisionRepository,
+    DecisionRuntimeSnapshotRepository,
     DetectionResultRepository,
     FusionResultRepository,
     FusionStoppingTraceRepository,
@@ -66,7 +68,7 @@ def persist_s0_results(
     *,
     connection: DatabaseConnection | None = None,
 ) -> None:
-    """Atomically save Run, Event, Fusion, trace, Detection, and Decision contracts."""
+    """Atomically save First Cycle Runtime, Decision, and snapshot contracts."""
     try:
         _validate_result_scope(
             artifacts,
@@ -214,6 +216,13 @@ def _persist(
                 f"actual={actual_head_id!r}"
             )
 
+        runtime_snapshot = build_decision_runtime_snapshot(
+            decision_result=decision_result,
+            detection_result=fast_result.detection_result,
+            fusion_result=fusion_result,
+            fusion_stopping_trace=stopping_trace,
+        )
+
         RunRepository(connection).save(artifacts.run_metadata)
         event_repository = EventRepository(connection)
         for event in normalized_artifacts.events:
@@ -222,6 +231,7 @@ def _persist(
         FusionStoppingTraceRepository(connection).save(stopping_trace)
         DetectionResultRepository(connection).save(fast_result.detection_result)
         decision_repository.save(decision_result)
+        DecisionRuntimeSnapshotRepository(connection).save(runtime_snapshot)
         connection.commit()
     except Exception:
         try:

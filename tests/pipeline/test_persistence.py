@@ -26,6 +26,7 @@ from incident_awareness.pipeline.persistence import (
 )
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
 from incident_awareness.storage.repositories.result_repository import (
+    _INSERT_DECISION_RUNTIME_SNAPSHOT,
     _SELECT_CURRENT_DECISION_HEADS,
     _SELECT_DECISION_PAYLOAD,
     DecisionIntegrityError,
@@ -57,6 +58,7 @@ class _Connection:
         self,
         *,
         fail_on_statement: int | None = None,
+        fail_on_query_prefix: str | None = None,
         fail_rollback: bool = False,
         existing_decision: DecisionResult | None = None,
         current_heads: tuple[DecisionResult, ...] = (),
@@ -68,6 +70,7 @@ class _Connection:
         self.commits = 0
         self.rollbacks = 0
         self._fail_on_statement = fail_on_statement
+        self._fail_on_query_prefix = fail_on_query_prefix
         self._fail_rollback = fail_rollback
         self._existing_decision = existing_decision
         self._current_heads = current_heads
@@ -78,6 +81,10 @@ class _Connection:
     def execute(self, query: str, params: tuple[object, ...]) -> _Cursor:
         self.statements.append((query, params))
         if self._fail_on_statement == len(self.statements):
+            raise RuntimeError("database write failed")
+        if self._fail_on_query_prefix is not None and query.lstrip().startswith(
+            self._fail_on_query_prefix
+        ):
             raise RuntimeError("database write failed")
 
         if query == _SHOW_TRANSACTION_ISOLATION:
@@ -141,6 +148,7 @@ def test_persists_first_cycle_contracts_in_dependency_order() -> None:
         ["INSERT", "INTO", "fusion_stopping_traces"],
         ["INSERT", "INTO", "detection_results"],
         ["INSERT", "INTO", "decisions"],
+        ["INSERT", "INTO", "decision_runtime_snapshots"],
     ]
     assert connection.statements[:5] == [
         (_SHOW_TRANSACTION_ISOLATION, ()),
@@ -154,6 +162,17 @@ def test_persists_first_cycle_contracts_in_dependency_order() -> None:
     ]
     assert connection.commits == 1
     assert connection.rollbacks == 0
+    snapshot_payload = write_statements[-1][1][3]
+    assert snapshot_payload.obj["decision_id"] == decision_result.decision_id
+    assert snapshot_payload.obj["run_id"] == decision_result.run_id
+    assert snapshot_payload.obj["entity_id"] == decision_result.entity_id
+    assert snapshot_payload.obj["detection_result"] == fast_result.detection_result.model_dump(
+        mode="json"
+    )
+    assert snapshot_payload.obj["fusion_result"] == fusion_result.model_dump(mode="json")
+    assert snapshot_payload.obj["fusion_stopping_trace"] == _stopping_trace().model_dump(
+        mode="json"
+    )
 
 
 def test_resolves_no_expected_supersedes_when_scope_has_no_decision() -> None:
@@ -436,6 +455,61 @@ def test_treats_identical_existing_decision_as_idempotent_no_op() -> None:
         query.lstrip().startswith("INSERT INTO fusion_stopping_traces")
         for query, _ in connection.statements
     )
+    assert not any(query == _INSERT_DECISION_RUNTIME_SNAPSHOT for query, _ in connection.statements)
+
+
+def test_skips_snapshot_factory_for_identical_decision_with_mismatched_runtime_input() -> None:
+    # Given
+    fusion_result, _, decision_result = _results()
+    invalid_fast_result = _detected_fast_result()
+    connection = _Connection(existing_decision=decision_result)
+
+    # When
+    persist_s0_results(
+        _artifacts(),
+        NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
+        fusion_result,
+        _stopping_trace(),
+        invalid_fast_result,
+        decision_result,
+        connection=connection,
+    )
+
+    # Then
+    assert decision_result.fast_status != invalid_fast_result.detection_result.detector_status
+    assert connection.commits == 1
+    assert connection.rollbacks == 0
+    assert not any(query.lstrip().startswith("INSERT") for query, _ in connection.statements)
+    assert not any(query == _INSERT_DECISION_RUNTIME_SNAPSHOT for query, _ in connection.statements)
+
+
+def test_rejects_new_decision_runtime_mismatch_before_persistence_writes() -> None:
+    # Given
+    fusion_result, _, decision_result = _results()
+    invalid_fast_result = _detected_fast_result()
+    connection = _Connection()
+
+    # When
+    with pytest.raises(
+        ValueError,
+        match="DecisionResult fast_status must match DetectionResult detector_status",
+    ):
+        persist_s0_results(
+            _artifacts(),
+            NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
+            fusion_result,
+            _stopping_trace(),
+            invalid_fast_result,
+            decision_result,
+            connection=connection,
+        )
+
+    # Then
+    assert (_ACQUIRE_DECISION_ID_LOCK, (decision_result.decision_id,)) in connection.statements
+    assert (_SELECT_CURRENT_DECISION_HEADS, (RUN_ID, ENTITY_ID)) in connection.statements
+    assert not any(query.lstrip().startswith("INSERT") for query, _ in connection.statements)
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
 
 
 def test_rejects_existing_decision_id_with_different_content() -> None:
@@ -525,6 +599,39 @@ def test_preserves_save_error_when_rollback_fails(caplog: pytest.LogCaptureFixtu
 
     assert connection.rollbacks == 1
     assert "First Cycle persistence rollback failed" in caplog.text
+
+
+def test_rolls_back_when_decision_runtime_snapshot_insert_fails() -> None:
+    # Given
+    connection = _Connection(fail_on_query_prefix="INSERT INTO decision_runtime_snapshots")
+    fusion_result, fast_result, decision_result = _results()
+
+    # When
+    with pytest.raises(RuntimeError, match="database write failed"):
+        persist_s0_results(
+            _artifacts(),
+            NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
+            fusion_result,
+            _stopping_trace(),
+            fast_result,
+            decision_result,
+            connection=connection,
+        )
+
+    # Then
+    decision_index = next(
+        index
+        for index, (query, _) in enumerate(connection.statements)
+        if query.lstrip().startswith("INSERT INTO decisions")
+    )
+    snapshot_index = next(
+        index
+        for index, (query, _) in enumerate(connection.statements)
+        if query == _INSERT_DECISION_RUNTIME_SNAPSHOT
+    )
+    assert decision_index < snapshot_index
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
 
 
 def test_rejects_result_with_run_id_outside_persisted_run() -> None:
@@ -671,8 +778,23 @@ def test_rejects_evaluated_result_with_empty_stopping_trace(
 def test_accepts_not_evaluated_result_with_empty_stopping_trace() -> None:
     # Given
     fusion_result, fast_result, decision_result = _results()
-    not_evaluated_result = fusion_result.model_copy(update={"fusion_status": "not_evaluated"})
+    not_evaluated_result = FusionResult.model_validate(
+        {
+            **fusion_result.model_dump(mode="python"),
+            "fusion_status": "not_evaluated",
+        }
+    )
     empty_trace = _stopping_trace().model_copy(update={"points": []})
+    not_evaluated_decision = DecisionResult.model_validate(
+        {
+            **decision_result.model_dump(mode="python"),
+            "fusion_status": "not_evaluated",
+            "fusion_time": None,
+            "t_e": None,
+            "decision_path": None,
+            "winning_path": None,
+        }
+    )
     connection = _Connection()
 
     # When
@@ -682,7 +804,7 @@ def test_accepts_not_evaluated_result_with_empty_stopping_trace() -> None:
         not_evaluated_result,
         empty_trace,
         fast_result,
-        decision_result,
+        not_evaluated_decision,
         connection=connection,
     )
 
@@ -849,6 +971,24 @@ def _detected_fusion_result() -> FusionResult:
                 contributing_evidence_ids=evidence_ids,
             )
         ],
+    )
+
+
+def _detected_fast_result() -> FastDetectionAdapterResult:
+    detection_result = DetectionResult(
+        run_id=RUN_ID,
+        entity_id=ENTITY_ID,
+        detector_time=datetime(2026, 9, 20, tzinfo=UTC),
+        detector_status="detected",
+        detector_id="hayabusa",
+        rule_id="RULE-001",
+        rule_version="v0.2",
+        severity="high",
+    )
+    return FastDetectionAdapterResult(
+        detection_result=detection_result,
+        source_hit_ids=("hit-001",),
+        selected_source_hit_id="hit-001",
     )
 
 
