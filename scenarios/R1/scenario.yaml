@@ -10,10 +10,11 @@ scenario_id: R1
 
 # Identity of the Pair a rendered scenario describes. It is stated once for both
 # runs of the Pair and written to RunMetadata unchanged; a run cannot state its
-# own. family_id and variation_id name the design in this file and may be stated
-# again when the JSON is rendered (--family-id, --variation-id). repetition is
-# which Pair of the family this is: it has no default and is given for every
-# rendered scenario (--repetition).
+# own. family_id and variation_id name the design in this file. They are fixed
+# here: rendering has no option that replaces them, so one design cannot be
+# recorded under two family names. Another family is another scenario file.
+# repetition is which Pair of the family this is: it has no default and is given
+# for every rendered scenario (--repetition).
 family_id: remote_management          # PoC start guide v1.1 section 5-1 (kept outside the repository)
 variation_id: V02
 repetition: null

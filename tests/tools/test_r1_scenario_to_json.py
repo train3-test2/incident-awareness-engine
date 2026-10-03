@@ -582,6 +582,15 @@ def test_canonical_scenario_states_its_family_and_variation_but_no_repetition() 
     assert scenario["repetition"] is None
 
 
+def _load_stating(tmp_path: Path, **stated: object) -> dict:
+    """A scenario file that states the given top-level values, read by the R1 loader."""
+
+    def mutate(scenario: dict) -> None:
+        scenario.update(stated)
+
+    return _load_mutated(tmp_path, mutate)
+
+
 @pytest.mark.parametrize(
     ("family_id", "variation_id", "repetition"),
     [("family_x7", "V09", 4), ("holdout-b", "v1", 1), ("F3", "lineage-axis", 5)],
@@ -589,13 +598,10 @@ def test_canonical_scenario_states_its_family_and_variation_but_no_repetition() 
 def test_any_valid_identity_is_written_to_the_rendered_json(
     tmp_path: Path, family_id: str, variation_id: str, repetition: int
 ) -> None:
-    # Given: the scenario rendered for one Pair of that family
-    rendered = apply_run_inputs(
-        _load_canonical(),
-        family_id=family_id,
-        variation_id=variation_id,
-        repetition=repetition,
-    )
+    # Given: a scenario file that states that family and variation, rendered for
+    # one Pair of it
+    scenario = _load_stating(tmp_path, family_id=family_id, variation_id=variation_id)
+    rendered = apply_run_inputs(scenario, repetition=repetition)
     out = render_json(rendered, tmp_path / "scenario.json")
 
     # Then: the three values are in the JSON as they were stated, the repetition
@@ -608,28 +614,64 @@ def test_any_valid_identity_is_written_to_the_rendered_json(
     assert require_pair_identity(written) == R1PairIdentity(family_id, variation_id, repetition)
 
 
-def test_identity_is_injected_into_a_copy() -> None:
+def test_repetition_is_injected_into_a_copy() -> None:
     scenario = _load_canonical()
     before = copy.deepcopy(scenario)
 
-    rendered = apply_run_inputs(scenario, variation_id="V09", repetition=3)
+    rendered = apply_run_inputs(scenario, repetition=3)
 
-    assert (rendered["variation_id"], rendered["repetition"]) == ("V09", 3)
+    assert (rendered["variation_id"], rendered["repetition"]) == ("V02", 3)
     assert scenario == before
+
+
+@pytest.mark.parametrize("repetition", [1, 3, 5])
+def test_rendering_keeps_the_family_and_variation_the_scenario_states(
+    tmp_path: Path, repetition: int
+) -> None:
+    # Given: the canonical scenario as it is in the repository
+    canonical = yaml.safe_load(CANONICAL_SCENARIO.read_text(encoding="utf-8"))
+
+    # When: it is rendered with every run input there is
+    rendered = apply_run_inputs(
+        _load_canonical(),
+        target_host=TARGET_HOST,
+        internal_target=INTERNAL_TARGET,
+        internal_port=INTERNAL_PORT,
+        lab_cidr=LAB_CIDR,
+        repetition=repetition,
+    )
+    written = json.loads(render_json(rendered, tmp_path / "scenario.json").read_text("utf-8"))
+
+    # Then: only the repetition is the caller's; the design values are the file's
+    assert written["family_id"] == canonical["family_id"] == "remote_management"
+    assert written["variation_id"] == canonical["variation_id"] == "V02"
+    assert written["repetition"] == repetition
+
+
+@pytest.mark.parametrize(
+    "run_input", [{"family_id": "family_x7"}, {"variation_id": "V09"}], ids=["family", "variation"]
+)
+def test_family_and_variation_are_not_run_inputs(run_input: dict) -> None:
+    # A family is what the data is split by. One design rendered under two family
+    # names would be counted as two families, so no call can rename it.
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        apply_run_inputs(_load_canonical(), repetition=1, **run_input)
 
 
 @pytest.mark.parametrize("field", ["family_id", "variation_id"])
 @pytest.mark.parametrize("value", ["", " ", "\t"])
-def test_empty_family_or_variation_is_refused(field: str, value: str) -> None:
+def test_empty_family_or_variation_is_refused(tmp_path: Path, field: str, value: str) -> None:
     with pytest.raises(R1PairIdentityError, match="must be a non-empty string"):
-        apply_run_inputs(_load_canonical(), **{field: value})
+        _load_stating(tmp_path, **{field: value})
 
 
 @pytest.mark.parametrize("field", ["family_id", "variation_id"])
 @pytest.mark.parametrize("value", ["normal_family", "V02-Attack", "BENIGN", "x-malicious"])
-def test_family_or_variation_named_after_a_run_type_is_refused(field: str, value: str) -> None:
+def test_family_or_variation_named_after_a_run_type_is_refused(
+    tmp_path: Path, field: str, value: str
+) -> None:
     with pytest.raises(R1PairIdentityError, match="would expose the run type"):
-        apply_run_inputs(_load_canonical(), **{field: value})
+        _load_stating(tmp_path, **{field: value})
 
 
 @pytest.mark.parametrize("repetition", [0, -1, -3, 1.5, 2.0, "1", True, False])
@@ -663,12 +705,10 @@ def test_run_cannot_state_an_identity_of_its_own(
 
 
 def test_both_runs_of_a_pair_read_the_same_identity(tmp_path: Path) -> None:
-    # Given: one JSON rendered for the Pair
+    # Given: one JSON rendered for the Pair of a scenario that states its family
     rendered = apply_run_inputs(
-        _load_canonical(),
+        _load_stating(tmp_path, family_id="family_x7", variation_id="V09"),
         target_host=TARGET_HOST,
-        family_id="family_x7",
-        variation_id="V09",
         repetition=4,
     )
     out = render_json(rendered, tmp_path / "scenario.json")
@@ -736,8 +776,44 @@ def test_cli_does_not_render_a_scenario_without_a_repetition(
     assert not out.parent.exists()
 
 
-def test_cli_renders_the_identity_it_was_given(
+def test_cli_renders_the_identity_of_the_scenario_with_the_given_repetition(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Given: a scenario file that states its own family and variation
+    scenario_path = tmp_path / "scenario.yaml"
+    stated = yaml.safe_load(CANONICAL_SCENARIO.read_text(encoding="utf-8"))
+    stated.update(family_id="family_x7", variation_id="V09")
+    scenario_path.write_text(yaml.safe_dump(stated, allow_unicode=True), encoding="utf-8")
+    out = tmp_path / "build" / "scenario.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["r1_scenario_to_json.py", str(scenario_path), "--out", str(out), "--repetition", "3"],
+    )
+
+    assert renderer.main() == 0
+
+    # Then: the family and the variation are the file's, the repetition the caller's
+    rendered = json.loads(out.read_text(encoding="utf-8"))
+    assert (rendered["family_id"], rendered["variation_id"], rendered["repetition"]) == (
+        "family_x7",
+        "V09",
+        3,
+    )
+    printed = capsys.readouterr().out
+    assert "pair: family_id=family_x7 variation_id=V09 repetition=3" in printed
+
+
+@pytest.mark.parametrize(
+    "removed",
+    [["--family-id", "family_x7"], ["--variation-id", "V09"], ["--family-id=family_x7"]],
+    ids=["family", "variation", "family-with-equals"],
+)
+def test_cli_refuses_the_removed_family_and_variation_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    removed: list[str],
 ) -> None:
     out = tmp_path / "build" / "scenario.json"
     monkeypatch.setattr(
@@ -748,25 +824,20 @@ def test_cli_renders_the_identity_it_was_given(
             str(CANONICAL_SCENARIO),
             "--out",
             str(out),
-            "--family-id",
-            "family_x7",
-            "--variation-id",
-            "V09",
             "--repetition",
-            "3",
+            "1",
+            *removed,
         ],
     )
 
-    assert renderer.main() == 0
+    # The parser stops the command before anything is loaded or written.
+    with pytest.raises(SystemExit) as stopped:
+        renderer.main()
 
-    rendered = json.loads(out.read_text(encoding="utf-8"))
-    assert (rendered["family_id"], rendered["variation_id"], rendered["repetition"]) == (
-        "family_x7",
-        "V09",
-        3,
-    )
-    printed = capsys.readouterr().out
-    assert "pair: family_id=family_x7 variation_id=V09 repetition=3" in printed
+    assert stopped.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+    assert not out.exists()
+    assert not out.parent.exists()
 
 
 # ---------------------------------------------------------------------------

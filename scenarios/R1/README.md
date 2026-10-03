@@ -75,19 +75,23 @@ Attack 실행 계보    wsmprovhost.exe -> cscript.exe -> powershell.exe
 세 값은 렌더링한 `scenario.json` 최상위에 한 번만 있고, 두 Run 이 같은 JSON 을 읽는다. Run 별로
 따로 적을 수 없으며(`runs.<run_type>` 안에 있으면 거부), 실행 입력으로 덮어쓸 수도 없다.
 
-| 값 | 규칙 |
-| --- | --- |
-| `family_id` | 비어 있지 않은 문자열 |
-| `variation_id` | 비어 있지 않은 문자열 |
-| `repetition` | 1 이상의 정수. 그 family 의 몇 번째 Pair 인지다. 정본 YAML 에는 없고 렌더링할 때 준다 |
+| 값 | 규칙 | 정하는 곳 |
+| --- | --- | --- |
+| `family_id` | 비어 있지 않은 문자열 | `scenario.yaml` (설계 값) |
+| `variation_id` | 비어 있지 않은 문자열 | `scenario.yaml` (설계 값) |
+| `repetition` | 1 이상의 정수. 그 family 의 몇 번째 Pair 인지다 | 렌더링할 때 `--repetition` |
 
+- **`family_id` 와 `variation_id` 는 scenario 의 설계 값이며 렌더링할 때 바꿀 수 없다.** 렌더러에는
+  두 값을 바꾸는 옵션이 없고 `apply_run_inputs` 도 받지 않는다. 데이터를 family 단위로 나누므로(§1-3),
+  같은 설계를 이름만 바꿔 다른 family 로 기록할 수 있으면 hold-out 경계가 무너진다. 실행마다 달라지는
+  식별자는 `repetition` 하나다.
+- 다른 family 나 variation 은 그 설계(실행 계보)를 담은 **별도 scenario 파일**로 정의한다. variation
+  matrix 구현은 이 변경 밖이다.
 - `family_id` 와 `variation_id` 에 `normal` · `attack` · `benign` · `malicious` 가 들어 있으면
   거부한다(대소문자 무시, 부분 문자열 포함). 그래서 `abnormal` 이 들어간 이름도 거부된다.
 - 세 값은 Ground Truth 기록이다. Evidence 추출이나 Fusion 의 입력으로 넘기지 않는다.
 - 지금은 `family_id` 를 승인 계보 정책과 대조하지 않는다. 정책 config 가 연결되면 정책의
-  `family_id` 와 다를 때 거부해야 한다(§1-1). 그 전에는 `--family-id` 로 이름만 바꿔 렌더링해도
-  막지 않으므로, 다른 family 는 그 family 의 실행 계보를 담은 scenario 로 실행한다(variation matrix
-  구현은 이 변경 밖이다).
+  `family_id` 와 다를 때 거부해야 한다(§1-1).
 - S0 는 `repetition` 을 적지 않으며 지금까지처럼 `1` 이 기록된다.
 
 ### 1-3. 데이터 계획과 정식 Run 의 조건
@@ -127,12 +131,11 @@ uv run python tools/r1_scenario_to_json.py scenarios/R1/scenario.yaml --out buil
 **JSON 은 Pair 마다 한 번 렌더링하고, 그 Pair 의 두 Run 이 같은 파일을 쓴다.** 렌더링한
 `scenario.json` 이 실행의 단일 정본이다. 실행기에는 그 값을 덮어쓰는 입력이 없다.
 
-Pair 식별자는 렌더링할 때 적는다(§1-2).
+Pair 식별자 가운데 렌더링할 때 적는 것은 `repetition` 뿐이다. `family_id` 와 `variation_id` 는
+`scenario.yaml` 의 값이 그대로 들어가며, 바꾸는 옵션이 없다(§1-2).
 
 | 옵션 | 뜻 | 없으면 |
 | --- | --- | --- |
-| `--family-id` | Pair 의 family | 정본 YAML 의 값 |
-| `--variation-id` | Pair 의 variation | 정본 YAML 의 값 |
 | `--repetition` | 그 family 의 몇 번째 Pair 인지. 1 이상의 정수 | **렌더링하지 않는다** |
 
 정본 YAML 은 Target-A 이름, 내부 목적지, 포트, 실험망을 모두 `null` 로 둔다. **실제 값은 저장소에

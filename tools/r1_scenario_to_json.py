@@ -13,15 +13,18 @@ One JSON is rendered for one Pair, and both runs of the Pair read it. It is the
 only place a run takes its values from: the runner has no option that overrides
 what the rendered file says.
 
-The identity of the Pair is stated when the JSON is rendered:
+The family and the variation of the Pair are design values. The scenario YAML
+states them next to the lineage they belong to, and nothing replaces them when
+the JSON is rendered: data is split by family, so a rendering that could rename
+the family would let one design be recorded as several. Another family or
+variation is another scenario file that states its own design.
 
-    --family-id      family the Pair belongs to
-    --variation-id   variation the Pair belongs to
+The repetition is the only identity value given per rendering:
+
     --repetition     which Pair of the family this is, 1 or more
 
-The canonical YAML states the family and the variation it designs, and the
-options replace them when given. It states no repetition, so --repetition is
-always needed. The three values are written to RunMetadata for both runs.
+The canonical YAML states no repetition, so --repetition is always needed. The
+three values are written to RunMetadata for both runs.
 
 The canonical YAML keeps the Target-A host name, the internal destination and
 the lab network as null. They are injected only when the JSON is rendered for a
@@ -379,8 +382,6 @@ def apply_run_inputs(
     internal_target: str | None = None,
     internal_port: int | None = None,
     lab_cidr: str | None = None,
-    family_id: str | None = None,
-    variation_id: str | None = None,
     repetition: int | None = None,
 ) -> dict:
     """Return a copy with the run inputs injected.
@@ -390,8 +391,9 @@ def apply_run_inputs(
     identically to normal and attack. The destination, its port and the lab
     network are given together or not at all.
 
-    A family, a variation or a repetition that is given is validated and
-    replaces what the scenario states.
+    A repetition that is given is validated and replaces what the scenario
+    states. The family and the variation are not run inputs: the copy keeps the
+    values the scenario states.
     """
     rendered = copy.deepcopy(scenario)
 
@@ -411,10 +413,6 @@ def apply_run_inputs(
         internal["port"] = validate_internal_port(internal_port)
         internal["lab_cidr"] = str(network)
 
-    if family_id is not None:
-        rendered["family_id"] = validate_family_id(family_id)
-    if variation_id is not None:
-        rendered["variation_id"] = validate_variation_id(variation_id)
     if repetition is not None:
         rendered["repetition"] = validate_repetition(repetition)
 
@@ -431,7 +429,8 @@ def require_pair_identity(scenario: dict) -> R1PairIdentity:
         return read_pair_identity(scenario)
     except R1PairIdentityError as error:
         raise R1PairIdentityError(
-            f"{error}. State it when rendering: --family-id, --variation-id, --repetition"
+            f"{error}. The repetition is given when rendering (--repetition); the family and "
+            "the variation are stated by the scenario"
         ) from error
 
 
@@ -439,8 +438,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scenario", type=Path, help="path to scenarios/R1/scenario.yaml")
     parser.add_argument("--out", type=Path, required=True, help="path of the JSON to write")
-    parser.add_argument("--family-id", help="family of the Pair")
-    parser.add_argument("--variation-id", help="variation of the Pair")
     parser.add_argument("--repetition", type=int, help="which Pair of the family this is, from 1")
     parser.add_argument("--target-host", help="Target-A computer name; omit for a dry run")
     parser.add_argument(
@@ -457,8 +454,6 @@ def main() -> int:
         internal_target=args.internal_target,
         internal_port=args.internal_port,
         lab_cidr=args.lab_cidr,
-        family_id=args.family_id,
-        variation_id=args.variation_id,
         repetition=args.repetition,
     )
     identity = require_pair_identity(scenario)

@@ -377,6 +377,10 @@ function Get-R1PairIdentity {
         them, so both runs of a Pair, which read one rendered file, record the
         same three values. A value that is missing, of the wrong type or named
         after a run type throws.
+
+        The family and the variation are design values of the scenario YAML; the
+        renderer does not replace them. Only the repetition is given when the
+        JSON is rendered.
     #>
     param([Parameter(Mandatory = $true)]$Scenario)
 
@@ -384,8 +388,8 @@ function Get-R1PairIdentity {
     foreach ($name in @("family_id", "variation_id")) {
         $value = Get-R1Value $Scenario $name
         if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) {
-            throw ($name + " must be a non-empty string; state it when rendering scenario.json (--" +
-                $name.Replace("_", "-") + ")")
+            throw ($name + " must be a non-empty string; the scenario YAML states it and " +
+                "rendering does not replace it")
         }
         if ($value -cne $value.Trim()) {
             throw ($name + " must not have surrounding whitespace: '" + $value + "'")
