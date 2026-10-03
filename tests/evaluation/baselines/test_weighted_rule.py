@@ -13,14 +13,16 @@ from incident_awareness.evaluation.baselines.weighted_rule import WeightedRuleSc
 START = datetime(2026, 9, 7, tzinfo=UTC)
 
 
-def evidence(name="a", identifier="EVD-001", seconds=0, group="fusion_feature"):
+def evidence(
+    name="encoded_powershell_command", identifier="E-001", seconds=0, group="fusion_feature"
+):
     return Evidence(
         evidence_id=identifier,
         run_id="RUN-20260907-001",
         entity_id="HOST-01",
         timestamp=START + timedelta(seconds=seconds),
         evidence_type=name,
-        event_ids=[f"EVENT-{identifier}"],
+        event_ids=[f"evt-{identifier}"],
         derived_from_source_layer="raw_telemetry",
         feature_channel_group=group,
         extractor_version="test",
@@ -28,25 +30,38 @@ def evidence(name="a", identifier="EVD-001", seconds=0, group="fusion_feature"):
 
 
 def test_weighted_presence_and_provenance():
-    scorer = WeightedRuleScorer({"a": 1, "b": 3})
+    scorer = WeightedRuleScorer(
+        {"encoded_powershell_command": 1, "script_interpreter_external_connection": 3}
+    )
     rows = [
         evidence(),
-        evidence(identifier="EVD-002"),
+        evidence(identifier="E-002"),
         evidence(),
-        evidence("b", "DIAGNOSTIC", group="diagnostic_only"),
-        evidence("other", "OTHER"),
+        evidence("script_interpreter_external_connection", "E-DIAGNOSTIC", group="diagnostic_only"),
+        evidence("other", "E-OTHER"),
     ]
     assert scorer.score(iter(rows)) == 0.25
-    assert scorer.contributing_evidence_ids(rows) == ("EVD-001", "EVD-002")
+    assert scorer.contributing_evidence_ids(rows) == ("E-001", "E-002")
     assert scorer.score([]) == 0
-    assert scorer.score([*rows, evidence("b", "EVD-003")]) == 1
+    assert scorer.score([*rows, evidence("script_interpreter_external_connection", "E-003")]) == 1
 
 
-@pytest.mark.parametrize("names", [[], ["a"], ["b"], ["a", "b"], ["a", "a", "other"]])
+@pytest.mark.parametrize(
+    "names",
+    [
+        [],
+        ["encoded_powershell_command"],
+        ["script_interpreter_external_connection"],
+        ["encoded_powershell_command", "script_interpreter_external_connection"],
+        ["encoded_powershell_command", "encoded_powershell_command", "other"],
+    ],
+)
 def test_uniform_weights_match_existing_scorer(names):
-    rows = [evidence(name, f"EVD-{index}") for index, name in enumerate(names)]
-    weighted = WeightedRuleScorer({"a": 2, "b": 2})
-    simple = SimpleScorer(["a", "b"])
+    rows = [evidence(name, f"E-{index}") for index, name in enumerate(names)]
+    weighted = WeightedRuleScorer(
+        {"encoded_powershell_command": 2, "script_interpreter_external_connection": 2}
+    )
+    simple = SimpleScorer(["encoded_powershell_command", "script_interpreter_external_connection"])
     assert weighted.score(rows) == simple.score(rows)
     assert weighted.contributing_evidence_ids(rows) == simple.contributing_evidence_ids(rows)
 
@@ -58,14 +73,14 @@ def test_uniform_weights_match_existing_scorer(names):
         {"": 1},
         {" a": 1},
         {1: 1},
-        {"a": True},
-        {"a": "1"},
-        {"a": 0},
-        {"a": -1},
-        {"a": float("nan")},
-        {"a": float("inf")},
-        {"a": 1e308, "b": 1e308},
-        {"a": 10**1000},
+        {"encoded_powershell_command": True},
+        {"encoded_powershell_command": "1"},
+        {"encoded_powershell_command": 0},
+        {"encoded_powershell_command": -1},
+        {"encoded_powershell_command": float("nan")},
+        {"encoded_powershell_command": float("inf")},
+        {"encoded_powershell_command": 1e308, "script_interpreter_external_connection": 1e308},
+        {"encoded_powershell_command": 10**1000},
     ],
 )
 def test_rejects_invalid_weights(weights):
@@ -74,19 +89,24 @@ def test_rejects_invalid_weights(weights):
 
 
 def test_weights_are_copied_and_order_independent():
-    weights = {"a": 1, "b": 3, "c": 0.1}
+    weights = {"encoded_powershell_command": 1, "script_interpreter_external_connection": 3}
     scorer = WeightedRuleScorer(weights)
     equivalent = WeightedRuleScorer(dict(reversed(list(weights.items()))))
-    weights["a"] = 100
-    rows = [evidence("a"), evidence("c", "EVD-002")]
-    assert scorer.total_weight == 4.1
+    weights["encoded_powershell_command"] = 100
+    rows = [
+        evidence("encoded_powershell_command"),
+        evidence("script_interpreter_external_connection", "E-002"),
+    ]
+    assert scorer.total_weight == 4.0
     assert scorer.score(rows) == equivalent.score(reversed(rows))
 
 
 def test_replay_and_fusion_result_use_existing_window_and_stopping_contract():
     runner = TemporalReplayRunner(
         window_engine=WindowEngine(window_size=timedelta(seconds=20)),
-        scorer=WeightedRuleScorer({"a": 1, "b": 3}),
+        scorer=WeightedRuleScorer(
+            {"encoded_powershell_command": 1, "script_interpreter_external_connection": 3}
+        ),
         stopping_policy=ThresholdStoppingPolicy(
             threshold_on=0.8,
             threshold_off=0.4,
@@ -95,7 +115,7 @@ def test_replay_and_fusion_result_use_existing_window_and_stopping_contract():
         step_size=timedelta(seconds=10),
     )
     replay = runner.run(
-        [evidence(), evidence("b", "EVD-002", seconds=15)],
+        [evidence(), evidence("script_interpreter_external_connection", "E-002", seconds=15)],
         run_id="RUN-20260907-001",
         entity_id="HOST-01",
         run_start=START,
@@ -113,5 +133,10 @@ def test_replay_and_fusion_result_use_existing_window_and_stopping_contract():
     )
     assert result.fusion_status == "detected"
     assert result.fusion_time == START + timedelta(seconds=20)
-    assert set(result.contributing_evidence_ids) == {"EVD-001", "EVD-002"}
+    assert set(result.contributing_evidence_ids) == {"E-001", "E-002"}
     assert result.scoring_method == "weighted_rule"
+
+
+def test_unknown_weight_key_is_rejected_before_scoring():
+    with pytest.raises(ValueError, match="unmanaged values: encoded_powershell_typo"):
+        WeightedRuleScorer({"encoded_powershell_command": 1, "encoded_powershell_typo": 3})

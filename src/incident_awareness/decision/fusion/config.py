@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from datetime import timedelta
 from decimal import Decimal
 from functools import lru_cache
@@ -46,6 +47,13 @@ def _load_allowed_evidence_types() -> frozenset[str]:
         raise RuntimeError("Evidence type vocabulary must contain non-blank string values")
 
     return frozenset(evidence_types)
+
+
+def validate_managed_evidence_types(evidence_types: Iterable[str]) -> None:
+    """Reject types outside the repository-managed Evidence vocabulary."""
+    unknown = sorted(set(evidence_types) - _load_allowed_evidence_types())
+    if unknown:
+        raise ValueError("evidence_types contains unmanaged values: " + ", ".join(unknown))
 
 
 def _reject_boolean_numeric(
@@ -173,12 +181,7 @@ class ScoringConfig(BaseModel):
         if len(set(value)) != len(value):
             raise ValueError("evidence_types must not contain duplicates")
 
-        allowed_evidence_types = _load_allowed_evidence_types()
-        unknown_evidence_types = sorted(set(value) - allowed_evidence_types)
-        if unknown_evidence_types:
-            raise ValueError(
-                "evidence_types contains unmanaged values: " + ", ".join(unknown_evidence_types)
-            )
+        validate_managed_evidence_types(value)
 
         return value
 

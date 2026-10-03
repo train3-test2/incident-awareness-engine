@@ -5,6 +5,7 @@ from collections.abc import Iterable, Mapping
 from types import MappingProxyType
 
 from incident_awareness.common.models.evidence import Evidence
+from incident_awareness.decision.fusion.config import validate_managed_evidence_types
 from incident_awareness.decision.fusion.simple_score import SimpleScorer
 
 
@@ -32,6 +33,7 @@ class WeightedRuleScorer(SimpleScorer):
                 valid = False
             if not valid:
                 raise ValueError("weights must be finite positive numbers")
+        validate_managed_evidence_types(copied)
         try:
             total = math.fsum(copied[name] for name in sorted(copied))
         except OverflowError as exc:
