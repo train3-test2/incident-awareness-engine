@@ -38,7 +38,7 @@ scorer = WeightedRuleScorer(weights=config["evidence_weights"])
 
 ## 검증과 다음 단계
 
-테스트의 a/b 종류, 1:3 가중치, threshold/window 값은 기능 검증용이다.
+테스트의 정본 Evidence 종류와 1:3 가중치, threshold/window 값은 기능 검증용이다.
 R1 detector set이나 최종 운영점의 동결을 의미하지 않는다.
 
 다음 단계는 R1 Evidence coverage에 맞춘 비교 입력/실행 설정 연결이다.
@@ -48,3 +48,18 @@ R1 detector set이나 최종 운영점의 동결을 의미하지 않는다.
 
 CUSUM/EWMA, Static ML, episode 기반 FA/BH와 동일 오경보 조건 비교는 별도 작업이다.
 현재 구현만으로 성능 우위나 FP 검증 완료를 주장하지 않는다.
+
+
+## 리뷰 보완: 비교 범위와 설정 경계
+
+SimpleScorer는 균등 가중치 WeightedRuleScorer와 동치인 중첩 비교군이다.
+비교는 scoring 단계의 weighting 효과만 검증하며 공통으로 사용하는
+window/cadence/stopping의 기여를 분리해 증명하지 않는다.
+
+위 예제의 config는 별도의 Weighted Rule 평가 설정 mapping이다.
+기존 FusionConfig는 simple_score만 지원하고 build_runner()도 SimpleScorer를 생성한다.
+run_fusion_pipeline_from_config()에 weighted_rule이 연결된 상태가 아니다.
+
+WeightedRuleScorer 생성 시 FusionConfig와 공유하는 public vocabulary 검증을 실행한다.
+configs/evidence_types_v0.2.yaml 밖의 weight key는 점수 분모에 포함되기 전에 오류가 된다.
+향후 실제 R1 설정 연결에서도 이 검증 경계를 유지한다.
