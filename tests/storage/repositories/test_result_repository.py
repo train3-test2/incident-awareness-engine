@@ -27,6 +27,7 @@ from incident_awareness.storage.repositories.result_repository import (
     _SELECT_CURRENT_DECISION_HEADS,
     _SELECT_DECISION_PAYLOAD,
     _SELECT_DECISION_RUNTIME_SNAPSHOT_PAYLOAD,
+    _SELECT_DECISION_WITH_RUNTIME_SNAPSHOT_PAYLOADS,
     _SELECT_DECISIONS_BY_SCOPE,
     _SELECT_DETECTION_RESULT_PAYLOAD,
     _SELECT_FUSION_RESULT_PAYLOAD,
@@ -299,6 +300,87 @@ def test_decision_runtime_snapshot_repository_inserts_and_rebuilds_snapshot(
         (decision_runtime_snapshot.decision_id,),
     )
     assert stored_snapshot == decision_runtime_snapshot
+
+
+def test_decision_runtime_snapshot_repository_gets_decision_with_snapshot(
+    decision_result: DecisionResult,
+    decision_runtime_snapshot: DecisionRuntimeSnapshot,
+) -> None:
+    # Given
+    connection = FakeConnection(
+        (
+            decision_result.model_dump(mode="json"),
+            decision_runtime_snapshot.model_dump(mode="json"),
+        )
+    )
+    repository = DecisionRuntimeSnapshotRepository(connection)
+
+    # When
+    stored = repository.get_with_decision(decision_result.decision_id)
+
+    # Then
+    assert stored == (decision_result, decision_runtime_snapshot)
+    assert connection.statements == [
+        (
+            _SELECT_DECISION_WITH_RUNTIME_SNAPSHOT_PAYLOADS,
+            (decision_result.decision_id,),
+        )
+    ]
+
+
+def test_decision_runtime_snapshot_repository_gets_legacy_decision_without_snapshot(
+    decision_result: DecisionResult,
+) -> None:
+    # Given
+    connection = FakeConnection((decision_result.model_dump(mode="json"), None))
+    repository = DecisionRuntimeSnapshotRepository(connection)
+
+    # When
+    stored = repository.get_with_decision(decision_result.decision_id)
+
+    # Then
+    assert stored == (decision_result, None)
+    assert len(connection.statements) == 1
+
+
+def test_decision_runtime_snapshot_repository_returns_none_without_decision() -> None:
+    # Given
+    connection = FakeConnection()
+    repository = DecisionRuntimeSnapshotRepository(connection)
+
+    # When
+    stored = repository.get_with_decision("DEC-MISSING")
+
+    # Then
+    assert stored is None
+    assert len(connection.statements) == 1
+
+
+def test_decision_runtime_snapshot_repository_rejects_invalid_joined_decision_payload() -> None:
+    # Given
+    connection = FakeConnection(("invalid", None))
+    repository = DecisionRuntimeSnapshotRepository(connection)
+
+    # When / Then
+    with pytest.raises(TypeError, match="decisions.payload must be a JSON object"):
+        repository.get_with_decision("DEC-001")
+    assert len(connection.statements) == 1
+
+
+def test_decision_runtime_snapshot_repository_rejects_invalid_joined_snapshot_payload(
+    decision_result: DecisionResult,
+) -> None:
+    # Given
+    connection = FakeConnection((decision_result.model_dump(mode="json"), "invalid"))
+    repository = DecisionRuntimeSnapshotRepository(connection)
+
+    # When / Then
+    with pytest.raises(
+        TypeError,
+        match="decision_runtime_snapshots.payload must be a JSON object",
+    ):
+        repository.get_with_decision(decision_result.decision_id)
+    assert len(connection.statements) == 1
 
 
 def test_decision_repository_returns_none_when_current_head_does_not_exist() -> None:

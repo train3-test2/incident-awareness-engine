@@ -290,6 +290,7 @@ def test_postgres_decision_runtime_snapshot_round_trip(database_url: str) -> Non
             # When
             snapshot_repository.save(snapshot)
             stored_snapshot = snapshot_repository.get(snapshot.decision_id)
+            stored_with_decision = snapshot_repository.get_with_decision(snapshot.decision_id)
 
             # Then
             assert stored_snapshot == snapshot
@@ -297,6 +298,7 @@ def test_postgres_decision_runtime_snapshot_round_trip(database_url: str) -> Non
             assert stored_snapshot.detection_result == snapshot.detection_result
             assert stored_snapshot.fusion_result == snapshot.fusion_result
             assert stored_snapshot.fusion_stopping_trace == snapshot.fusion_stopping_trace
+            assert stored_with_decision == (decision, snapshot)
         finally:
             connection.execute("DELETE FROM runs WHERE run_id = %s", (run.run_id,))
             connection.commit()
@@ -386,9 +388,10 @@ def test_postgres_deleting_decision_cascades_runtime_snapshot(database_url: str)
                 "DELETE FROM decisions WHERE decision_id = %s",
                 (decision.decision_id,),
             )
+            connection.commit()
 
             # Then
-            assert snapshot_repository.get(snapshot.decision_id) is None
+            assert snapshot_repository.get_with_decision(snapshot.decision_id) is None
         finally:
             connection.execute("DELETE FROM runs WHERE run_id = %s", (run.run_id,))
             connection.commit()
@@ -632,6 +635,7 @@ def test_postgres_dashboard_reader_does_not_fallback_for_legacy_decision(
             # When
             current = reader.get_current(run_id, entity_id)
             historical = reader.get_historical(decision_id)
+            stored_with_decision = snapshot_repository.get_with_decision(decision_id)
 
             # Then
             assert current is not None
@@ -643,7 +647,7 @@ def test_postgres_dashboard_reader_does_not_fallback_for_legacy_decision(
             assert historical is not None
             assert historical.decision == decision_result
             assert historical.runtime_snapshot is None
-            assert snapshot_repository.get(decision_id) is None
+            assert stored_with_decision == (decision_result, None)
         finally:
             connection.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
             connection.commit()

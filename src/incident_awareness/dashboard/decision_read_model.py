@@ -83,11 +83,13 @@ class DashboardDecisionReader:
         return build_decision_history(decisions)
 
     def get_historical(self, decision_id: str) -> HistoricalDecisionReadModel | None:
-        decision = self._decision_repository.get(decision_id)
-        if decision is None:
+        stored = self._snapshot_repository.get_with_decision(decision_id)
+        if stored is None:
             return None
+
+        decision, snapshot = stored
 
         return HistoricalDecisionReadModel(
             decision=decision,
-            runtime_snapshot=self._snapshot_repository.get(decision_id),
+            runtime_snapshot=snapshot,
         )

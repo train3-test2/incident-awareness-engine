@@ -123,6 +123,18 @@ FROM decision_runtime_snapshots
 WHERE decision_id = %s
 """
 
+_SELECT_DECISION_WITH_RUNTIME_SNAPSHOT_PAYLOADS = """
+SELECT
+    decision.payload AS decision_payload,
+    snapshot.payload AS snapshot_payload
+FROM decisions AS decision
+LEFT JOIN decision_runtime_snapshots AS snapshot
+  ON snapshot.decision_id = decision.decision_id
+ AND snapshot.run_id = decision.run_id
+ AND snapshot.entity_id = decision.entity_id
+WHERE decision.decision_id = %s
+"""
+
 
 _SELECT_CURRENT_DECISION_HEADS = """
 WITH scope_decisions AS (
@@ -338,6 +350,36 @@ class DecisionRuntimeSnapshotRepository:
         return DecisionRuntimeSnapshot.model_validate(
             _payload_from_row(row, table_name="decision_runtime_snapshots")
         )
+
+    def get_with_decision(
+        self,
+        decision_id: str,
+    ) -> tuple[DecisionResult, DecisionRuntimeSnapshot | None] | None:
+        row = self._connection.execute(
+            _SELECT_DECISION_WITH_RUNTIME_SNAPSHOT_PAYLOADS,
+            (decision_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        if isinstance(row, tuple):
+            decision_payload, snapshot_payload = row
+        else:
+            decision_payload = row["decision_payload"]
+            snapshot_payload = row["snapshot_payload"]
+
+        if not isinstance(decision_payload, Mapping):
+            raise TypeError("decisions.payload must be a JSON object")
+        if snapshot_payload is not None and not isinstance(snapshot_payload, Mapping):
+            raise TypeError("decision_runtime_snapshots.payload must be a JSON object")
+
+        decision = DecisionResult.model_validate(decision_payload)
+        snapshot = (
+            None
+            if snapshot_payload is None
+            else DecisionRuntimeSnapshot.model_validate(snapshot_payload)
+        )
+        return decision, snapshot
 
 
 def _scope_has_decisions_from_head_row(

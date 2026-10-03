@@ -83,14 +83,24 @@ class FakeScopeRepository[ScopeResult]:
 class FakeSnapshotRepository:
     def __init__(
         self,
-        snapshots: dict[str, DecisionRuntimeSnapshot] | None = None,
+        stored: dict[
+            str,
+            tuple[DecisionResult, DecisionRuntimeSnapshot | None],
+        ]
+        | None = None,
     ) -> None:
-        self.snapshots = snapshots if snapshots is not None else {}
-        self.calls: list[str] = []
+        self.stored = stored if stored is not None else {}
+        self.combined_calls: list[str] = []
 
     def get(self, decision_id: str) -> DecisionRuntimeSnapshot | None:
-        self.calls.append(decision_id)
-        return self.snapshots.get(decision_id)
+        raise AssertionError("get_historical must not query the snapshot separately")
+
+    def get_with_decision(
+        self,
+        decision_id: str,
+    ) -> tuple[DecisionResult, DecisionRuntimeSnapshot | None] | None:
+        self.combined_calls.append(decision_id)
+        return self.stored.get(decision_id)
 
 
 def test_get_current_returns_none_without_querying_runtime_repositories() -> None:
@@ -311,7 +321,7 @@ def test_get_historical_uses_decision_snapshot_without_latest_runtime() -> None:
     detection_repository = FakeScopeRepository(current_detection)
     fusion_repository = FakeScopeRepository(current_fusion)
     trace_repository = FakeScopeRepository(current_trace)
-    snapshot_repository = FakeSnapshotRepository({decision.decision_id: snapshot})
+    snapshot_repository = FakeSnapshotRepository({decision.decision_id: (decision, snapshot)})
     reader = DashboardDecisionReader(
         decision_repository=decision_repository,
         detection_repository=detection_repository,
@@ -332,8 +342,8 @@ def test_get_historical_uses_decision_snapshot_without_latest_runtime() -> None:
     assert result.runtime_snapshot.detection_result == snapshot.detection_result
     assert result.runtime_snapshot.fusion_result == snapshot.fusion_result
     assert result.runtime_snapshot.fusion_stopping_trace == snapshot.fusion_stopping_trace
-    assert decision_repository.get_calls == [decision.decision_id]
-    assert snapshot_repository.calls == [decision.decision_id]
+    assert decision_repository.get_calls == []
+    assert snapshot_repository.combined_calls == [decision.decision_id]
     assert detection_repository.calls == []
     assert fusion_repository.calls == []
     assert trace_repository.calls == []
@@ -346,7 +356,7 @@ def test_get_historical_returns_legacy_decision_without_runtime_fallback() -> No
     detection_repository = FakeScopeRepository(_detection_result(marker="runtime-2"))
     fusion_repository = FakeScopeRepository(_fusion_result(marker="runtime-2"))
     trace_repository = FakeScopeRepository(_fusion_stopping_trace(score=0.2))
-    snapshot_repository = FakeSnapshotRepository()
+    snapshot_repository = FakeSnapshotRepository({decision.decision_id: (decision, None)})
     reader = DashboardDecisionReader(
         decision_repository=decision_repository,
         detection_repository=detection_repository,
@@ -363,13 +373,14 @@ def test_get_historical_returns_legacy_decision_without_runtime_fallback() -> No
         decision=decision,
         runtime_snapshot=None,
     )
-    assert snapshot_repository.calls == [decision.decision_id]
+    assert decision_repository.get_calls == []
+    assert snapshot_repository.combined_calls == [decision.decision_id]
     assert detection_repository.calls == []
     assert fusion_repository.calls == []
     assert trace_repository.calls == []
 
 
-def test_get_historical_returns_none_without_querying_snapshot() -> None:
+def test_get_historical_returns_none_from_combined_read() -> None:
     # Given
     decision_repository = FakeDecisionRepository()
     detection_repository = FakeScopeRepository[DetectionResult](None)
@@ -389,8 +400,8 @@ def test_get_historical_returns_none_without_querying_snapshot() -> None:
 
     # Then
     assert result is None
-    assert decision_repository.get_calls == ["DEC-MISSING"]
-    assert snapshot_repository.calls == []
+    assert decision_repository.get_calls == []
+    assert snapshot_repository.combined_calls == ["DEC-MISSING"]
     assert detection_repository.calls == []
     assert fusion_repository.calls == []
     assert trace_repository.calls == []
