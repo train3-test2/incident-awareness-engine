@@ -10,10 +10,13 @@ dependencies = [
     "PyYAML>=6.0,<7",
     "pandas>=3.0.5",
     "boto3>=1.43.102",
+    "fastapi>=0.116,<1",
+    "uvicorn>=0.35,<1",
 ]
 
 [dependency-groups]
 dev = [
+    "httpx2>=2,<3",
     "pytest>=9.1.1,<10",
     "ruff>=0.16.4,<1",
 ]
