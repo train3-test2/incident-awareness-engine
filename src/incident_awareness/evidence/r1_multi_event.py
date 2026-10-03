@@ -1,7 +1,7 @@
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 from uuid import NAMESPACE_URL, uuid5
 
 from incident_awareness.common.models.event import NormalizedEvent
@@ -136,7 +136,10 @@ def extract_remote_session_process_lineage_deviation(
     if correlation.status != "complete":
         return []
 
-    observed_lineage = tuple(_canonical_process_name(event) for event in correlation.events)
+    observed_lineage = _canonical_process_lineage(correlation.events)
+    if observed_lineage is None:
+        return []
+
     approved_lineage = tuple(name.casefold() for name in approved_policy.approved_lineage)
     if observed_lineage == approved_lineage:
         return []
@@ -339,9 +342,14 @@ def _process_name(event: NormalizedEvent) -> str | None:
     return event.process.name
 
 
-def _canonical_process_name(event: NormalizedEvent) -> str | None:
-    process_name = _process_name(event)
-    return process_name.casefold() if process_name is not None else None
+def _canonical_process_lineage(
+    events: tuple[NormalizedEvent, ...],
+) -> tuple[str, ...] | None:
+    process_names = tuple(_process_name(event) for event in events)
+    if any(process_name is None or not process_name.strip() for process_name in process_names):
+        return None
+
+    return tuple(cast(str, process_name).casefold() for process_name in process_names)
 
 
 def _deterministic_evidence_id(*, run_id: str, event_ids: list[str]) -> str:

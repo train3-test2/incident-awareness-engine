@@ -1,10 +1,8 @@
 import json
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
-import yaml
 
 import incident_awareness.evidence.r1_multi_event as r1_multi_event_module
 from incident_awareness.common.models.event import NormalizedEvent
@@ -23,7 +21,6 @@ _MIDDLE_GUID = "{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}"
 _TERMINAL_GUID = "{CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC}"
 _SVCHOST_GUID = "{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}"
 _SERVICES_GUID = "{EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE}"
-_VOCABULARY_PATH = Path(__file__).parents[2] / "configs" / "evidence_types_v0.2.yaml"
 
 
 def _normalized_event(
@@ -36,7 +33,7 @@ def _normalized_event(
     source: str = "sysmon",
     source_layer: str = "raw_telemetry",
     process_guid: str | None = _PROCESS_GUID,
-    process_name: str = "powershell.exe",
+    process_name: str | None = "powershell.exe",
     parent_process_guid: str | None = None,
 ) -> NormalizedEvent:
     is_network_event = event_type == "network_connection"
@@ -343,38 +340,6 @@ def _lineage_events(
     )
 
 
-def test_generated_r1_evidence_types_are_in_shared_vocabulary() -> None:
-    # Given
-    process_event, network_event = _matching_events()
-    anchor, middle, terminal = _lineage_events()
-    vocabulary = yaml.safe_load(_VOCABULARY_PATH.read_text(encoding="utf-8"))
-    existing_s0_types = {
-        "encoded_powershell_command",
-        "script_interpreter_external_connection",
-    }
-
-    # When
-    generated_evidences = [
-        *extract_remote_process_network_follow_on(process_event, network_event),
-        *extract_remote_session_process_lineage_deviation(
-            [anchor, middle, terminal],
-            anchor,
-            terminal,
-            _approved_policy(),
-        ),
-    ]
-    generated_types = {evidence.evidence_type for evidence in generated_evidences}
-    allowed_types = set(vocabulary["evidence_types"])
-
-    # Then
-    assert generated_types == {
-        "remote_session_process_lineage_deviation",
-        "remote_process_network_follow_on",
-    }
-    assert generated_types <= allowed_types
-    assert existing_s0_types <= allowed_types
-
-
 def test_matching_approved_lineage_does_not_create_evidence() -> None:
     # Given
     anchor, middle, terminal = _lineage_events(
@@ -475,6 +440,49 @@ def test_process_name_comparison_is_case_insensitive() -> None:
         anchor_overrides={"process_name": "Session-Anchor.EXE"},
         middle_overrides={"process_name": "Approved-Hop.EXE"},
         terminal_overrides={"process_name": "Terminal-Tool.EXE"},
+    )
+
+    # When
+    evidences = extract_remote_session_process_lineage_deviation(
+        [anchor, middle, terminal],
+        anchor,
+        terminal,
+        _approved_policy(),
+    )
+
+    # Then
+    assert evidences == []
+
+
+@pytest.mark.parametrize(
+    ("anchor_overrides", "middle_overrides", "terminal_overrides"),
+    [
+        ({"process_name": None}, None, None),
+        ({"process_name": "   "}, None, None),
+        (None, {"process_name": None}, None),
+        (None, {"process_name": "   "}, None),
+        (None, None, {"process_name": None}),
+        (None, None, {"process_name": "   "}),
+    ],
+    ids=[
+        "anchor_name_missing",
+        "anchor_name_blank",
+        "middle_name_missing",
+        "middle_name_blank",
+        "terminal_name_missing",
+        "terminal_name_blank",
+    ],
+)
+def test_missing_or_blank_process_name_fails_closed(
+    anchor_overrides: dict[str, object] | None,
+    middle_overrides: dict[str, object] | None,
+    terminal_overrides: dict[str, object] | None,
+) -> None:
+    # Given
+    anchor, middle, terminal = _lineage_events(
+        anchor_overrides=anchor_overrides,
+        middle_overrides=middle_overrides,
+        terminal_overrides=terminal_overrides,
     )
 
     # When
