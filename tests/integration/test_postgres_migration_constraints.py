@@ -143,23 +143,9 @@ def test_baselines_migrations_applied_by_docker_initdb(
 
     # When
     applied = apply_migrations(migration_connection)
-
-    # Then
-    assert applied == (
-        "001_first_cycle",
-        "002_fusion_stopping_trace",
-        "003_decision_runtime_snapshot",
-        "004_fusion_runtime_config_snapshot",
-    )
     migration_ids = migration_connection.execute(
         "SELECT migration_id FROM schema_migrations ORDER BY migration_id"
     ).fetchall()
-    assert migration_ids == [
-        ("001_first_cycle",),
-        ("002_fusion_stopping_trace",),
-        ("003_decision_runtime_snapshot",),
-        ("004_fusion_runtime_config_snapshot",),
-    ]
     existing_tables = migration_connection.execute(
         """
         SELECT table_name
@@ -178,6 +164,21 @@ def test_baselines_migrations_applied_by_docker_initdb(
         ORDER BY table_name
         """
     ).fetchall()
+    reapplied = apply_migrations(migration_connection)
+
+    # Then
+    assert applied == (
+        "001_first_cycle",
+        "002_fusion_stopping_trace",
+        "003_decision_runtime_snapshot",
+        "004_fusion_runtime_config_snapshot",
+    )
+    assert migration_ids == [
+        ("001_first_cycle",),
+        ("002_fusion_stopping_trace",),
+        ("003_decision_runtime_snapshot",),
+        ("004_fusion_runtime_config_snapshot",),
+    ]
     assert existing_tables == [
         ("decision_runtime_snapshots",),
         ("decisions",),
@@ -188,14 +189,17 @@ def test_baselines_migrations_applied_by_docker_initdb(
         ("fusion_stopping_traces",),
         ("runs",),
     ]
-    assert apply_migrations(migration_connection) == ()
+    assert reapplied == ()
 
 
 def test_fusion_runtime_config_snapshot_schema_matches_contract(
     migration_connection: psycopg.Connection[tuple[object, ...]],
 ) -> None:
+    # Given
+    connection = migration_connection
+
     # When
-    columns = migration_connection.execute(
+    columns = connection.execute(
         """
         SELECT column_name, data_type, is_nullable, column_default
         FROM information_schema.columns
@@ -204,7 +208,7 @@ def test_fusion_runtime_config_snapshot_schema_matches_contract(
         ORDER BY ordinal_position
         """
     ).fetchall()
-    primary_key_columns = migration_connection.execute(
+    primary_key_columns = connection.execute(
         """
         SELECT key_column.column_name
         FROM information_schema.table_constraints AS table_constraint
@@ -217,7 +221,7 @@ def test_fusion_runtime_config_snapshot_schema_matches_contract(
         ORDER BY key_column.ordinal_position
         """
     ).fetchall()
-    foreign_keys = migration_connection.execute(
+    foreign_keys = connection.execute(
         """
         SELECT
             key_column.column_name,
@@ -311,9 +315,8 @@ def test_fusion_runtime_config_snapshots_reject_invalid_database_contracts(
     config_version: str,
     payload: object,
 ) -> None:
-    _assert_check_violation(
-        migration_connection,
-        """
+    # Given
+    statement = """
         INSERT INTO fusion_runtime_config_snapshots (
             run_id,
             entity_id,
@@ -321,9 +324,15 @@ def test_fusion_runtime_config_snapshots_reject_invalid_database_contracts(
             payload
         )
         VALUES (%s, %s, %s, %s)
-        """,
-        (RUN_ID, entity_id, config_version, Jsonb(payload)),
-    )
+        """
+    parameters = (RUN_ID, entity_id, config_version, Jsonb(payload))
+
+    # When
+    with pytest.raises(CheckViolation) as exc_info, migration_connection.transaction():
+        migration_connection.execute(statement, parameters)
+
+    # Then
+    assert exc_info.type is CheckViolation
 
 
 def test_fusion_runtime_config_snapshot_is_deleted_with_its_run(

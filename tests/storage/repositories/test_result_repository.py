@@ -310,12 +310,12 @@ def test_fusion_runtime_config_repository_rejects_non_object_payload() -> None:
     connection = FakeConnection(("invalid",))
     repository = FusionRuntimeConfigSnapshotRepository(connection)
 
-    # When / Then
-    with pytest.raises(
-        TypeError,
-        match="fusion_runtime_config_snapshots.payload",
-    ):
+    # When
+    with pytest.raises(TypeError) as exc_info:
         repository.get("RUN-20260912-001", "WIN-01")
+
+    # Then
+    assert "fusion_runtime_config_snapshots.payload" in str(exc_info.value)
 
 
 def test_fusion_runtime_config_repository_rejects_invalid_snapshot_payload(
@@ -327,9 +327,12 @@ def test_fusion_runtime_config_repository_rejects_invalid_snapshot_payload(
     connection = FakeConnection((payload,))
     repository = FusionRuntimeConfigSnapshotRepository(connection)
 
-    # When / Then
-    with pytest.raises(ValueError, match="config_version"):
+    # When
+    with pytest.raises(ValueError) as exc_info:
         repository.get("RUN-20260912-001", "WIN-01")
+
+    # Then
+    assert "config_version" in str(exc_info.value)
 
 
 def test_detection_repository_saves_and_rebuilds_result(
