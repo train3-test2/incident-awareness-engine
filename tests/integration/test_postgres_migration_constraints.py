@@ -41,6 +41,13 @@ THIRD_MIGRATION_PATH = (
     / "migrations"
     / "003_decision_runtime_snapshot.sql"
 )
+FOURTH_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "infra"
+    / "postgres"
+    / "migrations"
+    / "004_fusion_runtime_config_snapshot.sql"
+)
 RUN_ID = "RUN-20260912-998"
 EVENT_ID = "evt-001"
 ENTITY_ID = "WIN-01"
@@ -69,6 +76,7 @@ def migration_connection(database_url: str) -> psycopg.Connection[tuple[object, 
         connection.execute(FIRST_MIGRATION_PATH.read_text(encoding="utf-8"))
         connection.execute(SECOND_MIGRATION_PATH.read_text(encoding="utf-8"))
         connection.execute(THIRD_MIGRATION_PATH.read_text(encoding="utf-8"))
+        connection.execute(FOURTH_MIGRATION_PATH.read_text(encoding="utf-8"))
         connection.execute(
             """
             INSERT INTO runs (
@@ -141,6 +149,7 @@ def test_baselines_migrations_applied_by_docker_initdb(
         "001_first_cycle",
         "002_fusion_stopping_trace",
         "003_decision_runtime_snapshot",
+        "004_fusion_runtime_config_snapshot",
     )
     migration_ids = migration_connection.execute(
         "SELECT migration_id FROM schema_migrations ORDER BY migration_id"
@@ -149,6 +158,7 @@ def test_baselines_migrations_applied_by_docker_initdb(
         ("001_first_cycle",),
         ("002_fusion_stopping_trace",),
         ("003_decision_runtime_snapshot",),
+        ("004_fusion_runtime_config_snapshot",),
     ]
     existing_tables = migration_connection.execute(
         """
@@ -162,7 +172,8 @@ def test_baselines_migrations_applied_by_docker_initdb(
               'detection_results',
               'decisions',
               'fusion_stopping_traces',
-              'decision_runtime_snapshots'
+              'decision_runtime_snapshots',
+              'fusion_runtime_config_snapshots'
           )
         ORDER BY table_name
         """
@@ -173,6 +184,7 @@ def test_baselines_migrations_applied_by_docker_initdb(
         ("detection_results",),
         ("events",),
         ("fusion_results",),
+        ("fusion_runtime_config_snapshots",),
         ("fusion_stopping_traces",),
         ("runs",),
     ]
@@ -274,6 +286,7 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
             (
                 "002_fusion_stopping_trace",
                 "003_decision_runtime_snapshot",
+                "004_fusion_runtime_config_snapshot",
             ),
         ]
         with psycopg.connect(database_url) as verification_connection:
@@ -285,7 +298,8 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
                 WHERE table_schema = current_schema()
                   AND table_name IN (
                       'fusion_stopping_traces',
-                      'decision_runtime_snapshots'
+                      'decision_runtime_snapshots',
+                      'fusion_runtime_config_snapshots'
                   )
                 GROUP BY table_name
                 ORDER BY table_name
@@ -295,23 +309,26 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
                 """
                 SELECT migration_id, count(*)
                 FROM schema_migrations
-                WHERE migration_id IN (%s, %s)
+                WHERE migration_id IN (%s, %s, %s)
                 GROUP BY migration_id
                 ORDER BY migration_id
                 """,
                 (
                     "002_fusion_stopping_trace",
                     "003_decision_runtime_snapshot",
+                    "004_fusion_runtime_config_snapshot",
                 ),
             ).fetchall()
 
         assert table_counts == [
             ("decision_runtime_snapshots", 1),
+            ("fusion_runtime_config_snapshots", 1),
             ("fusion_stopping_traces", 1),
         ]
         assert migration_counts == [
             ("002_fusion_stopping_trace", 1),
             ("003_decision_runtime_snapshot", 1),
+            ("004_fusion_runtime_config_snapshot", 1),
         ]
     finally:
         setup_connection.rollback()

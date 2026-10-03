@@ -101,7 +101,7 @@ def test_dashboard_read_api_against_postgres(
                 unknown_run_response = client.get(f"/runs/{unknown_run_id}")
                 unknown_decision_response = client.get(f"/decisions/{unknown_decision_id}")
 
-                legacy_decision = d3_case[5].model_copy(
+                legacy_decision = d3_case[6].model_copy(
                     update={
                         "decision_id": legacy_id,
                         "decision_reason": "Legacy Decision without Runtime snapshot",
@@ -138,7 +138,7 @@ def test_dashboard_read_api_against_postgres(
             current_runtime = detail["current_decision"]
             assert (
                 current_runtime["latest_detection_result"]["detector_time"]
-                == d3_case[4].detection_result.model_dump(mode="json")["detector_time"]
+                == d3_case[5].detection_result.model_dump(mode="json")["detector_time"]
             )
             assert (
                 current_runtime["latest_fusion_result"]["scoring_config_version"]
@@ -152,7 +152,7 @@ def test_dashboard_read_api_against_postgres(
             assert historical_d1["runtime_snapshot"]["decision_id"] == d1_id
             assert (
                 historical_d1["runtime_snapshot"]["detection_result"]["detector_time"]
-                == d1_case[4].detection_result.model_dump(mode="json")["detector_time"]
+                == d1_case[5].detection_result.model_dump(mode="json")["detector_time"]
             )
             assert (
                 historical_d1["runtime_snapshot"]["fusion_result"]["scoring_config_version"]

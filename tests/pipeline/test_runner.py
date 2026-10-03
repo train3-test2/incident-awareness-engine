@@ -100,6 +100,7 @@ def test_runs_each_first_cycle_stage_in_order(monkeypatch: pytest.MonkeyPatch) -
             normalized_artifacts,
             fusion_result,
             stopping_trace,
+            runtime_config_snapshot,
             fast_result,
             decision_result,
         )

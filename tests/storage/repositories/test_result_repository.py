@@ -9,6 +9,13 @@ from incident_awareness.common.models.fusion import (
     FusionStoppingTrace,
     FusionStoppingTracePoint,
 )
+from incident_awareness.common.models.fusion_runtime_config import (
+    FusionRuntimeConfigSnapshot,
+    FusionRuntimeReplaySnapshot,
+    FusionRuntimeScoringSnapshot,
+    FusionRuntimeStoppingSnapshot,
+    FusionRuntimeWindowSnapshot,
+)
 from incident_awareness.common.models.result import (
     DecisionPath,
     DecisionResult,
@@ -31,15 +38,18 @@ from incident_awareness.storage.repositories.result_repository import (
     _SELECT_DECISIONS_BY_SCOPE,
     _SELECT_DETECTION_RESULT_PAYLOAD,
     _SELECT_FUSION_RESULT_PAYLOAD,
+    _SELECT_FUSION_RUNTIME_CONFIG_SNAPSHOT_PAYLOAD,
     _SELECT_FUSION_STOPPING_TRACE_PAYLOAD,
     _UPSERT_DETECTION_RESULT,
     _UPSERT_FUSION_RESULT,
+    _UPSERT_FUSION_RUNTIME_CONFIG_SNAPSHOT,
     _UPSERT_FUSION_STOPPING_TRACE,
     DecisionIntegrityError,
     DecisionRepository,
     DecisionRuntimeSnapshotRepository,
     DetectionResultRepository,
     FusionResultRepository,
+    FusionRuntimeConfigSnapshotRepository,
     FusionStoppingTraceRepository,
 )
 
@@ -90,7 +100,7 @@ def fusion_result() -> FusionResult:
         contributing_evidence_ids=[],
         scoring_config_version="v0.2",
         scoring_profile_id="S0",
-        scoring_method="temporal_fusion",
+        scoring_method="simple_score",
         scorer_version="v0.2",
         fusion_episodes=[],
     )
@@ -159,6 +169,7 @@ def decision_runtime_snapshot(
     detection_result: DetectionResult,
     fusion_result: FusionResult,
     fusion_stopping_trace: FusionStoppingTrace,
+    fusion_runtime_config_snapshot: FusionRuntimeConfigSnapshot,
 ) -> DecisionRuntimeSnapshot:
     trace = fusion_stopping_trace.model_copy(
         update={"scoring_config_version": fusion_result.scoring_config_version}
@@ -168,6 +179,32 @@ def decision_runtime_snapshot(
         detection_result=detection_result,
         fusion_result=fusion_result,
         fusion_stopping_trace=trace,
+        fusion_runtime_config_snapshot=fusion_runtime_config_snapshot,
+    )
+
+
+@pytest.fixture
+def fusion_runtime_config_snapshot(
+    fusion_result: FusionResult,
+) -> FusionRuntimeConfigSnapshot:
+    return FusionRuntimeConfigSnapshot(
+        run_id=fusion_result.run_id,
+        entity_id=fusion_result.entity_id,
+        config_version=fusion_result.scoring_config_version,
+        model_version=fusion_result.model_version,
+        window=FusionRuntimeWindowSnapshot(window_size_sec=60.0),
+        replay=FusionRuntimeReplaySnapshot(step_size_sec=10.0),
+        scoring=FusionRuntimeScoringSnapshot(
+            method="simple_score",
+            scorer_version=fusion_result.scorer_version,
+            profile_id=fusion_result.scoring_profile_id,
+            evidence_types=("process_start",),
+        ),
+        stopping=FusionRuntimeStoppingSnapshot(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=2,
+        ),
     )
 
 
@@ -222,6 +259,77 @@ def test_fusion_stopping_trace_repository_saves_and_rebuilds_trace(
         (fusion_stopping_trace.run_id, fusion_stopping_trace.entity_id),
     )
     assert stored_trace == fusion_stopping_trace
+
+
+def test_fusion_runtime_config_repository_saves_and_rebuilds_snapshot(
+    fusion_runtime_config_snapshot: FusionRuntimeConfigSnapshot,
+) -> None:
+    # Given
+    connection = FakeConnection((fusion_runtime_config_snapshot.model_dump(mode="json"),))
+    repository = FusionRuntimeConfigSnapshotRepository(connection)
+
+    # When
+    repository.save(fusion_runtime_config_snapshot)
+    stored_snapshot = repository.get(
+        fusion_runtime_config_snapshot.run_id,
+        fusion_runtime_config_snapshot.entity_id,
+    )
+
+    # Then
+    assert connection.statements[0][0] == _UPSERT_FUSION_RUNTIME_CONFIG_SNAPSHOT
+    assert connection.statements[0][1][:3] == (
+        fusion_runtime_config_snapshot.run_id,
+        fusion_runtime_config_snapshot.entity_id,
+        fusion_runtime_config_snapshot.config_version,
+    )
+    assert isinstance(connection.statements[0][1][3], Jsonb)
+    assert connection.statements[1] == (
+        _SELECT_FUSION_RUNTIME_CONFIG_SNAPSHOT_PAYLOAD,
+        (
+            fusion_runtime_config_snapshot.run_id,
+            fusion_runtime_config_snapshot.entity_id,
+        ),
+    )
+    assert stored_snapshot == fusion_runtime_config_snapshot
+
+
+def test_fusion_runtime_config_repository_returns_none_when_missing() -> None:
+    # Given
+    connection = FakeConnection()
+    repository = FusionRuntimeConfigSnapshotRepository(connection)
+
+    # When
+    stored_snapshot = repository.get("RUN-20260912-001", "WIN-01")
+
+    # Then
+    assert stored_snapshot is None
+
+
+def test_fusion_runtime_config_repository_rejects_non_object_payload() -> None:
+    # Given
+    connection = FakeConnection(("invalid",))
+    repository = FusionRuntimeConfigSnapshotRepository(connection)
+
+    # When / Then
+    with pytest.raises(
+        TypeError,
+        match="fusion_runtime_config_snapshots.payload",
+    ):
+        repository.get("RUN-20260912-001", "WIN-01")
+
+
+def test_fusion_runtime_config_repository_rejects_invalid_snapshot_payload(
+    fusion_runtime_config_snapshot: FusionRuntimeConfigSnapshot,
+) -> None:
+    # Given
+    payload = fusion_runtime_config_snapshot.model_dump(mode="json")
+    payload["config_version"] = ""
+    connection = FakeConnection((payload,))
+    repository = FusionRuntimeConfigSnapshotRepository(connection)
+
+    # When / Then
+    with pytest.raises(ValueError, match="config_version"):
+        repository.get("RUN-20260912-001", "WIN-01")
 
 
 def test_detection_repository_saves_and_rebuilds_result(

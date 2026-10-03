@@ -3,6 +3,7 @@
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from incident_awareness.common.models.fusion import FusionResult, FusionStoppingTrace
+from incident_awareness.common.models.fusion_runtime_config import FusionRuntimeConfigSnapshot
 from incident_awareness.common.models.result import DecisionResult, DetectionResult
 
 
@@ -17,6 +18,7 @@ class DecisionRuntimeSnapshot(BaseModel):
     detection_result: DetectionResult
     fusion_result: FusionResult
     fusion_stopping_trace: FusionStoppingTrace
+    fusion_runtime_config_snapshot: FusionRuntimeConfigSnapshot | None = None
 
     @model_validator(mode="after")
     def validate_runtime_contracts(self) -> "DecisionRuntimeSnapshot":
@@ -56,6 +58,47 @@ class DecisionRuntimeSnapshot(BaseModel):
                 "FusionStoppingTrace"
             )
 
+        runtime_config = self.fusion_runtime_config_snapshot
+        if runtime_config is None:
+            return self
+
+        if runtime_config.run_id != self.run_id:
+            raise ValueError(
+                "FusionRuntimeConfigSnapshot run_id must match DecisionRuntimeSnapshot run_id"
+            )
+        if runtime_config.entity_id != self.entity_id:
+            raise ValueError(
+                "FusionRuntimeConfigSnapshot entity_id must match DecisionRuntimeSnapshot entity_id"
+            )
+        if runtime_config.config_version != self.fusion_result.scoring_config_version:
+            raise ValueError(
+                "FusionRuntimeConfigSnapshot config_version must match "
+                "FusionResult scoring_config_version"
+            )
+        if runtime_config.config_version != self.fusion_stopping_trace.scoring_config_version:
+            raise ValueError(
+                "FusionRuntimeConfigSnapshot config_version must match "
+                "FusionStoppingTrace scoring_config_version"
+            )
+        if runtime_config.scoring.profile_id != self.fusion_result.scoring_profile_id:
+            raise ValueError(
+                "FusionRuntimeConfigSnapshot scoring profile_id must match "
+                "FusionResult scoring_profile_id"
+            )
+        if runtime_config.scoring.method != self.fusion_result.scoring_method:
+            raise ValueError(
+                "FusionRuntimeConfigSnapshot scoring method must match FusionResult scoring_method"
+            )
+        if runtime_config.scoring.scorer_version != self.fusion_result.scorer_version:
+            raise ValueError(
+                "FusionRuntimeConfigSnapshot scoring scorer_version must match "
+                "FusionResult scorer_version"
+            )
+        if runtime_config.model_version != self.fusion_result.model_version:
+            raise ValueError(
+                "FusionRuntimeConfigSnapshot model_version must match FusionResult model_version"
+            )
+
         return self
 
 
@@ -65,6 +108,7 @@ def build_decision_runtime_snapshot(
     detection_result: DetectionResult,
     fusion_result: FusionResult,
     fusion_stopping_trace: FusionStoppingTrace,
+    fusion_runtime_config_snapshot: FusionRuntimeConfigSnapshot,
 ) -> DecisionRuntimeSnapshot:
     """Build a snapshot after validating Decision-to-Runtime relationships."""
     if decision_result.fast_status != detection_result.detector_status:
@@ -83,6 +127,7 @@ def build_decision_runtime_snapshot(
         detection_result=detection_result,
         fusion_result=fusion_result,
         fusion_stopping_trace=fusion_stopping_trace,
+        fusion_runtime_config_snapshot=fusion_runtime_config_snapshot,
     )
 
 

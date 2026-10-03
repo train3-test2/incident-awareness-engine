@@ -7,6 +7,13 @@ from incident_awareness.common.models.fusion import (
     FusionStoppingTrace,
     FusionStoppingTracePoint,
 )
+from incident_awareness.common.models.fusion_runtime_config import (
+    FusionRuntimeConfigSnapshot,
+    FusionRuntimeReplaySnapshot,
+    FusionRuntimeScoringSnapshot,
+    FusionRuntimeStoppingSnapshot,
+    FusionRuntimeWindowSnapshot,
+)
 from incident_awareness.common.models.result import (
     DecisionPath,
     DecisionResult,
@@ -14,7 +21,10 @@ from incident_awareness.common.models.result import (
     DetectorStatus,
     WinningPath,
 )
-from incident_awareness.common.models.runtime_snapshot import build_decision_runtime_snapshot
+from incident_awareness.common.models.runtime_snapshot import (
+    DecisionRuntimeSnapshot,
+    build_decision_runtime_snapshot,
+)
 from incident_awareness.dashboard.api.app import create_app
 from incident_awareness.dashboard.api.dependencies import get_dashboard_decision_reader
 from incident_awareness.dashboard.decision_read_model import HistoricalDecisionReadModel
@@ -55,6 +65,7 @@ def test_get_historical_decision_returns_immutable_runtime_snapshot() -> None:
         detection_result=_detection_result(),
         fusion_result=_fusion_result(),
         fusion_stopping_trace=_stopping_trace(),
+        fusion_runtime_config_snapshot=_runtime_config_snapshot(),
     )
     reader = FakeDashboardDecisionReader(
         HistoricalDecisionReadModel(
@@ -71,7 +82,40 @@ def test_get_historical_decision_returns_immutable_runtime_snapshot() -> None:
     assert response.status_code == 200
     assert response.json()["decision"]["decision_id"] == DECISION_ID
     assert response.json()["runtime_snapshot"]["decision_id"] == DECISION_ID
+    assert response.json()["runtime_snapshot"]["fusion_runtime_config_snapshot"] == (
+        _runtime_config_snapshot().model_dump(mode="json")
+    )
     assert reader.historical_calls == [DECISION_ID]
+
+
+def test_get_historical_decision_restores_embedded_legacy_snapshot_without_config() -> None:
+    # Given
+    decision = _decision()
+    current_snapshot = build_decision_runtime_snapshot(
+        decision_result=decision,
+        detection_result=_detection_result(),
+        fusion_result=_fusion_result(),
+        fusion_stopping_trace=_stopping_trace(),
+        fusion_runtime_config_snapshot=_runtime_config_snapshot(),
+    )
+    legacy_payload = current_snapshot.model_dump(mode="json")
+    del legacy_payload["fusion_runtime_config_snapshot"]
+    legacy_snapshot = DecisionRuntimeSnapshot.model_validate(legacy_payload)
+    reader = FakeDashboardDecisionReader(
+        HistoricalDecisionReadModel(
+            decision=decision,
+            runtime_snapshot=legacy_snapshot,
+        )
+    )
+    client = _client(reader)
+
+    # When
+    response = client.get(f"/decisions/{DECISION_ID}")
+
+    # Then
+    assert response.status_code == 200
+    assert response.json()["runtime_snapshot"] is not None
+    assert response.json()["runtime_snapshot"]["fusion_runtime_config_snapshot"] is None
 
 
 def test_get_historical_decision_preserves_legacy_null_snapshot() -> None:
@@ -172,7 +216,7 @@ def _fusion_result() -> FusionResult:
         contributing_evidence_ids=[],
         scoring_config_version="historical-v1",
         scoring_profile_id="historical-v1",
-        scoring_method="temporal_fusion",
+        scoring_method="simple_score",
         scorer_version="historical-v1",
         fusion_episodes=[],
     )
@@ -191,4 +235,26 @@ def _stopping_trace() -> FusionStoppingTrace:
                 policy_state="off",
             )
         ],
+    )
+
+
+def _runtime_config_snapshot() -> FusionRuntimeConfigSnapshot:
+    return FusionRuntimeConfigSnapshot(
+        run_id=RUN_ID,
+        entity_id=ENTITY_ID,
+        config_version="historical-v1",
+        model_version=None,
+        window=FusionRuntimeWindowSnapshot(window_size_sec=60.0),
+        replay=FusionRuntimeReplaySnapshot(step_size_sec=10.0),
+        scoring=FusionRuntimeScoringSnapshot(
+            method="simple_score",
+            scorer_version="historical-v1",
+            profile_id="historical-v1",
+            evidence_types=("process_start",),
+        ),
+        stopping=FusionRuntimeStoppingSnapshot(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=2,
+        ),
     )

@@ -11,6 +11,13 @@ from incident_awareness.common.models.fusion import (
     FusionStoppingTrace,
     FusionStoppingTracePoint,
 )
+from incident_awareness.common.models.fusion_runtime_config import (
+    FusionRuntimeConfigSnapshot,
+    FusionRuntimeReplaySnapshot,
+    FusionRuntimeScoringSnapshot,
+    FusionRuntimeStoppingSnapshot,
+    FusionRuntimeWindowSnapshot,
+)
 from incident_awareness.common.models.result import DecisionResult, DetectionResult
 from incident_awareness.common.models.run import RunMetadata
 from incident_awareness.integration.fast_hit_handoff import FastDetectionAdapterResult
@@ -29,6 +36,7 @@ from incident_awareness.storage.repositories.result_repository import (
     _INSERT_DECISION_RUNTIME_SNAPSHOT,
     _SELECT_CURRENT_DECISION_HEADS,
     _SELECT_DECISION_PAYLOAD,
+    _UPSERT_FUSION_RUNTIME_CONFIG_SNAPSHOT,
     DecisionIntegrityError,
 )
 
@@ -130,6 +138,7 @@ def test_persists_first_cycle_contracts_in_dependency_order() -> None:
         NormalizedEvidenceArtifacts(events=(event,), evidences=()),
         fusion_result,
         _stopping_trace(),
+        _runtime_config_snapshot(),
         fast_result,
         decision_result,
         connection=connection,
@@ -146,6 +155,7 @@ def test_persists_first_cycle_contracts_in_dependency_order() -> None:
         ["INSERT", "INTO", "events"],
         ["INSERT", "INTO", "fusion_results"],
         ["INSERT", "INTO", "fusion_stopping_traces"],
+        ["INSERT", "INTO", "fusion_runtime_config_snapshots"],
         ["INSERT", "INTO", "detection_results"],
         ["INSERT", "INTO", "decisions"],
         ["INSERT", "INTO", "decision_runtime_snapshots"],
@@ -173,6 +183,9 @@ def test_persists_first_cycle_contracts_in_dependency_order() -> None:
     assert snapshot_payload.obj["fusion_stopping_trace"] == _stopping_trace().model_dump(
         mode="json"
     )
+    assert snapshot_payload.obj[
+        "fusion_runtime_config_snapshot"
+    ] == _runtime_config_snapshot().model_dump(mode="json")
 
 
 def test_resolves_no_expected_supersedes_when_scope_has_no_decision() -> None:
@@ -262,6 +275,7 @@ def test_rejects_unsafe_connection_before_persistence_writes() -> None:
             NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
             fusion_result,
             _stopping_trace(),
+            _runtime_config_snapshot(),
             fast_result,
             decision_result,
             connection=connection,
@@ -375,6 +389,7 @@ def test_persists_new_decision_when_expected_head_matches() -> None:
         NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
         fusion_result,
         _stopping_trace(),
+        _runtime_config_snapshot(),
         fast_result,
         candidate,
         connection=connection,
@@ -407,6 +422,7 @@ def test_rejects_new_decision_when_current_head_changed() -> None:
             NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
             fusion_result,
             _stopping_trace(),
+            _runtime_config_snapshot(),
             fast_result,
             candidate,
             connection=connection,
@@ -441,6 +457,7 @@ def test_treats_identical_existing_decision_as_idempotent_no_op() -> None:
         NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
         fusion_result,
         retry_trace,
+        _runtime_config_snapshot(),
         fast_result,
         decision_result,
         connection=connection,
@@ -454,6 +471,9 @@ def test_treats_identical_existing_decision_as_idempotent_no_op() -> None:
     assert not any(
         query.lstrip().startswith("INSERT INTO fusion_stopping_traces")
         for query, _ in connection.statements
+    )
+    assert not any(
+        query == _UPSERT_FUSION_RUNTIME_CONFIG_SNAPSHOT for query, _ in connection.statements
     )
     assert not any(query == _INSERT_DECISION_RUNTIME_SNAPSHOT for query, _ in connection.statements)
 
@@ -470,6 +490,7 @@ def test_skips_snapshot_factory_for_identical_decision_with_mismatched_runtime_i
         NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
         fusion_result,
         _stopping_trace(),
+        _runtime_config_snapshot(),
         invalid_fast_result,
         decision_result,
         connection=connection,
@@ -499,6 +520,7 @@ def test_rejects_new_decision_runtime_mismatch_before_persistence_writes() -> No
             NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
             fusion_result,
             _stopping_trace(),
+            _runtime_config_snapshot(),
             invalid_fast_result,
             decision_result,
             connection=connection,
@@ -528,6 +550,7 @@ def test_rejects_existing_decision_id_with_different_content() -> None:
             NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
             fusion_result,
             _stopping_trace(),
+            _runtime_config_snapshot(),
             fast_result,
             decision_result,
             connection=connection,
@@ -552,6 +575,7 @@ def test_rejects_existing_decision_id_in_different_scope_during_persistence() ->
             NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
             fusion_result,
             _stopping_trace(),
+            _runtime_config_snapshot(),
             fast_result,
             decision_result,
             connection=connection,
@@ -573,6 +597,7 @@ def test_rolls_back_all_writes_when_persistence_fails() -> None:
             NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
             fusion_result,
             _stopping_trace(),
+            _runtime_config_snapshot(),
             fast_result,
             decision_result,
             connection=connection,
@@ -592,6 +617,7 @@ def test_preserves_save_error_when_rollback_fails(caplog: pytest.LogCaptureFixtu
             NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
             fusion_result,
             _stopping_trace(),
+            _runtime_config_snapshot(),
             fast_result,
             decision_result,
             connection=connection,
@@ -613,6 +639,7 @@ def test_rolls_back_when_decision_runtime_snapshot_insert_fails() -> None:
             NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
             fusion_result,
             _stopping_trace(),
+            _runtime_config_snapshot(),
             fast_result,
             decision_result,
             connection=connection,
@@ -634,6 +661,112 @@ def test_rolls_back_when_decision_runtime_snapshot_insert_fails() -> None:
     assert connection.rollbacks == 1
 
 
+def test_rolls_back_when_runtime_config_snapshot_save_fails() -> None:
+    # Given
+    connection = _Connection(fail_on_query_prefix="INSERT INTO fusion_runtime_config_snapshots")
+    fusion_result, fast_result, decision_result = _results()
+
+    # When
+    with pytest.raises(RuntimeError, match="database write failed"):
+        persist_s0_results(
+            _artifacts(),
+            NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
+            fusion_result,
+            _stopping_trace(),
+            _runtime_config_snapshot(),
+            fast_result,
+            decision_result,
+            connection=connection,
+        )
+
+    # Then
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
+@pytest.mark.parametrize(
+    ("runtime_config_overrides", "expected_message"),
+    [
+        (
+            {"run_id": "RUN-20260920-002"},
+            "result run_id must match RunMetadata",
+        ),
+        (
+            {"entity_id": "WIN-02"},
+            "result entity_id must match RunMetadata target_host",
+        ),
+        (
+            {"config_version": "other-config"},
+            "config_version must match FusionResult scoring_config_version",
+        ),
+        (
+            {"profile_id": "other-profile"},
+            "scoring profile_id must match FusionResult scoring_profile_id",
+        ),
+        (
+            {"scorer_version": "other-scorer"},
+            "scoring scorer_version must match FusionResult scorer_version",
+        ),
+        (
+            {"model_version": "model-v1"},
+            "model_version must match FusionResult model_version",
+        ),
+    ],
+)
+def test_rejects_invalid_runtime_config_snapshot_before_database_access(
+    runtime_config_overrides: dict[str, str],
+    expected_message: str,
+) -> None:
+    # Given
+    fusion_result, fast_result, decision_result = _results()
+    runtime_config = _runtime_config_snapshot(**runtime_config_overrides)
+    connection = _Connection()
+
+    # When
+    with pytest.raises(ValueError, match=expected_message):
+        persist_s0_results(
+            _artifacts(),
+            NormalizedEvidenceArtifacts(events=(), evidences=()),
+            fusion_result,
+            _stopping_trace(),
+            runtime_config,
+            fast_result,
+            decision_result,
+            connection=connection,
+        )
+
+    # Then
+    assert connection.statements == []
+    assert connection.rollbacks == 1
+
+
+def test_rejects_runtime_config_scoring_method_mismatch_before_database_access() -> None:
+    # Given
+    fusion_result, fast_result, decision_result = _results()
+    invalid_fusion = fusion_result.model_copy(update={"scoring_method": "temporal_fusion"})
+    connection = _Connection()
+
+    # When
+    with pytest.raises(
+        ValueError,
+        match="scoring method must match FusionResult scoring_method",
+    ):
+        persist_s0_results(
+            _artifacts(),
+            NormalizedEvidenceArtifacts(events=(), evidences=()),
+            invalid_fusion,
+            _stopping_trace(),
+            _runtime_config_snapshot(),
+            fast_result,
+            decision_result,
+            connection=connection,
+        )
+
+    # Then
+    assert connection.statements == []
+    assert connection.rollbacks == 1
+
+
 def test_rejects_result_with_run_id_outside_persisted_run() -> None:
     # Given
     fusion_result, fast_result, decision_result = _results()
@@ -647,6 +780,7 @@ def test_rejects_result_with_run_id_outside_persisted_run() -> None:
             NormalizedEvidenceArtifacts(events=(), evidences=()),
             invalid_fusion,
             _stopping_trace(),
+            _runtime_config_snapshot(),
             fast_result,
             decision_result,
             connection=connection,
@@ -669,6 +803,7 @@ def test_rejects_stopping_trace_with_run_id_outside_persisted_run() -> None:
             NormalizedEvidenceArtifacts(events=(), evidences=()),
             fusion_result,
             stopping_trace,
+            _runtime_config_snapshot(),
             fast_result,
             decision_result,
             connection=connection,
@@ -692,6 +827,7 @@ def test_rejects_stopping_trace_for_a_host_other_than_the_run_target() -> None:
             NormalizedEvidenceArtifacts(events=(), evidences=()),
             fusion_result,
             stopping_trace,
+            _runtime_config_snapshot(),
             fast_result,
             decision_result,
             connection=connection,
@@ -715,6 +851,7 @@ def test_rejects_stopping_trace_with_different_scoring_config_version() -> None:
             NormalizedEvidenceArtifacts(events=(), evidences=()),
             fusion_result,
             stopping_trace,
+            _runtime_config_snapshot(),
             fast_result,
             decision_result,
             connection=connection,
@@ -738,6 +875,7 @@ def test_rejects_not_evaluated_result_with_non_empty_stopping_trace() -> None:
             NormalizedEvidenceArtifacts(events=(), evidences=()),
             not_evaluated_result,
             _stopping_trace(),
+            _runtime_config_snapshot(),
             fast_result,
             decision_result,
             connection=connection,
@@ -765,6 +903,7 @@ def test_rejects_evaluated_result_with_empty_stopping_trace(
             NormalizedEvidenceArtifacts(events=(), evidences=()),
             fusion_result,
             empty_trace,
+            _runtime_config_snapshot(),
             fast_result,
             decision_result,
             connection=connection,
@@ -803,6 +942,7 @@ def test_accepts_not_evaluated_result_with_empty_stopping_trace() -> None:
         NormalizedEvidenceArtifacts(events=(), evidences=()),
         not_evaluated_result,
         empty_trace,
+        _runtime_config_snapshot(),
         fast_result,
         not_evaluated_decision,
         connection=connection,
@@ -831,6 +971,7 @@ def test_preserves_pre_persistence_validation_error_when_rollback_fails(
             NormalizedEvidenceArtifacts(events=(), evidences=()),
             invalid_fusion,
             _stopping_trace(),
+            _runtime_config_snapshot(),
             fast_result,
             decision_result,
             connection=connection,
@@ -858,6 +999,7 @@ def test_rejects_result_for_a_host_other_than_the_run_target() -> None:
             NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
             invalid_fusion,
             _stopping_trace(),
+            _runtime_config_snapshot(),
             invalid_fast,
             invalid_decision,
             connection=_Connection(),
@@ -874,6 +1016,7 @@ def test_rejects_event_for_a_host_other_than_the_run_target() -> None:
             NormalizedEvidenceArtifacts(events=(invalid_event,), evidences=()),
             fusion_result,
             _stopping_trace(),
+            _runtime_config_snapshot(),
             fast_result,
             decision_result,
             connection=_Connection(),
@@ -941,6 +1084,36 @@ def _stopping_trace() -> FusionStoppingTrace:
                 policy_state="off",
             )
         ],
+    )
+
+
+def _runtime_config_snapshot(
+    *,
+    run_id: str = RUN_ID,
+    entity_id: str = ENTITY_ID,
+    config_version: str = "fusion-config-s0-pair-v0.1",
+    profile_id: str = "s0-profile",
+    scorer_version: str = "simple-score-v0.1",
+    model_version: str | None = None,
+) -> FusionRuntimeConfigSnapshot:
+    return FusionRuntimeConfigSnapshot(
+        run_id=run_id,
+        entity_id=entity_id,
+        config_version=config_version,
+        model_version=model_version,
+        window=FusionRuntimeWindowSnapshot(window_size_sec=60.0),
+        replay=FusionRuntimeReplaySnapshot(step_size_sec=10.0),
+        scoring=FusionRuntimeScoringSnapshot(
+            method="simple_score",
+            scorer_version=scorer_version,
+            profile_id=profile_id,
+            evidence_types=("process_start",),
+        ),
+        stopping=FusionRuntimeStoppingSnapshot(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=2,
+        ),
     )
 
 
