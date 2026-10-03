@@ -31,15 +31,19 @@ def evaluate_normal_alert_burden(snapshot: EvaluationSnapshot) -> dict:
                 raise ValueError("evaluated normal Run must have positive observation duration")
             if method == "Fast":
                 starts = bundle.fast_episodes.start_times
-                if len(starts) != len(set(starts)):
-                    raise ValueError("duplicate Fast episode starts are ambiguous")
                 count = len(starts)
             else:
-                count = len(bundle.fusion.fusion_episodes)
+                starts = [episode.start_time for episode in bundle.fusion.fusion_episodes]
+                if len(starts) != len(set(starts)):
+                    raise ValueError("duplicate Fusion episode starts are ambiguous")
+                count = len(starts)
             per_run.append(
                 {
                     "run_id": run.run_id,
                     "entity_id": run.target_host,
+                    "family_id": run.family_id,
+                    "variation_id": run.variation_id,
+                    "repetition": run.repetition,
                     "false_alert_episodes": count,
                     "observation_seconds": duration,
                 }
