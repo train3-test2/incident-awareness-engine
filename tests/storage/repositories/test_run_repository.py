@@ -6,6 +6,7 @@ from psycopg.types.json import Jsonb
 
 from incident_awareness.common.models.run import RunMetadata, RunType, SchemaVersions
 from incident_awareness.storage.repositories.run_repository import (
+    _SELECT_RECENT_RUN_METADATA,
     _SELECT_RUN_METADATA,
     _UPSERT_RUN,
     RunRepository,
@@ -13,22 +14,35 @@ from incident_awareness.storage.repositories.run_repository import (
 
 
 class FakeCursor:
-    def __init__(self, row: tuple[object, ...] | Mapping[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        row: tuple[object, ...] | Mapping[str, object] | None = None,
+        rows: list[tuple[object, ...] | Mapping[str, object]] | None = None,
+    ) -> None:
         self._row = row
+        self._rows = rows if rows is not None else []
 
     def fetchone(self) -> tuple[object, ...] | Mapping[str, object] | None:
         return self._row
 
+    def fetchall(self) -> list[tuple[object, ...] | Mapping[str, object]]:
+        return self._rows
+
 
 class FakeConnection:
-    def __init__(self, row: tuple[object, ...] | Mapping[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        row: tuple[object, ...] | Mapping[str, object] | None = None,
+        rows: list[tuple[object, ...] | Mapping[str, object]] | None = None,
+    ) -> None:
         self.row = row
+        self.rows = rows
         self.statements: list[tuple[str, tuple[object, ...]]] = []
         self.commits = 0
 
     def execute(self, query: str, params: tuple[object, ...]) -> FakeCursor:
         self.statements.append((query, params))
-        return FakeCursor(self.row)
+        return FakeCursor(self.row, self.rows)
 
     def commit(self) -> None:
         self.commits += 1
@@ -97,3 +111,59 @@ def test_get_rejects_non_object_metadata() -> None:
 
     with pytest.raises(TypeError, match="JSON 객체"):
         RunRepository(connection).get("RUN-20260911-001")
+
+
+def test_list_recent_rebuilds_runs_in_database_order(run_metadata: RunMetadata) -> None:
+    # Given
+    older_run = run_metadata.model_copy(
+        update={
+            "run_id": "RUN-20260910-001",
+            "start_time": datetime(2026, 9, 10, 1, tzinfo=UTC),
+        }
+    )
+    connection = FakeConnection(
+        rows=[
+            (run_metadata.model_dump(mode="json"),),
+            {"metadata": older_run.model_dump(mode="json")},
+        ]
+    )
+
+    # When
+    runs = RunRepository(connection).list_recent(20)
+
+    # Then
+    assert runs == [run_metadata, older_run]
+    assert connection.statements == [(_SELECT_RECENT_RUN_METADATA, (20,))]
+    assert "ORDER BY start_time DESC, run_id DESC" in _SELECT_RECENT_RUN_METADATA
+
+
+def test_list_recent_returns_empty_list() -> None:
+    # Given
+    connection = FakeConnection(rows=[])
+
+    # When
+    runs = RunRepository(connection).list_recent(5)
+
+    # Then
+    assert runs == []
+    assert connection.statements == [(_SELECT_RECENT_RUN_METADATA, (5,))]
+
+
+def test_list_recent_rejects_non_object_metadata() -> None:
+    # Given
+    connection = FakeConnection(rows=[("not-an-object",)])
+
+    # When / Then
+    with pytest.raises(TypeError, match="JSON 객체"):
+        RunRepository(connection).list_recent(20)
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_list_recent_rejects_non_positive_limit(limit: int) -> None:
+    # Given
+    connection = FakeConnection()
+
+    # When / Then
+    with pytest.raises(ValueError, match="greater than zero"):
+        RunRepository(connection).list_recent(limit)
+    assert connection.statements == []

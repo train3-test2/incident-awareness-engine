@@ -9,6 +9,8 @@ from incident_awareness.common.models.run import RunMetadata
 class _Cursor(Protocol):
     def fetchone(self) -> tuple[object, ...] | Mapping[str, object] | None: ...
 
+    def fetchall(self) -> list[tuple[object, ...] | Mapping[str, object]]: ...
+
 
 class _Connection(Protocol):
     def execute(self, query: str, params: tuple[object, ...]) -> _Cursor: ...
@@ -35,6 +37,13 @@ ON CONFLICT (run_id) DO UPDATE SET
 """
 
 _SELECT_RUN_METADATA = "SELECT metadata FROM runs WHERE run_id = %s"
+
+_SELECT_RECENT_RUN_METADATA = """
+SELECT metadata
+FROM runs
+ORDER BY start_time DESC, run_id DESC
+LIMIT %s
+"""
 
 
 class RunRepository:
@@ -64,8 +73,22 @@ class RunRepository:
         if row is None:
             return None
 
-        metadata = row[0] if isinstance(row, tuple) else row["metadata"]
-        if not isinstance(metadata, Mapping):
-            raise TypeError("runs.metadata는 JSON 객체여야 합니다.")
+        return RunMetadata.model_validate(_metadata_from_row(row))
 
-        return RunMetadata.model_validate(metadata)
+    def list_recent(self, limit: int) -> list[RunMetadata]:
+        """Return the most recently started Runs with deterministic ordering."""
+        if limit <= 0:
+            raise ValueError("limit must be greater than zero")
+
+        rows = self._connection.execute(_SELECT_RECENT_RUN_METADATA, (limit,)).fetchall()
+        return [RunMetadata.model_validate(_metadata_from_row(row)) for row in rows]
+
+
+def _metadata_from_row(
+    row: tuple[object, ...] | Mapping[str, object],
+) -> Mapping[str, object]:
+    metadata = row[0] if isinstance(row, tuple) else row["metadata"]
+    if not isinstance(metadata, Mapping):
+        raise TypeError("runs.metadata는 JSON 객체여야 합니다.")
+
+    return metadata
