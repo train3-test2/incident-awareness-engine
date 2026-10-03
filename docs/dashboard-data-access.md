@@ -27,9 +27,11 @@ DB URL, DB 비밀번호, Bastion SSH 개인 키는 서버 측 비밀 값으로�
 | --- | --- | --- |
 | `runs` | `run_id` | 실행 메타데이터와 실행 기간 |
 | `events` | `run_id`, `event_id` | 정규화된 이벤트 목록 |
-| `fusion_results` | `run_id`, `entity_id` | Fusion 판단 결과 |
-| `detection_results` | `run_id`, `entity_id` | Fast Detection 판단 결과 |
-| `decisions` | `run_id`, `decision_id` | Hybrid Decision 결과 |
+| `fusion_results` | `run_id`, `entity_id` | 최신 Fusion Runtime view |
+| `detection_results` | `run_id`, `entity_id` | 최신 Fast Runtime view |
+| `fusion_stopping_traces` | `run_id`, `entity_id` | 최신 Fusion stopping trace |
+| `decisions` | `run_id`, `entity_id`, `decision_id` | 불변 Hybrid Decision lifecycle record |
+| `decision_runtime_snapshots` | `decision_id` | Decision별 불변 Historical Runtime |
 
 `payload`는 원본 Pydantic Contract를 보존하는 JSONB 열이다. 대시보드의 목록·요약 화면은
 우선 구조화 열을 사용하고, 상세 화면에서 필요한 경우에만 `payload`를 표시한다.
@@ -55,8 +57,10 @@ Run: run_id, scenario_id, target_host, start_time, end_time
 Decision: decision_id, fast_status, fusion_status, t_e, decision_path, winning_path
 ```
 
-`decisions`는 `decision_id`가 기본 키다. 대시보드는 같은 Run에 여러 Decision이 저장될
-수 있음을 전제로 `decision_id`를 식별자로 유지해야 한다.
+`decisions`는 `decision_id`가 기본 키다. 대시보드는 같은 Run과 Endpoint에 여러
+Decision이 저장될 수 있음을 전제로 `decision_id`를 식별자로 유지해야 한다. 상세 요약의
+Current Decision은 생성 시각이 가장 최신인 row가 아니라 아래 lifecycle 규칙의 유일한
+chain head다.
 
 ### Event 목록
 
@@ -71,14 +75,48 @@ event_id, timestamp, host_id, event_type, payload
 
 ### 판단 결과
 
-Fusion과 Fast Detection은 `run_id`, `entity_id` 조합으로 조회한다.
+Current 화면의 Fusion, Fast Detection, stopping trace는 `run_id`, `entity_id` 조합으로
+latest Runtime view를 조회한다.
 
 ```text
 Fusion: fusion_status, fusion_time, payload
 Detection: detector_status, detector_time, detector_id, payload
+Stopping trace: scoring_config_version, payload
 Decision: fast_status, fusion_status, detector_time, fusion_time, t_e,
           decision_path, winning_path, payload
 ```
+
+Historical 화면은 선택한 `decision_id`의 `decisions` row와 같은 `decision_id`의
+`decision_runtime_snapshots`만 사용한다. latest Runtime view를 Historical 화면에
+결합하지 않는다.
+
+## Decision lifecycle 조회 규칙
+
+### Current
+
+Current Decision은 동일한 `(run_id, entity_id)` scope에서 다른 Decision이
+`supersedes_decision_id`로 supersede하지 않는 유일한 chain head다. Dashboard backend는
+`DecisionRepository.get_current_head()` 또는 이와 동일한 successor 부재 의미를 사용한다.
+
+`created_at DESC`의 첫 row, `MAX(created_at)`, 가장 큰 `decision_id`는 Current Decision의
+정본이 아니다. Current Runtime은 같은 scope의 `detection_results`, `fusion_results`,
+`fusion_stopping_traces` latest view다.
+
+### History
+
+Decision History는 Current head에서 `supersedes_decision_id`를 역추적해 조립한다. 예를
+들어 `D3`가 `D2`를, `D2`가 `D1`을 supersede하면 출력은 `D3 → D2 → D1`이다.
+`created_at` 또는 `decision_id` 정렬은 lifecycle 순서의 정본이 아니다.
+
+### Historical
+
+Historical Decision은 `decisions`의 선택된 `DecisionResult`와
+`decision_runtime_snapshots`의 동일 `decision_id` Snapshot으로 구성한다. Snapshot에는
+해당 Decision 생성 당시의 DetectionResult, FusionResult, FusionStoppingTrace가 들어 있다.
+
+Snapshot이 없는 legacy Decision은 `Runtime snapshot unavailable` 상태로 취급한다. 이때도
+`detection_results`, `fusion_results`, `fusion_stopping_traces`의 latest Runtime으로
+fallback하지 않는다.
 
 ## 상태 표시 규칙
 
@@ -88,8 +126,9 @@ Decision: fast_status, fusion_status, detector_time, fusion_time, t_e,
 | `miss` | 해당 경로가 탐지하지 못함 | 대응 시간 열은 `null` |
 | `not_evaluated` | 해당 경로를 평가하지 않음 | 대응 시간 열은 `null` |
 
-Decision의 `decision_path`와 `winning_path`는 `DecisionResult` Contract를 그대로
-표시한다. UI가 상태나 판단 경로를 자체 계산하거나 추론해서는 안 된다.
+Decision의 `fast_status`, `fusion_status`, `detector_time`, `fusion_time`, `t_e`,
+`decision_path`, `winning_path`는 저장된 `DecisionResult` Contract를 그대로 표시한다.
+UI가 상태, 시간 또는 판단 경로를 자체 계산하거나 추론해서는 안 된다.
 
 ## 백엔드 조회 예시
 
@@ -109,22 +148,6 @@ SELECT
 FROM runs
 ORDER BY start_time DESC;
 
--- Run별 최종 판단
-SELECT
-    decision_id,
-    run_id,
-    entity_id,
-    fast_status,
-    fusion_status,
-    detector_time,
-    fusion_time,
-    t_e,
-    decision_path,
-    winning_path
-FROM decisions
-WHERE run_id = $1
-ORDER BY created_at DESC;
-
 -- Run별 Event timeline
 SELECT
     event_id,
@@ -136,6 +159,10 @@ FROM events
 WHERE run_id = $1
 ORDER BY timestamp, event_id;
 ```
+
+Current Decision과 Decision History는 위와 같은 단순 정렬 SQL로 결정하지 않는다.
+Dashboard backend의 `DashboardDecisionReader`가 repository의 current-head 조회와
+`supersedes_decision_id` chain 조립을 사용한다.
 
 API는 SQL 파라미터 바인딩을 사용해야 하며, 사용자 입력을 SQL 문자열에 직접 연결해서는
 안 된다.
