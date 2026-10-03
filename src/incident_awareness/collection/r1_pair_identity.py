@@ -22,7 +22,13 @@ from dataclasses import dataclass
 
 # Words that would give the run type away. The same list guards everything the
 # runner puts in front of Sysmon on Target-A.
-LABEL_WORDS = ("normal", "attack", "benign", "malicious")
+#
+# The labels are refused in English and in Korean (normal, attack, malicious),
+# because the project writes them in both. `$R1_LABEL_WORDS` in
+# scenarios/R1/run-common.ps1 is the same list in the same order, and both are
+# checked against scenarios/R1/tests/label_shortcut_cases.json so that one side
+# cannot change without the other.
+LABEL_WORDS = ("normal", "attack", "benign", "malicious", "정상", "공격", "악성")
 
 
 class R1PairIdentityError(ValueError):
@@ -39,7 +45,12 @@ class R1PairIdentity:
 
 
 def exposed_label_word(value: str) -> str | None:
-    """The label word a value contains, compared without case, or None."""
+    """The label word a value contains, compared without case, or None.
+
+    A word counts wherever it stands in the value, so a longer word that holds a
+    label is refused as well. The first word of `LABEL_WORDS` that is found is
+    the one returned.
+    """
     lowered = value.lower()
     for word in LABEL_WORDS:
         if word in lowered:

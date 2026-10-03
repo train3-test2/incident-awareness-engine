@@ -360,6 +360,75 @@ def test_unmutated_copy_of_the_canonical_scenario_still_loads(tmp_path: Path) ->
     assert _load_mutated(tmp_path, lambda scenario: None) == _load_canonical()
 
 
+def _with_text(place: str, text: str) -> Callable[[dict], None]:
+    """Put a text into one place of the scenario that ends up identifying or running a run."""
+
+    def mutate(scenario: dict) -> None:
+        lineage = scenario["planned_lineage"]
+        if place == "family_id":
+            scenario["family_id"] = f"{text}_family"
+        elif place == "variation_id":
+            scenario["variation_id"] = f"V02-{text}"
+        elif place == "session host image":
+            lineage["session_host"]["image"] = f"{text}.exe"
+        elif place == "final tool image":
+            lineage["final_tool"]["image"] = f"{text}.exe"
+        elif place == "final tool argument":
+            lineage["final_tool"]["arguments"].append(f"r1_{text}.txt")
+        elif place == "intermediate image":
+            lineage["intermediate"]["attack"]["image"] = f"{text}.exe"
+        elif place == "intermediate argument":
+            lineage["intermediate"]["normal"]["arguments"].append(text)
+        else:
+            raise AssertionError(place)
+
+    return mutate
+
+
+_LABELLED_PLACES = [
+    "family_id",
+    "variation_id",
+    "session host image",
+    "final tool image",
+    "final tool argument",
+    "intermediate image",
+    "intermediate argument",
+]
+
+
+@pytest.mark.parametrize("label", ["정상", "공격", "악성"])
+@pytest.mark.parametrize("place", _LABELLED_PLACES)
+def test_korean_label_in_the_identity_or_the_plan_is_refused(
+    tmp_path: Path, place: str, label: str
+) -> None:
+    # The labels are refused in Korean as in English, in the identity of the Pair
+    # and in everything the launch plan puts on Target-A.
+    with pytest.raises(ValueError, match="would expose the run type"):
+        _load_mutated(tmp_path, _with_text(place, label))
+
+
+@pytest.mark.parametrize("place", _LABELLED_PLACES)
+def test_korean_text_without_a_label_is_accepted(tmp_path: Path, place: str) -> None:
+    # Given: the same places holding a Korean word that is not a label
+    scenario = _load_mutated(tmp_path, _with_text(place, "원격관리"))
+
+    # Then: it loads and renders with the text unchanged
+    out = render_json(apply_run_inputs(scenario, repetition=1), tmp_path / "scenario.json")
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written == apply_run_inputs(scenario, repetition=1)
+    assert "원격관리" in json.dumps(written, ensure_ascii=False)
+
+
+def test_label_words_of_the_renderer_are_the_shared_list() -> None:
+    # The renderer imports the list the identity rules use; the same list is in
+    # the PowerShell runner (tests/collection/test_r1_pair_identity.py).
+    shared = json.loads(
+        Path("scenarios/R1/tests/label_shortcut_cases.json").read_text(encoding="ascii")
+    )
+
+    assert list(LABEL_WORDS) == shared["label_words"]
+
+
 # ---------------------------------------------------------------------------
 # Run inputs
 # ---------------------------------------------------------------------------

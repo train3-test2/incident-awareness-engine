@@ -913,6 +913,116 @@ Assert-True "the earlier output is untouched" (
     (Get-Content -LiteralPath (Join-Path $reusedDir "manifest.json") -Raw).Trim() -eq "manifest-sentinel")
 
  # ---------------------------------------------------------------------------
+ # 4b. Label words in two languages, the same list as the Python side
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== label words ===" -ForegroundColor Cyan
+
+ # Korean is built from code points here too: this file is ASCII only. The three
+ # labels mean normal, attack and malicious; the fourth word holds no label.
+$KO_NORMAL = -join [char[]](0xC815, 0xC0C1)
+$KO_ATTACK = -join [char[]](0xACF5, 0xACA9)
+$KO_MALICIOUS = -join [char[]](0xC545, 0xC131)
+$KO_UNRELATED = -join [char[]](0xC6D0, 0xACA9, 0xAD00, 0xB9AC)
+$koLabels = @($KO_NORMAL, $KO_ATTACK, $KO_MALICIOUS)
+
+function Test-SameText {
+    <# Ordinal comparison, with $null equal only to $null. #>
+    param([AllowNull()]$Left, [AllowNull()]$Right)
+    if ($null -eq $Left -or $null -eq $Right) { return ($null -eq $Left -and $null -eq $Right) }
+    return [string]::Equals([string]$Left, [string]$Right, [System.StringComparison]::Ordinal)
+}
+
+ # tests\label_shortcut_cases.json is read by this script and by
+ # tests/collection/test_r1_pair_identity.py. Both sides have to hold its list
+ # and give its answer for every case, so neither can change alone.
+$labelCases = Get-Content -LiteralPath (Join-Path $PSScriptRoot "label_shortcut_cases.json") -Raw -Encoding UTF8 |
+    ConvertFrom-Json
+Assert-True "the label words are the shared list, in the same order" (
+    @($R1_LABEL_WORDS).Count -eq 7 -and
+    (Test-SameText (@($R1_LABEL_WORDS) -join "|") (@($labelCases.label_words) -join "|")))
+Assert-True "the list holds the three Korean labels" (
+    (Test-SameText $R1_LABEL_WORDS[4] $KO_NORMAL) -and (Test-SameText $R1_LABEL_WORDS[5] $KO_ATTACK) -and
+    (Test-SameText $R1_LABEL_WORDS[6] $KO_MALICIOUS))
+$caseNumber = 0
+foreach ($case in @($labelCases.cases)) {
+    $caseNumber++
+    $found = Get-R1ExposedLabelWord -Value ([string]$case.value)
+    Assert-True ("shared label case " + $caseNumber + ": " + [string]$case.note) (Test-SameText $found $case.word)
+}
+Assert-True "every shared label case was read" (
+    $caseNumber -eq @($labelCases.cases).Count -and $caseNumber -ge 20)
+Assert-True "an empty value holds no label" (
+    $null -eq (Get-R1ExposedLabelWord -Value "") -and $null -eq (Get-R1ExposedLabelWord -Value $null))
+
+ # Identity of the Pair.
+foreach ($field in @("family_id", "variation_id")) {
+    for ($index = 0; $index -lt $koLabels.Count; $index++) {
+        $label = $koLabels[$index]
+        Assert-IdentityRefused ("a " + $field + " that is Korean label " + ($index + 1) + " is refused") {
+            param($s) $s.$field = $label } ("*" + $field + " would expose the run type*")
+        Assert-IdentityRefused ("a " + $field + " that contains Korean label " + ($index + 1) + " is refused") {
+            param($s) $s.$field = ("V02-" + $label + "-set") } ("*" + $field + " would expose the run type*")
+    }
+}
+$koPair = Get-R1PairIdentity -Scenario (ConvertTo-RenderedScenario (
+    New-ScenarioObject -FamilyId $KO_UNRELATED -VariationId ($KO_UNRELATED + "_V02")))
+Assert-True "a Korean family and variation that hold no label are taken as stated" (
+    (Test-SameText $koPair.family_id $KO_UNRELATED) -and (Test-SameText $koPair.variation_id ($KO_UNRELATED + "_V02")))
+
+ # Launch plan: what the run would put on Target-A.
+for ($index = 0; $index -lt $koLabels.Count; $index++) {
+    $label = $koLabels[$index]
+
+    $koImage = New-ScenarioObject
+    $koImage.planned_lineage.intermediate.attack.image = ($label + ".exe")
+    Assert-Throws ("an intermediate image that holds Korean label " + ($index + 1) + " is refused") {
+        Assert-R1PlanShortcutFree -Plan (Get-R1LaunchPlan -Scenario $koImage -RunType "attack" -WorkDir $TEST_WORK)
+    } "*expose the run type*"
+
+    $koArgument = New-ScenarioObject
+    $koArgument.planned_lineage.final_tool.arguments = @($koArgument.planned_lineage.final_tool.arguments) +
+        @("r1_" + $label + ".txt")
+    Assert-Throws ("a final tool argument that holds Korean label " + ($index + 1) + " is refused") {
+        Assert-R1PlanShortcutFree -Plan (Get-R1LaunchPlan -Scenario $koArgument -RunType "normal" -WorkDir $TEST_WORK)
+    } "*expose the run type*"
+}
+$koPlain = New-ScenarioObject
+$koPlain.planned_lineage.final_tool.arguments = @($koPlain.planned_lineage.final_tool.arguments) + @($KO_UNRELATED)
+$koPlainThrew = $false
+try {
+    Assert-R1PlanShortcutFree -Plan (Get-R1LaunchPlan -Scenario $koPlain -RunType "normal" -WorkDir $TEST_WORK)
+} catch { $koPlainThrew = $true }
+Assert-True "a Korean argument that holds no label passes the shortcut check" (-not $koPlainThrew)
+
+ # The same rule through the whole run, read from a UTF-8 scenario file.
+for ($index = 0; $index -lt $koLabels.Count; $index++) {
+    $koFamilyScenario = Save-Scenario (New-ScenarioObject -FamilyId ($koLabels[$index] + "_family"))
+    Assert-RefusedBeforeAnyCall ("a run whose family holds Korean label " + ($index + 1)) {
+        Invoke-FakeRun -ScenarioPath $koFamilyScenario -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
+    } "*family_id would expose the run type*"
+}
+$koArgumentScenario = New-ScenarioObject
+$koArgumentScenario.planned_lineage.intermediate.normal.arguments = @(
+    $koArgumentScenario.planned_lineage.intermediate.normal.arguments) + @($KO_ATTACK)
+$koArgumentPath = Save-Scenario $koArgumentScenario
+Assert-RefusedBeforeAnyCall "a run whose plan holds a Korean label" {
+    Invoke-FakeRun -ScenarioPath $koArgumentPath -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
+} "*expose the run type*"
+Assert-RefusedBeforeAnyCall "a dry run whose plan holds a Korean label" {
+    Invoke-FakeRun -ScenarioPath $koArgumentPath -DataRoot (New-TempRoot) -Transport $null -DryRun
+} "*expose the run type*"
+
+Reset-Fakes
+$koRunRoot = New-TempRoot
+$koRun = Invoke-FakeRun -RunId "RUN-20300101-050" -DataRoot $koRunRoot -Transport (New-FakeTransport) `
+    -ScenarioPath (Save-Scenario (New-ScenarioObject -FamilyId $KO_UNRELATED))
+$koMetadata = Get-Content -LiteralPath (Join-Path $koRunRoot "ground_truth\RUN-20300101-050\run_metadata.json") `
+    -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True "a run of a Korean family that holds no label records that family unchanged" (
+    $koRun.mode -eq "collection" -and (Test-SameText $koMetadata.family_id $KO_UNRELATED))
+
+ # ---------------------------------------------------------------------------
  # 5. Dry run
  # ---------------------------------------------------------------------------
 

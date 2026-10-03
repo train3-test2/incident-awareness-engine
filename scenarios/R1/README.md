@@ -41,8 +41,9 @@ scenarios/R1/
 - 첫 Pilot 은 `-enc` · `-EncodedCommand` 를 쓰지 않는다. 그 옵션으로 읽힐 수 있는 토큰이 계획에
   있으면 실행 전에 중단한다(`Test-R1EncodedOption`).
 - 실행 파일 이름·인자·파일 이름·작업 디렉터리에 `normal` · `attack` 같은 라벨 문자열이 들어가면
-  실행 전에 중단한다(`Assert-R1PlanShortcutFree`). 두 Run 은 준비 단계에서 **두 launcher 파일을
-  모두** 같은 이름으로 쓰므로, Target-A 의 파일만 봐서는 어느 Run 인지 알 수 없다.
+  실행 전에 중단한다(`Assert-R1PlanShortcutFree`). 라벨은 영어와 한국어(`정상` · `공격` · `악성`)를
+  모두 거부한다(§1-2). 두 Run 은 준비 단계에서 **두 launcher 파일을 모두** 같은 이름으로 쓰므로,
+  Target-A 의 파일만 봐서는 어느 Run 인지 알 수 없다.
 - 최종 관리 도구가 하는 일은 `remote/r1_task.ps1` 하나다. 자기 PID 를 기록하고, 신호를 기다린 뒤,
   승인된 내부 목적지로 **payload 없는 TCP 연결을 한 번** 시도하고 결과를 기록한다.
 
@@ -87,8 +88,13 @@ Attack 실행 계보    wsmprovhost.exe -> cscript.exe -> powershell.exe
   식별자는 `repetition` 하나다.
 - 다른 family 나 variation 은 그 설계(실행 계보)를 담은 **별도 scenario 파일**로 정의한다. variation
   matrix 구현은 이 변경 밖이다.
-- `family_id` 와 `variation_id` 에 `normal` · `attack` · `benign` · `malicious` 가 들어 있으면
-  거부한다(대소문자 무시, 부분 문자열 포함). 그래서 `abnormal` 이 들어간 이름도 거부된다.
+- `family_id` 와 `variation_id` 에 `normal` · `attack` · `benign` · `malicious` 또는 `정상` · `공격` ·
+  `악성` 이 들어 있으면 거부한다(대소문자 무시, 부분 문자열 포함). 그래서 `abnormal` 이나 `비정상` 이
+  들어간 이름도 거부된다. 라벨이 아닌 한국어 식별자는 거부하지 않는다.
+- 이 라벨 목록은 Python(`r1_pair_identity.LABEL_WORDS`)과 PowerShell(`$R1_LABEL_WORDS`)이 각각 갖고
+  있고, 식별자와 launch plan 에 같은 규칙으로 적용한다. 두 쪽의 테스트가
+  `tests/label_shortcut_cases.json` 하나를 읽어 목록과 판정이 같은지 확인하므로, 한쪽만 고치면
+  테스트가 실패한다.
 - 세 값은 Ground Truth 기록이다. Evidence 추출이나 Fusion 의 입력으로 넘기지 않는다.
 - 지금은 `family_id` 를 승인 계보 정책과 대조하지 않는다. 정책 config 가 연결되면 정책의
   `family_id` 와 다를 때 거부해야 한다(§1-1).
@@ -458,6 +464,9 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
   `tests/tools/test_validate_r1_run.py` — 합성 산출물만 쓴다.
 - `scenarios/S0/tests/Test-RunCommonGuards.ps1` — S0 와 함께 쓰는 `Write-RunMetadata` 가 `repetition`
   을 적지 않은 scenario 에는 계속 `1` 을, 적은 scenario 에는 그 값을 기록하는지 확인한다.
+- `scenarios/R1/tests/label_shortcut_cases.json` — 라벨 문자열 검사의 공유 케이스다. 위 PowerShell
+  guard 와 `tests/collection/test_r1_pair_identity.py` 가 같은 파일을 읽는다. PowerShell 5.1 이 읽을 수
+  있게 ASCII 로 두고 한국어는 escape 로 적는다.
 
 첫 VM rehearsal 에서 확인해야 하는 가정:
 

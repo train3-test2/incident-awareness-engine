@@ -70,7 +70,18 @@ $R1_RUN_TYPES = @("normal", "attack")
 # Words that would give the run type away if they reached a process name, an
 # argument or a file name on Target-A (docs/scenarios/r1.md section 7), or the
 # family and variation both runs of a Pair record.
-$R1_LABEL_WORDS = @("normal", "attack", "benign", "malicious")
+#
+# The last three are the Korean labels for normal, attack and malicious. This
+# file is ASCII only, so they are built from their code points. The list is the
+# same one, in the same order, as LABEL_WORDS in
+# src/incident_awareness/collection/r1_pair_identity.py; both are checked against
+# tests\label_shortcut_cases.json.
+$R1_LABEL_WORDS = @(
+    "normal", "attack", "benign", "malicious",
+    (-join [char[]](0xC815, 0xC0C1)),
+    (-join [char[]](0xACF5, 0xACA9)),
+    (-join [char[]](0xC545, 0xC131))
+)
 
 $R1_READY_TIMEOUT_SEC = 60
 $R1_STATUS_TIMEOUT_SEC = 60
@@ -127,6 +138,27 @@ function Test-R1SafePath {
 
     if ([string]::IsNullOrEmpty($Path)) { return $false }
     return ($Path -match '^[A-Za-z]:(\\[A-Za-z0-9_.-]+)+$')
+}
+
+function Get-R1ExposedLabelWord {
+    <#
+        The label word a value contains, or $null.
+
+        The value is lower cased without regard to the culture of the machine and
+        searched for each word of $R1_LABEL_WORDS as a substring, in the order of
+        that list. It is the rule exposed_label_word applies on the Python side:
+        the identity of a Pair and everything the launch plan puts on Target-A
+        go through this one function.
+    #>
+    param([AllowNull()][AllowEmptyString()][string]$Value)
+
+    if ([string]::IsNullOrEmpty($Value)) { return $null }
+
+    $lower = $Value.ToLowerInvariant()
+    foreach ($word in $R1_LABEL_WORDS) {
+        if ($lower.Contains($word)) { return $word }
+    }
+    return $null
 }
 
 function Test-R1EncodedOption {
@@ -316,12 +348,10 @@ function Assert-R1PlanShortcutFree {
             throw ("the plan carries an encoded command option, which the first Pilot does not use: '" +
                 $token + "'")
         }
-        $lower = $token.ToLower()
-        foreach ($word in $R1_LABEL_WORDS) {
-            if ($lower.Contains($word)) {
-                throw ("the plan would expose the run type on Target-A: '" + $token +
-                    "' contains '" + $word + "'")
-            }
+        $exposedWord = Get-R1ExposedLabelWord -Value $token
+        if ($null -ne $exposedWord) {
+            throw ("the plan would expose the run type on Target-A: '" + $token +
+                "' contains '" + $exposedWord + "'")
         }
     }
 }
@@ -407,11 +437,9 @@ function Get-R1PairIdentity {
         if ($value -cne $value.Trim()) {
             throw ($name + " must not have surrounding whitespace: '" + $value + "'")
         }
-        $lower = $value.ToLower()
-        foreach ($word in $R1_LABEL_WORDS) {
-            if ($lower.Contains($word)) {
-                throw ($name + " would expose the run type: '" + $value + "' contains '" + $word + "'")
-            }
+        $exposedWord = Get-R1ExposedLabelWord -Value $value
+        if ($null -ne $exposedWord) {
+            throw ($name + " would expose the run type: '" + $value + "' contains '" + $exposedWord + "'")
         }
         $identity[$name] = $value
     }
