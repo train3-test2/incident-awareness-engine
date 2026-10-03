@@ -49,8 +49,15 @@ def config(**overrides):
     ],
 )
 def test_invalid_source(changes):
-    with pytest.raises(ValidationError):
-        source(**changes)
+    # Given
+    overrides = changes
+
+    # When
+    with pytest.raises(ValidationError) as error:
+        source(**overrides)
+
+    # Then
+    assert error.type is ValidationError
 
 
 @pytest.mark.parametrize(
@@ -64,66 +71,104 @@ def test_invalid_source(changes):
     ],
 )
 def test_invalid_config(changes):
-    with pytest.raises(ValidationError):
-        config(**changes)
+    # Given
+    overrides = changes
+
+    # When
+    with pytest.raises(ValidationError) as error:
+        config(**overrides)
+
+    # Then
+    assert error.type is ValidationError
 
 
 @pytest.mark.parametrize(
     "timestamp", [123, "123", "2026-10-02T00:00:00", "2026-10-02T09:00:00+09:00"]
 )
 def test_no_numeric_or_naive_or_non_utc_times(timestamp):
-    with pytest.raises(ValidationError):
-        source(points=[{"timestamp": timestamp, "score": 0.0, "evidence_ids": []}])
+    # Given
+    points = [{"timestamp": timestamp, "score": 0.0, "evidence_ids": []}]
+
+    # When
+    with pytest.raises(ValidationError) as error:
+        source(points=points)
+
+    # Then
+    assert error.type is ValidationError
 
 
 @pytest.mark.parametrize("offsets", [[10, 0], [0, 0]])
 def test_rejects_non_increasing_points(offsets):
-    with pytest.raises(ValidationError, match="strictly increasing"):
-        source(
-            points=[
-                {
-                    "timestamp": datetime(2026, 10, 2, tzinfo=UTC) + timedelta(seconds=t),
-                    "score": 0.0,
-                    "evidence_ids": [],
-                }
-                for t in offsets
-            ]
-        )
+    # Given
+    points = [
+        {
+            "timestamp": datetime(2026, 10, 2, tzinfo=UTC) + timedelta(seconds=t),
+            "score": 0.0,
+            "evidence_ids": [],
+        }
+        for t in offsets
+    ]
+
+    # When
+    with pytest.raises(ValidationError) as error:
+        source(points=points)
+
+    # Then
+    assert "strictly increasing" in str(error.value)
 
 
 @pytest.mark.parametrize("identifier", ["E1", "EVD-001", "evt-001", "E-"])
 def test_rejects_noncanonical_evidence_ids(identifier):
-    with pytest.raises(ValidationError, match="canonical E-"):
-        source(
-            points=[
-                {
-                    "timestamp": datetime(2026, 10, 2, tzinfo=UTC),
-                    "score": 0.0,
-                    "evidence_ids": [identifier],
-                }
-            ]
-        )
+    # Given
+    points = [
+        {"timestamp": datetime(2026, 10, 2, tzinfo=UTC), "score": 0.0, "evidence_ids": [identifier]}
+    ]
+
+    # When
+    with pytest.raises(ValidationError) as error:
+        source(points=points)
+
+    # Then
+    assert "canonical E-" in str(error.value)
 
 
 def test_canonical_evidence_ids_remain_sorted_and_unique():
-    value = source(
-        points=[
-            {
-                "timestamp": datetime(2026, 10, 2, tzinfo=UTC),
-                "score": 0.0,
-                "evidence_ids": ["E-002", "E-001", "E-002"],
-            }
-        ]
-    )
+    # Given
+    points = [
+        {
+            "timestamp": datetime(2026, 10, 2, tzinfo=UTC),
+            "score": 0.0,
+            "evidence_ids": ["E-002", "E-001", "E-002"],
+        }
+    ]
+
+    # When
+    value = source(points=points)
+
+    # Then
     assert value.points[0].evidence_ids == ("E-001", "E-002")
 
 
 @pytest.mark.parametrize("step", [1e-10, 1e20])
 def test_rejects_unusable_duration(step):
-    with pytest.raises(ValidationError, match="step_seconds"):
-        config(step_seconds=step)
+    # Given
+    step_seconds = step
+
+    # When
+    with pytest.raises(ValidationError) as error:
+        config(step_seconds=step_seconds)
+
+    # Then
+    assert "step_seconds" in str(error.value)
 
 
 @pytest.mark.parametrize("step", [0.000001, 10.0])
 def test_accepts_representable_positive_duration(step):
-    assert config(step_seconds=step).step_seconds == step
+    # Given
+    step_seconds = step
+
+    # When
+    result = config(step_seconds=step_seconds)
+
+    # Then
+    assert result.step_seconds == step
