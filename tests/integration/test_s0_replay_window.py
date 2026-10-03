@@ -408,6 +408,17 @@ def test_runtime_fusion_replays_the_filtered_events() -> None:
     assert fusion_result.fusion_time == START_TIME + timedelta(seconds=50)
     assert fusion_result.scoring_config_version == "fusion-config-v0.1"
 
+    assert len(result.stopping_traces) == len(result.fusion_results)
+    (stopping_trace,) = result.stopping_traces
+    assert stopping_trace.run_id == fusion_result.run_id
+    assert stopping_trace.entity_id == fusion_result.entity_id
+    assert stopping_trace.scoring_config_version == fusion_result.scoring_config_version
+    assert stopping_trace.points
+    assert stopping_trace.points[0].timestamp == START_TIME
+    assert stopping_trace.points[0].score == 0.0
+    assert stopping_trace.points[4].timestamp == START_TIME + timedelta(seconds=40)
+    assert stopping_trace.points[4].score == 1.0
+
     (episode,) = fusion_result.fusion_episodes
     assert episode.run_id == RUN_ID
     assert episode.entity_id == HOST_ID
@@ -428,6 +439,12 @@ def test_runtime_fusion_reports_not_evaluated_when_the_window_is_not_covered() -
     assert fusion_result.fusion_time is None
     assert fusion_result.fusion_episodes == []
 
+    (stopping_trace,) = result.stopping_traces
+    assert stopping_trace.run_id == fusion_result.run_id
+    assert stopping_trace.entity_id == fusion_result.entity_id
+    assert stopping_trace.scoring_config_version == fusion_result.scoring_config_version
+    assert stopping_trace.points == []
+
 
 def test_empty_input_in_a_covered_window_is_a_miss_for_the_expected_host() -> None:
     # Given / When
@@ -438,6 +455,12 @@ def test_empty_input_in_a_covered_window_is_a_miss_for_the_expected_host() -> No
     assert result.selection.included_count == 0
     (fusion_result,) = result.fusion_results
     _assert_miss(fusion_result)
+    (stopping_trace,) = result.stopping_traces
+    assert stopping_trace.run_id == fusion_result.run_id
+    assert stopping_trace.entity_id == fusion_result.entity_id
+    assert stopping_trace.scoring_config_version == fusion_result.scoring_config_version
+    assert stopping_trace.points
+    assert all(point.score == 0.0 for point in stopping_trace.points)
 
 
 def test_input_made_only_of_margin_records_is_a_miss_for_the_expected_host() -> None:
@@ -565,8 +588,16 @@ def test_result_order_does_not_depend_on_input_order() -> None:
 
     # Then
     assert [result.entity_id for result in forward.fusion_results] == [HOST_ID, second_host]
+    assert len(forward.stopping_traces) == len(forward.fusion_results)
+    assert [trace.entity_id for trace in forward.stopping_traces] == [HOST_ID, second_host]
+    assert [trace.entity_id for trace in forward.stopping_traces] == [
+        result.entity_id for result in forward.fusion_results
+    ]
     assert [result.model_dump() for result in forward.fusion_results] == [
         result.model_dump() for result in backward.fusion_results
+    ]
+    assert [trace.model_dump() for trace in forward.stopping_traces] == [
+        trace.model_dump() for trace in backward.stopping_traces
     ]
 
 

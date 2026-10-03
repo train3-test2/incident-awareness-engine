@@ -3,7 +3,11 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from incident_awareness.common.models.evidence import Evidence
-from incident_awareness.common.models.fusion import FusionResult
+from incident_awareness.common.models.fusion import (
+    FusionResult,
+    FusionStoppingTrace,
+    FusionStoppingTracePoint,
+)
 from incident_awareness.decision.fusion.config import FusionConfig
 from incident_awareness.decision.fusion.result_builder import (
     build_fusion_result,
@@ -18,6 +22,7 @@ from incident_awareness.decision.fusion.temporal_replay import (
 class FusionPipelineResult:
     replay_result: TemporalReplayResult
     fusion_result: FusionResult
+    stopping_trace: FusionStoppingTrace
 
 
 def run_fusion_pipeline(
@@ -67,10 +72,25 @@ def run_fusion_pipeline(
         scorer_version=scorer_version,
         model_version=model_version,
     )
+    stopping_trace = FusionStoppingTrace(
+        run_id=run_id,
+        entity_id=entity_id,
+        scoring_config_version=scoring_config_version,
+        points=[
+            FusionStoppingTracePoint(
+                timestamp=point.timestamp,
+                score=point.score,
+                persistence_count=point.persistence_count,
+                policy_state=point.policy_state,
+            )
+            for point in replay_result.stopping_trace
+        ],
+    )
 
     return FusionPipelineResult(
         replay_result=replay_result,
         fusion_result=fusion_result,
+        stopping_trace=stopping_trace,
     )
 
 

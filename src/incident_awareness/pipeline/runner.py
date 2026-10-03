@@ -9,7 +9,7 @@ from incident_awareness.integration.fast_hit_handoff import FastDetectionAdapter
 from incident_awareness.pipeline.cli import PipelineInputs
 from incident_awareness.pipeline.event_evidence import normalize_sysmon_and_extract_evidence
 from incident_awareness.pipeline.fast import load_s0_fast_detection
-from incident_awareness.pipeline.fusion import run_s0_fusion
+from incident_awareness.pipeline.fusion import run_s0_fusion_with_trace
 from incident_awareness.pipeline.hybrid import combine_parallel_decision
 from incident_awareness.pipeline.persistence import (
     DatabaseConnection,
@@ -38,10 +38,12 @@ def run_first_cycle_pipeline(
         "normalization",
         lambda: normalize_sysmon_and_extract_evidence(artifacts),
     )
-    fusion_result = _run_stage(
+    fusion_output = _run_stage(
         "fusion",
-        lambda: run_s0_fusion(inputs, artifacts, normalized_artifacts),
+        lambda: run_s0_fusion_with_trace(inputs, artifacts, normalized_artifacts),
     )
+    fusion_result = fusion_output.fusion_result
+    stopping_trace = fusion_output.stopping_trace
     fast_result = _run_stage(
         "fast_handoff",
         lambda: load_s0_fast_detection(inputs, artifacts),
@@ -62,6 +64,7 @@ def run_first_cycle_pipeline(
             artifacts,
             normalized_artifacts,
             fusion_result,
+            stopping_trace,
             fast_result,
             decision_result,
             connection=connection,
