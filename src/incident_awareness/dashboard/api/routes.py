@@ -4,10 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from incident_awareness.dashboard.api.dependencies import (
     get_dashboard_decision_reader,
+    get_event_repository,
     get_run_repository,
 )
 from incident_awareness.dashboard.api.models import (
     CurrentDecisionResponse,
+    EventDetailResponse,
+    EventTimelineItem,
+    EventTimelineResponse,
     HistoricalDecisionResponse,
     OverviewResponse,
     RunDetailResponse,
@@ -16,6 +20,7 @@ from incident_awareness.dashboard.api.models import (
 )
 from incident_awareness.dashboard.api.service import get_run_detail
 from incident_awareness.dashboard.decision_read_model import DashboardDecisionReader
+from incident_awareness.storage.repositories.event_repository import EventRepository
 from incident_awareness.storage.repositories.run_repository import RunRepository
 
 router = APIRouter()
@@ -71,6 +76,54 @@ def get_run(
         current_decision=current_response,
         decision_history=detail.decision_history,
     )
+
+
+@router.get("/runs/{run_id}/timeline", response_model=EventTimelineResponse)
+def get_event_timeline(
+    run_id: str,
+    repository: Annotated[EventRepository, Depends(get_event_repository)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> EventTimelineResponse:
+    result = repository.list_by_run_with_total_count(
+        run_id,
+        limit=limit,
+        offset=offset,
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Run not found",
+        )
+
+    total, events = result
+    return EventTimelineResponse(
+        items=[EventTimelineItem.from_normalized_event(event) for event in events],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/runs/{run_id}/events/{event_id}", response_model=EventDetailResponse)
+def get_event(
+    run_id: str,
+    event_id: str,
+    repository: Annotated[EventRepository, Depends(get_event_repository)],
+) -> EventDetailResponse:
+    result = repository.get_by_run(run_id, event_id)
+    if not result.run_exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Run not found",
+        )
+    if result.event is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Event not found",
+        )
+
+    return EventDetailResponse.from_normalized_event(result.event)
 
 
 @router.get("/decisions/{decision_id}", response_model=HistoricalDecisionResponse)

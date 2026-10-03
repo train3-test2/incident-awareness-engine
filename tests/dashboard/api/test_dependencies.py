@@ -63,3 +63,24 @@ def test_database_connection_dependency_closes_request_connection(
     assert provided_connection is connection
     assert connect_urls == [database_url]
     assert connection.closes == 1
+
+
+def test_event_repository_dependency_reuses_request_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    connection = FakeConnection()
+    repository_connections: list[FakeConnection] = []
+
+    class FakeEventRepository:
+        def __init__(self, provided_connection: FakeConnection) -> None:
+            repository_connections.append(provided_connection)
+
+    monkeypatch.setattr(dependencies, "EventRepository", FakeEventRepository)
+
+    # When
+    repository = dependencies.get_event_repository(connection)
+
+    # Then
+    assert isinstance(repository, FakeEventRepository)
+    assert repository_connections == [connection]
