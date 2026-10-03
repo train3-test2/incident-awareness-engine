@@ -9,6 +9,7 @@ of the lab appears.
 
 import copy
 import json
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -805,3 +806,219 @@ def test_scenario_that_still_uses_the_old_lineage_key_is_refused(tmp_path: Path)
 
     with pytest.raises(ValueError, match="planned_lineage"):
         _load_mutated(tmp_path, mutate)
+
+
+# ---------------------------------------------------------------------------
+# A key stated twice
+# ---------------------------------------------------------------------------
+
+# A second block for each place a repeated key would change what a run does.
+# Plain YAML loading would use these and drop the canonical ones.
+_SECOND_ATTACK_INTERMEDIATE = """
+    attack:
+      image: wscript.exe
+      launcher_kind: jscript
+      launcher_file: r1_other.js
+      arguments:
+        - "{launcher}"
+"""
+_SECOND_INTERNAL_CONNECTION = """
+internal_connection:
+  required: true
+  target: null
+  port: null
+  protocol: UDP
+  lab_cidr: null
+  max_attempts: 1
+"""
+_SECOND_NORMAL_RUN = """
+  normal:
+    run_type: normal
+    reference_action_id: null
+    actions: []
+"""
+
+
+def _canonical_text() -> str:
+    return CANONICAL_SCENARIO.read_text(encoding="utf-8")
+
+
+def _load_text(tmp_path: Path, text: str) -> dict:
+    path = tmp_path / "scenario.yaml"
+    path.write_text(text, encoding="utf-8", newline="\n")
+    return load_r1_scenario(path)
+
+
+def _after(text: str, line: str, added: str) -> str:
+    """The text with `added` right after the one place `line` occurs."""
+    assert text.count(line) == 1, line
+    return text.replace(line, line + added)
+
+
+def _before(text: str, line: str, added: str) -> str:
+    """The text with `added` right before the one place `line` occurs."""
+    assert text.count(line) == 1, line
+    return text.replace(line, added + line)
+
+
+def _repeated_top_level_scalar(text: str) -> str:
+    return text + "\nscenario_id: R1\n"
+
+
+def _repeated_internal_connection(text: str) -> str:
+    return _before(text, "\nshortcut_controls:\n", _SECOND_INTERNAL_CONNECTION)
+
+
+def _repeated_protocol(text: str) -> str:
+    return _after(text, "  protocol: TCP\n", "  protocol: UDP\n")
+
+
+def _repeated_attack_intermediate(text: str) -> str:
+    # The comment lines above shortcut_controls do not end the intermediate mapping.
+    return _before(text, "\nshortcut_controls:\n", _SECOND_ATTACK_INTERMEDIATE)
+
+
+def _repeated_attack_image(text: str) -> str:
+    return _after(text, "      image: cscript.exe\n", "      image: wscript.exe\n")
+
+
+def _repeated_final_tool_arguments(text: str) -> str:
+    return _before(text, "  intermediate:\n", '    arguments:\n      - "-File"\n')
+
+
+def _repeated_normal_run(text: str) -> str:
+    return text.rstrip("\n") + "\n" + _SECOND_NORMAL_RUN
+
+
+def _repeated_run_type(text: str) -> str:
+    return _after(text, "    run_type: normal\n", "    run_type: attack\n")
+
+
+def _repeated_key_inside_an_action(text: str) -> str:
+    return _after(text, "      - action_id: N01\n", "        action_id: N09\n")
+
+
+@pytest.mark.parametrize(
+    ("repeat", "key"),
+    [
+        (_repeated_top_level_scalar, "scenario_id"),
+        (_repeated_internal_connection, "internal_connection"),
+        (_repeated_protocol, "protocol"),
+        (_repeated_attack_intermediate, "attack"),
+        (_repeated_attack_image, "image"),
+        (_repeated_final_tool_arguments, "arguments"),
+        (_repeated_normal_run, "normal"),
+        (_repeated_run_type, "run_type"),
+        (_repeated_key_inside_an_action, "action_id"),
+    ],
+)
+def test_key_stated_twice_in_one_mapping_is_refused_at_any_depth(
+    tmp_path: Path, repeat: Callable[[str], str], key: str
+) -> None:
+    # Given: the canonical scenario with one key of one mapping stated a second time
+    text = repeat(_canonical_text())
+    # Plain loading accepts the text, so the refusal below is this loader's own.
+    assert isinstance(yaml.safe_load(text), dict)
+
+    # When / Then
+    with pytest.raises(ValueError, match=f"duplicate key '{key}' in one mapping") as refusal:
+        _load_text(tmp_path, text)
+
+    # And: the two line numbers of the message are the two places the key is stated
+    message = str(refusal.value)
+    numbers = re.search(r"line (\d+) repeats line (\d+)", message)
+    assert numbers is not None, message
+    second, first = (int(number) for number in numbers.groups())
+    lines = text.splitlines()
+    assert first < second
+    for number in (first, second):
+        assert lines[number - 1].strip().removeprefix("- ").startswith(f"{key}:"), message
+    assert "scenario.yaml" in message
+
+
+def test_repeated_block_would_otherwise_replace_the_reviewed_one(tmp_path: Path) -> None:
+    # Given: a second attack intermediate, which plain loading silently prefers
+    text = _repeated_attack_intermediate(_canonical_text())
+    silently_used = yaml.safe_load(text)["planned_lineage"]["intermediate"]["attack"]
+    assert silently_used["image"] == "wscript.exe"
+    assert silently_used["launcher_file"] == "r1_other.js"
+
+    # Then: the R1 loader refuses the file instead of planning the second block
+    with pytest.raises(ValueError, match="duplicate key 'attack'"):
+        _load_text(tmp_path, text)
+
+
+def test_keys_that_load_to_one_value_are_a_repeat_too(tmp_path: Path) -> None:
+    # YAML reads the plain scalars 5 and 0x5 as the same integer; a dict keeps one of them.
+    text = _canonical_text() + "\nextra_block:\n  5: first\n  0x5: second\n"
+    assert yaml.safe_load(text)["extra_block"] == {5: "second"}
+
+    with pytest.raises(ValueError, match="duplicate key 5 in one mapping"):
+        _load_text(tmp_path, text)
+
+
+def test_same_key_in_different_mappings_is_not_a_repeat(tmp_path: Path) -> None:
+    # `image` and `arguments` are stated once in each of several mappings, and an
+    # unknown block may reuse a key name of another block.
+    text = _canonical_text() + "\nextra_block:\n  image: x\n  nested:\n    image: y\n"
+
+    scenario = _load_text(tmp_path, text)
+
+    assert scenario["extra_block"] == {"image": "x", "nested": {"image": "y"}}
+    assert scenario["planned_lineage"] == _load_canonical()["planned_lineage"]
+
+
+def test_canonical_scenario_loads_and_renders_as_plain_loading_would(tmp_path: Path) -> None:
+    # Given: the canonical scenario read by the R1 loader and by plain safe loading
+    loaded = _load_canonical()
+    plain = yaml.safe_load(_canonical_text())
+
+    # Then: the same values in the same order
+    assert loaded == plain
+    assert json.dumps(loaded) == json.dumps(plain)
+
+    # And: the same rendered bytes
+    inputs = {
+        "target_host": TARGET_HOST,
+        "internal_target": INTERNAL_TARGET,
+        "internal_port": INTERNAL_PORT,
+        "lab_cidr": LAB_CIDR,
+        "repetition": 1,
+    }
+    from_loader = render_json(apply_run_inputs(loaded, **inputs), tmp_path / "loader.json")
+    from_plain = render_json(apply_run_inputs(plain, **inputs), tmp_path / "plain.json")
+    assert from_loader.read_bytes() == from_plain.read_bytes()
+
+
+def test_loader_constructs_only_what_safe_loading_constructs(tmp_path: Path) -> None:
+    assert issubclass(renderer._UniqueKeyLoader, yaml.SafeLoader)
+
+    # A tag that builds a Python object is refused, as yaml.safe_load refuses it.
+    text = _canonical_text().replace(
+        "scenario_version: v1\n", "scenario_version: !!python/object/apply:os.getcwd []\n", 1
+    )
+    with pytest.raises(yaml.constructor.ConstructorError):
+        yaml.safe_load(text)
+    with pytest.raises(yaml.constructor.ConstructorError):
+        _load_text(tmp_path, text)
+
+
+def test_cli_writes_nothing_for_a_repeated_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scenario_path = tmp_path / "scenario.yaml"
+    scenario_path.write_text(
+        _repeated_attack_intermediate(_canonical_text()), encoding="utf-8", newline="\n"
+    )
+    out = tmp_path / "build" / "scenario.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["r1_scenario_to_json.py", str(scenario_path), "--out", str(out), "--repetition", "1"],
+    )
+
+    with pytest.raises(ValueError, match="duplicate key 'attack'"):
+        renderer.main()
+
+    assert not out.exists()
+    assert not out.parent.exists()

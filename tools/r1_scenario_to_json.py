@@ -44,6 +44,10 @@ intermediate each, the same steps at the same offsets - and refuses a scenario
 that would carry an encoded command option or the run type in a file name or an
 argument. The runner repeats the last two checks on the plan it builds.
 
+A key stated twice in one mapping is refused, at any depth. Plain YAML loading
+keeps the last value and reports nothing, so a repeated block would replace the
+one that was reviewed.
+
 The lineage a scenario states is `planned_lineage`: what each run is planned to
 execute, selected by run type. It is a collection plan. The approved lineage
 policy of a family is not part of a scenario and is not read here
@@ -54,6 +58,7 @@ import argparse
 import copy
 import re
 import sys
+from collections.abc import Hashable
 from pathlib import Path
 
 import yaml
@@ -98,6 +103,42 @@ _ENCODED_OPTION = "-encodedcommand"
 _ENCODED_ALIAS = "-ec"
 _FILE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _HOST_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,253}[A-Za-z0-9])?$")
+_MERGE_TAG = "tag:yaml.org,2002:merge"
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """A `yaml.SafeLoader` that refuses a mapping stating one key twice.
+
+    `yaml.safe_load` keeps the last value of a repeated key and reports nothing.
+    The blocks of this scenario decide what a run executes on Target-A and where
+    it connects, so a repeated block would replace the one that was reviewed
+    without a trace. Every mapping of the document is checked, at any depth.
+
+    Nothing else changes: the tags it constructs are the ones `SafeLoader`
+    constructs, and a document without a repeated key loads to the same value.
+    """
+
+    def construct_mapping(self, node: yaml.Node, deep: bool = False) -> dict:
+        if isinstance(node, yaml.MappingNode):
+            stated: dict[Hashable, int] = {}
+            for key_node, _ in node.value:
+                # A merge key is not a key of this mapping, and a key that cannot
+                # be hashed is refused by SafeLoader itself.
+                if key_node.tag == _MERGE_TAG:
+                    continue
+                key = self.construct_object(key_node, deep=True)
+                if not isinstance(key, Hashable):
+                    continue
+
+                line = key_node.start_mark.line + 1
+                if key in stated:
+                    raise ValueError(
+                        f"duplicate key {key!r} in one mapping: line {line} repeats line "
+                        f"{stated[key]} ({key_node.start_mark.name})"
+                    )
+                stated[key] = line
+
+        return super().construct_mapping(node, deep=deep)
 
 
 def is_encoded_option(token: object) -> bool:
@@ -283,10 +324,26 @@ def _check_identity(scenario: dict) -> None:
         validate_repetition(scenario["repetition"])
 
 
-def load_r1_scenario(path: Path) -> dict:
-    """Load the R1 scenario and check the rules the runner depends on."""
+def _read_yaml(path: Path) -> object:
+    """Read one YAML document with `_UniqueKeyLoader`.
+
+    The loader is driven directly, the way `yaml.safe_load` drives `SafeLoader`,
+    so this file holds no call that could be handed an unsafe loader.
+    """
     with path.open(encoding="utf-8") as stream:
-        scenario = yaml.safe_load(stream)
+        loader = _UniqueKeyLoader(stream)
+        try:
+            return loader.get_single_data()
+        finally:
+            loader.dispose()
+
+
+def load_r1_scenario(path: Path) -> dict:
+    """Load the R1 scenario and check the rules the runner depends on.
+
+    A key stated twice in one mapping is refused while the YAML is read.
+    """
+    scenario = _read_yaml(path)
 
     if not isinstance(scenario, dict):
         raise TypeError(f"scenario must be a mapping: {path}")
