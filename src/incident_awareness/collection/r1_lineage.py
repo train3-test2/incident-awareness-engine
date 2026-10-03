@@ -24,9 +24,11 @@ These checks are a subset of the Pilot in r1.md section 8-2, not the Pilot
 verdict. For one capture and one anchor process they cover the parent chain the
 caller expects, by ProcessGuid (S-3), an EID 3 carrying the anchor's host and
 ProcessGuid (S-4, S-8), and the destination when the caller gives one (S-5,
-S-6). They do not compare the two runs of a pair (S-1, and the lineages
-differing in S-3), do not find the designated tool or compare Images (S-2: the
-caller supplies the anchor), and do not check the t+5 or t+8 window (S-7).
+S-6). A caller may also give the protocol that connection has to be recorded
+with; section 8-1 lists no such check, so it is the caller's own expectation.
+They do not compare the two runs of a pair (S-1, and the lineages differing in
+S-3), do not find the designated tool or compare Images (S-2: the caller
+supplies the anchor), and do not check the t+5 or t+8 window (S-7).
 `R1LineageReport.ok` therefore means the requested lineage and link checks held
 for this capture. It never means the Pilot passed.
 
@@ -442,6 +444,18 @@ def select_connections(
     return tuple(sorted(matched, key=_connection_sort_key))
 
 
+def connection_uses_protocol(connection: ConnectionRecord, protocol: str) -> bool:
+    """Whether one EID 3 was recorded with the given protocol.
+
+    Sysmon writes the protocol in lower case and a scenario may state it in
+    upper case, so the comparison ignores case. A record with another Protocol
+    was not recorded with this one, and neither was a record with none: a
+    missing value is not evidence of any protocol.
+    """
+    recorded = connection.protocol
+    return recorded is not None and recorded.casefold() == protocol.casefold()
+
+
 def verify_r1_lineage(
     jsonl_path: Path,
     *,
@@ -449,6 +463,7 @@ def verify_r1_lineage(
     expected_parent_process_guids: Sequence[str] | None = None,
     expected_destination_ip: str | None = None,
     expected_destination_port: str | None = None,
+    expected_protocol: str | None = None,
 ) -> R1LineageReport:
     """Check one anchor process, its recorded lineage and its connections.
 
@@ -466,6 +481,12 @@ def verify_r1_lineage(
     EID 1 -> EID 3 link, so it fails instead of being reported as a count of 0.
     Passing a destination additionally requires one of the linked records to
     match it (S-5, S-6).
+
+    `expected_protocol` narrows which linked record counts as that connection:
+    only one recorded with this protocol, compared without case (see
+    `connection_uses_protocol`). A record with another Protocol, or with none,
+    is not the connection even when it reaches the destination. Leaving it out
+    compares no protocol.
     """
     report = R1LineageReport()
 
@@ -505,6 +526,7 @@ def verify_r1_lineage(
         anchor,
         expected_destination_ip=expected_destination_ip,
         expected_destination_port=expected_destination_port,
+        expected_protocol=expected_protocol,
     )
     return report
 
@@ -567,6 +589,7 @@ def _check_connections(
     *,
     expected_destination_ip: str | None,
     expected_destination_port: str | None,
+    expected_protocol: str | None,
 ) -> None:
     linked = select_connections(connections, anchor)
     if linked:
@@ -580,23 +603,58 @@ def _check_connections(
             f"ProcessGuid: host={anchor.host} ProcessGuid={anchor.process_guid}"
         )
 
-    if expected_destination_ip is None and expected_destination_port is None:
+    destination_given = expected_destination_ip is not None or expected_destination_port is not None
+    if not destination_given and expected_protocol is None:
         return
 
-    reached = any(
-        _connection_matches_destination(
+    # A record is the expected connection only when everything the caller gave
+    # fits. One that reaches the destination with another Protocol, or with none,
+    # is reported as that, so it cannot be mistaken for a wrong destination.
+    at_destination = [
+        connection
+        for connection in linked
+        if _connection_matches_destination(
             connection,
             expected_ip=expected_destination_ip,
             expected_port=expected_destination_port,
         )
-        for connection in linked
-    )
+    ]
+    accepted = [
+        connection
+        for connection in at_destination
+        if expected_protocol is None or connection_uses_protocol(connection, expected_protocol)
+    ]
     wanted = f"{expected_destination_ip or '(any)'}:{expected_destination_port or '(any)'}"
-    if reached:
-        report.passed(f"a linked connection reaches the expected destination {wanted}")
+    where = f" to the expected destination {wanted}" if destination_given else ""
+
+    if accepted:
+        if destination_given:
+            report.passed(f"a linked connection reaches the expected destination {wanted}")
+        if expected_protocol is not None:
+            report.passed(
+                f"a linked connection{where} was recorded with the expected Protocol "
+                f"{expected_protocol}"
+            )
+        return
+
+    if expected_protocol is not None and at_destination:
+        recorded = sorted({connection.protocol or "(missing)" for connection in at_destination})
+        report.fail(
+            f"no connection with the anchor host and ProcessGuid{where} was recorded with the "
+            f"expected Protocol {expected_protocol}: the {len(at_destination)} EID "
+            f"{SYSMON_NETWORK_CONNECTION_EVENT_ID} record(s) found carry Protocol "
+            f"{', '.join(recorded)}"
+        )
+        return
+
+    if destination_given:
+        report.fail(
+            "no connection with the anchor host and ProcessGuid reaches the expected destination "
+            f"{wanted}"
+        )
         return
 
     report.fail(
-        "no connection with the anchor host and ProcessGuid reaches the expected destination "
-        f"{wanted}"
+        "no connection with the anchor host and ProcessGuid was recorded with the expected "
+        f"Protocol {expected_protocol}"
     )

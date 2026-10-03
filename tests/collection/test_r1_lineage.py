@@ -17,6 +17,7 @@ from incident_awareness.collection.r1_lineage import (
     ProcessKey,
     R1LineageReport,
     build_process_tree,
+    connection_uses_protocol,
     read_r1_lineage_records,
     resolve_lineage,
     select_connections,
@@ -41,6 +42,9 @@ TOOL_IMAGE = r"C:\synthetic\admin_tool.exe"
 DESTINATION_IP = "10.0.0.9"
 DESTINATION_PORT = "443"
 SOURCE_IP = "10.0.0.5"
+
+# Passed as `protocol` to leave the Protocol field out of an EID 3.
+OMITTED = object()
 
 
 def process_event(
@@ -79,22 +83,26 @@ def connection_event(
     source_port: str | None = None,
     time_created: str = "2026-09-28T10:02:00.000Z",
     utc_time: str = "2026-09-28 10:02:00.000",
+    protocol: object = "tcp",
 ) -> dict:
     """One synthetic Sysmon EID 3 shaped like the collected JSONL.
 
     `record_id=None` leaves RecordId out, `source_port` adds the source endpoint
     and the two time arguments replace the default strings. They exist for the
     ordering tests; without them the event keeps the shape every other test
-    uses.
+    uses. `protocol` replaces the Protocol value, and `OMITTED` leaves the field
+    out, for the protocol tests.
     """
     event_data: dict[str, object] = {
         "ProcessGuid": guid,
         "Image": TOOL_IMAGE,
         "UtcTime": utc_time,
-        "Protocol": "tcp",
+        "Protocol": protocol,
         "DestinationIp": destination_ip,
         "DestinationPort": destination_port,
     }
+    if protocol is OMITTED:
+        del event_data["Protocol"]
     if source_port is not None:
         event_data["SourceIp"] = SOURCE_IP
         event_data["SourcePort"] = source_port
@@ -682,3 +690,217 @@ def test_other_event_ids_are_skipped_without_failing(tmp_path: Path) -> None:
     )
 
     assert report.ok, report.errors
+
+
+# ---------------------------------------------------------------------------
+# The protocol of the connection, when the caller expects one
+# ---------------------------------------------------------------------------
+
+
+def lineage_with_connections(*connections: dict) -> list[dict]:
+    """The normal candidate lineage followed by the given EID 3 records."""
+    return [*normal_candidate_events()[:3], *connections]
+
+
+def verify_expected_connection(
+    path: Path, *, expected_protocol: str | None = "tcp"
+) -> R1LineageReport:
+    """Verify the normal candidate against its destination and, by default, tcp."""
+    return verify_r1_lineage(
+        path,
+        anchor=ProcessKey(host=HOST, process_guid=NORMAL_TOOL_GUID),
+        expected_parent_process_guids=[WRAPPER_GUID, SESSION_GUID],
+        expected_destination_ip=DESTINATION_IP,
+        expected_destination_port=DESTINATION_PORT,
+        expected_protocol=expected_protocol,
+    )
+
+
+def test_expected_protocol_is_compared_without_case(tmp_path: Path) -> None:
+    cases = {
+        "lower": ("tcp", "tcp"),
+        "upper-record": ("TCP", "tcp"),
+        "mixed-record": ("Tcp", "tcp"),
+        "upper-expectation": ("tcp", "TCP"),
+    }
+
+    for name, (recorded, expected) in cases.items():
+        events = lineage_with_connections(
+            connection_event(record_id=4, guid=NORMAL_TOOL_GUID, protocol=recorded)
+        )
+        path = write_jsonl(tmp_path / f"{name}.jsonl", events)
+
+        report = verify_expected_connection(path, expected_protocol=expected)
+
+        assert report.ok, (name, report.errors)
+        wanted = f"{DESTINATION_IP}:{DESTINATION_PORT}"
+        assert f"a linked connection reaches the expected destination {wanted}" in report.checks
+        assert (
+            f"a linked connection to the expected destination {wanted} was recorded with the "
+            f"expected Protocol {expected}"
+        ) in report.checks, name
+
+
+def test_connection_recorded_with_another_protocol_is_not_the_expected_one(tmp_path: Path) -> None:
+    # The last value only looks like tcp: it holds a soft hyphen.
+    for index, recorded in enumerate(("udp", "UDP", "icmp", "tcpip", "tc\u00adp")):
+        events = lineage_with_connections(
+            connection_event(record_id=4, guid=NORMAL_TOOL_GUID, protocol=recorded)
+        )
+        path = write_jsonl(tmp_path / f"other-protocol-{index}.jsonl", events)
+
+        report = verify_expected_connection(path)
+
+        assert not report.ok, recorded
+        assert len(report.errors) == 1, recorded
+        assert "was recorded with the expected Protocol tcp" in report.errors[0], recorded
+        assert report.errors[0].endswith(f"carry Protocol {recorded}"), recorded
+        # The host, the ProcessGuid, the address and the port all fit, so this is
+        # not reported as a missing link or as a wrong destination.
+        assert "1 EID 3 record(s) carry the anchor host and ProcessGuid" in report.checks
+        assert not any("reaches the expected destination" in line for line in report.checks)
+        assert "reaches the expected destination" not in report.errors[0], recorded
+
+
+def test_connection_without_a_usable_protocol_is_not_the_expected_one(tmp_path: Path) -> None:
+    cases = {
+        "omitted": OMITTED,
+        "null": None,
+        "empty": "",
+        "blank": "   ",
+        "number": 6,
+        "list": ["tcp"],
+    }
+
+    for name, recorded in cases.items():
+        events = lineage_with_connections(
+            connection_event(record_id=4, guid=NORMAL_TOOL_GUID, protocol=recorded)
+        )
+        path = write_jsonl(tmp_path / f"{name}.jsonl", events)
+
+        report = verify_expected_connection(path)
+
+        assert not report.ok, name
+        assert len(report.errors) == 1, name
+        assert "was recorded with the expected Protocol tcp" in report.errors[0], name
+        assert report.errors[0].endswith("carry Protocol (missing)"), name
+
+
+def test_tcp_record_is_the_expected_connection_next_to_a_udp_record(tmp_path: Path) -> None:
+    # Given: two records of the anchor to the same address and port, one of each protocol
+    udp = connection_event(record_id=4, guid=NORMAL_TOOL_GUID, protocol="udp")
+    tcp = connection_event(record_id=5, guid=NORMAL_TOOL_GUID, protocol="tcp")
+
+    for name, connections in {"udp-first": (udp, tcp), "tcp-first": (tcp, udp)}.items():
+        path = write_jsonl(tmp_path / f"{name}.jsonl", lineage_with_connections(*connections))
+
+        report = verify_expected_connection(path)
+
+        assert report.ok, (name, report.errors)
+        assert "2 EID 3 record(s) carry the anchor host and ProcessGuid" in report.checks
+
+    # And: the udp record alone, with a record that states no Protocol, names both
+    missing = connection_event(record_id=6, guid=NORMAL_TOOL_GUID, protocol=OMITTED)
+    path = write_jsonl(tmp_path / "no-tcp.jsonl", lineage_with_connections(udp, missing))
+
+    report = verify_expected_connection(path)
+
+    assert not report.ok
+    assert report.errors[0].endswith("the 2 EID 3 record(s) found carry Protocol (missing), udp")
+
+
+def test_protocol_is_not_compared_unless_the_caller_expects_one(tmp_path: Path) -> None:
+    # A caller that pins no protocol keeps the result it had before the argument existed.
+    for name, recorded in {"udp": "udp", "omitted": OMITTED}.items():
+        events = lineage_with_connections(
+            connection_event(record_id=4, guid=NORMAL_TOOL_GUID, protocol=recorded)
+        )
+        path = write_jsonl(tmp_path / f"{name}.jsonl", events)
+
+        report = verify_expected_connection(path, expected_protocol=None)
+
+        assert report.ok, (name, report.errors)
+        assert not any("Protocol" in check for check in report.checks), name
+
+
+def test_expected_protocol_does_not_replace_the_other_checks(tmp_path: Path) -> None:
+    # Every record here is tcp. The address, the port, the ProcessGuid and the
+    # host still decide whether it is the expected connection.
+    cases = {
+        "another-address": (
+            connection_event(record_id=4, guid=NORMAL_TOOL_GUID, destination_ip="10.0.0.10"),
+            "reaches the expected destination",
+        ),
+        "another-port": (
+            connection_event(record_id=4, guid=NORMAL_TOOL_GUID, destination_port="8443"),
+            "reaches the expected destination",
+        ),
+        "process-guid-of-the-parent": (
+            connection_event(record_id=4, guid=WRAPPER_GUID),
+            "no EID 3 record carries the anchor",
+        ),
+        "another-host": (
+            connection_event(record_id=4, guid=NORMAL_TOOL_GUID, host=OTHER_HOST),
+            "no EID 3 record carries the anchor",
+        ),
+    }
+
+    for name, (connection, expected) in cases.items():
+        path = write_jsonl(tmp_path / f"{name}.jsonl", lineage_with_connections(connection))
+
+        report = verify_expected_connection(path)
+
+        assert not report.ok, name
+        assert any(expected in error for error in report.errors), name
+        assert not any("Protocol" in error for error in report.errors), name
+
+
+def test_protocol_can_be_expected_without_a_destination(tmp_path: Path) -> None:
+    anchor = ProcessKey(host=HOST, process_guid=NORMAL_TOOL_GUID)
+    tcp = connection_event(record_id=4, guid=NORMAL_TOOL_GUID, protocol="tcp")
+    udp = connection_event(record_id=4, guid=NORMAL_TOOL_GUID, protocol="udp")
+
+    tcp_path = write_jsonl(tmp_path / "tcp.jsonl", lineage_with_connections(tcp))
+    report = verify_r1_lineage(tcp_path, anchor=anchor, expected_protocol="tcp")
+    assert report.ok, report.errors
+    assert "a linked connection was recorded with the expected Protocol tcp" in report.checks
+
+    udp_path = write_jsonl(tmp_path / "udp.jsonl", lineage_with_connections(udp))
+    report = verify_r1_lineage(udp_path, anchor=anchor, expected_protocol="tcp")
+    assert not report.ok
+    assert report.errors == [
+        (
+            "no connection with the anchor host and ProcessGuid was recorded with the expected "
+            "Protocol tcp: the 1 EID 3 record(s) found carry Protocol udp"
+        )
+    ]
+
+    no_link_path = write_jsonl(tmp_path / "no-link.jsonl", lineage_with_connections())
+    report = verify_r1_lineage(no_link_path, anchor=anchor, expected_protocol="tcp")
+    assert not report.ok
+    assert "no EID 3 record carries the anchor" in report.errors[0]
+    assert report.errors[1] == (
+        "no connection with the anchor host and ProcessGuid was recorded with the expected "
+        "Protocol tcp"
+    )
+
+
+def test_connection_uses_protocol_reads_one_record(tmp_path: Path) -> None:
+    events = lineage_with_connections(
+        connection_event(record_id=4, guid=NORMAL_TOOL_GUID, protocol="TCP"),
+        connection_event(record_id=5, guid=NORMAL_TOOL_GUID, protocol="udp"),
+        connection_event(record_id=6, guid=NORMAL_TOOL_GUID, protocol=OMITTED),
+    )
+    path = write_jsonl(tmp_path / "three-records.jsonl", events)
+    _, _, connections = load_tree(path)
+    upper, udp, missing = select_connections(
+        connections, ProcessKey(host=HOST, process_guid=NORMAL_TOOL_GUID)
+    )
+
+    assert (upper.protocol, udp.protocol, missing.protocol) == ("TCP", "udp", None)
+    assert connection_uses_protocol(upper, "tcp")
+    assert connection_uses_protocol(upper, "TCP")
+    assert connection_uses_protocol(udp, "udp")
+    assert not connection_uses_protocol(udp, "tcp")
+    assert not connection_uses_protocol(missing, "tcp")
+    assert not connection_uses_protocol(missing, "")

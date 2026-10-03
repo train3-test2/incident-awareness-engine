@@ -806,7 +806,8 @@ function Test-R1RunLineage {
         The records have to show exactly that chain through ParentProcessGuid,
         with the expected Image at each step, and - when a connection was made -
         an EID 3 carrying the final tool's ProcessGuid to the approved
-        destination.
+        destination, recorded with the approved protocol. A record with another
+        Protocol, or with none, is not that connection.
 
         No time is compared. The process ids tie the records to this run, and
         which raw time orders records is not decided (r1.md section 8-1, S-7).
@@ -903,14 +904,48 @@ function Test-R1RunLineage {
         }
     }
 
+    # The approved connection is one protocol (Get-R1ConnectionApproval admits
+    # only TCP). An approval that states none could be met by a record that
+    # states none, so it accepts nothing.
+    $approvedProtocol = [string](Get-R1Value $Approval "protocol")
+    if ([string]::IsNullOrWhiteSpace($approvedProtocol)) {
+        return [ordered]@{
+            status             = "mismatched"
+            reason             = "the approval states no protocol, so no EID 3 can be the approved connection"
+            final_process_guid = $finalGuid
+        }
+    }
+
+    $otherProtocols = New-Object System.Collections.Generic.List[string]
     foreach ($data in $connections) {
         if ([string](Get-R1Value $data "ProcessGuid") -ne $finalGuid) { continue }
         if ([string](Get-R1Value $data "DestinationIp") -ne [string]$Approval.target) { continue }
         if ([string](Get-R1Value $data "DestinationPort") -ne [string]$Approval.port) { continue }
 
+        # Sysmon writes "tcp" and the scenario states "TCP": only case may differ.
+        # Another Protocol, an empty one or a record without the field is kept
+        # for the reason below and is never the approved connection.
+        $recordedProtocol = [string](Get-R1Value $data "Protocol")
+        if (-not [string]::Equals($recordedProtocol, $approvedProtocol,
+                [System.StringComparison]::OrdinalIgnoreCase)) {
+            if ([string]::IsNullOrWhiteSpace($recordedProtocol)) { $recordedProtocol = "(missing)" }
+            if (-not $otherProtocols.Contains($recordedProtocol)) { $otherProtocols.Add($recordedProtocol) }
+            continue
+        }
+
         return [ordered]@{
             status             = "matched"
             reason             = "the lineage matches and the final tool made the approved connection"
+            final_process_guid = $finalGuid
+        }
+    }
+
+    if ($otherProtocols.Count -gt 0) {
+        return [ordered]@{
+            status             = "mismatched"
+            reason             = ("an EID 3 with the final tool's ProcessGuid reaches the approved " +
+                "destination, but none was recorded with the approved Protocol " + $approvedProtocol +
+                ": recorded Protocol " + ($otherProtocols -join ", "))
             final_process_guid = $finalGuid
         }
     }

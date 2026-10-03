@@ -269,6 +269,9 @@ function New-SyntheticRecords {
         What Target-A's Sysmon would hold after a run: the session host, the
         intermediate, the final tool and, optionally, the final tool's connection.
         Every value is synthetic.
+
+        -Protocol replaces the Protocol Sysmon wrote on the connection ($null is
+        written as a JSON null) and -OmitProtocol leaves the field out.
     #>
     param(
         [string]$Computer = $TEST_HOST,
@@ -278,6 +281,8 @@ function New-SyntheticRecords {
         [string]$ConnectionGuid = $FINAL_GUID,
         [AllowNull()][string]$DestinationIp = $TEST_TARGET,
         [AllowNull()][string]$DestinationPort = [string]$TEST_PORT,
+        [AllowNull()]$Protocol = "tcp",
+        [switch]$OmitProtocol,
         [switch]$DuplicateFinal
     )
 
@@ -297,9 +302,11 @@ function New-SyntheticRecords {
             ParentProcessGuid = $SESSION_GUID; ParentProcessId = "4000" })))
     }
     if (-not [string]::IsNullOrEmpty($DestinationIp)) {
-        $records.Add((New-SyntheticRecord 4 3 $Computer ([ordered]@{
+        $connection = [ordered]@{
             ProcessGuid = $ConnectionGuid; ProcessId = "4200"; Image = ("C:\synthetic\" + $FinalImage)
-            Protocol = "tcp"; DestinationIp = $DestinationIp; DestinationPort = $DestinationPort })))
+            Protocol = $Protocol; DestinationIp = $DestinationIp; DestinationPort = $DestinationPort }
+        if ($OmitProtocol) { $connection.Remove("Protocol") }
+        $records.Add((New-SyntheticRecord 4 3 $Computer $connection))
     }
 
     return $records.ToArray()
@@ -399,7 +406,8 @@ function New-FakeTransport {
             $records = New-SyntheticRecords `
                 -IntermediateImage (Get-FakeOption "TelemetryIntermediateImage" ([string]$script:FakeArguments["launch"].executable)) `
                 -ConnectionGuid (Get-FakeOption "ConnectionGuid" $FINAL_GUID) `
-                -DestinationIp $destinationIp -DestinationPort $destinationPort
+                -DestinationIp $destinationIp -DestinationPort $destinationPort `
+                -Protocol (Get-FakeOption "TelemetryProtocol" "tcp")
 
             $lines = @($records | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 5 })
             $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -1125,6 +1133,10 @@ function Assert-FailedRun {
 
 Assert-FailedRun "the connection of another process is not accepted" `
     @{ ConnectionGuid = $INTERMEDIATE_GUID } "*lineage check failed*"
+Assert-FailedRun "a connection that telemetry recorded as udp is not accepted" `
+    @{ TelemetryProtocol = "udp" } "*lineage check failed*recorded Protocol udp*"
+Assert-FailedRun "a connection that telemetry recorded with an empty Protocol is not accepted" `
+    @{ TelemetryProtocol = "" } "*lineage check failed*recorded Protocol (missing)*"
 Assert-FailedRun "telemetry showing another intermediate is not accepted" `
     @{ TelemetryIntermediateImage = $attackImage } "*lineage check failed*"
 Assert-FailedRun "an attack run whose telemetry shows the wrapper is not accepted" `
@@ -1201,6 +1213,55 @@ Assert-True "mismatched: no records at all" ((Invoke-Lineage @()).status -eq "mi
 Assert-True "the attack lineage passes with its own expectation" (
     (Invoke-Lineage (New-SyntheticRecords -IntermediateImage "cscript.exe") `
         -Expected ([string[]]@("powershell.exe", "cscript.exe", "wsmprovhost.exe"))).status -eq "matched")
+
+ # The approved connection is TCP. The process, the address and the port of the
+ # records below all fit; only the Protocol Sysmon wrote differs.
+function New-FinalToolConnection {
+    <# One more synthetic EID 3 of the final tool to the approved destination. #>
+    param([int]$RecordId, [string]$Protocol)
+
+    return (New-SyntheticRecord $RecordId 3 $TEST_HOST ([ordered]@{
+        ProcessGuid = $FINAL_GUID; ProcessId = "4200"; Image = "C:\synthetic\powershell.exe"
+        Protocol = $Protocol; DestinationIp = $TEST_TARGET; DestinationPort = [string]$TEST_PORT }))
+}
+
+Assert-True "matched: the Protocol comparison ignores case" (
+    (Invoke-Lineage (New-SyntheticRecords -Protocol "TCP")).status -eq "matched" -and
+    (Invoke-Lineage (New-SyntheticRecords -Protocol "Tcp")).status -eq "matched")
+$recordedAsUdp = Invoke-Lineage (New-SyntheticRecords -Protocol "udp")
+Assert-True "mismatched: the connection was recorded as udp" ($recordedAsUdp.status -eq "mismatched")
+Assert-True "mismatched: the reason names the approved and the recorded Protocol" (
+    $recordedAsUdp.reason -like "*the approved Protocol TCP: recorded Protocol udp")
+Assert-True "mismatched: a udp connection still returns the final tool's ProcessGuid" (
+    $recordedAsUdp.final_process_guid -eq $FINAL_GUID)
+$withoutProtocol = Invoke-Lineage (New-SyntheticRecords -OmitProtocol)
+Assert-True "mismatched: the connection record carries no Protocol" ($withoutProtocol.status -eq "mismatched")
+Assert-True "mismatched: the reason says the Protocol is missing" (
+    $withoutProtocol.reason -like "*the approved Protocol TCP: recorded Protocol (missing)")
+Assert-True "mismatched: a null Protocol" (
+    (Invoke-Lineage (New-SyntheticRecords -Protocol $null)).status -eq "mismatched")
+Assert-True "mismatched: an empty Protocol" (
+    (Invoke-Lineage (New-SyntheticRecords -Protocol "")).status -eq "mismatched")
+Assert-True "mismatched: a Protocol that only starts with tcp" (
+    (Invoke-Lineage (New-SyntheticRecords -Protocol "tcpip")).status -eq "mismatched")
+ # A soft hyphen is ignored by a culture-aware comparison, so "tc-p" would equal
+ # "tcp" under -eq. The check compares ordinally.
+Assert-True "mismatched: a Protocol that only looks like tcp" (
+    (Invoke-Lineage (New-SyntheticRecords -Protocol ("tc" + [char]0x00AD + "p"))).status -eq "mismatched")
+Assert-True "matched: the tcp record is the connection when a udp record precedes it" (
+    (Invoke-Lineage (@(New-SyntheticRecords -Protocol "udp") + @(New-FinalToolConnection 6 "tcp"))).status -eq "matched")
+Assert-True "matched: the tcp record is the connection when a udp record follows it" (
+    (Invoke-Lineage (@(New-SyntheticRecords -Protocol "tcp") + @(New-FinalToolConnection 6 "udp"))).status -eq "matched")
+$twoOthers = Invoke-Lineage (@(New-SyntheticRecords -Protocol "udp") + @(New-FinalToolConnection 6 ""))
+Assert-True "mismatched: a udp record and a record without a Protocol are both named" (
+    $twoOthers.status -eq "mismatched" -and $twoOthers.reason -like "*recorded Protocol udp, (missing)")
+Assert-True "mismatched: a wrong destination is still reported as the destination" (
+    (Invoke-Lineage (New-SyntheticRecords -DestinationIp "10.20.30.99")).reason -notlike "*Protocol*")
+ # An approval without a protocol and a record without one must not meet.
+$approvalWithoutProtocol = [ordered]@{ target = $TEST_TARGET; port = $TEST_PORT }
+Assert-True "mismatched: an approval that states no protocol accepts no record" (
+    (Invoke-Lineage (New-SyntheticRecords -OmitProtocol) -Approval $approvalWithoutProtocol).status -eq "mismatched" -and
+    (Invoke-Lineage (New-SyntheticRecords) -Approval $approvalWithoutProtocol).status -eq "mismatched")
 
  # ---------------------------------------------------------------------------
  # 9. Rehearsal

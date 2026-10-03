@@ -74,6 +74,9 @@ RECORDED_TIMES = (
 )
 ACTION_PREFIX = {"normal": "N", "attack": "A"}
 
+# Passed as `protocol` to leave the Protocol field out of an EID 3.
+OMITTED = object()
+
 SCHEMA_VERSIONS = {
     "run_metadata": "v0.2",
     "event": "v0.3",
@@ -187,8 +190,23 @@ def connection_event(
     host: str = TARGET_HOST,
     destination_ip: str = DESTINATION_IP,
     destination_port: str = str(DESTINATION_PORT),
+    protocol: object = "tcp",
 ) -> dict:
-    """One synthetic Sysmon EID 3 in the shape the runner writes."""
+    """One synthetic Sysmon EID 3 in the shape the runner writes.
+
+    `protocol` replaces the Protocol value and `OMITTED` leaves the field out.
+    """
+    event_data: dict[str, object] = {
+        "UtcTime": "2030-01-02 00:08:00.350",
+        "ProcessGuid": guid,
+        "Image": FINAL_IMAGE,
+        "Protocol": protocol,
+        "DestinationIp": destination_ip,
+        "DestinationPort": destination_port,
+    }
+    if protocol is OMITTED:
+        del event_data["Protocol"]
+
     return {
         "RecordId": record_id,
         "EventId": 3,
@@ -196,14 +214,7 @@ def connection_event(
         "Channel": "Microsoft-Windows-Sysmon/Operational",
         "Computer": host,
         "Provider": "Microsoft-Windows-Sysmon",
-        "EventData": {
-            "UtcTime": "2030-01-02 00:08:00.350",
-            "ProcessGuid": guid,
-            "Image": FINAL_IMAGE,
-            "Protocol": "tcp",
-            "DestinationIp": destination_ip,
-            "DestinationPort": destination_port,
-        },
+        "EventData": event_data,
     }
 
 
@@ -693,6 +704,108 @@ def test_connection_to_another_destination_fails(
     assert report.lineage is None
 
 
+def run_with_connections(run_type: str, *protocols: object) -> list[dict]:
+    """The lineage of a run, then one EID 3 of the final tool per given Protocol.
+
+    Every connection carries the final tool's ProcessGuid, the approved address
+    and the approved port; only the Protocol differs. RecordIds start at 4.
+    """
+    events = run_events(run_type, connect=False)
+    events.extend(
+        connection_event(record_id=4 + index, guid=FINAL_GUID, protocol=protocol)
+        for index, protocol in enumerate(protocols)
+    )
+    return events
+
+
+@pytest.mark.parametrize("protocol", ["tcp", "TCP", "Tcp"])
+def test_connection_recorded_as_tcp_passes_whatever_its_case(tmp_path: Path, protocol: str) -> None:
+    report = validate(build_run(tmp_path, events=run_with_connections("normal", protocol)))
+
+    assert report.ok, report.errors
+    assert report.lineage is not None
+    assert [connection.protocol for connection in report.lineage.connections] == [protocol]
+    assert (
+        f"a linked connection to the expected destination {DESTINATION_IP}:{DESTINATION_PORT} "
+        "was recorded with the expected Protocol tcp"
+    ) in report.checks
+
+
+@pytest.mark.parametrize("run_type", ["normal", "attack"])
+def test_connection_recorded_as_udp_fails(tmp_path: Path, run_type: str) -> None:
+    # Given: the final tool's EID 3 reaches the approved address and port, as udp
+    run = build_run(tmp_path, run_type=run_type, events=run_with_connections(run_type, "udp"))
+
+    report = validate(run)
+
+    # Then: the host, the ProcessGuid, the address and the port do not make it
+    # the connection of the run
+    assert not report.ok
+    assert report.errors == [
+        (
+            "no connection with the anchor host and ProcessGuid to the expected destination "
+            f"{DESTINATION_IP}:{DESTINATION_PORT} was recorded with the expected Protocol tcp: "
+            "the 1 EID 3 record(s) found carry Protocol udp"
+        )
+    ]
+    assert report.lineage is None
+    assert "PASS" not in format_report(report)
+
+
+@pytest.mark.parametrize(
+    "protocol", [OMITTED, None, "", "   ", 6], ids=["omitted", "null", "empty", "blank", "number"]
+)
+def test_connection_without_a_protocol_fails(tmp_path: Path, protocol: object) -> None:
+    report = validate(build_run(tmp_path, events=run_with_connections("normal", protocol)))
+
+    assert not report.ok
+    assert len(report.errors) == 1
+    assert "was recorded with the expected Protocol tcp" in report.errors[0]
+    assert report.errors[0].endswith("the 1 EID 3 record(s) found carry Protocol (missing)")
+    assert report.lineage is None
+
+
+@pytest.mark.parametrize(
+    "protocols",
+    [("udp", "tcp", OMITTED), ("tcp", "udp", OMITTED), (OMITTED, "udp", "tcp")],
+    ids=["tcp-second", "tcp-first", "tcp-last"],
+)
+def test_only_the_tcp_record_is_kept_as_the_connection_of_the_run(
+    tmp_path: Path, protocols: tuple[object, ...]
+) -> None:
+    # Given: three records of the final tool to the approved address and port,
+    # of which one is tcp
+    run = build_run(tmp_path, run_type="attack", events=run_with_connections("attack", *protocols))
+
+    report = validate(run)
+
+    # Then: the run passes on the tcp record, and the lineage record holds it alone
+    assert report.ok, report.errors
+    assert "3 EID 3 record(s) carry the anchor host and ProcessGuid" in report.checks
+    assert report.lineage is not None
+    kept = report.lineage.connections
+    assert [connection.record_id for connection in kept] == [str(4 + protocols.index("tcp"))]
+    assert [connection.protocol for connection in kept] == ["tcp"]
+
+    text = format_report(report)
+    assert text.count("  connection: ") == 1
+    assert f"connection: {DESTINATION_IP}:{DESTINATION_PORT} tcp" in text
+    assert "udp" not in text
+    assert "(no Protocol)" not in text
+
+
+def test_udp_record_does_not_stand_in_for_a_tcp_record_of_another_process(tmp_path: Path) -> None:
+    # Given: the intermediate made the tcp connection and the final tool only a udp one
+    events = run_with_connections("normal", "udp")
+    events.append(connection_event(record_id=5, guid=INTERMEDIATE_GUID, protocol="tcp"))
+
+    report = validate(build_run(tmp_path, events=events))
+
+    assert not report.ok
+    assert "the 1 EID 3 record(s) found carry Protocol udp" in errors_of(report)
+    assert report.lineage is None
+
+
 def test_two_instances_with_the_designed_lineage_are_ambiguous(tmp_path: Path) -> None:
     # Given: a second intermediate and final tool under the same session host
     events = [
@@ -1107,6 +1220,17 @@ def test_rehearsal_with_a_destination_checks_the_connection(tmp_path: Path) -> N
     assert passing.ok, passing.errors
     assert not failing.ok
     assert "no EID 3 record carries the anchor host and ProcessGuid" in errors_of(failing)
+
+
+def test_rehearsal_with_a_destination_refuses_a_connection_that_is_not_tcp(tmp_path: Path) -> None:
+    # A rehearsal rendered with a destination checks the same connection a collection does.
+    run = build_run(tmp_path, rehearsal=True, events=run_with_connections("normal", "udp"))
+
+    report = validate(run, rehearsal=True)
+
+    assert not report.ok
+    assert "was recorded with the expected Protocol tcp" in errors_of(report)
+    assert report.lineage is None
 
 
 # ---------------------------------------------------------------------------

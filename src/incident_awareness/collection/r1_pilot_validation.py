@@ -17,7 +17,7 @@ Controller. It does two things.
 2. It finds the final management tool instance of the run in the raw Sysmon
    JSONL and hands it to `r1_lineage.verify_r1_lineage`, which checks the parent
    chain by host and ProcessGuid and the EID 3 carrying the same host and
-   ProcessGuid to the approved destination.
+   ProcessGuid to the approved destination, recorded as TCP.
 
 What the run was planned to leave - the three Images of its planned lineage, the
 internal destination, the Target-A name and the family, variation and repetition
@@ -67,6 +67,7 @@ from incident_awareness.collection.r1_lineage import (
     ProcessRecord,
     R1LineageReport,
     build_process_tree,
+    connection_uses_protocol,
     read_r1_lineage_records,
     resolve_lineage,
     select_connections,
@@ -97,6 +98,10 @@ from incident_awareness.common.models.run import RunMetadata
 SCENARIO_ID = "R1"
 RUN_TYPES = ("normal", "attack")
 CONNECT_STEP = "connect"
+# The connection an R1 run makes is TCP: the runner refuses a scenario stating
+# another protocol and the task attempts nothing else. This is the spelling
+# Sysmon records; the comparison ignores case.
+CONNECTION_PROTOCOL = "tcp"
 PLANNED_LINEAGE_KEY = "planned_lineage"
 LINEAGE_ROLES = ("final tool", "intermediate", "session host")
 REFERENCE_FIELDS = ("reference_time", "reference_action_id", "reference_source_event_id")
@@ -480,9 +485,11 @@ def _conforms(chain: LineageChain, expectation: R1PilotExpectation) -> bool:
 
 
 def _reaches(connection: ConnectionRecord, expectation: R1PilotExpectation) -> bool:
+    """Whether one record is the connection of the run: its destination, as TCP."""
     return (
         connection.destination_ip == expectation.destination_ip
         and connection.destination_port == expectation.destination_port
+        and connection_uses_protocol(connection, CONNECTION_PROTOCOL)
     )
 
 
@@ -523,9 +530,9 @@ def _check_lineage(
 ) -> None:
     """Find the final tool instance of this run and verify its lineage and link.
 
-    A duplicate ProcessGuid, a loop, a missing parent or a wrong destination is a
-    failure, never something to work around: each one is found by `r1_lineage`
-    and passed on unchanged.
+    A duplicate ProcessGuid, a loop, a missing parent, a wrong destination or a
+    connection that was not recorded as TCP is a failure, never something to
+    work around: each one is found by `r1_lineage` and passed on unchanged.
     """
     if expectation.destination_ip is None and not rehearsal:
         report.fail(
@@ -627,6 +634,7 @@ def _verify_anchor(
         expected_parent_process_guids=chain.process_guids[1:],
         expected_destination_ip=expectation.destination_ip,
         expected_destination_port=expectation.destination_port,
+        expected_protocol=CONNECTION_PROTOCOL,
     )
     report.errors.extend(verdict.errors)
     if not verdict.ok:
@@ -636,6 +644,8 @@ def _verify_anchor(
     report.passed(
         f"the final tool on {anchor.host} has the designed lineage: {_describe_chain(chain)}"
     )
+    # The record keeps what the verdict rests on: a record that reaches the
+    # destination with another Protocol, or with none, is left out.
     report.lineage = R1ObservedLineage(
         host=anchor.host,
         nodes=chain.nodes[: len(LINEAGE_ROLES)],
