@@ -1,8 +1,10 @@
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
+import yaml
 
 import incident_awareness.evidence.r1_multi_event as r1_multi_event_module
 from incident_awareness.common.models.event import NormalizedEvent
@@ -21,6 +23,7 @@ _MIDDLE_GUID = "{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}"
 _TERMINAL_GUID = "{CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC}"
 _SVCHOST_GUID = "{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}"
 _SERVICES_GUID = "{EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE}"
+_VOCABULARY_PATH = Path(__file__).parents[2] / "configs" / "evidence_types_v0.2.yaml"
 
 
 def _normalized_event(
@@ -338,6 +341,38 @@ def _lineage_events(
         _normalized_event(**middle_payload),
         _normalized_event(**terminal_payload),
     )
+
+
+def test_generated_r1_evidence_types_are_in_shared_vocabulary() -> None:
+    # Given
+    process_event, network_event = _matching_events()
+    anchor, middle, terminal = _lineage_events()
+    vocabulary = yaml.safe_load(_VOCABULARY_PATH.read_text(encoding="utf-8"))
+    existing_s0_types = {
+        "encoded_powershell_command",
+        "script_interpreter_external_connection",
+    }
+
+    # When
+    generated_evidences = [
+        *extract_remote_process_network_follow_on(process_event, network_event),
+        *extract_remote_session_process_lineage_deviation(
+            [anchor, middle, terminal],
+            anchor,
+            terminal,
+            _approved_policy(),
+        ),
+    ]
+    generated_types = {evidence.evidence_type for evidence in generated_evidences}
+    allowed_types = set(vocabulary["evidence_types"])
+
+    # Then
+    assert generated_types == {
+        "remote_session_process_lineage_deviation",
+        "remote_process_network_follow_on",
+    }
+    assert generated_types <= allowed_types
+    assert existing_s0_types <= allowed_types
 
 
 def test_matching_approved_lineage_does_not_create_evidence() -> None:
