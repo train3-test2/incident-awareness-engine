@@ -30,6 +30,7 @@ DB URL, DB 비밀번호, Bastion SSH 개인 키는 서버 측 비밀 값으로�
 | `fusion_results` | `run_id`, `entity_id` | 최신 Fusion Runtime view |
 | `detection_results` | `run_id`, `entity_id` | 최신 Fast Runtime view |
 | `fusion_stopping_traces` | `run_id`, `entity_id` | 최신 Fusion stopping trace |
+| `fusion_runtime_config_snapshots` | `run_id`, `entity_id` | 최신 Fusion Runtime 설정 view |
 | `decisions` | `run_id`, `entity_id`, `decision_id` | 불변 Hybrid Decision lifecycle record |
 | `decision_runtime_snapshots` | `decision_id` | Decision별 불변 Historical Runtime |
 
@@ -100,7 +101,9 @@ Current Decision은 동일한 `(run_id, entity_id)` scope에서 다른 Decision�
 
 `created_at DESC`의 첫 row, `MAX(created_at)`, 가장 큰 `decision_id`는 Current Decision의
 정본이 아니다. Current Runtime은 같은 scope의 `detection_results`, `fusion_results`,
-`fusion_stopping_traces` latest view다.
+`fusion_stopping_traces`, `fusion_runtime_config_snapshots` latest view다. Runtime config는
+`(run_id, entity_id)`별 mutable latest view이며 향후 Engine Read Model에서 사용할 수 있다.
+현재 `/runs/{run_id}` 응답에는 Runtime config를 추가하지 않는다.
 
 ### History
 
@@ -112,11 +115,26 @@ Decision History는 Current head에서 `supersedes_decision_id`를 역추적해 
 
 Historical Decision은 `decisions`의 선택된 `DecisionResult`와
 `decision_runtime_snapshots`의 동일 `decision_id` Snapshot으로 구성한다. Snapshot에는
-해당 Decision 생성 당시의 DetectionResult, FusionResult, FusionStoppingTrace가 들어 있다.
+해당 Decision 생성 당시의 DetectionResult, FusionResult, FusionStoppingTrace,
+FusionRuntimeConfigSnapshot이 들어 있다. Historical 조회는 latest
+`fusion_runtime_config_snapshots`를 fallback으로 사용하지 않는다.
 
 Snapshot이 없는 legacy Decision은 `Runtime snapshot unavailable` 상태로 취급한다. 이때도
 `detection_results`, `fusion_results`, `fusion_stopping_traces`의 latest Runtime으로
 fallback하지 않는다.
+
+Snapshot row는 있지만 `fusion_runtime_config_snapshot` 필드가 없는 legacy payload는
+`Runtime config snapshot unavailable`로 취급하며 값은 `null`이다. Snapshot row 자체가 없는
+legacy Decision의 `runtime_snapshot: null`과는 서로 다른 상태다. 어느 경우에도 현재 YAML이나
+latest Runtime config를 읽어 과거 값을 backfill하지 않는다.
+
+## Fusion Runtime 설정 Source of Truth
+
+Fusion Runtime Config Snapshot은 실행 당시 검증된 `FusionConfig`에서 생성되어 저장된다.
+Dashboard는 `scoring_config_version`의 내용을 복원하기 위해 현재 YAML, vocabulary 또는 설정
+파일을 다시 읽지 않는다. 따라서 과거 Decision의 설정은 해당 DecisionRuntimeSnapshot에
+포함된 immutable copy만 사용하며, 설정 파일이 이후 변경되더라도 Historical 응답은 바뀌지
+않는다.
 
 ## 상태 표시 규칙
 

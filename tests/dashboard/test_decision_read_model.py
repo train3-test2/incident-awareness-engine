@@ -7,6 +7,13 @@ from incident_awareness.common.models.fusion import (
     FusionStoppingTrace,
     FusionStoppingTracePoint,
 )
+from incident_awareness.common.models.fusion_runtime_config import (
+    FusionRuntimeConfigSnapshot,
+    FusionRuntimeReplaySnapshot,
+    FusionRuntimeScoringSnapshot,
+    FusionRuntimeStoppingSnapshot,
+    FusionRuntimeWindowSnapshot,
+)
 from incident_awareness.common.models.result import (
     DecisionPath,
     DecisionResult,
@@ -486,4 +493,27 @@ def _snapshot(
         detection_result=_detection_result(marker=marker),
         fusion_result=_fusion_result(marker=marker),
         fusion_stopping_trace=_fusion_stopping_trace(score=score),
+        fusion_runtime_config_snapshot=_runtime_config_snapshot(marker=marker),
+    )
+
+
+def _runtime_config_snapshot(*, marker: str) -> FusionRuntimeConfigSnapshot:
+    return FusionRuntimeConfigSnapshot(
+        run_id=RUN_ID,
+        entity_id=ENTITY_ID,
+        config_version=SCORING_CONFIG_VERSION,
+        model_version=None,
+        window=FusionRuntimeWindowSnapshot(window_size_sec=60.0),
+        replay=FusionRuntimeReplaySnapshot(step_size_sec=10.0),
+        scoring=FusionRuntimeScoringSnapshot(
+            method="simple_score",
+            scorer_version=marker,
+            profile_id="s0-profile",
+            evidence_types=("process_start",),
+        ),
+        stopping=FusionRuntimeStoppingSnapshot(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=2,
+        ),
     )

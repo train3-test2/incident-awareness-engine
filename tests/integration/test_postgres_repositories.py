@@ -17,6 +17,13 @@ from incident_awareness.common.models.fusion import (
     FusionStoppingTrace,
     FusionStoppingTracePoint,
 )
+from incident_awareness.common.models.fusion_runtime_config import (
+    FusionRuntimeConfigSnapshot,
+    FusionRuntimeReplaySnapshot,
+    FusionRuntimeScoringSnapshot,
+    FusionRuntimeStoppingSnapshot,
+    FusionRuntimeWindowSnapshot,
+)
 from incident_awareness.common.models.result import (
     DecisionPath,
     DecisionResult,
@@ -45,6 +52,7 @@ from incident_awareness.storage.repositories.result_repository import (
     DecisionRuntimeSnapshotRepository,
     DetectionResultRepository,
     FusionResultRepository,
+    FusionRuntimeConfigSnapshotRepository,
     FusionStoppingTraceRepository,
 )
 from incident_awareness.storage.repositories.run_repository import RunRepository
@@ -57,6 +65,7 @@ type _PersistenceCase = tuple[
     NormalizedEvidenceArtifacts,
     FusionResult,
     FusionStoppingTrace,
+    FusionRuntimeConfigSnapshot,
     FastDetectionAdapterResult,
     DecisionResult,
 ]
@@ -268,6 +277,58 @@ def test_postgres_stores_updates_and_cascades_fusion_stopping_trace(
             connection.commit()
 
 
+def test_postgres_runtime_config_repository_round_trip_and_latest_upsert(
+    database_url: str,
+) -> None:
+    # Given
+    run_id = "RUN-20261003-909"
+    entity_id = f"WIN-{uuid4().hex}"
+    decision_id = f"DEC-{uuid4().hex}"
+    case = _persistence_case(run_id, entity_id, decision_id)
+    artifacts = case[0]
+    snapshot_a = case[4].model_copy(
+        update={"config_version": "config-a", "model_version": "fusion-model-a"}
+    )
+    snapshot_b = snapshot_a.model_copy(
+        update={
+            "config_version": "config-b",
+            "model_version": "fusion-model-b",
+            "scoring": snapshot_a.scoring.model_copy(
+                update={"evidence_types": ("historical_sentinel", "network_connection")}
+            ),
+            "stopping": snapshot_a.stopping.model_copy(update={"threshold_on": 0.9}),
+        }
+    )
+
+    with psycopg.connect(database_url) as connection:
+        apply_migrations(connection)
+        repository = FusionRuntimeConfigSnapshotRepository(connection)
+        try:
+            RunRepository(connection).save(artifacts.run_metadata)
+            repository.save(snapshot_a)
+            stored_a = repository.get(run_id, entity_id)
+
+            # When
+            repository.save(snapshot_b)
+            stored_b = repository.get(run_id, entity_id)
+            row_count = connection.execute(
+                """
+                SELECT count(*)
+                FROM fusion_runtime_config_snapshots
+                WHERE run_id = %s AND entity_id = %s
+                """,
+                (run_id, entity_id),
+            ).fetchone()
+
+            # Then
+            assert stored_a == snapshot_a
+            assert stored_b == snapshot_b
+            assert row_count == (1,)
+        finally:
+            connection.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
+            connection.commit()
+
+
 def test_postgres_decision_runtime_snapshot_round_trip(database_url: str) -> None:
     # Given
     run, decision, snapshot = _runtime_snapshot_case(
@@ -435,26 +496,30 @@ def test_postgres_preserves_historical_runtime_snapshot_after_reprocessing(
         d1_id,
         d2_id,
     )
-    _, _, d1_fusion, d1_trace, d1_fast, d1_decision = d1_case
-    _, _, d2_fusion, d2_trace, d2_fast, d2_decision = d2_case
+    _, _, d1_fusion, d1_trace, d1_config, d1_fast, d1_decision = d1_case
+    _, _, d2_fusion, d2_trace, d2_config, d2_fast, d2_decision = d2_case
 
     with psycopg.connect(database_url) as connection:
         apply_migrations(connection)
         snapshot_repository = DecisionRuntimeSnapshotRepository(connection)
         fusion_repository = FusionResultRepository(connection)
         trace_repository = FusionStoppingTraceRepository(connection)
+        config_repository = FusionRuntimeConfigSnapshotRepository(connection)
         detection_repository = DetectionResultRepository(connection)
         decision_repository = DecisionRepository(connection)
 
         try:
             persist_s0_results(*d1_case, connection=connection)
             snapshot_d1 = snapshot_repository.get(d1_id)
+            latest_config_after_d1 = config_repository.get(run_id, entity_id)
+            d1_table_counts = _first_cycle_table_counts(connection, run_id)
 
             # When
             persist_s0_results(*d2_case, connection=connection)
             snapshot_d2 = snapshot_repository.get(d2_id)
             latest_fusion = fusion_repository.get(run_id, entity_id)
             latest_trace = trace_repository.get(run_id, entity_id)
+            latest_config = config_repository.get(run_id, entity_id)
             latest_detection = detection_repository.get(run_id, entity_id)
             current_head = decision_repository.get_current_head(run_id, entity_id)
             snapshot_d1_after_reprocessing = snapshot_repository.get(d1_id)
@@ -467,16 +532,21 @@ def test_postgres_preserves_historical_runtime_snapshot_after_reprocessing(
             assert snapshot_d1.detection_result == d1_fast.detection_result
             assert snapshot_d1.fusion_result == d1_fusion
             assert snapshot_d1.fusion_stopping_trace == d1_trace
+            assert snapshot_d1.fusion_runtime_config_snapshot == d1_config
+            assert latest_config_after_d1 == d1_config
+            assert d1_table_counts == (1, 1, 1, 1, 1, 1, 1, 1)
 
             assert snapshot_d2 is not None
             assert snapshot_d2.decision_id == d2_id
             assert snapshot_d2.detection_result == d2_fast.detection_result
             assert snapshot_d2.fusion_result == d2_fusion
             assert snapshot_d2.fusion_stopping_trace == d2_trace
+            assert snapshot_d2.fusion_runtime_config_snapshot == d2_config
             assert snapshot_d1 != snapshot_d2
 
             assert latest_fusion == d2_fusion
             assert latest_trace == d2_trace
+            assert latest_config == d2_config
             assert latest_detection == d2_fast.detection_result
             assert decision_repository.get(d1_id) == d1_decision
             assert decision_repository.get(d2_id) == d2_decision
@@ -484,6 +554,48 @@ def test_postgres_preserves_historical_runtime_snapshot_after_reprocessing(
             assert current_head.decision_id == d2_id
             assert current_head.supersedes_decision_id == d1_id
             assert snapshot_d1_after_reprocessing == snapshot_d1
+        finally:
+            connection.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
+            connection.commit()
+
+
+def test_postgres_rolls_back_first_cycle_writes_when_snapshot_write_fails(
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    suffix = uuid4().hex
+    run_id = "RUN-20261003-910"
+    entity_id = f"WIN-{suffix}"
+    d1_case, _ = _historical_persistence_cases(
+        run_id,
+        entity_id,
+        f"DEC-D1-{suffix}",
+        f"DEC-D2-{suffix}",
+    )
+
+    def fail_snapshot_save(
+        _repository: DecisionRuntimeSnapshotRepository,
+        _snapshot: DecisionRuntimeSnapshot,
+    ) -> None:
+        raise RuntimeError("injected Decision Runtime snapshot write failure")
+
+    with psycopg.connect(database_url) as connection:
+        apply_migrations(connection)
+        connection.commit()
+        try:
+            # When
+            with monkeypatch.context() as patch:
+                patch.setattr(DecisionRuntimeSnapshotRepository, "save", fail_snapshot_save)
+                with pytest.raises(RuntimeError, match="injected Decision Runtime snapshot"):
+                    persist_s0_results(*d1_case, connection=connection)
+            counts_after_failure = _first_cycle_table_counts(connection, run_id)
+            persist_s0_results(*d1_case, connection=connection)
+            counts_after_retry = _first_cycle_table_counts(connection, run_id)
+
+            # Then
+            assert counts_after_failure == (0, 0, 0, 0, 0, 0, 0, 0)
+            assert counts_after_retry == (1, 1, 1, 1, 1, 1, 1, 1)
         finally:
             connection.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
             connection.commit()
@@ -525,10 +637,11 @@ def test_postgres_dashboard_reader_preserves_current_history_and_snapshots(
     cases = (d1_case, d2_case, d3_case)
     expected_snapshots = tuple(
         build_decision_runtime_snapshot(
-            decision_result=case[5],
-            detection_result=case[4].detection_result,
+            decision_result=case[6],
+            detection_result=case[5].detection_result,
             fusion_result=case[2],
             fusion_stopping_trace=case[3],
+            fusion_runtime_config_snapshot=case[4],
         )
         for case in cases
     )
@@ -556,35 +669,35 @@ def test_postgres_dashboard_reader_preserves_current_history_and_snapshots(
 
             # Then
             assert current is not None
-            assert current.decision == d3_case[5]
-            assert current.latest_detection_result == d3_case[4].detection_result
+            assert current.decision == d3_case[6]
+            assert current.latest_detection_result == d3_case[5].detection_result
             assert current.latest_fusion_result == d3_case[2]
             assert current.latest_fusion_stopping_trace == d3_case[3]
 
             assert [decision.decision_id for decision in history] == [d3_id, d2_id, d1_id]
 
             assert historical_d1 is not None
-            assert historical_d1.decision == d1_case[5]
+            assert historical_d1.decision == d1_case[6]
             assert historical_d1.runtime_snapshot == expected_snapshots[0]
-            assert historical_d1.runtime_snapshot.detection_result == d1_case[4].detection_result
+            assert historical_d1.runtime_snapshot.detection_result == d1_case[5].detection_result
             assert historical_d1.runtime_snapshot.fusion_result == d1_case[2]
             assert historical_d1.runtime_snapshot.fusion_stopping_trace == d1_case[3]
 
             assert historical_d2 is not None
-            assert historical_d2.decision == d2_case[5]
+            assert historical_d2.decision == d2_case[6]
             assert historical_d2.runtime_snapshot == expected_snapshots[1]
-            assert historical_d2.runtime_snapshot.detection_result == d2_case[4].detection_result
+            assert historical_d2.runtime_snapshot.detection_result == d2_case[5].detection_result
             assert historical_d2.runtime_snapshot.fusion_result == d2_case[2]
             assert historical_d2.runtime_snapshot.fusion_stopping_trace == d2_case[3]
 
             assert historical_d3 is not None
-            assert historical_d3.decision == d3_case[5]
+            assert historical_d3.decision == d3_case[6]
             assert historical_d3.runtime_snapshot == expected_snapshots[2]
-            assert historical_d3.runtime_snapshot.detection_result == d3_case[4].detection_result
+            assert historical_d3.runtime_snapshot.detection_result == d3_case[5].detection_result
             assert historical_d3.runtime_snapshot.fusion_result == d3_case[2]
             assert historical_d3.runtime_snapshot.fusion_stopping_trace == d3_case[3]
 
-            assert historical_d1.runtime_snapshot.detection_result != d3_case[4].detection_result
+            assert historical_d1.runtime_snapshot.detection_result != d3_case[5].detection_result
             assert historical_d1.runtime_snapshot.fusion_result != d3_case[2]
             assert historical_d1.runtime_snapshot.fusion_stopping_trace != d3_case[3]
         finally:
@@ -607,7 +720,15 @@ def test_postgres_dashboard_reader_does_not_fallback_for_legacy_decision(
         runtime_version=4,
         trace_score=0.7,
     )
-    artifacts, _, fusion_result, stopping_trace, fast_result, decision_result = case
+    (
+        artifacts,
+        _,
+        fusion_result,
+        stopping_trace,
+        _,
+        fast_result,
+        decision_result,
+    ) = case
 
     with psycopg.connect(database_url) as connection:
         apply_migrations(connection)
@@ -653,7 +774,7 @@ def test_postgres_dashboard_reader_does_not_fallback_for_legacy_decision(
             connection.commit()
 
 
-def test_postgres_idempotent_decision_retry_preserves_first_stopping_trace(
+def test_postgres_decision_retry_keeps_runtime_a_until_d2_supersedes_with_b(
     database_url: str,
 ) -> None:
     # Given
@@ -661,15 +782,50 @@ def test_postgres_idempotent_decision_retry_preserves_first_stopping_trace(
     entity_id = f"WIN-{uuid4().hex}"
     decision_id = f"DEC-{uuid4().hex}"
     case = _persistence_case(run_id, entity_id, decision_id)
-    artifacts, normalized_artifacts, fusion_result, first_trace, fast_result, decision_result = case
-    retry_fast_result = _detected_fast_result(
-        run_id,
-        entity_id,
-        datetime(2026, 9, 12, 1, 0, 10, tzinfo=UTC),
-        hit_id=f"hit-{uuid4().hex}",
+    (
+        artifacts,
+        normalized_artifacts,
+        fusion_result,
+        first_trace,
+        runtime_config_snapshot,
+        fast_result,
+        decision_result,
+    ) = case
+    fusion_result = fusion_result.model_copy(
+        update={
+            "scoring_config_version": "config-a",
+            "scoring_profile_id": "profile-a",
+            "scorer_version": "scorer-a",
+        }
+    )
+    first_trace = first_trace.model_copy(update={"scoring_config_version": "config-a"})
+    runtime_config_snapshot = runtime_config_snapshot.model_copy(
+        update={
+            "config_version": "config-a",
+            "scoring": runtime_config_snapshot.scoring.model_copy(
+                update={"profile_id": "profile-a", "scorer_version": "scorer-a"}
+            ),
+        }
+    )
+    case = (
+        artifacts,
+        normalized_artifacts,
+        fusion_result,
+        first_trace,
+        runtime_config_snapshot,
+        fast_result,
+        decision_result,
+    )
+    second_fusion = fusion_result.model_copy(
+        update={
+            "scoring_config_version": "config-b",
+            "scoring_profile_id": "profile-b",
+            "scorer_version": "scorer-b",
+        }
     )
     second_trace = first_trace.model_copy(
         update={
+            "scoring_config_version": "config-b",
             "points": [
                 FusionStoppingTracePoint(
                     timestamp=datetime(2026, 9, 12, 1, tzinfo=UTC),
@@ -677,7 +833,34 @@ def test_postgres_idempotent_decision_retry_preserves_first_stopping_trace(
                     persistence_count=1,
                     policy_state="off",
                 )
-            ]
+            ],
+        }
+    )
+    second_config = runtime_config_snapshot.model_copy(
+        update={
+            "config_version": "config-b",
+            "scoring": runtime_config_snapshot.scoring.model_copy(
+                update={
+                    "scorer_version": "scorer-b",
+                    "profile_id": "profile-b",
+                    "evidence_types": ("historical_sentinel", "process_start"),
+                }
+            ),
+            "stopping": runtime_config_snapshot.stopping.model_copy(update={"threshold_on": 0.9}),
+        }
+    )
+    retry_fast_result = FastDetectionAdapterResult(
+        detection_result=fast_result.detection_result.model_copy(
+            update={"rule_version": "retry-v2"}
+        ),
+        source_hit_ids=fast_result.source_hit_ids,
+        selected_source_hit_id=fast_result.selected_source_hit_id,
+    )
+    d2_decision = decision_result.model_copy(
+        update={
+            "decision_id": f"DEC-D2-{uuid4().hex}",
+            "decision_reason": "D2 supersedes D1 with Runtime bundle B",
+            "supersedes_decision_id": decision_id,
         }
     )
 
@@ -685,7 +868,9 @@ def test_postgres_idempotent_decision_retry_preserves_first_stopping_trace(
         trace_repository = FusionStoppingTraceRepository(connection)
         detection_repository = DetectionResultRepository(connection)
         fusion_repository = FusionResultRepository(connection)
+        config_repository = FusionRuntimeConfigSnapshotRepository(connection)
         snapshot_repository = DecisionRuntimeSnapshotRepository(connection)
+        decision_repository = DecisionRepository(connection)
         try:
             apply_migrations(connection)
             persist_s0_results(*case, connection=connection)
@@ -695,8 +880,9 @@ def test_postgres_idempotent_decision_retry_preserves_first_stopping_trace(
             persist_s0_results(
                 artifacts,
                 normalized_artifacts,
-                fusion_result,
+                second_fusion,
                 second_trace,
+                second_config,
                 retry_fast_result,
                 decision_result,
                 connection=connection,
@@ -704,6 +890,7 @@ def test_postgres_idempotent_decision_retry_preserves_first_stopping_trace(
             stored_trace = trace_repository.get(run_id, entity_id)
             stored_detection = detection_repository.get(run_id, entity_id)
             stored_fusion = fusion_repository.get(run_id, entity_id)
+            stored_config = config_repository.get(run_id, entity_id)
             stored_snapshot = snapshot_repository.get(decision_id)
             snapshot_count = connection.execute(
                 "SELECT count(*) FROM decision_runtime_snapshots WHERE decision_id = %s",
@@ -712,13 +899,57 @@ def test_postgres_idempotent_decision_retry_preserves_first_stopping_trace(
 
             # Then
             assert second_trace != first_trace
+            assert second_fusion != fusion_result
+            assert second_config != runtime_config_snapshot
             assert retry_fast_result.detection_result != fast_result.detection_result
             assert stored_trace == first_trace
             assert stored_detection == fast_result.detection_result
             assert stored_fusion == fusion_result
+            assert stored_config == runtime_config_snapshot
             assert first_snapshot is not None
+            assert first_snapshot == build_decision_runtime_snapshot(
+                decision_result=decision_result,
+                detection_result=fast_result.detection_result,
+                fusion_result=fusion_result,
+                fusion_stopping_trace=first_trace,
+                fusion_runtime_config_snapshot=runtime_config_snapshot,
+            )
             assert stored_snapshot == first_snapshot
             assert snapshot_count == (1,)
+
+            # When
+            persist_s0_results(
+                artifacts,
+                normalized_artifacts,
+                second_fusion,
+                second_trace,
+                second_config,
+                retry_fast_result,
+                d2_decision,
+                connection=connection,
+            )
+            latest_fusion = fusion_repository.get(run_id, entity_id)
+            latest_trace = trace_repository.get(run_id, entity_id)
+            latest_config = config_repository.get(run_id, entity_id)
+            latest_detection = detection_repository.get(run_id, entity_id)
+            d1_snapshot_after_d2 = snapshot_repository.get(decision_id)
+            d2_snapshot = snapshot_repository.get(d2_decision.decision_id)
+            current_head = decision_repository.get_current_head(run_id, entity_id)
+
+            # Then
+            assert latest_fusion == second_fusion
+            assert latest_trace == second_trace
+            assert latest_config == second_config
+            assert latest_detection == retry_fast_result.detection_result
+            assert d1_snapshot_after_d2 == first_snapshot
+            assert d2_snapshot == build_decision_runtime_snapshot(
+                decision_result=d2_decision,
+                detection_result=retry_fast_result.detection_result,
+                fusion_result=second_fusion,
+                fusion_stopping_trace=second_trace,
+                fusion_runtime_config_snapshot=second_config,
+            )
+            assert current_head == d2_decision
         finally:
             connection.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
             connection.commit()
@@ -858,7 +1089,7 @@ def _persistence_case(
         contributing_evidence_ids=[],
         scoring_config_version="v0.2",
         scoring_profile_id="S0",
-        scoring_method="temporal_fusion",
+        scoring_method="simple_score",
         scorer_version="v0.2",
         fusion_episodes=[],
     )
@@ -910,6 +1141,7 @@ def _persistence_case(
         NormalizedEvidenceArtifacts(events=(), evidences=()),
         fusion_result,
         stopping_trace,
+        _runtime_config_snapshot_for(fusion_result),
         fast_result,
         decision_result,
     )
@@ -961,7 +1193,7 @@ def _decision_read_model_persistence_case(
         contributing_evidence_ids=[],
         scoring_config_version=version,
         scoring_profile_id=version,
-        scoring_method="temporal_fusion",
+        scoring_method="simple_score",
         scorer_version=version,
         fusion_episodes=[],
     )
@@ -1009,6 +1241,7 @@ def _decision_read_model_persistence_case(
         NormalizedEvidenceArtifacts(events=(), evidences=()),
         fusion_result,
         stopping_trace,
+        _runtime_config_snapshot_for(fusion_result),
         fast_result,
         decision_result,
     )
@@ -1059,7 +1292,7 @@ def _runtime_snapshot_case(
         contributing_evidence_ids=[],
         scoring_config_version="snapshot-v0.1",
         scoring_profile_id="S0",
-        scoring_method="temporal_fusion",
+        scoring_method="simple_score",
         scorer_version="v0.2",
         fusion_episodes=[],
     )
@@ -1095,6 +1328,7 @@ def _runtime_snapshot_case(
         detection_result=detection_result,
         fusion_result=fusion_result,
         fusion_stopping_trace=fusion_stopping_trace,
+        fusion_runtime_config_snapshot=_runtime_config_snapshot_for(fusion_result),
     )
     return run, decision_result, snapshot
 
@@ -1134,7 +1368,29 @@ def _historical_persistence_cases(
             segment_no=1,
         ),
     )
-    normalized_artifacts = NormalizedEvidenceArtifacts(events=(), evidences=())
+    event_time = d1_time
+    normalized_artifacts = NormalizedEvidenceArtifacts(
+        events=(
+            NormalizedEvent(
+                event_id=f"evt-{uuid4().hex}",
+                run_id=run_id,
+                timestamp=event_time,
+                timestamp_source="event_time",
+                event_time=event_time,
+                host_id=entity_id,
+                source="sysmon",
+                source_layer="raw_telemetry",
+                source_event_id="1",
+                event_type="process_create",
+                raw_ref=RawLogReference(
+                    raw_log_id="RAW-HISTORICAL",
+                    segment_no=1,
+                    record_no=1,
+                ),
+            ),
+        ),
+        evidences=(),
+    )
 
     d1_fusion = FusionResult(
         run_id=run_id,
@@ -1145,7 +1401,7 @@ def _historical_persistence_cases(
         contributing_evidence_ids=[],
         scoring_config_version="historical-v1",
         scoring_profile_id="historical-profile-v1",
-        scoring_method="temporal_fusion",
+        scoring_method="simple_score",
         scorer_version="historical-scorer-v1",
         fusion_episodes=[],
     )
@@ -1212,7 +1468,7 @@ def _historical_persistence_cases(
         contributing_evidence_ids=d2_evidence_ids,
         scoring_config_version="historical-v2",
         scoring_profile_id="historical-profile-v2",
-        scoring_method="temporal_fusion",
+        scoring_method="simple_score",
         scorer_version="historical-scorer-v2",
         fusion_episodes=[
             FusionEpisodeResult(
@@ -1272,6 +1528,7 @@ def _historical_persistence_cases(
         normalized_artifacts,
         d1_fusion,
         d1_trace,
+        _runtime_config_snapshot_for(d1_fusion),
         d1_fast,
         d1_decision,
     )
@@ -1280,10 +1537,35 @@ def _historical_persistence_cases(
         normalized_artifacts,
         d2_fusion,
         d2_trace,
+        _runtime_config_snapshot_for(d2_fusion),
         d2_fast,
         d2_decision,
     )
     return d1_case, d2_case
+
+
+def _runtime_config_snapshot_for(
+    fusion_result: FusionResult,
+) -> FusionRuntimeConfigSnapshot:
+    return FusionRuntimeConfigSnapshot(
+        run_id=fusion_result.run_id,
+        entity_id=fusion_result.entity_id,
+        config_version=fusion_result.scoring_config_version,
+        model_version=fusion_result.model_version,
+        window=FusionRuntimeWindowSnapshot(window_size_sec=60.0),
+        replay=FusionRuntimeReplaySnapshot(step_size_sec=10.0),
+        scoring=FusionRuntimeScoringSnapshot(
+            method="simple_score",
+            scorer_version=fusion_result.scorer_version,
+            profile_id=fusion_result.scoring_profile_id,
+            evidence_types=("process_start",),
+        ),
+        stopping=FusionRuntimeStoppingSnapshot(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=2,
+        ),
+    )
 
 
 def _detected_fast_result(
@@ -1308,3 +1590,23 @@ def _detected_fast_result(
         source_hit_ids=(hit_id,),
         selected_source_hit_id=hit_id,
     )
+
+
+def _first_cycle_table_counts(
+    connection: psycopg.Connection[tuple[object, ...]],
+    run_id: str,
+) -> tuple[object, ...] | None:
+    return connection.execute(
+        """
+        SELECT
+            (SELECT count(*) FROM runs WHERE run_id = %s),
+            (SELECT count(*) FROM events WHERE run_id = %s),
+            (SELECT count(*) FROM fusion_results WHERE run_id = %s),
+            (SELECT count(*) FROM fusion_stopping_traces WHERE run_id = %s),
+            (SELECT count(*) FROM fusion_runtime_config_snapshots WHERE run_id = %s),
+            (SELECT count(*) FROM detection_results WHERE run_id = %s),
+            (SELECT count(*) FROM decisions WHERE run_id = %s),
+            (SELECT count(*) FROM decision_runtime_snapshots WHERE run_id = %s)
+        """,
+        (run_id,) * 8,
+    ).fetchone()

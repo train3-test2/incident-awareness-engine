@@ -44,6 +44,7 @@ def run_first_cycle_pipeline(
     )
     fusion_result = fusion_output.fusion_result
     stopping_trace = fusion_output.stopping_trace
+    runtime_config_snapshot = fusion_output.runtime_config_snapshot
     fast_result = _run_stage(
         "fast_handoff",
         lambda: load_s0_fast_detection(inputs, artifacts),
@@ -65,6 +66,7 @@ def run_first_cycle_pipeline(
             normalized_artifacts,
             fusion_result,
             stopping_trace,
+            runtime_config_snapshot,
             fast_result,
             decision_result,
             connection=connection,
