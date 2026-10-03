@@ -26,6 +26,7 @@ _MIGRATION_BASELINE_TABLES = {
     ),
     "002_fusion_stopping_trace": frozenset({"fusion_stopping_traces"}),
     "003_decision_runtime_snapshot": frozenset({"decision_runtime_snapshots"}),
+    "004_fusion_runtime_config_snapshot": frozenset({"fusion_runtime_config_snapshots"}),
 }
 _MIGRATIONS_DIRECTORY = Path(__file__).resolve().parents[3] / "infra" / "postgres" / "migrations"
 

@@ -7,6 +7,7 @@ from typing import Protocol
 import psycopg
 
 from incident_awareness.common.models.fusion import FusionResult, FusionStoppingTrace
+from incident_awareness.common.models.fusion_runtime_config import FusionRuntimeConfigSnapshot
 from incident_awareness.common.models.result import DecisionResult
 from incident_awareness.common.models.runtime_snapshot import build_decision_runtime_snapshot
 from incident_awareness.integration.fast_hit_handoff import FastDetectionAdapterResult
@@ -20,6 +21,7 @@ from incident_awareness.storage.repositories.result_repository import (
     DecisionRuntimeSnapshotRepository,
     DetectionResultRepository,
     FusionResultRepository,
+    FusionRuntimeConfigSnapshotRepository,
     FusionStoppingTraceRepository,
 )
 from incident_awareness.storage.repositories.run_repository import RunRepository
@@ -63,6 +65,7 @@ def persist_s0_results(
     normalized_artifacts: NormalizedEvidenceArtifacts,
     fusion_result: FusionResult,
     stopping_trace: FusionStoppingTrace,
+    runtime_config_snapshot: FusionRuntimeConfigSnapshot,
     fast_result: FastDetectionAdapterResult,
     decision_result: DecisionResult,
     *,
@@ -75,6 +78,7 @@ def persist_s0_results(
             normalized_artifacts,
             fusion_result,
             stopping_trace,
+            runtime_config_snapshot,
             fast_result,
             decision_result,
         )
@@ -95,6 +99,7 @@ def persist_s0_results(
             normalized_artifacts,
             fusion_result,
             stopping_trace,
+            runtime_config_snapshot,
             fast_result,
             decision_result,
         )
@@ -109,6 +114,7 @@ def persist_s0_results(
             normalized_artifacts,
             fusion_result,
             stopping_trace,
+            runtime_config_snapshot,
             fast_result,
             decision_result,
         )
@@ -176,6 +182,7 @@ def _persist(
     normalized_artifacts: NormalizedEvidenceArtifacts,
     fusion_result: FusionResult,
     stopping_trace: FusionStoppingTrace,
+    runtime_config_snapshot: FusionRuntimeConfigSnapshot,
     fast_result: FastDetectionAdapterResult,
     decision_result: DecisionResult,
 ) -> None:
@@ -221,6 +228,7 @@ def _persist(
             detection_result=fast_result.detection_result,
             fusion_result=fusion_result,
             fusion_stopping_trace=stopping_trace,
+            fusion_runtime_config_snapshot=runtime_config_snapshot,
         )
 
         RunRepository(connection).save(artifacts.run_metadata)
@@ -229,6 +237,7 @@ def _persist(
             event_repository.save(event)
         FusionResultRepository(connection).save(fusion_result)
         FusionStoppingTraceRepository(connection).save(stopping_trace)
+        FusionRuntimeConfigSnapshotRepository(connection).save(runtime_config_snapshot)
         DetectionResultRepository(connection).save(fast_result.detection_result)
         decision_repository.save(decision_result)
         DecisionRuntimeSnapshotRepository(connection).save(runtime_snapshot)
@@ -273,6 +282,7 @@ def _validate_result_scope(
     normalized_artifacts: NormalizedEvidenceArtifacts,
     fusion_result: FusionResult,
     stopping_trace: FusionStoppingTrace,
+    runtime_config_snapshot: FusionRuntimeConfigSnapshot,
     fast_result: FastDetectionAdapterResult,
     decision_result: DecisionResult,
 ) -> None:
@@ -283,7 +293,13 @@ def _validate_result_scope(
     if any(event.host_id != target_host for event in normalized_artifacts.events):
         raise ValueError("NormalizedEvent host_id must match RunMetadata target_host")
 
-    results = (fusion_result, stopping_trace, fast_result.detection_result, decision_result)
+    results = (
+        fusion_result,
+        stopping_trace,
+        runtime_config_snapshot,
+        fast_result.detection_result,
+        decision_result,
+    )
     if any(result.run_id != run_id for result in results):
         raise ValueError("result run_id must match RunMetadata before persistence")
     if any(result.entity_id != target_host for result in results):
@@ -291,13 +307,42 @@ def _validate_result_scope(
 
     entity_ids = {result.entity_id for result in results}
     if len(entity_ids) != 1:
-        raise ValueError(
-            "Fusion, FusionStoppingTrace, Detection, and Decision results must share one entity_id"
-        )
+        raise ValueError("Fusion Runtime, Detection, and Decision results must share one entity_id")
 
     if stopping_trace.scoring_config_version != fusion_result.scoring_config_version:
         raise ValueError(
             "FusionStoppingTrace scoring_config_version must match FusionResult before persistence"
+        )
+
+    if runtime_config_snapshot.config_version != fusion_result.scoring_config_version:
+        raise ValueError(
+            "FusionRuntimeConfigSnapshot config_version must match "
+            "FusionResult scoring_config_version before persistence"
+        )
+    if runtime_config_snapshot.config_version != stopping_trace.scoring_config_version:
+        raise ValueError(
+            "FusionRuntimeConfigSnapshot config_version must match "
+            "FusionStoppingTrace scoring_config_version before persistence"
+        )
+    if runtime_config_snapshot.scoring.profile_id != fusion_result.scoring_profile_id:
+        raise ValueError(
+            "FusionRuntimeConfigSnapshot scoring profile_id must match "
+            "FusionResult scoring_profile_id before persistence"
+        )
+    if runtime_config_snapshot.scoring.method != fusion_result.scoring_method:
+        raise ValueError(
+            "FusionRuntimeConfigSnapshot scoring method must match "
+            "FusionResult scoring_method before persistence"
+        )
+    if runtime_config_snapshot.scoring.scorer_version != fusion_result.scorer_version:
+        raise ValueError(
+            "FusionRuntimeConfigSnapshot scoring scorer_version must match "
+            "FusionResult scorer_version before persistence"
+        )
+    if runtime_config_snapshot.model_version != fusion_result.model_version:
+        raise ValueError(
+            "FusionRuntimeConfigSnapshot model_version must match "
+            "FusionResult model_version before persistence"
         )
 
     if fusion_result.fusion_status == "not_evaluated":

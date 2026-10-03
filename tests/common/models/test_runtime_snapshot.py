@@ -9,6 +9,13 @@ from incident_awareness.common.models.fusion import (
     FusionStoppingTrace,
     FusionStoppingTracePoint,
 )
+from incident_awareness.common.models.fusion_runtime_config import (
+    FusionRuntimeConfigSnapshot,
+    FusionRuntimeReplaySnapshot,
+    FusionRuntimeScoringSnapshot,
+    FusionRuntimeStoppingSnapshot,
+    FusionRuntimeWindowSnapshot,
+)
 from incident_awareness.common.models.result import (
     DecisionPath,
     DecisionResult,
@@ -45,6 +52,7 @@ def test_builds_decision_runtime_snapshot_from_runtime_contracts() -> None:
         detection_result=detection_result,
         fusion_result=fusion_result,
         fusion_stopping_trace=fusion_stopping_trace,
+        fusion_runtime_config_snapshot=_runtime_config_snapshot(),
     )
 
     # Then
@@ -54,6 +62,7 @@ def test_builds_decision_runtime_snapshot_from_runtime_contracts() -> None:
     assert snapshot.detection_result is detection_result
     assert snapshot.fusion_result is fusion_result
     assert snapshot.fusion_stopping_trace is fusion_stopping_trace
+    assert snapshot.fusion_runtime_config_snapshot == _runtime_config_snapshot()
 
 
 @pytest.mark.parametrize(
@@ -238,6 +247,7 @@ def test_rejects_decision_fast_status_mismatched_with_detection_result() -> None
             detection_result=detection_result,
             fusion_result=_fusion_result(),
             fusion_stopping_trace=_fusion_stopping_trace(),
+            fusion_runtime_config_snapshot=_runtime_config_snapshot(),
         )
 
     # Then
@@ -264,6 +274,7 @@ def test_rejects_decision_detector_time_mismatched_with_detection_result() -> No
             detection_result=detection_result,
             fusion_result=_fusion_result(),
             fusion_stopping_trace=_fusion_stopping_trace(),
+            fusion_runtime_config_snapshot=_runtime_config_snapshot(),
         )
 
     # Then
@@ -284,6 +295,7 @@ def test_rejects_decision_fusion_status_mismatched_with_fusion_result() -> None:
             detection_result=_detection_result(),
             fusion_result=fusion_result,
             fusion_stopping_trace=_fusion_stopping_trace(points_present=False),
+            fusion_runtime_config_snapshot=_runtime_config_snapshot(),
         )
 
     # Then
@@ -310,6 +322,7 @@ def test_rejects_decision_fusion_time_mismatched_with_fusion_result() -> None:
             detection_result=_detection_result(),
             fusion_result=fusion_result,
             fusion_stopping_trace=_fusion_stopping_trace(),
+            fusion_runtime_config_snapshot=_runtime_config_snapshot(),
         )
 
     # Then
@@ -323,6 +336,7 @@ def test_round_trips_decision_runtime_snapshot_through_json() -> None:
         detection_result=_detection_result(),
         fusion_result=_fusion_result(),
         fusion_stopping_trace=_fusion_stopping_trace(),
+        fusion_runtime_config_snapshot=_runtime_config_snapshot(),
     )
 
     # When
@@ -360,11 +374,105 @@ def test_rejects_empty_decision_runtime_snapshot_identifier(field_name: str) -> 
     assert field_name in str(exc_info.value)
 
 
+def test_restores_legacy_snapshot_without_runtime_config_snapshot() -> None:
+    # Given
+    payload = _snapshot().model_dump(mode="json")
+    del payload["fusion_runtime_config_snapshot"]
+
+    # When
+    restored = DecisionRuntimeSnapshot.model_validate(payload)
+
+    # Then
+    assert restored.fusion_runtime_config_snapshot is None
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "expected_message"),
+    [
+        (
+            "run_id",
+            OTHER_RUN_ID,
+            "FusionRuntimeConfigSnapshot run_id must match DecisionRuntimeSnapshot run_id",
+        ),
+        (
+            "entity_id",
+            OTHER_ENTITY_ID,
+            "FusionRuntimeConfigSnapshot entity_id must match DecisionRuntimeSnapshot entity_id",
+        ),
+    ],
+)
+def test_rejects_runtime_config_snapshot_with_mismatched_scope(
+    field_name: str,
+    value: str,
+    expected_message: str,
+) -> None:
+    # Given
+    runtime_config = _runtime_config_snapshot().model_copy(update={field_name: value})
+
+    # When
+    with pytest.raises(ValueError, match=expected_message):
+        _snapshot(fusion_runtime_config_snapshot=runtime_config)
+
+
+def test_rejects_runtime_config_snapshot_with_mismatched_config_version() -> None:
+    # Given
+    runtime_config = _runtime_config_snapshot(config_version="other-config")
+
+    # When
+    with pytest.raises(
+        ValueError,
+        match=(
+            "FusionRuntimeConfigSnapshot config_version must match "
+            "FusionResult scoring_config_version"
+        ),
+    ):
+        _snapshot(fusion_runtime_config_snapshot=runtime_config)
+
+
+@pytest.mark.parametrize(
+    ("fusion_field", "fusion_value", "expected_message"),
+    [
+        (
+            "scoring_profile_id",
+            "other-profile",
+            "scoring profile_id must match FusionResult scoring_profile_id",
+        ),
+        (
+            "scoring_method",
+            "temporal_fusion",
+            "scoring method must match FusionResult scoring_method",
+        ),
+        (
+            "scorer_version",
+            "other-scorer",
+            "scoring scorer_version must match FusionResult scorer_version",
+        ),
+        (
+            "model_version",
+            "model-v1",
+            "model_version must match FusionResult model_version",
+        ),
+    ],
+)
+def test_rejects_runtime_config_snapshot_with_mismatched_fusion_metadata(
+    fusion_field: str,
+    fusion_value: str,
+    expected_message: str,
+) -> None:
+    # Given
+    fusion_result = _fusion_result().model_copy(update={fusion_field: fusion_value})
+
+    # When / Then
+    with pytest.raises(ValueError, match=expected_message):
+        _snapshot(fusion_result=fusion_result)
+
+
 def _snapshot(
     *,
     detection_result: DetectionResult | None = None,
     fusion_result: FusionResult | None = None,
     fusion_stopping_trace: FusionStoppingTrace | None = None,
+    fusion_runtime_config_snapshot: FusionRuntimeConfigSnapshot | None = None,
 ) -> DecisionRuntimeSnapshot:
     return DecisionRuntimeSnapshot(
         decision_id=DECISION_ID,
@@ -376,6 +484,42 @@ def _snapshot(
         fusion_result=fusion_result if fusion_result is not None else _fusion_result(),
         fusion_stopping_trace=(
             fusion_stopping_trace if fusion_stopping_trace is not None else _fusion_stopping_trace()
+        ),
+        fusion_runtime_config_snapshot=(
+            fusion_runtime_config_snapshot
+            if fusion_runtime_config_snapshot is not None
+            else _runtime_config_snapshot()
+        ),
+    )
+
+
+def _runtime_config_snapshot(
+    *,
+    run_id: str = RUN_ID,
+    entity_id: str = ENTITY_ID,
+    config_version: str = SCORING_CONFIG_VERSION,
+    profile_id: str = "s0-profile",
+    method: Literal["simple_score"] = "simple_score",
+    scorer_version: str = "simple-score-v0.1",
+    model_version: str | None = None,
+) -> FusionRuntimeConfigSnapshot:
+    return FusionRuntimeConfigSnapshot(
+        run_id=run_id,
+        entity_id=entity_id,
+        config_version=config_version,
+        model_version=model_version,
+        window=FusionRuntimeWindowSnapshot(window_size_sec=60.0),
+        replay=FusionRuntimeReplaySnapshot(step_size_sec=10.0),
+        scoring=FusionRuntimeScoringSnapshot(
+            method=method,
+            scorer_version=scorer_version,
+            profile_id=profile_id,
+            evidence_types=("process_start",),
+        ),
+        stopping=FusionRuntimeStoppingSnapshot(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=2,
         ),
     )
 

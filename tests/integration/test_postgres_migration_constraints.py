@@ -41,6 +41,13 @@ THIRD_MIGRATION_PATH = (
     / "migrations"
     / "003_decision_runtime_snapshot.sql"
 )
+FOURTH_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "infra"
+    / "postgres"
+    / "migrations"
+    / "004_fusion_runtime_config_snapshot.sql"
+)
 RUN_ID = "RUN-20260912-998"
 EVENT_ID = "evt-001"
 ENTITY_ID = "WIN-01"
@@ -69,6 +76,7 @@ def migration_connection(database_url: str) -> psycopg.Connection[tuple[object, 
         connection.execute(FIRST_MIGRATION_PATH.read_text(encoding="utf-8"))
         connection.execute(SECOND_MIGRATION_PATH.read_text(encoding="utf-8"))
         connection.execute(THIRD_MIGRATION_PATH.read_text(encoding="utf-8"))
+        connection.execute(FOURTH_MIGRATION_PATH.read_text(encoding="utf-8"))
         connection.execute(
             """
             INSERT INTO runs (
@@ -135,21 +143,9 @@ def test_baselines_migrations_applied_by_docker_initdb(
 
     # When
     applied = apply_migrations(migration_connection)
-
-    # Then
-    assert applied == (
-        "001_first_cycle",
-        "002_fusion_stopping_trace",
-        "003_decision_runtime_snapshot",
-    )
     migration_ids = migration_connection.execute(
         "SELECT migration_id FROM schema_migrations ORDER BY migration_id"
     ).fetchall()
-    assert migration_ids == [
-        ("001_first_cycle",),
-        ("002_fusion_stopping_trace",),
-        ("003_decision_runtime_snapshot",),
-    ]
     existing_tables = migration_connection.execute(
         """
         SELECT table_name
@@ -162,20 +158,213 @@ def test_baselines_migrations_applied_by_docker_initdb(
               'detection_results',
               'decisions',
               'fusion_stopping_traces',
-              'decision_runtime_snapshots'
+              'decision_runtime_snapshots',
+              'fusion_runtime_config_snapshots'
           )
         ORDER BY table_name
         """
     ).fetchall()
+    reapplied = apply_migrations(migration_connection)
+
+    # Then
+    assert applied == (
+        "001_first_cycle",
+        "002_fusion_stopping_trace",
+        "003_decision_runtime_snapshot",
+        "004_fusion_runtime_config_snapshot",
+    )
+    assert migration_ids == [
+        ("001_first_cycle",),
+        ("002_fusion_stopping_trace",),
+        ("003_decision_runtime_snapshot",),
+        ("004_fusion_runtime_config_snapshot",),
+    ]
     assert existing_tables == [
         ("decision_runtime_snapshots",),
         ("decisions",),
         ("detection_results",),
         ("events",),
         ("fusion_results",),
+        ("fusion_runtime_config_snapshots",),
         ("fusion_stopping_traces",),
         ("runs",),
     ]
+    assert reapplied == ()
+
+
+def test_fusion_runtime_config_snapshot_schema_matches_contract(
+    migration_connection: psycopg.Connection[tuple[object, ...]],
+) -> None:
+    # Given
+    connection = migration_connection
+
+    # When
+    columns = connection.execute(
+        """
+        SELECT column_name, data_type, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'fusion_runtime_config_snapshots'
+        ORDER BY ordinal_position
+        """
+    ).fetchall()
+    primary_key_columns = connection.execute(
+        """
+        SELECT key_column.column_name
+        FROM information_schema.table_constraints AS table_constraint
+        JOIN information_schema.key_column_usage AS key_column
+          ON key_column.constraint_schema = table_constraint.constraint_schema
+         AND key_column.constraint_name = table_constraint.constraint_name
+        WHERE table_constraint.table_schema = current_schema()
+          AND table_constraint.table_name = 'fusion_runtime_config_snapshots'
+          AND table_constraint.constraint_type = 'PRIMARY KEY'
+        ORDER BY key_column.ordinal_position
+        """
+    ).fetchall()
+    foreign_keys = connection.execute(
+        """
+        SELECT
+            key_column.column_name,
+            referenced_column.table_name,
+            referenced_column.column_name,
+            referential_constraint.delete_rule
+        FROM information_schema.table_constraints AS table_constraint
+        JOIN information_schema.key_column_usage AS key_column
+          ON key_column.constraint_schema = table_constraint.constraint_schema
+         AND key_column.constraint_name = table_constraint.constraint_name
+        JOIN information_schema.referential_constraints AS referential_constraint
+          ON referential_constraint.constraint_schema = table_constraint.constraint_schema
+         AND referential_constraint.constraint_name = table_constraint.constraint_name
+        JOIN information_schema.constraint_column_usage AS referenced_column
+          ON referenced_column.constraint_schema = referential_constraint.unique_constraint_schema
+         AND referenced_column.constraint_name = referential_constraint.unique_constraint_name
+        WHERE table_constraint.table_schema = current_schema()
+          AND table_constraint.table_name = 'fusion_runtime_config_snapshots'
+          AND table_constraint.constraint_type = 'FOREIGN KEY'
+        """
+    ).fetchall()
+
+    # Then
+    assert len(columns) == 5
+    assert columns[:4] == [
+        ("run_id", "text", "NO", None),
+        ("entity_id", "text", "NO", None),
+        ("config_version", "text", "NO", None),
+        ("payload", "jsonb", "NO", None),
+    ]
+    assert columns[4][:3] == ("created_at", "timestamp with time zone", "NO")
+    assert columns[4][3] is not None
+    assert primary_key_columns == [("run_id",), ("entity_id",)]
+    assert foreign_keys == [("run_id", "runs", "run_id", "CASCADE")]
+
+
+@pytest.mark.parametrize(
+    ("entity_id", "config_version", "payload"),
+    [
+        ("", "config-v1", {"run_id": RUN_ID, "entity_id": "", "config_version": "config-v1"}),
+        (
+            "   ",
+            "config-v1",
+            {"run_id": RUN_ID, "entity_id": "   ", "config_version": "config-v1"},
+        ),
+        (
+            ENTITY_ID,
+            "",
+            {"run_id": RUN_ID, "entity_id": ENTITY_ID, "config_version": ""},
+        ),
+        (
+            ENTITY_ID,
+            "   ",
+            {"run_id": RUN_ID, "entity_id": ENTITY_ID, "config_version": "   "},
+        ),
+        (ENTITY_ID, "config-v1", ["not", "an", "object"]),
+        (
+            ENTITY_ID,
+            "config-v1",
+            {
+                "run_id": "RUN-20260912-997",
+                "entity_id": ENTITY_ID,
+                "config_version": "config-v1",
+            },
+        ),
+        (
+            ENTITY_ID,
+            "config-v1",
+            {"run_id": RUN_ID, "entity_id": "WIN-02", "config_version": "config-v1"},
+        ),
+        (
+            ENTITY_ID,
+            "config-v1",
+            {"run_id": RUN_ID, "entity_id": ENTITY_ID, "config_version": "config-v2"},
+        ),
+    ],
+    ids=(
+        "blank-entity-id",
+        "whitespace-entity-id",
+        "blank-config-version",
+        "whitespace-config-version",
+        "non-object-payload",
+        "run-id-mismatch",
+        "entity-id-mismatch",
+        "config-version-mismatch",
+    ),
+)
+def test_fusion_runtime_config_snapshots_reject_invalid_database_contracts(
+    migration_connection: psycopg.Connection[tuple[object, ...]],
+    entity_id: str,
+    config_version: str,
+    payload: object,
+) -> None:
+    # Given
+    statement = """
+        INSERT INTO fusion_runtime_config_snapshots (
+            run_id,
+            entity_id,
+            config_version,
+            payload
+        )
+        VALUES (%s, %s, %s, %s)
+        """
+    parameters = (RUN_ID, entity_id, config_version, Jsonb(payload))
+
+    # When
+    with pytest.raises(CheckViolation) as exc_info, migration_connection.transaction():
+        migration_connection.execute(statement, parameters)
+
+    # Then
+    assert exc_info.type is CheckViolation
+
+
+def test_fusion_runtime_config_snapshot_is_deleted_with_its_run(
+    migration_connection: psycopg.Connection[tuple[object, ...]],
+) -> None:
+    # Given
+    payload = {
+        "run_id": RUN_ID,
+        "entity_id": ENTITY_ID,
+        "config_version": "config-v1",
+    }
+    migration_connection.execute(
+        """
+        INSERT INTO fusion_runtime_config_snapshots (
+            run_id,
+            entity_id,
+            config_version,
+            payload
+        )
+        VALUES (%s, %s, %s, %s)
+        """,
+        (RUN_ID, ENTITY_ID, "config-v1", Jsonb(payload)),
+    )
+
+    # When
+    migration_connection.execute("DELETE FROM runs WHERE run_id = %s", (RUN_ID,))
+
+    # Then
+    assert migration_connection.execute(
+        "SELECT count(*) FROM fusion_runtime_config_snapshots WHERE run_id = %s",
+        (RUN_ID,),
+    ).fetchone() == (0,)
 
 
 def test_serializes_concurrent_migration_runners(database_url: str) -> None:
@@ -274,6 +463,7 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
             (
                 "002_fusion_stopping_trace",
                 "003_decision_runtime_snapshot",
+                "004_fusion_runtime_config_snapshot",
             ),
         ]
         with psycopg.connect(database_url) as verification_connection:
@@ -285,7 +475,8 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
                 WHERE table_schema = current_schema()
                   AND table_name IN (
                       'fusion_stopping_traces',
-                      'decision_runtime_snapshots'
+                      'decision_runtime_snapshots',
+                      'fusion_runtime_config_snapshots'
                   )
                 GROUP BY table_name
                 ORDER BY table_name
@@ -295,23 +486,26 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
                 """
                 SELECT migration_id, count(*)
                 FROM schema_migrations
-                WHERE migration_id IN (%s, %s)
+                WHERE migration_id IN (%s, %s, %s)
                 GROUP BY migration_id
                 ORDER BY migration_id
                 """,
                 (
                     "002_fusion_stopping_trace",
                     "003_decision_runtime_snapshot",
+                    "004_fusion_runtime_config_snapshot",
                 ),
             ).fetchall()
 
         assert table_counts == [
             ("decision_runtime_snapshots", 1),
+            ("fusion_runtime_config_snapshots", 1),
             ("fusion_stopping_traces", 1),
         ]
         assert migration_counts == [
             ("002_fusion_stopping_trace", 1),
             ("003_decision_runtime_snapshot", 1),
+            ("004_fusion_runtime_config_snapshot", 1),
         ]
     finally:
         setup_connection.rollback()
