@@ -107,3 +107,21 @@ def test_transformed_trajectory_uses_existing_episode_policy():
     assert result.fusion_time == START + 2 * STEP
     assert len(result.fusion_episodes) == 1
     assert result.fusion_episodes[0].end_time == START + 3 * STEP
+
+
+def test_ewma_starts_from_nonzero_baseline():
+    result = ewma(points([0, 1]), baseline_mean=0.4, alpha=0.5)
+    assert [point.score for point in result] == [0.2, 0.6]
+
+
+def test_zero_cusum_baseline_and_allowance_never_release_on_zero_input():
+    trajectory = cusum(points([1, 0, 0, 0]), baseline_mean=0.0, allowance=0.0)
+    assert [point.score for point in trajectory] == [1, 1, 1, 1]
+    result = ThresholdStoppingPolicy(
+        threshold_on=0.8,
+        threshold_off=0.4,
+        persistence_k=1,
+    ).evaluate(
+        list(trajectory), run_id="RUN-20261002-001", entity_id="HOST-01", run_end=START + 3 * STEP
+    )
+    assert result.fusion_episodes[0].end_reason == "run_end"
