@@ -8,13 +8,24 @@ from incident_awareness.dashboard.api.dependencies import get_run_repository
 
 
 class FakeRunRepository:
-    def __init__(self, runs: list[RunMetadata] | None = None) -> None:
+    def __init__(
+        self,
+        runs: list[RunMetadata] | None = None,
+        *,
+        total_runs: int | None = None,
+    ) -> None:
         self.runs = runs if runs is not None else []
+        self.total_runs = len(self.runs) if total_runs is None else total_runs
         self.limits: list[int] = []
+        self.count_calls = 0
 
     def list_recent(self, limit: int) -> list[RunMetadata]:
         self.limits.append(limit)
         return self.runs
+
+    def count(self) -> int:
+        self.count_calls += 1
+        return self.total_runs
 
 
 def test_get_runs_uses_default_limit_and_serializes_run_fields() -> None:
@@ -95,19 +106,78 @@ def test_get_runs_does_not_expose_database_configuration() -> None:
         assert secret_marker not in response.text
 
 
+def test_get_overview_returns_total_and_five_recent_runs() -> None:
+    # Given
+    runs = [
+        _run_metadata(),
+        _run_metadata(
+            run_id="RUN-20260910-001",
+            start_time=datetime(2026, 9, 10, 1, tzinfo=UTC),
+        ),
+        _run_metadata(
+            run_id="RUN-20260909-001",
+            start_time=datetime(2026, 9, 9, 1, tzinfo=UTC),
+        ),
+    ]
+    repository = FakeRunRepository(runs, total_runs=3)
+    client = _client(repository)
+
+    # When
+    response = client.get("/overview")
+
+    # Then
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_runs"] == 3
+    assert [run["run_id"] for run in payload["recent_runs"]] == [
+        "RUN-20260911-001",
+        "RUN-20260910-001",
+        "RUN-20260909-001",
+    ]
+    assert set(payload["recent_runs"][0]) == {
+        "run_id",
+        "scenario_id",
+        "run_type",
+        "target_host",
+        "start_time",
+        "end_time",
+    }
+    assert repository.limits == [5]
+    assert repository.count_calls == 1
+
+
+def test_get_overview_returns_empty_summary() -> None:
+    # Given
+    repository = FakeRunRepository(total_runs=0)
+    client = _client(repository)
+
+    # When
+    response = client.get("/overview")
+
+    # Then
+    assert response.status_code == 200
+    assert response.json() == {"total_runs": 0, "recent_runs": []}
+    assert repository.limits == [5]
+    assert repository.count_calls == 1
+
+
 def _client(repository: FakeRunRepository) -> TestClient:
     app = create_app()
     app.dependency_overrides[get_run_repository] = lambda: repository
     return TestClient(app)
 
 
-def _run_metadata() -> RunMetadata:
+def _run_metadata(
+    *,
+    run_id: str = "RUN-20260911-001",
+    start_time: datetime = datetime(2026, 9, 11, 1, tzinfo=UTC),
+) -> RunMetadata:
     return RunMetadata(
-        run_id="RUN-20260911-001",
+        run_id=run_id,
         scenario_id="scenario-001",
         run_type=RunType.ATTACK,
         target_host="WIN-01",
-        start_time=datetime(2026, 9, 11, 1, tzinfo=UTC),
+        start_time=start_time,
         schema_versions=SchemaVersions(
             run_metadata="v0.2",
             event="v0.2",

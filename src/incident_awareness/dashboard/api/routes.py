@@ -1,12 +1,35 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from incident_awareness.dashboard.api.dependencies import get_run_repository
-from incident_awareness.dashboard.api.models import RunListItem, RunListResponse
+from incident_awareness.dashboard.api.dependencies import (
+    get_dashboard_decision_reader,
+    get_run_repository,
+)
+from incident_awareness.dashboard.api.models import (
+    CurrentDecisionResponse,
+    OverviewResponse,
+    RunDetailResponse,
+    RunListItem,
+    RunListResponse,
+)
+from incident_awareness.dashboard.api.service import get_run_detail
+from incident_awareness.dashboard.decision_read_model import DashboardDecisionReader
 from incident_awareness.storage.repositories.run_repository import RunRepository
 
 router = APIRouter()
+_OVERVIEW_RECENT_RUN_LIMIT = 5
+
+
+@router.get("/overview", response_model=OverviewResponse)
+def get_overview(
+    repository: Annotated[RunRepository, Depends(get_run_repository)],
+) -> OverviewResponse:
+    recent_runs = repository.list_recent(_OVERVIEW_RECENT_RUN_LIMIT)
+    return OverviewResponse(
+        total_runs=repository.count(),
+        recent_runs=[RunListItem.from_run_metadata(run) for run in recent_runs],
+    )
 
 
 @router.get("/runs", response_model=RunListResponse)
@@ -17,4 +40,30 @@ def list_runs(
     runs = repository.list_recent(limit)
     return RunListResponse(
         runs=[RunListItem.from_run_metadata(run) for run in runs],
+    )
+
+
+@router.get("/runs/{run_id}", response_model=RunDetailResponse)
+def get_run(
+    run_id: str,
+    repository: Annotated[RunRepository, Depends(get_run_repository)],
+    reader: Annotated[DashboardDecisionReader, Depends(get_dashboard_decision_reader)],
+) -> RunDetailResponse:
+    run = repository.get(run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Run not found",
+        )
+
+    detail = get_run_detail(run=run, reader=reader)
+    current_response = (
+        None
+        if detail.current_decision is None
+        else CurrentDecisionResponse.from_read_model(detail.current_decision)
+    )
+    return RunDetailResponse(
+        run=run,
+        current_decision=current_response,
+        decision_history=detail.decision_history,
     )

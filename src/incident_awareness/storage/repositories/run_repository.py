@@ -45,6 +45,8 @@ ORDER BY start_time DESC, run_id DESC
 LIMIT %s
 """
 
+_SELECT_RUN_COUNT = "SELECT COUNT(*) FROM runs"
+
 
 class RunRepository:
     """RunMetadata Contract를 runs 테이블에 저장하고 복원한다."""
@@ -82,6 +84,18 @@ class RunRepository:
 
         rows = self._connection.execute(_SELECT_RECENT_RUN_METADATA, (limit,)).fetchall()
         return [RunMetadata.model_validate(_metadata_from_row(row)) for row in rows]
+
+    def count(self) -> int:
+        """Return the number of stored Runs without changing transaction state."""
+        row = self._connection.execute(_SELECT_RUN_COUNT, ()).fetchone()
+        if row is None:
+            raise TypeError("Run count query must return one row")
+
+        count = row[0] if isinstance(row, tuple) else row["count"]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise TypeError("Run count must be a non-negative integer")
+
+        return count
 
 
 def _metadata_from_row(

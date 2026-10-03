@@ -2,7 +2,10 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from incident_awareness.common.models.fusion import FusionResult, FusionStoppingTrace
+from incident_awareness.common.models.result import DecisionResult, DetectionResult
 from incident_awareness.common.models.run import RunMetadata, RunType
+from incident_awareness.dashboard.decision_read_model import CurrentDecisionReadModel
 
 
 class RunListItem(BaseModel):
@@ -31,3 +34,36 @@ class RunListResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     runs: list[RunListItem]
+
+
+class OverviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total_runs: int
+    recent_runs: list[RunListItem]
+
+
+class CurrentDecisionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: DecisionResult
+    latest_detection_result: DetectionResult | None
+    latest_fusion_result: FusionResult | None
+    latest_fusion_stopping_trace: FusionStoppingTrace | None
+
+    @classmethod
+    def from_read_model(cls, current: CurrentDecisionReadModel) -> "CurrentDecisionResponse":
+        return cls(
+            decision=current.decision,
+            latest_detection_result=current.latest_detection_result,
+            latest_fusion_result=current.latest_fusion_result,
+            latest_fusion_stopping_trace=current.latest_fusion_stopping_trace,
+        )
+
+
+class RunDetailResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run: RunMetadata
+    current_decision: CurrentDecisionResponse | None
+    decision_history: list[DecisionResult]

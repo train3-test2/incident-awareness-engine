@@ -7,6 +7,7 @@ from psycopg.types.json import Jsonb
 from incident_awareness.common.models.run import RunMetadata, RunType, SchemaVersions
 from incident_awareness.storage.repositories.run_repository import (
     _SELECT_RECENT_RUN_METADATA,
+    _SELECT_RUN_COUNT,
     _SELECT_RUN_METADATA,
     _UPSERT_RUN,
     RunRepository,
@@ -167,3 +168,30 @@ def test_list_recent_rejects_non_positive_limit(limit: int) -> None:
     with pytest.raises(ValueError, match="greater than zero"):
         RunRepository(connection).list_recent(limit)
     assert connection.statements == []
+
+
+@pytest.mark.parametrize("stored_count", [3, 0])
+def test_count_returns_non_negative_integer_without_committing(stored_count: int) -> None:
+    # Given
+    connection = FakeConnection((stored_count,))
+
+    # When
+    count = RunRepository(connection).count()
+
+    # Then
+    assert count == stored_count
+    assert connection.statements == [(_SELECT_RUN_COUNT, ())]
+    assert connection.commits == 0
+
+
+@pytest.mark.parametrize("row", [None, (True,), (-1,), ("3",)])
+def test_count_rejects_invalid_database_result(
+    row: tuple[object, ...] | None,
+) -> None:
+    # Given
+    connection = FakeConnection(row)
+
+    # When / Then
+    with pytest.raises(TypeError, match="Run count"):
+        RunRepository(connection).count()
+    assert connection.commits == 0

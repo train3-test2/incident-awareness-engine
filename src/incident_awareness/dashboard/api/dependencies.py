@@ -5,7 +5,15 @@ import psycopg
 from fastapi import Depends
 from psycopg import Connection
 
+from incident_awareness.dashboard.decision_read_model import DashboardDecisionReader
 from incident_awareness.storage.config import DatabaseConfig
+from incident_awareness.storage.repositories.result_repository import (
+    DecisionRepository,
+    DecisionRuntimeSnapshotRepository,
+    DetectionResultRepository,
+    FusionResultRepository,
+    FusionStoppingTraceRepository,
+)
 from incident_awareness.storage.repositories.run_repository import RunRepository
 
 
@@ -22,3 +30,15 @@ def get_run_repository(
     connection: Annotated[Connection[tuple[object, ...]], Depends(get_database_connection)],
 ) -> RunRepository:
     return RunRepository(connection)
+
+
+def get_dashboard_decision_reader(
+    connection: Annotated[Connection[tuple[object, ...]], Depends(get_database_connection)],
+) -> DashboardDecisionReader:
+    return DashboardDecisionReader(
+        decision_repository=DecisionRepository(connection),
+        detection_repository=DetectionResultRepository(connection),
+        fusion_repository=FusionResultRepository(connection),
+        stopping_trace_repository=FusionStoppingTraceRepository(connection),
+        snapshot_repository=DecisionRuntimeSnapshotRepository(connection),
+    )
