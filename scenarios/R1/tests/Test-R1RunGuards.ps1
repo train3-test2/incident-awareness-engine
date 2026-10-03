@@ -331,6 +331,12 @@ function New-FakeTransport {
             $script:FakeCalls.Add("open")
             # Opening a session takes time on both clocks.
             $script:FakeNow = $script:FakeNow.AddSeconds([int](Get-FakeOption "OpenSeconds" 0))
+            # A scenario file that is replaced once the run is under way: the run
+            # has read it by now, so neither its plan nor its trace may change.
+            $overwrite = [string](Get-FakeOption "OverwriteScenarioOnOpen" "")
+            if (-not [string]::IsNullOrEmpty($overwrite)) {
+                [System.IO.File]::WriteAllText($overwrite, '{"scenario_id":"R1","replaced":true}')
+            }
             return ("session-" + $script:FakeCalls.Count)
         }
         invoke  = {
@@ -457,6 +463,30 @@ function Test-SuccessArtifactsAbsent {
         (Join-Path $Root "ground_truth\$RunId\run_metadata.json")
     )
     return (@($paths | Where-Object { Test-Path -LiteralPath $_ }).Count -eq 0)
+}
+
+function Get-FileSha256 {
+    <# SHA-256 of a file in lower case hex, computed here and not by the code under test. #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLower()
+}
+
+function Get-TraceOf {
+    <# The operator trace a run left under a root: its directory, its parsed record and its scenario copy. #>
+    param([Parameter(Mandatory = $true)][string]$Root, [Parameter(Mandatory = $true)][string]$RunId)
+
+    $dir = Join-Path $Root ("operator_trace\" + $RunId)
+    $recordPath = Join-Path $dir "r1_run_trace.json"
+    $record = $null
+    if (Test-Path -LiteralPath $recordPath) {
+        $record = Get-Content -LiteralPath $recordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    return [ordered]@{
+        dir           = $dir
+        record_path   = $recordPath
+        record        = $record
+        scenario_path = (Join-Path $dir "scenario.json")
+    }
 }
 
  # ---------------------------------------------------------------------------
@@ -899,6 +929,10 @@ Assert-True "a dry run reports the destination it validated" ($dry.connection.ta
 Assert-True "a dry run opens no session and starts nothing" ($script:FakeCalls.Count -eq 0)
 Assert-True "a dry run waits for nothing" ($script:SleepCalls.Count -eq 0)
 Assert-True "a dry run creates no directory" (@(Get-ChildItem -LiteralPath $dryRoot -Force).Count -eq 0)
+Assert-True "a dry run writes no operator trace" (
+    -not (Test-Path -LiteralPath (Join-Path $dryRoot "operator_trace")))
+Assert-True "a dry run reports the SHA-256 of the scenario it read" (
+    $dry.scenario_sha256 -ceq (Get-FileSha256 $goodScenario))
 Assert-True "a dry run returns the identity of the Pair" (
     $dry.identity.family_id -ceq $TEST_FAMILY -and $dry.identity.variation_id -ceq $TEST_VARIATION -and
     $dry.identity.repetition -eq $TEST_REPETITION)
@@ -1004,6 +1038,34 @@ foreach ($case in @(
         $result.identity.variation_id -ceq $metadata.variation_id -and
         $result.identity.repetition -eq $metadata.repetition)
 
+    # The operator trace: what ties the run to the scenario it executed.
+    $trace = Get-TraceOf -Root $root -RunId $case.run_id
+    $scenarioSha = Get-FileSha256 $goodScenario
+    Assert-True ($label + "the operator trace and the scenario copy exist next to raw and ground_truth") (
+        (Test-Path -LiteralPath $trace.record_path) -and (Test-Path -LiteralPath $trace.scenario_path) -and
+        (@(Get-ChildItem -LiteralPath $root -Force | ForEach-Object { $_.Name } | Sort-Object) -join ",") -ceq
+        "ground_truth,operator_trace,raw")
+    Assert-True ($label + "the trace holds exactly the five recorded values") (
+        (@($trace.record.PSObject.Properties.Name) -join ",") -ceq
+        "trace_version,run_id,dataset_tier,mode,scenario_sha256")
+    Assert-True ($label + "the trace names the run, the mode and the Pilot tier") (
+        $trace.record.trace_version -ceq "v1" -and $trace.record.run_id -ceq $case.run_id -and
+        $trace.record.dataset_tier -ceq "pilot" -and $trace.record.mode -ceq "collection")
+    Assert-True ($label + "the trace records the SHA-256 of the scenario file the run was given") (
+        $trace.record.scenario_sha256 -ceq $scenarioSha -and $scenarioSha -match "^[0-9a-f]{64}$")
+    Assert-True ($label + "the scenario copy is byte for byte the file the run was given") (
+        (Get-FileSha256 $trace.scenario_path) -ceq $scenarioSha -and
+        (Get-Item -LiteralPath $trace.scenario_path).Length -eq (Get-Item -LiteralPath $goodScenario).Length)
+    Assert-True ($label + "the result reports the trace, the tier and the digest") (
+        $result.trace_dir -eq $trace.dir -and $result.dataset_tier -ceq "pilot" -and
+        $result.scenario_sha256 -ceq $scenarioSha)
+    Assert-True ($label + "the trace is not a contract artifact: raw and ground_truth hold what they held") (
+        (@(Get-ChildItem -LiteralPath (Join-Path $root ("raw\" + $case.run_id)) -Force |
+            ForEach-Object { $_.Name } | Sort-Object) -join ",") -ceq "manifest.json,telemetry" -and
+        (@(Get-ChildItem -LiteralPath (Join-Path $root ("ground_truth\" + $case.run_id)) -Force |
+            ForEach-Object { $_.Name } | Sort-Object) -join ",") -ceq "execution_record.csv,run_metadata.json" -and
+        -not ((Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8).Contains("operator_trace")))
+
     $runs[$case.type] = @{
         record   = (Get-Content -LiteralPath $recordPath -Raw -Encoding UTF8)
         prepare  = $script:FakeArguments["prepare"]
@@ -1105,6 +1167,112 @@ Assert-True "a target whose records carry the approved name is accepted" (
     $namedRun.mode -eq "collection" -and $namedRun.lineage.status -eq "matched")
 Assert-True "the pre-run check is told which log to read the recorded name from" (
     [string]$script:FakeArguments["probe"].log_name -eq $SYSMON_LOG)
+
+ # ---------------------------------------------------------------------------
+ # 6b. The operator trace binds a run to the scenario it executed
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== operator trace ===" -ForegroundColor Cyan
+
+ # The scenario is read once. A file replaced after that changes neither what
+ # the run does nor what its trace keeps.
+$readOnceScenario = Save-Scenario (New-ScenarioObject)
+$readOnceOriginal = [System.IO.File]::ReadAllBytes($readOnceScenario)
+$readOnceSha = Get-FileSha256 $readOnceScenario
+Reset-Fakes @{ OverwriteScenarioOnOpen = $readOnceScenario }
+$readOnceRoot = New-TempRoot
+$readOnce = Invoke-FakeRun -RunType "attack" -RunId "RUN-20300101-040" -ScenarioPath $readOnceScenario `
+    -DataRoot $readOnceRoot -Transport (New-FakeTransport)
+$readOnceTrace = Get-TraceOf -Root $readOnceRoot -RunId "RUN-20300101-040"
+Assert-True "the scenario file was replaced while the run was under way" (
+    (Get-FileSha256 $readOnceScenario) -cne $readOnceSha)
+Assert-True "a run whose scenario file is replaced after the read still runs the plan it read" (
+    $readOnce.mode -eq "collection" -and $readOnce.lineage.status -eq "matched" -and
+    [string]$script:FakeArguments["launch"].executable -eq $attackImage)
+Assert-True "the trace records the digest of the bytes that were read, not of the replaced file" (
+    $readOnceTrace.record.scenario_sha256 -ceq $readOnceSha -and $readOnce.scenario_sha256 -ceq $readOnceSha)
+Assert-True "the scenario copy is the bytes that were read" (
+    (Get-FileSha256 $readOnceTrace.scenario_path) -ceq $readOnceSha -and
+    [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($readOnceTrace.scenario_path)) -ceq
+    [System.Convert]::ToBase64String($readOnceOriginal))
+
+ # A trace is written once. One that exists stops the run before the first
+ # session and is left as it was.
+$tracedRoot = New-TempRoot
+$tracedDir = Join-Path $tracedRoot "operator_trace\RUN-20300101-001"
+New-Item -ItemType Directory -Path $tracedDir -Force | Out-Null
+Set-Content -Path (Join-Path $tracedDir "r1_run_trace.json") -Value "trace-sentinel" -Encoding Ascii
+Assert-RefusedBeforeAnyCall "a run_id that already has an operator trace" {
+    Invoke-FakeRun -ScenarioPath $goodScenario -DataRoot $tracedRoot -Transport (New-FakeTransport)
+} "*already has an operator trace*"
+Assert-True "the earlier trace is untouched and nothing else was created" (
+    (Get-Content -LiteralPath (Join-Path $tracedDir "r1_run_trace.json") -Raw).Trim() -eq "trace-sentinel" -and
+    @(Get-ChildItem -LiteralPath $tracedDir -Force).Count -eq 1 -and
+    (@(Get-ChildItem -LiteralPath $tracedRoot -Force | ForEach-Object { $_.Name }) -join ",") -ceq "operator_trace")
+Assert-RefusedBeforeAnyCall "a rehearsal whose run_id already has a rehearsal trace" {
+    $rehearsedRoot = New-TempRoot
+    New-Item -ItemType Directory -Path (Join-Path $rehearsedRoot "_rehearsal\operator_trace\RUN-20300101-001") -Force | Out-Null
+    Invoke-FakeRun -ScenarioPath $goodScenario -DataRoot $rehearsedRoot -Transport (New-FakeTransport) -Rehearsal
+} "*already has an operator trace*"
+
+ # Each of the two files is created, never replaced.
+$onceRoot = New-TempRoot
+$onceDir = Write-R1RunTrace -EffectiveRoot $onceRoot -RunId "RUN-20300101-041" -Mode "collection" `
+    -ScenarioBytes ([byte[]](1, 2, 3)) -ScenarioSha256 ("ab" * 32)
+Assert-Throws "a second trace for the same run_id is refused" {
+    Write-R1RunTrace -EffectiveRoot $onceRoot -RunId "RUN-20300101-041" -Mode "collection" `
+        -ScenarioBytes ([byte[]](9, 9, 9)) -ScenarioSha256 ("cd" * 32)
+} "*already has an operator trace*"
+Assert-Throws "an existing file is never replaced" {
+    Write-R1NewFile -Path (Join-Path $onceDir "scenario.json") -Bytes ([byte[]](9, 9, 9))
+}
+Assert-True "the first trace is still what was written" (
+    ([System.IO.File]::ReadAllBytes((Join-Path $onceDir "scenario.json")) -join ",") -ceq "1,2,3" -and
+    (Get-TraceOf -Root $onceRoot -RunId "RUN-20300101-041").record.scenario_sha256 -ceq ("ab" * 32))
+
+ # A run the pre-run check stops has started nothing on Target-A and leaves no
+ # trace, so its run_id is still free. A run that fails later keeps its trace.
+Reset-Fakes @{ ComputerName = "OTHER-HOST" }
+$stoppedRoot = New-TempRoot
+Assert-Throws "a run stopped by the pre-run check" {
+    Invoke-FakeRun -RunId "RUN-20300101-042" -ScenarioPath $goodScenario -DataRoot $stoppedRoot `
+        -Transport (New-FakeTransport)
+} "*computer name mismatch*"
+Assert-True "a run stopped by the pre-run check leaves no trace and no directory" (
+    @(Get-ChildItem -LiteralPath $stoppedRoot -Force).Count -eq 0)
+
+Reset-Fakes @{ FailStep = "launch" }
+$failedRoot = New-TempRoot
+Assert-Throws "a run that fails after its first action" {
+    Invoke-FakeRun -RunId "RUN-20300101-043" -ScenarioPath $goodScenario -DataRoot $failedRoot `
+        -Transport (New-FakeTransport)
+} "*synthetic failure in step launch*"
+$failedTrace = Get-TraceOf -Root $failedRoot -RunId "RUN-20300101-043"
+Assert-True "a failed run keeps the trace of the scenario it ran and no success artifact" (
+    $failedTrace.record.scenario_sha256 -ceq (Get-FileSha256 $goodScenario) -and
+    $failedTrace.record.dataset_tier -ceq "pilot" -and
+    (Test-SuccessArtifactsAbsent -Root $failedRoot -RunId "RUN-20300101-043"))
+Assert-RefusedBeforeAnyCall "the run_id of a failed run is not used again" {
+    Invoke-FakeRun -RunId "RUN-20300101-043" -ScenarioPath $goodScenario -DataRoot $failedRoot `
+        -Transport (New-FakeTransport)
+} "*already has*"
+
+ # A scenario that is not UTF-8 is refused instead of being read with
+ # replacement characters, which would change what the digest stands for.
+$notUtf8 = Join-Path (New-TempRoot) "scenario.json"
+[System.IO.File]::WriteAllBytes($notUtf8, [byte[]](0x7B, 0x22, 0xFF, 0xFE, 0x22, 0x7D))
+Assert-RefusedBeforeAnyCall "a scenario file that is not UTF-8" {
+    Invoke-FakeRun -ScenarioPath $notUtf8 -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
+} "*scenario JSON is not UTF-8*"
+
+ # Read-R1ScenarioFile: the digest is of the bytes on disk, a BOM included.
+$bomScenario = Join-Path (New-TempRoot) "scenario.json"
+$bomBody = [System.Text.Encoding]::UTF8.GetBytes(((New-ScenarioObject) | ConvertTo-Json -Depth 10))
+[System.IO.File]::WriteAllBytes($bomScenario, [byte[]](@(0xEF, 0xBB, 0xBF) + $bomBody))
+$bomRead = Read-R1ScenarioFile -Path $bomScenario
+Assert-True "the scenario is parsed from the bytes whose digest is returned" (
+    $bomRead.sha256 -ceq (Get-FileSha256 $bomScenario) -and $bomRead.bytes.Length -eq ($bomBody.Length + 3) -and
+    [string]$bomRead.scenario.scenario_id -eq "R1")
 
  # ---------------------------------------------------------------------------
  # 7. Failures leave no success artifact
@@ -1286,6 +1454,12 @@ Assert-True "rehearsal output is kept under _rehearsal" (
     -not (Test-Path -LiteralPath (Join-Path $rehearsalRoot "ground_truth")))
 Assert-True "rehearsal output carries the marker" (
     Test-Path -LiteralPath (Join-Path $rehearsalRoot "_rehearsal\REHEARSAL.txt"))
+$rehearsalTrace = Get-TraceOf -Root (Join-Path $rehearsalRoot "_rehearsal") -RunId "RUN-20300101-020"
+Assert-True "a rehearsal keeps its trace under _rehearsal, marked as a Pilot rehearsal" (
+    $rehearsalTrace.record.run_id -ceq "RUN-20300101-020" -and $rehearsalTrace.record.dataset_tier -ceq "pilot" -and
+    $rehearsalTrace.record.mode -ceq "rehearsal" -and $rehearsal.dataset_tier -ceq "pilot" -and
+    (Test-Path -LiteralPath $rehearsalTrace.scenario_path) -and
+    -not (Test-Path -LiteralPath (Join-Path $rehearsalRoot "operator_trace")))
 $rehearsalRows = @(Import-Csv -LiteralPath (Join-Path $rehearsalRoot "_rehearsal\ground_truth\RUN-20300101-020\execution_record.csv") -Encoding UTF8)
 Assert-True "the skipped connection is not recorded as executed" (
     (@($rehearsalRows | ForEach-Object { $_.action_id }) -join ",") -eq "N01,N02,N03,N05")

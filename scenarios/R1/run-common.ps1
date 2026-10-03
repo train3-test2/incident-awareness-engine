@@ -77,6 +77,19 @@ $R1_STATUS_TIMEOUT_SEC = 60
 $R1_CONNECT_TIMEOUT_MS = 3000
 $R1_TASK_IDLE_SEC = 3600
 
+# The operator trace of a run: what ties the run to the scenario it executed and
+# says which dataset tier it belongs to. It is kept next to raw/ and
+# ground_truth/, not inside them: those two hold exactly the files the contracts
+# and the Manifest describe.
+$R1_TRACE_DIR = "operator_trace"
+$R1_TRACE_FILE = "r1_run_trace.json"
+$R1_TRACE_SCENARIO_FILE = "scenario.json"
+$R1_TRACE_VERSION = "v1"
+
+# Every run of this runner is a Pilot run, a rehearsal included. A formal
+# evaluation selector has to leave out every run whose trace says so.
+$R1_DATASET_TIER = "pilot"
+
 function Get-R1Value {
     <# A property of a parsed JSON object or a key of a dictionary, or $null when it is absent. #>
     param([AllowNull()]$Object, [Parameter(Mandatory = $true)][string]$Name)
@@ -415,14 +428,146 @@ function Get-R1PairIdentity {
     return $identity
 }
 
+function Read-R1ScenarioFile {
+    <#
+        Read the rendered scenario exactly once.
+
+        The bytes read here are the ones that are parsed, hashed and later kept
+        in the operator trace of the run. The plan a run executes and the
+        scenario its record names therefore cannot differ, whatever happens to
+        the file afterwards.
+
+        Returns the bytes, their SHA-256 in lower case hex and the parsed
+        scenario. Bytes that are not UTF-8 are refused instead of being read
+        with replacement characters.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $Path).ProviderPath)
+
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    try {
+        $text = $strictUtf8.GetString($bytes)
+    } catch {
+        throw ("scenario JSON is not UTF-8: '" + $Path + "'")
+    }
+    if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = -join ($sha256.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") })
+    } finally {
+        $sha256.Dispose()
+    }
+
+    return [ordered]@{
+        bytes    = $bytes
+        sha256   = $digest
+        scenario = ($text | ConvertFrom-Json)
+    }
+}
+
+function Get-R1TraceDirectory {
+    <# Where the operator trace of one run lives under the root the run writes to. #>
+    param(
+        [Parameter(Mandatory = $true)][string]$EffectiveRoot,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+
+    return (Join-Path (Join-Path $EffectiveRoot $R1_TRACE_DIR) $RunId)
+}
+
+function Assert-R1TraceAvailable {
+    <#
+        Refuse to start when this run_id already has an operator trace.
+
+        A trace is written once. One that exists belongs to an earlier run of
+        this run_id, and writing a second scenario beside it would leave the
+        record of that run ambiguous. The check runs before the first session.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$EffectiveRoot,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+
+    $traceDir = Get-R1TraceDirectory -EffectiveRoot $EffectiveRoot -RunId $RunId
+    if (Test-Path -LiteralPath $traceDir) {
+        throw ("run_id " + $RunId + " already has an operator trace at " + $traceDir +
+            ". Issue a new run_id: the trace of a run is written once.")
+    }
+}
+
+function Write-R1NewFile {
+    <# Create a file that must not exist yet and write the bytes to it. An existing file throws. #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][byte[]]$Bytes
+    )
+
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::CreateNew,
+        [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    try {
+        $stream.Write($Bytes, 0, $Bytes.Length)
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Write-R1RunTrace {
+    <#
+        Keep what ties this run to the scenario it executes.
+
+        Two files are written, each exactly once, under
+        <root>\operator_trace\<run_id>\:
+
+            scenario.json        the bytes the plan of this run was built from
+            r1_run_trace.json    run_id, mode, dataset tier and the SHA-256 of
+                                 those bytes
+
+        The host validator refuses a run whose trace is missing or whose
+        scenario is not the one given to it, so a scenario edited after the run
+        cannot be used to judge the run. The trace is operator evidence: it is
+        not listed in the Manifest and no contract file changes.
+
+        Returns the trace directory.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$EffectiveRoot,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][string]$Mode,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][byte[]]$ScenarioBytes,
+        [Parameter(Mandatory = $true)][string]$ScenarioSha256
+    )
+
+    Assert-R1TraceAvailable -EffectiveRoot $EffectiveRoot -RunId $RunId
+    $traceDir = Get-R1TraceDirectory -EffectiveRoot $EffectiveRoot -RunId $RunId
+    New-Item -ItemType Directory -Path $traceDir -Force | Out-Null
+
+    Write-R1NewFile -Path (Join-Path $traceDir $R1_TRACE_SCENARIO_FILE) -Bytes $ScenarioBytes
+
+    $trace = [ordered]@{
+        trace_version   = $R1_TRACE_VERSION
+        run_id          = $RunId
+        dataset_tier    = $R1_DATASET_TIER
+        mode            = $Mode
+        scenario_sha256 = $ScenarioSha256
+    }
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    Write-R1NewFile -Path (Join-Path $traceDir $R1_TRACE_FILE) `
+        -Bytes $utf8NoBom.GetBytes(($trace | ConvertTo-Json))
+
+    return $traceDir
+}
+
 function Assert-R1RunInputs {
     <#
         Check every input before anything is created, opened or started.
 
         A value that is missing or malformed throws here, so a refused run leaves
         no directory, no session and no process behind. Returns the parsed
-        scenario, the identity of the Pair, the action list of this run type and
-        the connection approval ($null when the connection is skipped).
+        scenario, the bytes it was parsed from and their SHA-256, the identity of
+        the Pair, the action list of this run type and the connection approval
+        ($null when the connection is skipped).
     #>
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$RunType,
@@ -450,7 +595,10 @@ function Assert-R1RunInputs {
             "without spaces, found '" + $WorkDir + "'")
     }
 
-    $scenario = Get-Content -LiteralPath $ScenarioJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    # One read. Everything below works on what these bytes said, and the same
+    # bytes are what the operator trace keeps.
+    $loaded = Read-R1ScenarioFile -Path $ScenarioJsonPath
+    $scenario = $loaded.scenario
     if ([string](Get-R1Value $scenario "scenario_id") -ne $R1_SCENARIO_ID) {
         throw ("scenario_id must be " + $R1_SCENARIO_ID + ", found '" +
             [string](Get-R1Value $scenario "scenario_id") + "'")
@@ -511,12 +659,14 @@ function Assert-R1RunInputs {
     }
 
     return [ordered]@{
-        scenario    = $scenario
-        identity    = $identity
-        run         = $run
-        actions     = $actions
-        approval    = $approval
-        last_offset = $lastOffset
+        scenario        = $scenario
+        scenario_bytes  = $loaded.bytes
+        scenario_sha256 = $loaded.sha256
+        identity        = $identity
+        run             = $run
+        actions         = $actions
+        approval        = $approval
+        last_offset     = $lastOffset
     }
 }
 
@@ -982,9 +1132,13 @@ function Invoke-R1PilotRun {
         Order of side effects, so that a refusal leaves nothing behind:
 
           1. every input is validated and the launch plan is built (nothing is
-             created; -DryRun returns here with the plan),
-          2. the run_id must not have produced output already,
-          3. a pre-run session checks the Sysmon configuration on Target-A,
+             created; -DryRun returns here with the plan). The scenario file is
+             read once, and those bytes are what the plan is built from,
+          2. the run_id must not have produced output or an operator trace
+             already,
+          3. a pre-run session checks the Sysmon configuration on Target-A. Once
+             it passes, the scenario bytes and their SHA-256 are kept in the
+             operator trace of the run, before the first action,
           4. the scenario session runs the five actions at their offsets,
           5. the observation window is waited out,
           6. a collection session exports and fetches the Sysmon window,
@@ -994,6 +1148,9 @@ function Invoke-R1PilotRun {
         A failure at any step throws before step 8, so a failed run never has the
         three files a valid run has. A rehearsal skips the waits, may skip the
         connection, writes under _rehearsal and does not stop on step 7.
+
+        Every run is marked dataset_tier=pilot in its operator trace, a
+        rehearsal included. A dry run writes nothing, the trace included.
 
         Transport, NowProvider and Sleeper are the seams the guard tests replace.
     #>
@@ -1034,14 +1191,16 @@ function Invoke-R1PilotRun {
             $plan.intermediate.executable + " " + ($plan.intermediate.arguments -join " "))
         Write-Ok ("dry run: the final tool command is " + $plan.final.command_line)
         Write-Ok ("dry run: " + $pairLine)
+        Write-Ok ("dry run: scenario sha256=" + $inputs.scenario_sha256)
         return [ordered]@{
-            mode       = "dry_run"
-            run_id     = $RunId
-            run_type   = $RunType
-            identity   = $identity
-            plan       = $plan
-            connection = $approval
-            actions    = @($inputs.actions | ForEach-Object { [string](Get-R1Value $_ "action_id") })
+            mode            = "dry_run"
+            run_id          = $RunId
+            run_type        = $RunType
+            identity        = $identity
+            plan            = $plan
+            connection      = $approval
+            actions         = @($inputs.actions | ForEach-Object { [string](Get-R1Value $_ "action_id") })
+            scenario_sha256 = $inputs.scenario_sha256
         }
     }
 
@@ -1062,8 +1221,11 @@ function Invoke-R1PilotRun {
 
     $effectiveRoot = Get-EffectiveDataRoot -DataRoot $DataRoot -Rehearsal:$Rehearsal
     Assert-RunDirectoryAvailable -EffectiveRoot $effectiveRoot -RunId $RunId
+    Assert-R1TraceAvailable -EffectiveRoot $effectiveRoot -RunId $RunId
 
+    $mode = "collection"
     if ($Rehearsal) {
+        $mode = "rehearsal"
         Write-Fail "rehearsal mode: offsets and the observation window are skipped. Artifacts are not a valid R1 run."
     }
     Write-Ok $pairLine
@@ -1117,6 +1279,13 @@ function Invoke-R1PilotRun {
         foreach ($dir in @($telemetryDir, $groundTruthDir)) {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
         }
+
+        # Kept before the first action: from here on the record of this run_id
+        # names the bytes its plan was built from, whatever happens to the file.
+        $traceDir = Write-R1RunTrace -EffectiveRoot $effectiveRoot -RunId $RunId -Mode $mode `
+            -ScenarioBytes $inputs.scenario_bytes -ScenarioSha256 $inputs.scenario_sha256
+        Write-Ok ("operator trace written: dataset_tier=" + $R1_DATASET_TIER + " mode=" + $mode +
+            " scenario sha256=" + $inputs.scenario_sha256)
 
         $context = [ordered]@{
             run_id               = $RunId
@@ -1317,8 +1486,6 @@ function Invoke-R1PilotRun {
         Write-Ok ($RunType + " run finished: " + $RunId + " events=" + $eventCount +
             " actions=" + $context.execution_records.Count + " lineage=" + $lineage.status)
 
-        $mode = "collection"
-        if ($Rehearsal) { $mode = "rehearsal" }
         return [ordered]@{
             mode             = $mode
             run_id           = $RunId
@@ -1329,6 +1496,9 @@ function Invoke-R1PilotRun {
             lineage          = $lineage
             telemetry_dir    = $telemetryDir
             ground_truth_dir = $groundTruthDir
+            trace_dir        = $traceDir
+            dataset_tier     = $R1_DATASET_TIER
+            scenario_sha256  = $inputs.scenario_sha256
         }
     }
     finally {

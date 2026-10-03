@@ -14,13 +14,19 @@ repetition of the Pair, the Target-A name and the internal destination. The run
 is checked against its planned lineage only. Whether that lineage is approved is
 not judged here: no approved lineage policy is part of the scenario.
 
+It has to be the file the run executed. The runner keeps the bytes it read and
+their SHA-256 under `operator_trace/<run_id>/` of the artifact root, and the
+validator refuses a scenario with another digest, a run without that trace and
+a trace that does not mark the run `dataset_tier=pilot`. A copy of the same
+bytes at another path is the same scenario.
+
 `--record-out` also stores the printed report as the lineage record of the run
 (`docs/scenarios/r1.md` section 6). It is operator evidence: keep it next to the
 preserved copy of the run, outside `raw/` and `ground_truth/` and outside the
 repository. An existing file is never replaced.
 
-Exit code 0 means the contract files and the planned lineage held for this run
-and, when asked for, the record was written. It is not the Pilot verdict of
+Exit code 0 means the contract files, the operator trace and the planned lineage
+held for this run and, when asked for, the record was written. It is not the Pilot verdict of
 r1.md section 8-2, which also compares the two runs of a pair. Any other value
 means at least one check failed and the reason is printed.
 """
@@ -45,7 +51,7 @@ def main() -> int:
         "--artifact-root",
         type=Path,
         required=True,
-        help="directory holding raw/ and ground_truth/",
+        help="directory holding raw/, ground_truth/ and operator_trace/",
     )
     parser.add_argument("--run-id", required=True, help="RUN-YYYYMMDD-NNN")
     parser.add_argument(

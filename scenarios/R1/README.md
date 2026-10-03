@@ -112,8 +112,16 @@ Attack 실행 계보    wsmprovhost.exe -> cscript.exe -> powershell.exe
   보기 전에 승인 계보 정책이 있어야 한다.
 
 **승인 계보 정책, Evidence 조건, 평가 구간이 동결되기 전에 만든 Run 은 정식 38 Run 에 포함하지
-않는다.** rehearsal 과 Pilot Run 이 여기에 해당한다. 실행기와 검증기는 그 동결 여부를 알지 못하므로
-이 구분을 출력하거나 강제하지 않는다.
+않는다.** rehearsal 과 Pilot Run 이 여기에 해당한다.
+
+이 구분은 문서로만 두지 않고 Run 에 남긴다. **이 실행기가 만드는 Run 은 rehearsal 을 포함해 모두
+Pilot 이다.** 실행기는 Run 마다 operator trace 에 `dataset_tier: pilot` 을 적고(§6), 검증기는 그 값이
+없거나 다른 Run 을 통과시키지 않는다(§7).
+
+- **정식 평가 데이터를 고르는 선택기는 `dataset_tier` 가 `pilot` 인 Run 을 제외해야 한다.** trace 가
+  없는 Run 도 정식 데이터로 쓰지 않는다.
+- 이 실행기에는 다른 tier 를 적는 입력이 없다. 정식 수집의 tier 는 승인 계보 정책 · Evidence 조건 ·
+  평가 구간이 동결된 뒤에 따로 정한다(§9).
 
 `performance_claim_allowed: true` 는 R1 gate 가 이후 성능 주장을 허용한다는 뜻이다. 첫 Pilot 자체는
 성능을 입증하지 않는다(`r1.md` §1).
@@ -211,13 +219,13 @@ Target-A 에는 아무것도 미리 복사하지 않는다. 작업 파일과 lau
 
 | 모드 | 세션 | 대기 | 내부 연결 | 산출물 |
 | --- | --- | --- | --- | --- |
-| `-DryRun` | 열지 않음 | 없음 | 없음 | 없음. 입력을 모두 검증하고 launch plan 을 출력 |
-| `-Rehearsal` | 엶 | 건너뜀 | 목적지를 주입했을 때만 | `<DataRoot>\_rehearsal\` 아래 + `REHEARSAL.txt` |
-| 수집 모드 (옵션 없음) | 엶 | offset · 관측 창 준수 | 반드시 1 회 | `<DataRoot>\raw\` · `<DataRoot>\ground_truth\` |
+| `-DryRun` | 열지 않음 | 없음 | 없음 | 없음(operator trace 도 쓰지 않는다). 입력을 모두 검증하고 launch plan 을 출력 |
+| `-Rehearsal` | 엶 | 건너뜀 | 목적지를 주입했을 때만 | `<DataRoot>\_rehearsal\` 아래 + `REHEARSAL.txt`. operator trace 도 그 아래에 둔다 |
+| 수집 모드 (옵션 없음) | 엶 | offset · 관측 창 준수 | 반드시 1 회 | `<DataRoot>\raw\` · `<DataRoot>\ground_truth\` · `<DataRoot>\operator_trace\` |
 
 dry-run 은 어디서나 실행할 수 있다. Target-A 이름이나 목적지 없이도 된다. launch plan 과 함께 Pair
-식별자(`pair: family_id=... variation_id=... repetition=...`)를 출력하므로, 실제 Run 전에 어느 Pair 로
-기록될지 확인할 수 있다.
+식별자(`pair: family_id=... variation_id=... repetition=...`)와 읽은 scenario 의 SHA-256 을
+출력하므로, 실제 Run 전에 어느 Pair 로, 어느 scenario 파일로 기록될지 확인할 수 있다.
 
 ```powershell
 Set-Location C:\Tools\scenarios\R1\normal
@@ -239,8 +247,11 @@ $credential = Get-Credential
 `Invoke-R1PilotRun` 은 아래 순서로 진행하며, **1 ~ 3 에서 거부된 Run 은 아무것도 남기지 않는다.**
 
 1. 입력 전체를 검증하고 launch plan 을 만든다. 아무것도 만들지 않는다. `-DryRun` 은 여기서 끝난다.
-2. 같은 `run_id` 의 산출물이 이미 있으면 중단한다.
-3. 사전 세션으로 Target-A 의 컴퓨터 이름과 Sysmon 설정 해시를 확인하고 닫는다.
+   **scenario 파일은 여기서 한 번만 읽는다.** 그 바이트로 계획을 만들고 SHA-256 을 계산하며, 뒤에서
+   파일을 다시 읽지 않는다.
+2. 같은 `run_id` 의 산출물이나 operator trace 가 이미 있으면 중단한다.
+3. 사전 세션으로 Target-A 의 컴퓨터 이름과 Sysmon 설정 해시를 확인하고 닫는다. 통과하면 1 에서 읽은
+   scenario 바이트와 그 SHA-256 을 operator trace 로 남긴다(§6). 첫 행위보다 앞이다.
 4. 시나리오 세션에서 다섯 행위를 offset 에 맞춰 실행한다.
 5. 관측 창이 끝날 때까지 기다린다.
 6. 수집 세션으로 Run 구간의 Sysmon 을 export 해 가져오고 JSONL 로 변환한다. 구간은 Target-A 가
@@ -252,7 +263,7 @@ $credential = Get-Credential
 
 | 조건 | 비고 |
 | --- | --- |
-| `run_id` 형식 오류, 시나리오 JSON 없음, `scenario_id` 가 `R1` 이 아님 | |
+| `run_id` 형식 오류, 시나리오 JSON 없음 또는 UTF-8 이 아님, `scenario_id` 가 `R1` 이 아님 | |
 | `family_id` · `variation_id` 가 비었거나 라벨 문자열을 담음, `repetition` 이 1 이상의 정수가 아님 | dry-run · rehearsal 에서도 거부(§1-2) |
 | `runs.<run_type>` 가 식별자를 따로 적음 | Pair 는 식별자를 한 번만 적는다 |
 | `WorkDir` 가 안전한 경로가 아님 | 공백·따옴표가 명령줄에 들어가지 않게 한다 |
@@ -264,6 +275,7 @@ $credential = Get-Credential
 | encoded command 옵션 또는 라벨 문자열이 계획에 있음 | |
 | `target_host` · `VmSnapshot` · Sysmon 경로 · 접속 정보 · transport 중 하나라도 없음 | |
 | 같은 `run_id` 의 산출물이 이미 있음 | 기존 파일은 그대로 둔다 |
+| 같은 `run_id` 의 operator trace 가 이미 있음 | trace 는 한 번만 쓴다. 기존 trace 는 그대로 둔다 |
 
 세션을 연 뒤 중단하는 조건(Ground Truth 와 Manifest 를 쓰지 않는다):
 
@@ -277,10 +289,10 @@ $credential = Get-Credential
 | `t+0` 기록 시각이 세션이 열린 뒤 Target-A 가 찍은 시각보다 늦음 | 시계가 움직였다는 뜻이다(§6) |
 | 계보 확인 결과가 `matched` 가 아님 | rehearsal 은 결과만 출력하고 산출물을 쓴다 |
 
-사전 세션의 확인(위 표의 첫 두 행)을 통과한 뒤 실패한 Run 은 `raw\<run_id>` ·
-`ground_truth\<run_id>` 디렉터리(와 수집까지 갔다면 telemetry 파일)를 남긴다. Ground Truth 와
-Manifest 가 없으므로 유효한 Run 으로 읽히지 않으며, 그 `run_id` 는 다시 쓸 수 없다. 새 `run_id` 를
-발급한다.
+사전 세션의 확인(위 표의 첫 두 행)에서 멈춘 Run 은 아무것도 남기지 않는다. 그 확인을 통과한 뒤
+실패한 Run 은 `raw\<run_id>` · `ground_truth\<run_id>` 디렉터리(와 수집까지 갔다면 telemetry 파일),
+그리고 operator trace 를 남긴다. Ground Truth 와 Manifest 가 없으므로 유효한 Run 으로 읽히지 않으며,
+그 `run_id` 는 다시 쓸 수 없다. 새 `run_id` 를 발급한다.
 
 7 의 계보 확인(`Test-R1RunLineage`)은 실행기가 직접 얻은 세 PID(세션 host · 중간 프로세스 · 최종
 도구)가 `ParentProcessGuid` 로 이어지고, 각 단계의 Image 가 그 Run 의 `planned_lineage` 와 같고,
@@ -301,6 +313,32 @@ Manifest 가 없으므로 유효한 Run 으로 읽히지 않으며, 그 `run_id`
 <DataRoot>\ground_truth\<run_id>\run_metadata.json
 ```
 
+그 옆에 Run 마다 **operator trace** 를 남긴다. 계약 파일이 아니며 Manifest 에 넣지 않는다. Manifest 는
+지금처럼 telemetry 두 파일만 적는다.
+
+```text
+<DataRoot>\operator_trace\<run_id>\scenario.json        실행기가 실제로 읽은 scenario 바이트 그대로
+<DataRoot>\operator_trace\<run_id>\r1_run_trace.json    아래 다섯 값
+```
+
+| trace 의 값 | 뜻 |
+| --- | --- |
+| `trace_version` | `v1` |
+| `run_id` | 이 Run |
+| `dataset_tier` | 항상 `pilot`. rehearsal 도 같다(§1-3) |
+| `mode` | `collection` 또는 `rehearsal` |
+| `scenario_sha256` | 위 `scenario.json` 의 SHA-256 (소문자 hex) |
+
+- 실행기는 scenario 파일을 **한 번만** 읽고, 그 바이트로 계획을 만들고 SHA-256 을 계산하고 사본을
+  남긴다. 그래서 Run 이 실행한 계획과 trace 가 가리키는 scenario 는 다를 수 없다. 읽은 뒤에 파일이
+  바뀌어도 Run 과 trace 는 읽은 내용을 따른다.
+- 두 파일은 **한 번만** 쓴다. 같은 `run_id` 의 trace 가 이미 있으면 세션을 열기 전에 중단하고, 있는
+  파일은 덮어쓰지 않는다.
+- rehearsal 의 trace 는 `<DataRoot>\_rehearsal\operator_trace\<run_id>\` 에 둔다. dry-run 은 쓰지
+  않는다.
+- 사본에는 렌더링할 때 주입한 Target-A 이름과 내부 목적지가 들어 있다. 운영 증빙이며 **저장소에
+  커밋하지 않는다.**
+
 | 사실 | 기록 위치 |
 | --- | --- |
 | Run 식별자, `run_type`, 스냅샷 | `run_metadata.json` |
@@ -311,7 +349,8 @@ Manifest 가 없으므로 유효한 Run 으로 읽히지 않으며, 그 `run_id`
 | 각 Run 이 남기도록 계획한 부모-자식 계보 | `scenario.yaml` 의 `planned_lineage` — `scenario_version` · `run_type` 으로 찾는다 |
 | Run 이 Normal 인지 Attack 인지와 그 Run 의 실행 계보 | `run_metadata.json` 의 `run_type` + `scenario.yaml` 의 `planned_lineage.intermediate.<run_type>` |
 | 어느 계보가 승인된 것인지 | 여기에 기록하지 않는다. 설계상의 뜻은 `r1.md` §4-1, 정책은 역할 2 의 별도 config 가 정본이 될 예정이다(§1-1) |
-| 연결해야 할 내부 목적지와 포트 | 그 Pair 를 위해 렌더링한 `scenario.json` (저장소 밖) |
+| 연결해야 할 내부 목적지와 포트 | 그 Pair 를 위해 렌더링한 `scenario.json` (저장소 밖). Run 이 읽은 사본이 operator trace 에 남는다 |
+| Run 이 실제로 읽은 scenario 와 그 SHA-256, dataset tier, 실행 모드 | `operator_trace\<run_id>\` — 계약 파일이 아니다 |
 | 산출물 경로와 해시 | `manifest.json` |
 | 관측된 계보(ProcessGuid · Image)와 연결 | 호스트 검증기의 lineage record (§7, 저장소 밖) |
 | 실패 사유 | 실행기 출력 · 검증기 출력. 실패한 수집 모드 Run 은 Ground Truth 가 없다 |
@@ -332,7 +371,8 @@ Manifest 가 없으므로 유효한 Run 으로 읽히지 않으며, 그 `run_id`
 현재 계약으로 표현할 수 없어 **기록하지 않은 것**:
 
 - 관측된 ProcessGuid 체인과 연결 레코드 — 계약 파일에 자리가 없다. lineage record 로만 남긴다.
-- Run 별 내부 목적지 · 포트 · 관측 길이 — 렌더링한 `scenario.json` 과 실행 입력에만 있다.
+- Run 별 내부 목적지 · 포트 — 계약 파일에는 없다. operator trace 의 scenario 사본에만 있다.
+- 관측 길이 — 실행 입력에만 있다.
 - reference 세 필드 — `r1.md` §11-5 미결. 두 Run 모두 `null` 이다.
 - Controller · Target 시계 차이, 감사 정책(`auditpol`), Pair 제작 시간 — issue #73 항목이나 계약에
   자리가 없다.
@@ -345,7 +385,9 @@ Manifest 가 없으므로 유효한 Run 으로 읽히지 않으며, 그 `run_id`
 
 수집이 끝난 Run 을 **호스트에서** 확인한다. 규칙은
 `src/incident_awareness/collection/r1_pilot_validation.py` 가 소유하고 `tools/validate_r1_run.py` 는
-얇은 CLI 다. `--scenario` 에는 **그 Run 이 속한 Pair 를 위해 렌더링한 JSON** 을 준다.
+얇은 CLI 다. `--scenario` 에는 **그 Run 이 속한 Pair 를 위해 렌더링한 JSON** 을 준다. Run 이 실행할
+때 읽은 파일과 바이트가 같아야 하며, 검증기가 operator trace 로 그것을 확인한다. `--artifact-root`
+아래에는 `raw\` · `ground_truth\` 와 함께 `operator_trace\` 가 있어야 한다.
 
 ```bash
 uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run_id> --scenario <scenario.json>
@@ -357,11 +399,16 @@ uv run python tools/validate_r1_run.py --artifact-root <rehearsal-root> --run-id
 | 계약 파일 | S0 검증기의 검사를 그대로 쓴다 — 산출물 다섯 개, `RunMetadata` · `ExecutionRecordRow`, CSV 헤더와 BOM, Manifest 구조와 SHA-256 재계산, `run_id` 경계 |
 | `run_id` 일치 | CLI 인자 · `run_metadata.json` · CSV 모든 행 · `manifest.json` 과 그 항목 경로 |
 | Ground Truth | `scenario_id` 가 `R1`, `target_host` 가 렌더링 값과 같음, reference 세 필드가 모두 `null`, `vm_snapshot` · `end_time` 기록, action 순서와 `action_type` 이 시나리오와 같음, 시각이 순서대로이고 Run 구간 안 |
+| 실행 scenario 결속 | `operator_trace\<run_id>\r1_run_trace.json` 이 이 `run_id` · 실행 모드 · `dataset_tier: pilot` 을 적고 있는지, 그리고 trace 의 `scenario_sha256` · Run 이 남긴 `scenario.json` 사본 · `--scenario` 로 준 파일이 **모두 같은 바이트**인지 |
 | Pair 식별자 | `run_metadata.json` 의 `family_id` · `variation_id` · `repetition` 이 scenario 가 적은 값과 같은지. 하나라도 다르거나 비어 있으면 실패다 |
 | 시나리오 | 목적지가 내부 주소 규칙을 지키는지, 식별자 세 값이 유효한지 다시 검사한다. 어긴 시나리오로는 통과할 수 없다 |
 | 계보 | Target-A 에서 최종 관리 도구 Image 의 EID 1 중 **그 Run 이 계획한 3 단계 계보(`planned_lineage`)를 가진 인스턴스가 정확히 하나**인지 찾고, 그 host · ProcessGuid 를 `r1_lineage.verify_r1_lineage` 에 넘긴다 |
 | 연결 | 같은 host · ProcessGuid 의 EID 3 이 승인 목적지 · 포트로 향하는지 (`verify_r1_lineage`) |
 
+- **trace 가 없거나, JSON 이 아니거나, 다른 `run_id` · tier · 모드를 적고 있거나, SHA-256 이 형식에
+  맞지 않거나, 사본이나 `--scenario` 파일이 Run 뒤에 바뀌었으면 실패다.** 그때는 계획과의 대조
+  (Ground Truth · 식별자 · 계보)를 하지 않는다. Run 이 실행한 것이 증명되지 않은 scenario 로는 Run 을
+  판정하지 않기 때문이다. 결속은 내용으로 하므로 같은 바이트의 사본을 다른 경로에 두고 줘도 된다.
 - 중복 ProcessGuid, 부모 순환, 필수 부모 누락, 다른 프로세스의 연결, 목적지 불일치는 모두 실패다.
   `r1_lineage` 가 낸 오류 문장을 그대로 전달한다.
 - 검증기는 프로세스 이름 하나로 Run 을 판정하지 않는다. `run_type` 은 Ground Truth 에서 읽고,
@@ -369,6 +416,8 @@ uv run python tools/validate_r1_run.py --artifact-root <rehearsal-root> --run-id
   있어도 계획한 계보가 아니면 그 Run 의 인스턴스로 보지 않는다.
 - **계보가 승인된 것인지는 판정하지 않는다.** 검증기는 승인 계보 정책을 읽지 않는다(§1-1). 출력에는
   `pair` 줄과, 승인 여부를 판단하지 않았다는 `not judged here` 를 적는다.
+- 출력의 `tier` 줄은 trace 의 `dataset_tier`, `scenario` 줄은 결속된 SHA-256 이다. 마지막의
+  `not a formal run` 은 이 Run 이 정식 평가 데이터가 아님을 적는다(§1-3).
 - 레코드 사이의 시각은 비교하지 않는다. 계획 시각과 기록 시각은 판정 없이 나란히 출력한다.
 - lineage-only rehearsal(목적지 없이 렌더링)은 연결 action 과 EID 1 → EID 3 연결을 검사하지
   않고, 결과에 그렇게 적는다.
@@ -430,6 +479,9 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
 - **다른 family · variation matrix** — 지금 scenario 는 첫 Pilot family 하나다. 다른 family 를
   실행하려면 그 family 의 실행 계보를 담은 scenario 가 필요하다. 전체 variation matrix 는 구현하지
   않았다.
+- **정식 수집의 dataset tier 와 평가 선택기** — 지금은 모든 Run 이 `dataset_tier: pilot` 이고 다른 값을
+  적는 입력이 없다(§1-3). 정식 수집을 무엇으로 표시할지와, `pilot` 을 제외하는 정식 평가 선택기는 이
+  변경 밖이다.
 - **승인 계보 정책 연결** — 정책은 이 폴더에 없다(§1-1). 역할 2 의 config 형식이 정해지면 scenario 의
   `family_id` 와 정책의 `family_id` 를 fail-closed 로 대조하고, 어느 정책 아래에서 만든 Run 인지 남기는
   방법을 정한다.

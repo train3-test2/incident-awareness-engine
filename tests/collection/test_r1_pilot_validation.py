@@ -379,7 +379,34 @@ def build_run(
         json.dumps(scenario(destination=connect) if scenario_body is None else scenario_body),
         encoding="utf-8",
     )
+    write_trace(root, scenario_path.read_bytes(), rehearsal=rehearsal)
     return root, scenario_path
+
+
+def trace_dir(root: Path) -> Path:
+    return root / "operator_trace" / RUN_ID
+
+
+def write_trace(
+    root: Path, scenario_bytes: bytes, *, rehearsal: bool = False, **stated: object
+) -> None:
+    """Write the operator trace the runner leaves for a run that executed these bytes.
+
+    The scenario copy and the record are written the way the runner writes them.
+    `stated` replaces values of the record, for the tests that break it.
+    """
+    directory = trace_dir(root)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "scenario.json").write_bytes(scenario_bytes)
+    record = {
+        "trace_version": "v1",
+        "run_id": RUN_ID,
+        "dataset_tier": "pilot",
+        "mode": "rehearsal" if rehearsal else "collection",
+        "scenario_sha256": hashlib.sha256(scenario_bytes).hexdigest(),
+    }
+    record.update(stated)
+    (directory / "r1_run_trace.json").write_text(json.dumps(record, indent=4), encoding="utf-8")
 
 
 def validate(run: tuple[Path, Path], *, rehearsal: bool = False) -> R1PilotValidationReport:
@@ -1231,6 +1258,318 @@ def test_rehearsal_with_a_destination_refuses_a_connection_that_is_not_tcp(tmp_p
     assert not report.ok
     assert "was recorded with the expected Protocol tcp" in errors_of(report)
     assert report.lineage is None
+
+
+# ---------------------------------------------------------------------------
+# The operator trace: the scenario a run executed, and its dataset tier
+# ---------------------------------------------------------------------------
+
+TRACE_LABEL = f"operator_trace/{RUN_ID}/r1_run_trace.json"
+
+
+def sha256_of(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_run_bound_to_its_scenario_passes_and_reports_the_binding(tmp_path: Path) -> None:
+    # Given: a run whose trace records the scenario it was rendered with
+    run = build_run(tmp_path, run_type="attack")
+    digest = sha256_of(run[1])
+
+    # When
+    report = validate(run)
+
+    # Then: the binding and the tier are recorded facts of the report
+    assert report.ok, report.errors
+    assert report.trace is not None
+    assert (report.trace.dataset_tier, report.trace.mode) == ("pilot", "collection")
+    assert report.trace.scenario_sha256 == digest
+    assert (
+        "the operator trace, the scenario the run kept and the scenario given to the validator "
+        f"are the same bytes: sha256={digest}"
+    ) in report.checks
+    assert "the operator trace names this run: dataset_tier=pilot mode=collection" in report.checks
+
+    text = format_report(report)
+    assert "tier        : pilot" in text
+    assert f"scenario    : sha256={digest}" in text
+    assert "a formal evaluation selector has to leave such a run out" in text
+    assert "operator trace" in text.splitlines()[-1]
+
+
+def test_run_without_an_operator_trace_is_not_validated(tmp_path: Path) -> None:
+    # Given: a complete run whose trace record is gone
+    run = build_run(tmp_path)
+    (trace_dir(run[0]) / "r1_run_trace.json").unlink()
+
+    report = validate(run)
+
+    # Then: nothing is judged against a scenario that is not tied to the run
+    assert not report.ok
+    assert f"operator trace is missing: {TRACE_LABEL}" in errors_of(report)
+    assert report.trace is None
+    assert report.identity is None
+    assert report.lineage is None
+    assert "PASS" not in format_report(report)
+
+
+@pytest.mark.parametrize(
+    ("content", "problem"),
+    [
+        (b"", "operator trace is not readable JSON"),
+        (b"{", "operator trace is not readable JSON"),
+        (b"not json", "operator trace is not readable JSON"),
+        (b"\xff\xfe{}", "operator trace is not readable JSON"),
+        (b"[]", "operator trace is not a JSON object"),
+        (b'"pilot"', "operator trace is not a JSON object"),
+        (b"null", "operator trace is not a JSON object"),
+    ],
+    ids=["empty", "truncated", "text", "not-utf8", "array", "string", "null"],
+)
+def test_operator_trace_that_is_not_a_json_object_is_refused(
+    tmp_path: Path, content: bytes, problem: str
+) -> None:
+    run = build_run(tmp_path)
+    (trace_dir(run[0]) / "r1_run_trace.json").write_bytes(content)
+
+    report = validate(run)
+
+    assert not report.ok
+    assert f"{problem} ({TRACE_LABEL})" in errors_of(report)
+    assert report.trace is None
+    assert report.lineage is None
+
+
+@pytest.mark.parametrize(
+    ("stated", "problem"),
+    [
+        ({"run_id": OTHER_RUN_ID}, f"run_id is '{OTHER_RUN_ID}', expected '{RUN_ID}'"),
+        ({"run_id": None}, f"run_id is None, expected '{RUN_ID}'"),
+        ({"dataset_tier": "formal"}, "dataset_tier is 'formal', expected 'pilot'"),
+        ({"dataset_tier": "Pilot"}, "dataset_tier is 'Pilot', expected 'pilot'"),
+        ({"dataset_tier": ""}, "dataset_tier is '', expected 'pilot'"),
+        ({"dataset_tier": None}, "dataset_tier is None, expected 'pilot'"),
+        ({"dataset_tier": ["pilot"]}, "dataset_tier is ['pilot'], expected 'pilot'"),
+        ({"trace_version": "v2"}, "trace_version is 'v2', expected 'v1'"),
+        ({"trace_version": 1}, "trace_version is 1, expected 'v1'"),
+        ({"mode": "rehearsal"}, "mode is 'rehearsal', expected 'collection'"),
+        ({"mode": "dry_run"}, "mode is 'dry_run', expected 'collection'"),
+    ],
+)
+def test_operator_trace_of_another_run_tier_version_or_mode_is_refused(
+    tmp_path: Path, stated: dict, problem: str
+) -> None:
+    # Given: a trace whose digest is right and one other value is not
+    root, scenario_path = build_run(tmp_path)
+    write_trace(root, scenario_path.read_bytes(), **stated)
+
+    report = validate((root, scenario_path))
+
+    assert not report.ok
+    assert report.errors == [f"operator trace {problem} ({TRACE_LABEL})"]
+    assert report.trace is None
+    assert report.lineage is None
+
+
+@pytest.mark.parametrize(
+    "name", ["trace_version", "run_id", "dataset_tier", "mode", "scenario_sha256"]
+)
+def test_operator_trace_that_leaves_a_value_out_is_refused(tmp_path: Path, name: str) -> None:
+    root, scenario_path = build_run(tmp_path)
+    rewrite_json(trace_dir(root) / "r1_run_trace.json", lambda record: record.pop(name))
+
+    report = validate((root, scenario_path))
+
+    assert not report.ok
+    assert f"operator trace {name} is" in errors_of(report)
+    assert report.trace is None
+
+
+@pytest.mark.parametrize(
+    "recorded",
+    ["", "0" * 63, "0" * 65, "g" * 64, "AB" * 32, " " + "ab" * 32, None, 7],
+    ids=["empty", "short", "long", "not-hex", "upper-case", "padded", "null", "number"],
+)
+def test_operator_trace_without_a_well_formed_digest_is_refused(
+    tmp_path: Path, recorded: object
+) -> None:
+    root, scenario_path = build_run(tmp_path)
+    write_trace(root, scenario_path.read_bytes(), scenario_sha256=recorded)
+
+    report = validate((root, scenario_path))
+
+    assert not report.ok
+    assert "scenario_sha256 is not a SHA-256 in lower case hex" in errors_of(report)
+    assert report.trace is None
+
+
+def test_digest_written_in_upper_case_is_not_accepted_as_the_same(tmp_path: Path) -> None:
+    # The runner writes lower case hex. Another spelling is another record.
+    root, scenario_path = build_run(tmp_path)
+    write_trace(root, scenario_path.read_bytes(), scenario_sha256=sha256_of(scenario_path).upper())
+
+    report = validate((root, scenario_path))
+
+    assert not report.ok
+    assert "scenario_sha256 is not a SHA-256 in lower case hex" in errors_of(report)
+
+
+def test_well_formed_digest_of_other_bytes_is_refused(tmp_path: Path) -> None:
+    # Given: a trace that records a digest neither scenario has
+    root, scenario_path = build_run(tmp_path)
+    write_trace(root, scenario_path.read_bytes(), scenario_sha256="ab" * 32)
+
+    report = validate((root, scenario_path))
+
+    # Then: the kept copy and the given scenario are each reported
+    assert not report.ok
+    assert "does not have the SHA-256 its trace records" in errors_of(report)
+    assert "is not the one this run executed" in errors_of(report)
+    assert report.trace is None
+
+
+def test_scenario_edited_after_the_run_cannot_make_the_run_pass(tmp_path: Path) -> None:
+    # Given: a normal run whose telemetry shows the lineage of the other run type
+    root, scenario_path = build_run(tmp_path, events=run_events("attack"))
+    honest = validate((root, scenario_path))
+    assert not honest.ok
+    assert "no final tool instance has the lineage this run was designed with" in errors_of(honest)
+
+    # When: the scenario handed to the validator is edited so that the plan fits
+    # what the telemetry shows
+    edited = scenario(normal_image="cscript.exe", attack_image="cmd.exe")
+    scenario_path.write_text(json.dumps(edited), encoding="utf-8")
+    report = validate((root, scenario_path))
+
+    # Then: the run is not judged against the edited plan at all
+    assert not report.ok
+    assert report.errors == [
+        (
+            "the scenario given to the validator is not the one this run executed: its "
+            f"SHA-256 is {sha256_of(scenario_path)}, the operator trace records "
+            f"{sha256_of(trace_dir(root) / 'scenario.json')}"
+        )
+    ]
+    assert report.lineage is None
+    assert report.identity is None
+
+
+def test_editing_the_kept_scenario_as_well_is_still_refused(tmp_path: Path) -> None:
+    # Given: the same edit made to the given scenario and to the copy the run kept
+    root, scenario_path = build_run(tmp_path, events=run_events("attack"))
+    recorded = sha256_of(scenario_path)
+    edited = json.dumps(scenario(normal_image="cscript.exe", attack_image="cmd.exe"))
+    scenario_path.write_text(edited, encoding="utf-8")
+    (trace_dir(root) / "scenario.json").write_text(edited, encoding="utf-8")
+
+    report = validate((root, scenario_path))
+
+    # Then: the digest the trace recorded at run time gives both away
+    assert not report.ok
+    assert len(report.errors) == 2
+    assert "does not have the SHA-256 its trace records" in report.errors[0]
+    assert f"recorded {recorded}" in report.errors[0]
+    assert "is not the one this run executed" in report.errors[1]
+    assert report.lineage is None
+
+
+def test_same_values_in_other_bytes_are_not_the_scenario_of_the_run(tmp_path: Path) -> None:
+    # The binding is by bytes: a scenario written out again with the same values
+    # is a different file.
+    root, scenario_path = build_run(tmp_path)
+    values = json.loads(scenario_path.read_text(encoding="utf-8"))
+    scenario_path.write_text(json.dumps(values, indent=2), encoding="utf-8")
+
+    report = validate((root, scenario_path))
+
+    assert not report.ok
+    assert "is not the one this run executed" in errors_of(report)
+
+
+def test_copy_of_the_scenario_at_another_path_is_accepted(tmp_path: Path) -> None:
+    # The binding is by content, not by where the file lies.
+    root, scenario_path = build_run(tmp_path)
+    elsewhere = tmp_path / "elsewhere" / "rendered.json"
+    elsewhere.parent.mkdir()
+    elsewhere.write_bytes(scenario_path.read_bytes())
+
+    report = validate_r1_pilot_run(artifact_root=root, run_id=RUN_ID, scenario_path=elsewhere)
+
+    assert report.ok, report.errors
+
+    # And: the copy the run kept is such a copy
+    kept = validate_r1_pilot_run(
+        artifact_root=root, run_id=RUN_ID, scenario_path=trace_dir(root) / "scenario.json"
+    )
+    assert kept.ok, kept.errors
+
+
+@pytest.mark.parametrize("change", ["missing", "changed"])
+def test_kept_scenario_that_is_gone_or_changed_is_refused(tmp_path: Path, change: str) -> None:
+    root, scenario_path = build_run(tmp_path)
+    kept = trace_dir(root) / "scenario.json"
+    if change == "missing":
+        kept.unlink()
+    else:
+        kept.write_bytes(kept.read_bytes() + b"\n")
+
+    report = validate((root, scenario_path))
+
+    assert not report.ok
+    assert len(report.errors) == 1
+    assert f"operator_trace/{RUN_ID}/scenario.json" in report.errors[0]
+    assert report.trace is None
+
+
+def test_every_problem_of_a_trace_is_reported(tmp_path: Path) -> None:
+    root, scenario_path = build_run(tmp_path)
+    write_trace(root, scenario_path.read_bytes(), run_id=OTHER_RUN_ID, dataset_tier="formal")
+
+    report = validate((root, scenario_path))
+
+    assert report.errors == [
+        f"operator trace run_id is '{OTHER_RUN_ID}', expected '{RUN_ID}' ({TRACE_LABEL})",
+        f"operator trace dataset_tier is 'formal', expected 'pilot' ({TRACE_LABEL})",
+    ]
+
+
+def test_rehearsal_is_a_pilot_rehearsal_in_its_trace(tmp_path: Path) -> None:
+    # Given: a lineage-only rehearsal, as the runner writes it under _rehearsal
+    run = build_run(tmp_path, rehearsal=True, connect=False)
+
+    report = validate(run, rehearsal=True)
+
+    assert report.ok, report.errors
+    assert report.trace is not None
+    assert (report.trace.dataset_tier, report.trace.mode) == ("pilot", "rehearsal")
+    assert "tier        : pilot" in format_report(report)
+
+
+@pytest.mark.parametrize("rehearsal", [True, False])
+def test_trace_of_the_other_mode_is_refused(tmp_path: Path, rehearsal: bool) -> None:
+    # A collection trace does not validate a rehearsal, nor the other way round.
+    root, scenario_path = build_run(tmp_path, rehearsal=rehearsal)
+    write_trace(root, scenario_path.read_bytes(), rehearsal=not rehearsal)
+
+    report = validate((root, scenario_path), rehearsal=rehearsal)
+
+    wrong, right = ("collection", "rehearsal") if rehearsal else ("rehearsal", "collection")
+    assert not report.ok
+    assert f"operator trace mode is '{wrong}', expected '{right}'" in errors_of(report)
+
+
+def test_trace_is_no_contract_artifact(tmp_path: Path) -> None:
+    # Given: a passing run
+    root, scenario_path = build_run(tmp_path)
+    assert validate((root, scenario_path)).ok
+
+    # Then: the trace lies next to the contract directories, and the Manifest
+    # still lists the two telemetry files and nothing of the trace
+    assert sorted(path.name for path in root.iterdir()) == ["ground_truth", "operator_trace", "raw"]
+    manifest_text = (root / "raw" / RUN_ID / "manifest.json").read_text(encoding="utf-8")
+    assert len(json.loads(manifest_text)["items"]) == 2
+    assert "operator_trace" not in manifest_text
+    assert "scenario.json" not in manifest_text
 
 
 # ---------------------------------------------------------------------------

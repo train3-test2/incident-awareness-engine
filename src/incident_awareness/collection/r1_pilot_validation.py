@@ -8,13 +8,25 @@ The R1 runner (`scenarios/R1/`) writes the artifacts an S0 run writes:
     ground_truth/<run_id>/execution_record.csv
     ground_truth/<run_id>/run_metadata.json
 
+Next to them it keeps the operator trace of the run, which no contract and no
+Manifest lists:
+
+    operator_trace/<run_id>/r1_run_trace.json
+    operator_trace/<run_id>/scenario.json
+
 This module is run on the host, after the artifacts were copied off the
-Controller. It does two things.
+Controller. It does three things.
 
 1. It checks the contract files the way the S0 validator does: `RunMetadata`,
    `ExecutionRecordRow`, the Manifest with recomputed SHA-256, and one `run_id`
    across all of them.
-2. It finds the final management tool instance of the run in the raw Sysmon
+2. It checks the operator trace. The scenario given to this validator, the
+   scenario copy the run kept and the SHA-256 the trace records have to be the
+   same bytes, and the trace has to name this run and mark it
+   `dataset_tier=pilot`. A scenario edited after the run can therefore not be
+   the plan the run is judged against, and a run without a usable trace is not
+   validated at all.
+3. It finds the final management tool instance of the run in the raw Sysmon
    JSONL and hands it to `r1_lineage.verify_r1_lineage`, which checks the parent
    chain by host and ProcessGuid and the EID 3 carrying the same host and
    ProcessGuid to the approved destination, recorded as TCP.
@@ -22,7 +34,12 @@ Controller. It does two things.
 What the run was planned to leave - the three Images of its planned lineage, the
 internal destination, the Target-A name and the family, variation and repetition
 of its Pair - is read from the scenario JSON that was rendered for the run
-(`tools/r1_scenario_to_json.py`), never from this code.
+(`tools/r1_scenario_to_json.py`), never from this code. The bytes are read once:
+what is compared with the operator trace is what the plan is parsed from.
+
+Every run the R1 Pilot runner writes is a Pilot run, a rehearsal included, and
+its trace says so. A formal evaluation selector has to leave out every run whose
+trace says `dataset_tier=pilot`; this validator accepts no other tier.
 
 This is a conformance check of one collected run against its own plan. It
 detects nothing, builds no Evidence and produces no Fusion input. `run_type` is
@@ -36,11 +53,11 @@ collection. The approved lineage policy of a family is not part of the scenario
 and is not read here (`scenarios/R1/README.md` section 1-1), so nothing in this
 module judges a run by it.
 
-`R1PilotValidationReport.ok` means the contract files and the planned lineage
-held for this one run. It is not the Pilot verdict of `docs/scenarios/r1.md`
-section 8-2: the comparison of the two runs of a pair (S-1, and the Image and
-lineage comparison of S-2 and S-3) and the t+5 and t+8 windows (S-7) are not
-checked here.
+`R1PilotValidationReport.ok` means the contract files, the operator trace and
+the planned lineage held for this one run. It is not the Pilot verdict of
+`docs/scenarios/r1.md` section 8-2: the comparison of the two runs of a pair
+(S-1, and the Image and lineage comparison of S-2 and S-3) and the t+5 and t+8
+windows (S-7) are not checked here.
 
 The rendered report is the lineage record r1.md section 6 asks to keep "in the
 run record, extracted from the source telemetry". No contract file has a place
@@ -51,7 +68,9 @@ No time is compared between telemetry records, for the reason `r1_lineage`
 gives. Ground Truth times are only checked against each other.
 """
 
+import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 
@@ -106,6 +125,17 @@ PLANNED_LINEAGE_KEY = "planned_lineage"
 LINEAGE_ROLES = ("final tool", "intermediate", "session host")
 REFERENCE_FIELDS = ("reference_time", "reference_action_id", "reference_source_event_id")
 IDENTITY_FIELDS = ("family_id", "variation_id", "repetition")
+
+# The operator trace the runner writes next to raw/ and ground_truth/
+# (scenarios/R1/run-common.ps1, Write-R1RunTrace).
+TRACE_DIRNAME = "operator_trace"
+TRACE_FILENAME = "r1_run_trace.json"
+TRACE_SCENARIO_FILENAME = "scenario.json"
+TRACE_VERSION = "v1"
+# The only tier the Pilot runner writes, for a rehearsal as well.
+DATASET_TIER = "pilot"
+TRACE_MODES = {False: "collection", True: "rehearsal"}
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
 
 class R1ScenarioError(ValueError):
@@ -169,14 +199,23 @@ class R1ObservedLineage:
         return tuple(node.image for node in self.nodes)
 
 
+@dataclass(frozen=True)
+class R1RunTrace:
+    """What the operator trace of a run states, once every value of it was checked."""
+
+    dataset_tier: str
+    mode: str
+    scenario_sha256: str
+
+
 @dataclass
 class R1PilotValidationReport:
     """Everything one validation run found.
 
-    `errors` is the verdict: an empty list means the contract files and the
-    planned lineage held for this run. `checks` records what was verified;
-    `action_times`, `lineage` and `identity` are recorded facts with no verdict
-    of their own.
+    `errors` is the verdict: an empty list means the contract files, the
+    operator trace and the planned lineage held for this run. `checks` records
+    what was verified; `action_times`, `lineage`, `identity` and `trace` are
+    recorded facts with no verdict of their own.
     """
 
     run_id: str
@@ -187,6 +226,7 @@ class R1PilotValidationReport:
     action_times: list[str] = field(default_factory=list)
     lineage: R1ObservedLineage | None = None
     identity: R1PairIdentity | None = None
+    trace: R1RunTrace | None = None
 
     @property
     def ok(self) -> bool:
@@ -282,8 +322,25 @@ def load_r1_pilot_expectation(scenario_path: Path, run_type: str) -> R1PilotExpe
         raise R1ScenarioError(f"run_type must be one of {RUN_TYPES}, found {run_type!r}")
 
     try:
-        scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        scenario_bytes = scenario_path.read_bytes()
+    except OSError as error:
+        raise R1ScenarioError(f"scenario is not readable JSON: {error}") from error
+
+    return _read_expectation(scenario_bytes, run_type)
+
+
+def _read_expectation(scenario_bytes: bytes, run_type: str) -> R1PilotExpectation:
+    """Read the plan of one run type from the bytes of a rendered scenario.
+
+    The validator hands over the bytes it compared with the operator trace, so
+    the plan is parsed from exactly what was proven to be the run's scenario.
+    """
+    if run_type not in RUN_TYPES:
+        raise R1ScenarioError(f"run_type must be one of {RUN_TYPES}, found {run_type!r}")
+
+    try:
+        scenario = json.loads(scenario_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise R1ScenarioError(f"scenario is not readable JSON: {error}") from error
 
     scenario = _mapping(scenario, "scenario")
@@ -324,6 +381,98 @@ def load_r1_pilot_expectation(scenario_path: Path, run_type: str) -> R1PilotExpe
         destination_port=destination_port,
         identity=identity,
     )
+
+
+def _check_run_trace(
+    artifact_root: Path,
+    run_id: str,
+    scenario_bytes: bytes,
+    rehearsal: bool,
+    report: R1PilotValidationReport,
+) -> R1RunTrace | None:
+    """Check that the scenario given to the validator is the one the run executed.
+
+    The runner keeps the scenario bytes its plan was built from, and their
+    SHA-256, under `operator_trace/<run_id>/`. Three digests have to agree: the
+    one the trace records, the one of the kept copy and the one of the scenario
+    this validator was given. The trace also has to name this run, its mode and
+    the Pilot tier.
+
+    Returns the trace when everything held and None after reporting what did
+    not. Nothing is repaired or guessed: a run without a usable trace is not
+    judged against any scenario.
+    """
+    trace_dir = artifact_root / TRACE_DIRNAME / run_id
+    trace_label = f"{TRACE_DIRNAME}/{run_id}/{TRACE_FILENAME}"
+    kept_label = f"{TRACE_DIRNAME}/{run_id}/{TRACE_SCENARIO_FILENAME}"
+
+    trace_path = trace_dir / TRACE_FILENAME
+    if not trace_path.is_file():
+        report.fail(
+            f"operator trace is missing: {trace_label}. Without it the run cannot be tied to "
+            "the scenario it executed"
+        )
+        return None
+    try:
+        trace = json.loads(trace_path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        report.fail(f"operator trace is not readable JSON ({trace_label}): {error}")
+        return None
+    if not isinstance(trace, dict):
+        report.fail(f"operator trace is not a JSON object ({trace_label})")
+        return None
+
+    problems_before = len(report.errors)
+    expected = {
+        "trace_version": TRACE_VERSION,
+        "run_id": run_id,
+        "dataset_tier": DATASET_TIER,
+        "mode": TRACE_MODES[rehearsal],
+    }
+    for name, wanted in expected.items():
+        stated = trace.get(name)
+        if not isinstance(stated, str) or stated != wanted:
+            report.fail(f"operator trace {name} is {stated!r}, expected {wanted!r} ({trace_label})")
+
+    recorded = trace.get("scenario_sha256")
+    if not isinstance(recorded, str) or _SHA256_HEX.fullmatch(recorded) is None:
+        report.fail(
+            "operator trace scenario_sha256 is not a SHA-256 in lower case hex: "
+            f"{recorded!r} ({trace_label})"
+        )
+        return None
+
+    kept_path = trace_dir / TRACE_SCENARIO_FILENAME
+    try:
+        kept_sha256 = hashlib.sha256(kept_path.read_bytes()).hexdigest()
+    except OSError as error:
+        report.fail(f"the scenario the run kept is missing or not readable ({kept_label}): {error}")
+    else:
+        if kept_sha256 != recorded:
+            report.fail(
+                f"the scenario the run kept ({kept_label}) does not have the SHA-256 its trace "
+                f"records: {kept_sha256}, recorded {recorded}. One of them was changed after "
+                "the run"
+            )
+
+    given_sha256 = hashlib.sha256(scenario_bytes).hexdigest()
+    if given_sha256 != recorded:
+        report.fail(
+            "the scenario given to the validator is not the one this run executed: its SHA-256 "
+            f"is {given_sha256}, the operator trace records {recorded}"
+        )
+
+    if len(report.errors) != problems_before:
+        return None
+
+    report.passed(
+        "the operator trace, the scenario the run kept and the scenario given to the validator "
+        f"are the same bytes: sha256={recorded}"
+    )
+    report.passed(
+        f"the operator trace names this run: dataset_tier={DATASET_TIER} mode={expected['mode']}"
+    )
+    return R1RunTrace(dataset_tier=DATASET_TIER, mode=expected["mode"], scenario_sha256=recorded)
 
 
 def _check_rehearsal_isolation(
@@ -667,7 +816,9 @@ def validate_r1_pilot_run(
     """Validate one R1 Pilot run under `artifact_root` and report everything found.
 
     `scenario_path` is the scenario JSON that was rendered for this run. It holds
-    the designed lineage and the injected destination and host.
+    the designed lineage and the injected destination and host, and it has to be
+    the scenario the operator trace of the run records: the run is judged
+    against no other.
     """
     report = R1PilotValidationReport(run_id=run_id, rehearsal=rehearsal)
 
@@ -728,8 +879,24 @@ def validate_r1_pilot_run(
         )
         return report
 
+    # The scenario is read once. The bytes compared with the operator trace are
+    # the bytes the plan is parsed from, so no other scenario can stand in.
     try:
-        expectation = load_r1_pilot_expectation(scenario_path, metadata.run_type.value)
+        scenario_bytes = scenario_path.read_bytes()
+    except OSError as error:
+        report.fail(
+            f"scenario definition is not usable ({scenario_path}): scenario is not readable "
+            f"JSON: {error}"
+        )
+        return report
+
+    trace = _check_run_trace(artifact_root, run_id, scenario_bytes, rehearsal, report)
+    if trace is None:
+        return report
+    report.trace = trace
+
+    try:
+        expectation = _read_expectation(scenario_bytes, metadata.run_type.value)
     except R1ScenarioError as error:
         report.fail(f"scenario definition is not usable ({scenario_path}): {error}")
         return report
@@ -775,6 +942,9 @@ def format_report(report: R1PilotValidationReport) -> str:
             f"pair        : family_id={report.identity.family_id} "
             f"variation_id={report.identity.variation_id} repetition={report.identity.repetition}"
         )
+    if report.trace is not None:
+        lines.append(f"tier        : {report.trace.dataset_tier}")
+        lines.append(f"scenario    : sha256={report.trace.scenario_sha256}")
     lines.append("")
 
     for check in report.checks:
@@ -802,9 +972,16 @@ def format_report(report: R1PilotValidationReport) -> str:
         "not judged here: whether the lineage is approved. The run was checked against its "
         "planned lineage; no approved lineage policy is read here"
     )
+    lines.append(
+        "not a formal run: only a run whose operator trace says dataset_tier=pilot is accepted "
+        "here, and a formal evaluation selector has to leave such a run out"
+    )
     lines.append("")
     if report.ok:
-        verdict = "PASS (one run: contract files and planned lineage; not the Pilot verdict)"
+        verdict = (
+            "PASS (one run: contract files, operator trace and planned lineage; "
+            "not the Pilot verdict)"
+        )
         if report.rehearsal:
             verdict += " (REHEARSAL - not a valid R1 collection, do not use as an R1 Pair)"
         lines.append(verdict)
@@ -852,6 +1029,7 @@ __all__ = [
     "R1PilotExpectation",
     "R1PilotValidationReport",
     "R1ReportError",
+    "R1RunTrace",
     "R1ScenarioAction",
     "R1ScenarioError",
     "format_report",
