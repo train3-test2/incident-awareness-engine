@@ -5,13 +5,17 @@ from uuid import UUID, uuid4
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 from test_postgres_repositories import _decision_read_model_persistence_case
 
 from incident_awareness.dashboard.api.app import create_app
 from incident_awareness.pipeline.persistence import persist_s0_results
 from incident_awareness.storage.config import DATABASE_URL_ENV, DatabaseConfig
 from incident_awareness.storage.migrate import apply_migrations
-from incident_awareness.storage.repositories.result_repository import DecisionRepository
+from incident_awareness.storage.repositories.result_repository import (
+    DecisionRepository,
+    FusionRuntimeConfigSnapshotRepository,
+)
 
 TEST_DATABASE_URL_ENV = "TEST_DATABASE_URL"
 TEST_DATABASE_MARKER_ENV = "INCIDENT_AWARENESS_TEST_DATABASE"
@@ -47,7 +51,8 @@ def test_dashboard_read_api_against_postgres(
     d1_id = f"DEC-D1-{suffix}"
     d2_id = f"DEC-D2-{suffix}"
     d3_id = f"DEC-D3-{suffix}"
-    legacy_id = f"DEC-LEGACY-{suffix}"
+    embedded_legacy_id = f"DEC-EMBEDDED-LEGACY-{suffix}"
+    row_absent_legacy_id = f"DEC-ROW-ABSENT-LEGACY-{suffix}"
     d1_case = _decision_read_model_persistence_case(
         run_id,
         entity_id,
@@ -97,20 +102,60 @@ def test_dashboard_read_api_against_postgres(
                 overview_response = client.get("/overview")
                 detail_response = client.get(f"/runs/{run_id}")
                 historical_d1_response = client.get(f"/decisions/{d1_id}")
+                historical_d2_response = client.get(f"/decisions/{d2_id}")
                 historical_d3_response = client.get(f"/decisions/{d3_id}")
                 unknown_run_response = client.get(f"/runs/{unknown_run_id}")
                 unknown_decision_response = client.get(f"/decisions/{unknown_decision_id}")
 
-                legacy_decision = d3_case[6].model_copy(
+                embedded_legacy_decision = d3_case[6].model_copy(
                     update={
-                        "decision_id": legacy_id,
-                        "decision_reason": "Legacy Decision without Runtime snapshot",
+                        "decision_id": embedded_legacy_id,
+                        "decision_reason": "Legacy Decision with embedded Runtime snapshot",
                         "supersedes_decision_id": d3_id,
                     }
                 )
-                DecisionRepository(connection).save(legacy_decision)
+                row_absent_legacy_decision = d3_case[6].model_copy(
+                    update={
+                        "decision_id": row_absent_legacy_id,
+                        "decision_reason": "Legacy Decision without Runtime snapshot row",
+                        "supersedes_decision_id": embedded_legacy_id,
+                    }
+                )
+                DecisionRepository(connection).save(embedded_legacy_decision)
+                DecisionRepository(connection).save(row_absent_legacy_decision)
+                stored_snapshot_row = connection.execute(
+                    "SELECT payload FROM decision_runtime_snapshots WHERE decision_id = %s",
+                    (d3_id,),
+                ).fetchone()
+                assert stored_snapshot_row is not None
+                embedded_legacy_payload = dict(stored_snapshot_row[0])
+                embedded_legacy_payload["decision_id"] = embedded_legacy_id
+                del embedded_legacy_payload["fusion_runtime_config_snapshot"]
+                # Direct SQL intentionally reproduces a pre-Issue #164 stored payload.
+                connection.execute(
+                    """
+                    INSERT INTO decision_runtime_snapshots (
+                        decision_id,
+                        run_id,
+                        entity_id,
+                        payload
+                    )
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (
+                        embedded_legacy_id,
+                        run_id,
+                        entity_id,
+                        Jsonb(embedded_legacy_payload),
+                    ),
+                )
                 connection.commit()
-                legacy_response = client.get(f"/decisions/{legacy_id}")
+                embedded_legacy_response = client.get(f"/decisions/{embedded_legacy_id}")
+                row_absent_legacy_response = client.get(f"/decisions/{row_absent_legacy_id}")
+                latest_runtime_config = FusionRuntimeConfigSnapshotRepository(connection).get(
+                    run_id,
+                    entity_id,
+                )
 
             # Then
             assert runs_response.status_code == 200
@@ -136,6 +181,13 @@ def test_dashboard_read_api_against_postgres(
                 d1_id,
             ]
             current_runtime = detail["current_decision"]
+            assert set(current_runtime) == {
+                "decision",
+                "latest_detection_result",
+                "latest_fusion_result",
+                "latest_fusion_stopping_trace",
+            }
+            assert "fusion_runtime_config_snapshot" not in detail_response.text
             assert (
                 current_runtime["latest_detection_result"]["detector_time"]
                 == d3_case[5].detection_result.model_dump(mode="json")["detector_time"]
@@ -150,6 +202,9 @@ def test_dashboard_read_api_against_postgres(
             historical_d1 = historical_d1_response.json()
             assert historical_d1["decision"]["decision_id"] == d1_id
             assert historical_d1["runtime_snapshot"]["decision_id"] == d1_id
+            assert historical_d1["runtime_snapshot"]["fusion_runtime_config_snapshot"] == (
+                d1_case[4].model_dump(mode="json")
+            )
             assert (
                 historical_d1["runtime_snapshot"]["detection_result"]["detector_time"]
                 == d1_case[5].detection_result.model_dump(mode="json")["detector_time"]
@@ -175,13 +230,29 @@ def test_dashboard_read_api_against_postgres(
                 != current_runtime["latest_fusion_stopping_trace"]["points"][0]["score"]
             )
 
+            assert historical_d2_response.status_code == 200
+            historical_d2 = historical_d2_response.json()
+            assert historical_d2["decision"]["decision_id"] == d2_id
+            assert historical_d2["runtime_snapshot"]["fusion_runtime_config_snapshot"] == (
+                d2_case[4].model_dump(mode="json")
+            )
+
             assert historical_d3_response.status_code == 200
             assert historical_d3_response.json()["decision"]["decision_id"] == d3_id
             assert historical_d3_response.json()["runtime_snapshot"]["decision_id"] == d3_id
 
-            assert legacy_response.status_code == 200
-            assert legacy_response.json()["decision"]["decision_id"] == legacy_id
-            assert legacy_response.json()["runtime_snapshot"] is None
+            assert embedded_legacy_response.status_code == 200
+            embedded_legacy = embedded_legacy_response.json()
+            assert embedded_legacy["decision"]["decision_id"] == embedded_legacy_id
+            assert embedded_legacy["runtime_snapshot"] is not None
+            assert latest_runtime_config == d3_case[4]
+            assert embedded_legacy["runtime_snapshot"]["fusion_runtime_config_snapshot"] is None
+
+            assert row_absent_legacy_response.status_code == 200
+            assert row_absent_legacy_response.json()["decision"]["decision_id"] == (
+                row_absent_legacy_id
+            )
+            assert row_absent_legacy_response.json()["runtime_snapshot"] is None
 
             assert unknown_run_response.status_code == 404
             assert unknown_run_response.json() == {"detail": "Run not found"}
@@ -193,8 +264,10 @@ def test_dashboard_read_api_against_postgres(
                 overview_response,
                 detail_response,
                 historical_d1_response,
+                historical_d2_response,
                 historical_d3_response,
-                legacy_response,
+                embedded_legacy_response,
+                row_absent_legacy_response,
                 unknown_run_response,
                 unknown_decision_response,
             )

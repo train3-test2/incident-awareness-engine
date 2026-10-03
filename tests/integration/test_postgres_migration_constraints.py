@@ -188,6 +188,174 @@ def test_baselines_migrations_applied_by_docker_initdb(
         ("fusion_stopping_traces",),
         ("runs",),
     ]
+    assert apply_migrations(migration_connection) == ()
+
+
+def test_fusion_runtime_config_snapshot_schema_matches_contract(
+    migration_connection: psycopg.Connection[tuple[object, ...]],
+) -> None:
+    # When
+    columns = migration_connection.execute(
+        """
+        SELECT column_name, data_type, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'fusion_runtime_config_snapshots'
+        ORDER BY ordinal_position
+        """
+    ).fetchall()
+    primary_key_columns = migration_connection.execute(
+        """
+        SELECT key_column.column_name
+        FROM information_schema.table_constraints AS table_constraint
+        JOIN information_schema.key_column_usage AS key_column
+          ON key_column.constraint_schema = table_constraint.constraint_schema
+         AND key_column.constraint_name = table_constraint.constraint_name
+        WHERE table_constraint.table_schema = current_schema()
+          AND table_constraint.table_name = 'fusion_runtime_config_snapshots'
+          AND table_constraint.constraint_type = 'PRIMARY KEY'
+        ORDER BY key_column.ordinal_position
+        """
+    ).fetchall()
+    foreign_keys = migration_connection.execute(
+        """
+        SELECT
+            key_column.column_name,
+            referenced_column.table_name,
+            referenced_column.column_name,
+            referential_constraint.delete_rule
+        FROM information_schema.table_constraints AS table_constraint
+        JOIN information_schema.key_column_usage AS key_column
+          ON key_column.constraint_schema = table_constraint.constraint_schema
+         AND key_column.constraint_name = table_constraint.constraint_name
+        JOIN information_schema.referential_constraints AS referential_constraint
+          ON referential_constraint.constraint_schema = table_constraint.constraint_schema
+         AND referential_constraint.constraint_name = table_constraint.constraint_name
+        JOIN information_schema.constraint_column_usage AS referenced_column
+          ON referenced_column.constraint_schema = referential_constraint.unique_constraint_schema
+         AND referenced_column.constraint_name = referential_constraint.unique_constraint_name
+        WHERE table_constraint.table_schema = current_schema()
+          AND table_constraint.table_name = 'fusion_runtime_config_snapshots'
+          AND table_constraint.constraint_type = 'FOREIGN KEY'
+        """
+    ).fetchall()
+
+    # Then
+    assert len(columns) == 5
+    assert columns[:4] == [
+        ("run_id", "text", "NO", None),
+        ("entity_id", "text", "NO", None),
+        ("config_version", "text", "NO", None),
+        ("payload", "jsonb", "NO", None),
+    ]
+    assert columns[4][:3] == ("created_at", "timestamp with time zone", "NO")
+    assert columns[4][3] is not None
+    assert primary_key_columns == [("run_id",), ("entity_id",)]
+    assert foreign_keys == [("run_id", "runs", "run_id", "CASCADE")]
+
+
+@pytest.mark.parametrize(
+    ("entity_id", "config_version", "payload"),
+    [
+        ("", "config-v1", {"run_id": RUN_ID, "entity_id": "", "config_version": "config-v1"}),
+        (
+            "   ",
+            "config-v1",
+            {"run_id": RUN_ID, "entity_id": "   ", "config_version": "config-v1"},
+        ),
+        (
+            ENTITY_ID,
+            "",
+            {"run_id": RUN_ID, "entity_id": ENTITY_ID, "config_version": ""},
+        ),
+        (
+            ENTITY_ID,
+            "   ",
+            {"run_id": RUN_ID, "entity_id": ENTITY_ID, "config_version": "   "},
+        ),
+        (ENTITY_ID, "config-v1", ["not", "an", "object"]),
+        (
+            ENTITY_ID,
+            "config-v1",
+            {
+                "run_id": "RUN-20260912-997",
+                "entity_id": ENTITY_ID,
+                "config_version": "config-v1",
+            },
+        ),
+        (
+            ENTITY_ID,
+            "config-v1",
+            {"run_id": RUN_ID, "entity_id": "WIN-02", "config_version": "config-v1"},
+        ),
+        (
+            ENTITY_ID,
+            "config-v1",
+            {"run_id": RUN_ID, "entity_id": ENTITY_ID, "config_version": "config-v2"},
+        ),
+    ],
+    ids=(
+        "blank-entity-id",
+        "whitespace-entity-id",
+        "blank-config-version",
+        "whitespace-config-version",
+        "non-object-payload",
+        "run-id-mismatch",
+        "entity-id-mismatch",
+        "config-version-mismatch",
+    ),
+)
+def test_fusion_runtime_config_snapshots_reject_invalid_database_contracts(
+    migration_connection: psycopg.Connection[tuple[object, ...]],
+    entity_id: str,
+    config_version: str,
+    payload: object,
+) -> None:
+    _assert_check_violation(
+        migration_connection,
+        """
+        INSERT INTO fusion_runtime_config_snapshots (
+            run_id,
+            entity_id,
+            config_version,
+            payload
+        )
+        VALUES (%s, %s, %s, %s)
+        """,
+        (RUN_ID, entity_id, config_version, Jsonb(payload)),
+    )
+
+
+def test_fusion_runtime_config_snapshot_is_deleted_with_its_run(
+    migration_connection: psycopg.Connection[tuple[object, ...]],
+) -> None:
+    # Given
+    payload = {
+        "run_id": RUN_ID,
+        "entity_id": ENTITY_ID,
+        "config_version": "config-v1",
+    }
+    migration_connection.execute(
+        """
+        INSERT INTO fusion_runtime_config_snapshots (
+            run_id,
+            entity_id,
+            config_version,
+            payload
+        )
+        VALUES (%s, %s, %s, %s)
+        """,
+        (RUN_ID, ENTITY_ID, "config-v1", Jsonb(payload)),
+    )
+
+    # When
+    migration_connection.execute("DELETE FROM runs WHERE run_id = %s", (RUN_ID,))
+
+    # Then
+    assert migration_connection.execute(
+        "SELECT count(*) FROM fusion_runtime_config_snapshots WHERE run_id = %s",
+        (RUN_ID,),
+    ).fetchone() == (0,)
 
 
 def test_serializes_concurrent_migration_runners(database_url: str) -> None:
