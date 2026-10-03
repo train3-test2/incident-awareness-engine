@@ -53,3 +53,26 @@ EWMA 분산 기반 control limit이나 양방향 CUSUM은 이번 구현에 포�
 3. 시계열 입력 provenance와 평가 결과 저장 계약을 연결한다.
 4. 같은 관측 구간과 episode 기준으로 validation 오경보 수준을 맞춘다.
 5. test 전에 설정을 고정한 뒤 Recall/TTSD/FA/BH를 비교한다.
+
+## 비교 실험과경계 설정
+
+이 모듈은 Event/Evidence에서 독립적으로 판단하는 detector가 아니다.
+동일 upstream score/window/cadence와 episode 정책 아래에서 raw score와
+CUSUM/EWMA transformed score를 비교한다. 결과를 독립 CUSUM detector 대비
+Temporal Fusion의 우위로 확대 해석하지 않는다. persistence_k=1을 강제하지 않으며,
+method별 stopping 설정을 달리할지는 validation 단계에서 명시적으로 동결한다.
+
+baseline_mean의 의미도 다르다. EWMA에서는 초기값 z_0이며 그 영향은
+(1-alpha)^n으로 감소한다. CUSUM에서는 매 cadence마다 차감되는 기준선이다.
+EWMA의 alpha와 초기화 정책도 threshold와 함께 test 전에 동결한다.
+warm-up 구간을 평가에서 제외할지는 R1 연결 단계에서 별도로 결정한다.
+
+CUSUM에서 baseline_mean=0, allowance=0이면 입력이 비음수이므로 누적값은
+단조 비감소한다. 한번 진입하면 이후 0 입력만으로 threshold_off release가
+발생하지 않는다. 이 설정을 금지하지 않지만 FA/BH validation에서 사용 여부를 명시한다.
+
+CUSUM episode 진입 조건은 s_t >= scale * threshold_on,
+release는 s_t < scale * threshold_off로 표현된다(현재 threshold 정책 범위).
+따라서 판정 경계에는 scale과 threshold의 곱이 식별된다.
+validation에서 두 값을 독립적으로 탐색해 동일 경계를 중복 탐색하지 않도록
+어느 값을 자유 변수로 둘지 사전에 정한다. 출력 score 자체는 scale에 따라 달라진다.
