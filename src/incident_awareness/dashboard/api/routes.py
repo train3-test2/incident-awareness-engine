@@ -8,6 +8,7 @@ from incident_awareness.dashboard.api.dependencies import (
 )
 from incident_awareness.dashboard.api.models import (
     CurrentDecisionResponse,
+    HistoricalDecisionResponse,
     OverviewResponse,
     RunDetailResponse,
     RunListItem,
@@ -67,3 +68,18 @@ def get_run(
         current_decision=current_response,
         decision_history=detail.decision_history,
     )
+
+
+@router.get("/decisions/{decision_id}", response_model=HistoricalDecisionResponse)
+def get_historical_decision(
+    decision_id: str,
+    reader: Annotated[DashboardDecisionReader, Depends(get_dashboard_decision_reader)],
+) -> HistoricalDecisionResponse:
+    historical = reader.get_historical(decision_id)
+    if historical is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Decision not found",
+        )
+
+    return HistoricalDecisionResponse.from_read_model(historical)
