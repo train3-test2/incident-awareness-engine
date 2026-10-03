@@ -30,6 +30,7 @@ def evidence(
 
 
 def test_weighted_presence_and_provenance():
+    # Given
     scorer = WeightedRuleScorer(
         {"encoded_powershell_command": 1, "script_interpreter_external_connection": 3}
     )
@@ -40,10 +41,20 @@ def test_weighted_presence_and_provenance():
         evidence("script_interpreter_external_connection", "E-DIAGNOSTIC", group="diagnostic_only"),
         evidence("other", "E-OTHER"),
     ]
-    assert scorer.score(iter(rows)) == 0.25
-    assert scorer.contributing_evidence_ids(rows) == ("E-001", "E-002")
-    assert scorer.score([]) == 0
-    assert scorer.score([*rows, evidence("script_interpreter_external_connection", "E-003")]) == 1
+
+    all_types = [*rows, evidence("script_interpreter_external_connection", "E-003")]
+
+    # When
+    weighted_score = scorer.score(iter(rows))
+    contributing_ids = scorer.contributing_evidence_ids(rows)
+    empty_score = scorer.score([])
+    all_types_score = scorer.score(all_types)
+
+    # Then
+    assert weighted_score == 0.25
+    assert contributing_ids == ("E-001", "E-002")
+    assert empty_score == 0
+    assert all_types_score == 1
 
 
 @pytest.mark.parametrize(
@@ -57,13 +68,22 @@ def test_weighted_presence_and_provenance():
     ],
 )
 def test_uniform_weights_match_existing_scorer(names):
+    # Given
     rows = [evidence(name, f"E-{index}") for index, name in enumerate(names)]
     weighted = WeightedRuleScorer(
         {"encoded_powershell_command": 2, "script_interpreter_external_connection": 2}
     )
     simple = SimpleScorer(["encoded_powershell_command", "script_interpreter_external_connection"])
-    assert weighted.score(rows) == simple.score(rows)
-    assert weighted.contributing_evidence_ids(rows) == simple.contributing_evidence_ids(rows)
+
+    # When
+    weighted_score = weighted.score(rows)
+    comparison_score = simple.score(rows)
+    weighted_ids = weighted.contributing_evidence_ids(rows)
+    simple_ids = simple.contributing_evidence_ids(rows)
+
+    # Then
+    assert weighted_score == comparison_score
+    assert weighted_ids == simple_ids
 
 
 @pytest.mark.parametrize(
@@ -84,11 +104,19 @@ def test_uniform_weights_match_existing_scorer(names):
     ],
 )
 def test_rejects_invalid_weights(weights):
-    with pytest.raises((TypeError, ValueError)):
-        WeightedRuleScorer(weights)
+    # Given
+    invalid_weights = weights
+
+    # When
+    with pytest.raises((TypeError, ValueError)) as error:
+        WeightedRuleScorer(invalid_weights)
+
+    # Then
+    assert error.type in (TypeError, ValueError)
 
 
 def test_weights_are_copied_and_order_independent():
+    # Given
     weights = {"encoded_powershell_command": 1, "script_interpreter_external_connection": 3}
     scorer = WeightedRuleScorer(weights)
     equivalent = WeightedRuleScorer(dict(reversed(list(weights.items()))))
@@ -97,31 +125,39 @@ def test_weights_are_copied_and_order_independent():
         evidence("encoded_powershell_command"),
         evidence("script_interpreter_external_connection", "E-002"),
     ]
+
+    # When
+    weighted_score = scorer.score(rows)
+    comparison_score = equivalent.score(reversed(rows))
+
+    # Then
     assert scorer.total_weight == 4.0
-    assert scorer.score(rows) == equivalent.score(reversed(rows))
+    assert weighted_score == comparison_score
 
 
 def test_replay_and_fusion_result_use_existing_window_and_stopping_contract():
+    # Given
     runner = TemporalReplayRunner(
         window_engine=WindowEngine(window_size=timedelta(seconds=20)),
         scorer=WeightedRuleScorer(
             {"encoded_powershell_command": 1, "script_interpreter_external_connection": 3}
         ),
         stopping_policy=ThresholdStoppingPolicy(
-            threshold_on=0.8,
-            threshold_off=0.4,
-            persistence_k=1,
+            threshold_on=0.8, threshold_off=0.4, persistence_k=1
         ),
         step_size=timedelta(seconds=10),
     )
+
+    rows = [evidence(), evidence("script_interpreter_external_connection", "E-002", seconds=15)]
+
+    # When
     replay = runner.run(
-        [evidence(), evidence("script_interpreter_external_connection", "E-002", seconds=15)],
+        rows,
         run_id="RUN-20260907-001",
         entity_id="HOST-01",
         run_start=START,
         run_end=START + timedelta(seconds=40),
     )
-    assert [point.score for point in replay.trajectory] == [0.25, 0.25, 1, 0.75, 0]
     result = build_fusion_result(
         replay,
         run_id="RUN-20260907-001",
@@ -131,6 +167,9 @@ def test_replay_and_fusion_result_use_existing_window_and_stopping_contract():
         scoring_method="weighted_rule",
         scorer_version="weighted-rule-v0.1",
     )
+
+    # Then
+    assert [point.score for point in replay.trajectory] == [0.25, 0.25, 1, 0.75, 0]
     assert result.fusion_status == "detected"
     assert result.fusion_time == START + timedelta(seconds=20)
     assert set(result.contributing_evidence_ids) == {"E-001", "E-002"}
@@ -138,5 +177,12 @@ def test_replay_and_fusion_result_use_existing_window_and_stopping_contract():
 
 
 def test_unknown_weight_key_is_rejected_before_scoring():
-    with pytest.raises(ValueError, match="unmanaged values: encoded_powershell_typo"):
-        WeightedRuleScorer({"encoded_powershell_command": 1, "encoded_powershell_typo": 3})
+    # Given
+    invalid_weights = {"encoded_powershell_command": 1, "encoded_powershell_typo": 3}
+
+    # When
+    with pytest.raises(ValueError) as error:
+        WeightedRuleScorer(invalid_weights)
+
+    # Then
+    assert "unmanaged values: encoded_powershell_typo" in str(error.value)
