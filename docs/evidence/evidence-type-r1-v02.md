@@ -65,9 +65,9 @@ Attack: wsmprovhost.exe -> cscript.exe -> powershell.exe
 
 여러 Event 기반 Evidence에는 다음 공통 규칙을 적용한다.
 
-- EID 1→EID 3 correlation은 두 Event의 `process.process_guid`가 모두 non-null이고, `run_id`와 `host_id`가 동일하며, 두 `process.process_guid` 값이 같을 때만 수행. 생성된 `Evidence.entity_id`는 해당 `host_id`를 사용
+- EID 1→EID 3 correlation은 두 Event 모두 `source = sysmon`, `source_layer = raw_telemetry`이고, EID 1 Event는 `event_type = process_create`, EID 3 Event는 `event_type = network_connection`이며, 두 Event의 `process.process_guid`가 모두 non-null이고, `run_id`와 `host_id`가 동일하며, 두 `process.process_guid` 값이 같을 때만 수행. 생성된 `Evidence.entity_id`는 해당 `host_id`를 사용
 - GUID가 없는 Event끼리 `None == None` 비교로 연결하지 않음
-- EID 1 부모-자식 edge는 child의 `process.parent_process_guid`와 parent 후보의 `process.process_guid`가 모두 non-null이고, `run_id`와 `host_id`가 동일하며, `child.process.parent_process_guid == parent.process.process_guid`일 때만 연결
+- EID 1 부모-자식 edge는 child와 parent 후보 모두 `source = sysmon`, `source_layer = raw_telemetry`, `event_type = process_create`이고, child의 `process.parent_process_guid`와 parent 후보의 `process.process_guid`가 모두 non-null이며, `run_id`와 `host_id`가 동일하고, `child.process.parent_process_guid == parent.process.process_guid`이며, `child.timestamp >= parent.timestamp`일 때만 연결. 동일 timestamp는 허용
 - PID는 Process GUID의 대체 연결 키로 사용하지 않음
 - GUID 누락 시 Evidence 생성 또는 진단 처리 정책은 TBD
 - `event_ids`에는 상관분석에 실제 사용한 모든 `NormalizedEvent.event_id`를 기록
