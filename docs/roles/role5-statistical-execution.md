@@ -40,7 +40,7 @@ result = run_statistical_comparison(source, config)
 
 해시는 키 정렬, 공백 없는 구분자, UTF-8 인코딩, 비 ASCII 문자 보존으로 계산한다.
 입력의 evidence ID가 바뀌면 점수가 같더라도 입력 해시는 달라진다.
-`source_artifact_sha256`과 `calibration_artifact_sha256`은 호출자가 제공하는 참조이며,
+`source_artifact_sha256`과 `calibration_sha256`은 호출자가 제공하는 참조이며,
 이 함수가 해당 원본 파일을 열어서 무결성을 검증했다는 의미는 아니다.
 `implementation_version`은 Git 커밋 해시가 아니므로 실제 실험 기록에는 실행한 코드 revision도 별도로 보존한다.
 
