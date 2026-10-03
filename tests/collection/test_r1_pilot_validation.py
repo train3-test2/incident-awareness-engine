@@ -1504,6 +1504,37 @@ def test_copy_of_the_scenario_at_another_path_is_accepted(tmp_path: Path) -> Non
     assert kept.ok, kept.errors
 
 
+def test_scenario_is_read_once_so_the_plan_comes_from_the_compared_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given: a scenario file that is replaced as soon as it has been read
+    root, scenario_path = build_run(tmp_path)
+    digest = sha256_of(scenario_path)
+    read_bytes = Path.read_bytes
+    replaced: list[Path] = []
+
+    def read_then_replace(self: Path) -> bytes:
+        data = read_bytes(self)
+        if self == scenario_path and not replaced:
+            replaced.append(self)
+            self.write_text("{}", encoding="utf-8")
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", read_then_replace)
+
+    # When
+    report = validate((root, scenario_path))
+
+    # Then: the run is judged against what was read and compared with the trace;
+    # a second read, by any means, would have met the replaced file
+    assert replaced == [scenario_path]
+    assert scenario_path.read_text(encoding="utf-8") == "{}"
+    assert report.ok, report.errors
+    assert report.trace is not None
+    assert report.trace.scenario_sha256 == digest
+    assert report.lineage is not None
+
+
 @pytest.mark.parametrize("change", ["missing", "changed"])
 def test_kept_scenario_that_is_gone_or_changed_is_refused(tmp_path: Path, change: str) -> None:
     root, scenario_path = build_run(tmp_path)
