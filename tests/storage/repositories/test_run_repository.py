@@ -7,7 +7,7 @@ from psycopg.types.json import Jsonb
 from incident_awareness.common.models.run import RunMetadata, RunType, SchemaVersions
 from incident_awareness.storage.repositories.run_repository import (
     _SELECT_RECENT_RUN_METADATA,
-    _SELECT_RUN_COUNT,
+    _SELECT_RECENT_RUNS_WITH_TOTAL_COUNT,
     _SELECT_RUN_METADATA,
     _UPSERT_RUN,
     RunRepository,
@@ -170,28 +170,95 @@ def test_list_recent_rejects_non_positive_limit(limit: int) -> None:
     assert connection.statements == []
 
 
-@pytest.mark.parametrize("stored_count", [3, 0])
-def test_count_returns_non_negative_integer_without_committing(stored_count: int) -> None:
-    # Given
-    connection = FakeConnection((stored_count,))
-
-    # When
-    count = RunRepository(connection).count()
-
-    # Then
-    assert count == stored_count
-    assert connection.statements == [(_SELECT_RUN_COUNT, ())]
-    assert connection.commits == 0
-
-
-@pytest.mark.parametrize("row", [None, (True,), (-1,), ("3",)])
-def test_count_rejects_invalid_database_result(
-    row: tuple[object, ...] | None,
+def test_list_recent_with_total_count_uses_one_statement_and_rebuilds_runs(
+    run_metadata: RunMetadata,
 ) -> None:
     # Given
-    connection = FakeConnection(row)
+    older_run = run_metadata.model_copy(
+        update={
+            "run_id": "RUN-20260910-001",
+            "start_time": datetime(2026, 9, 10, 1, tzinfo=UTC),
+        }
+    )
+    connection = FakeConnection(
+        rows=[
+            (7, run_metadata.model_dump(mode="json")),
+            {"total_runs": 7, "metadata": older_run.model_dump(mode="json")},
+        ]
+    )
+
+    # When
+    total_runs, recent_runs = RunRepository(connection).list_recent_with_total_count(5)
+
+    # Then
+    assert total_runs == 7
+    assert recent_runs == [run_metadata, older_run]
+    assert connection.statements == [(_SELECT_RECENT_RUNS_WITH_TOTAL_COUNT, (5,))]
+    assert "SELECT COUNT(*) AS total_runs" in _SELECT_RECENT_RUNS_WITH_TOTAL_COUNT
+    assert "ORDER BY start_time DESC, run_id DESC" in _SELECT_RECENT_RUNS_WITH_TOTAL_COUNT
+    assert _SELECT_RECENT_RUNS_WITH_TOTAL_COUNT.count("LIMIT %s") == 1
+    assert connection.commits == 0
+
+
+def test_list_recent_with_total_count_returns_empty_overview() -> None:
+    # Given
+    connection = FakeConnection(rows=[(0, None)])
+
+    # When
+    result = RunRepository(connection).list_recent_with_total_count(5)
+
+    # Then
+    assert result == (0, [])
+    assert connection.statements == [(_SELECT_RECENT_RUNS_WITH_TOTAL_COUNT, (5,))]
+
+
+@pytest.mark.parametrize("stored_total", [True, -1, "3", None])
+def test_list_recent_with_total_count_rejects_invalid_total(
+    stored_total: object,
+    run_metadata: RunMetadata,
+) -> None:
+    # Given
+    connection = FakeConnection(rows=[(stored_total, run_metadata.model_dump(mode="json"))])
 
     # When / Then
-    with pytest.raises(TypeError, match="Run count"):
-        RunRepository(connection).count()
+    with pytest.raises(TypeError, match="total count"):
+        RunRepository(connection).list_recent_with_total_count(5)
     assert connection.commits == 0
+
+
+def test_list_recent_with_total_count_rejects_invalid_metadata() -> None:
+    # Given
+    connection = FakeConnection(rows=[(1, "not-an-object")])
+
+    # When / Then
+    with pytest.raises(TypeError, match="JSON object"):
+        RunRepository(connection).list_recent_with_total_count(5)
+
+
+def test_list_recent_with_total_count_rejects_null_metadata_for_nonempty_table() -> None:
+    # Given
+    connection = FakeConnection(rows=[(1, None)])
+
+    # When / Then
+    with pytest.raises(TypeError, match="may be null only"):
+        RunRepository(connection).list_recent_with_total_count(5)
+
+
+def test_list_recent_with_total_count_rejects_missing_result_row() -> None:
+    # Given
+    connection = FakeConnection(rows=[])
+
+    # When / Then
+    with pytest.raises(TypeError, match="at least one row"):
+        RunRepository(connection).list_recent_with_total_count(5)
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_list_recent_with_total_count_rejects_non_positive_limit(limit: int) -> None:
+    # Given
+    connection = FakeConnection()
+
+    # When / Then
+    with pytest.raises(ValueError, match="greater than zero"):
+        RunRepository(connection).list_recent_with_total_count(limit)
+    assert connection.statements == []

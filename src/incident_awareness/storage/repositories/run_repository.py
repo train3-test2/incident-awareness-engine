@@ -45,7 +45,29 @@ ORDER BY start_time DESC, run_id DESC
 LIMIT %s
 """
 
-_SELECT_RUN_COUNT = "SELECT COUNT(*) FROM runs"
+_SELECT_RECENT_RUNS_WITH_TOTAL_COUNT = """
+WITH recent_runs AS (
+    SELECT
+        metadata,
+        start_time,
+        run_id
+    FROM runs
+    ORDER BY start_time DESC, run_id DESC
+    LIMIT %s
+),
+run_count AS (
+    SELECT COUNT(*) AS total_runs
+    FROM runs
+)
+SELECT
+    run_count.total_runs,
+    recent_runs.metadata
+FROM run_count
+LEFT JOIN recent_runs ON TRUE
+ORDER BY
+    recent_runs.start_time DESC NULLS LAST,
+    recent_runs.run_id DESC NULLS LAST
+"""
 
 
 class RunRepository:
@@ -85,17 +107,43 @@ class RunRepository:
         rows = self._connection.execute(_SELECT_RECENT_RUN_METADATA, (limit,)).fetchall()
         return [RunMetadata.model_validate(_metadata_from_row(row)) for row in rows]
 
-    def count(self) -> int:
-        """Return the number of stored Runs without changing transaction state."""
-        row = self._connection.execute(_SELECT_RUN_COUNT, ()).fetchone()
-        if row is None:
-            raise TypeError("Run count query must return one row")
+    def list_recent_with_total_count(
+        self,
+        limit: int,
+    ) -> tuple[int, list[RunMetadata]]:
+        """Return the total and recent Runs from one database statement."""
+        if limit <= 0:
+            raise ValueError("limit must be greater than zero")
 
-        count = row[0] if isinstance(row, tuple) else row["count"]
-        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
-            raise TypeError("Run count must be a non-negative integer")
+        rows = self._connection.execute(
+            _SELECT_RECENT_RUNS_WITH_TOTAL_COUNT,
+            (limit,),
+        ).fetchall()
+        if not rows:
+            raise TypeError("Run overview query must return at least one row")
 
-        return count
+        total_runs: int | None = None
+        recent_runs: list[RunMetadata] = []
+        for row in rows:
+            row_total, metadata = _overview_values_from_row(row)
+            if total_runs is None:
+                total_runs = row_total
+            elif row_total != total_runs:
+                raise TypeError("Run overview query returned inconsistent total counts")
+
+            if metadata is None:
+                if row_total != 0 or len(rows) != 1:
+                    raise TypeError("Run overview metadata may be null only for an empty table")
+            else:
+                recent_runs.append(RunMetadata.model_validate(metadata))
+
+        if total_runs == 0:
+            if recent_runs or len(rows) != 1:
+                raise TypeError("Empty Run overview must return one row without metadata")
+        elif not recent_runs or total_runs < len(recent_runs):
+            raise TypeError("Run overview result is inconsistent with the total count")
+
+        return total_runs, recent_runs
 
 
 def _metadata_from_row(
@@ -106,3 +154,23 @@ def _metadata_from_row(
         raise TypeError("runs.metadata는 JSON 객체여야 합니다.")
 
     return metadata
+
+
+def _overview_values_from_row(
+    row: tuple[object, ...] | Mapping[str, object],
+) -> tuple[int, Mapping[str, object] | None]:
+    try:
+        if isinstance(row, tuple):
+            total_runs, metadata = row
+        else:
+            total_runs = row["total_runs"]
+            metadata = row["metadata"]
+    except (KeyError, ValueError) as error:
+        raise TypeError("Run overview query returned an invalid row") from error
+
+    if isinstance(total_runs, bool) or not isinstance(total_runs, int) or total_runs < 0:
+        raise TypeError("Run total count must be a non-negative integer")
+    if metadata is not None and not isinstance(metadata, Mapping):
+        raise TypeError("runs.metadata must be a JSON object")
+
+    return total_runs, metadata

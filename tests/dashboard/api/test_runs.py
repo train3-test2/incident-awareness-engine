@@ -17,15 +17,18 @@ class FakeRunRepository:
         self.runs = runs if runs is not None else []
         self.total_runs = len(self.runs) if total_runs is None else total_runs
         self.limits: list[int] = []
-        self.count_calls = 0
+        self.overview_limits: list[int] = []
 
     def list_recent(self, limit: int) -> list[RunMetadata]:
         self.limits.append(limit)
         return self.runs
 
-    def count(self) -> int:
-        self.count_calls += 1
-        return self.total_runs
+    def list_recent_with_total_count(
+        self,
+        limit: int,
+    ) -> tuple[int, list[RunMetadata]]:
+        self.overview_limits.append(limit)
+        return self.total_runs, self.runs
 
 
 def test_get_runs_uses_default_limit_and_serializes_run_fields() -> None:
@@ -142,8 +145,8 @@ def test_get_overview_returns_total_and_five_recent_runs() -> None:
         "start_time",
         "end_time",
     }
-    assert repository.limits == [5]
-    assert repository.count_calls == 1
+    assert repository.overview_limits == [5]
+    assert repository.limits == []
 
 
 def test_get_overview_returns_empty_summary() -> None:
@@ -157,8 +160,8 @@ def test_get_overview_returns_empty_summary() -> None:
     # Then
     assert response.status_code == 200
     assert response.json() == {"total_runs": 0, "recent_runs": []}
-    assert repository.limits == [5]
-    assert repository.count_calls == 1
+    assert repository.overview_limits == [5]
+    assert repository.limits == []
 
 
 def _client(repository: FakeRunRepository) -> TestClient:

@@ -30,13 +30,15 @@ BASE_TIME = datetime(2026, 10, 3, 1, tzinfo=UTC)
 
 
 class FakeRunRepository:
-    def __init__(self, run: RunMetadata | None) -> None:
-        self.run = run
+    def __init__(self, runs: list[RunMetadata | None]) -> None:
+        self.runs = list(runs)
         self.get_calls: list[str] = []
 
     def get(self, run_id: str) -> RunMetadata | None:
         self.get_calls.append(run_id)
-        return self.run
+        if not self.runs:
+            raise AssertionError("unexpected RunRepository.get call")
+        return self.runs.pop(0)
 
 
 class FakeDashboardDecisionReader:
@@ -75,7 +77,7 @@ def test_get_run_detail_returns_current_runtime_and_history() -> None:
     d3 = _decision("DEC-003", supersedes_decision_id=d2.decision_id)
     current = _current(d3)
     history = [d3, d2, d1]
-    repository = FakeRunRepository(run)
+    repository = FakeRunRepository([run, run])
     reader = FakeDashboardDecisionReader(
         current_results=[current],
         history_results=[history],
@@ -98,14 +100,14 @@ def test_get_run_detail_returns_current_runtime_and_history() -> None:
         "DEC-002",
         "DEC-001",
     ]
-    assert repository.get_calls == [RUN_ID]
+    assert repository.get_calls == [RUN_ID, RUN_ID]
     assert reader.current_calls == [(RUN_ID, ENTITY_ID)]
     assert reader.history_calls == [(RUN_ID, ENTITY_ID)]
 
 
 def test_get_run_detail_returns_404_without_querying_decisions() -> None:
     # Given
-    repository = FakeRunRepository(None)
+    repository = FakeRunRepository([None])
     reader = FakeDashboardDecisionReader()
     client = _client(repository, reader)
 
@@ -126,7 +128,7 @@ def test_get_run_detail_returns_empty_decisions_for_existing_run() -> None:
         current_results=[None],
         history_results=[[]],
     )
-    client = _client(FakeRunRepository(run), reader)
+    client = _client(FakeRunRepository([run, run]), reader)
 
     # When
     response = client.get(f"/runs/{RUN_ID}")
@@ -135,6 +137,29 @@ def test_get_run_detail_returns_empty_decisions_for_existing_run() -> None:
     assert response.status_code == 200
     assert response.json()["current_decision"] is None
     assert response.json()["decision_history"] == []
+
+
+def test_get_run_detail_returns_retried_run_metadata() -> None:
+    # Given
+    run_v1 = _run_metadata(scenario_id="scenario-v1")
+    run_v2 = _run_metadata(scenario_id="scenario-v2")
+    decision = _decision("DEC-001")
+    repository = FakeRunRepository([run_v1, run_v2, run_v2, run_v2])
+    reader = FakeDashboardDecisionReader(
+        current_results=[_current(decision), _current(decision)],
+        history_results=[[decision], [decision]],
+    )
+    client = _client(repository, reader)
+
+    # When
+    response = client.get(f"/runs/{RUN_ID}")
+
+    # Then
+    assert response.status_code == 200
+    assert response.json()["run"]["scenario_id"] == "scenario-v2"
+    assert repository.get_calls == [RUN_ID] * 4
+    assert len(reader.current_calls) == 2
+    assert len(reader.history_calls) == 2
 
 
 def test_get_run_detail_maps_retry_exhaustion_to_503() -> None:
@@ -146,7 +171,8 @@ def test_get_run_detail_maps_retry_exhaustion_to_503() -> None:
         current_results=[current, current, current],
         history_results=[[d2, d1], [d2, d1], [d2, d1]],
     )
-    client = _client(FakeRunRepository(_run_metadata()), reader)
+    run = _run_metadata()
+    client = _client(FakeRunRepository([run] * 6), reader)
 
     # When
     response = client.get(f"/runs/{RUN_ID}")
@@ -168,7 +194,7 @@ def test_get_run_detail_maps_decision_integrity_error_without_leaking_details() 
         current_results=[_current(d1)],
         history_results=[error],
     )
-    client = _client(FakeRunRepository(_run_metadata()), reader)
+    client = _client(FakeRunRepository([_run_metadata()]), reader)
 
     # When
     response = client.get(f"/runs/{RUN_ID}")
@@ -258,10 +284,10 @@ def _decision(
     )
 
 
-def _run_metadata() -> RunMetadata:
+def _run_metadata(*, scenario_id: str = "scenario-001") -> RunMetadata:
     return RunMetadata(
         run_id=RUN_ID,
-        scenario_id="scenario-001",
+        scenario_id=scenario_id,
         run_type=RunType.ATTACK,
         target_host=ENTITY_ID,
         start_time=BASE_TIME,

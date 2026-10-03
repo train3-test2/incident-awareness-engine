@@ -26,9 +26,9 @@ _OVERVIEW_RECENT_RUN_LIMIT = 5
 def get_overview(
     repository: Annotated[RunRepository, Depends(get_run_repository)],
 ) -> OverviewResponse:
-    recent_runs = repository.list_recent(_OVERVIEW_RECENT_RUN_LIMIT)
+    total_runs, recent_runs = repository.list_recent_with_total_count(_OVERVIEW_RECENT_RUN_LIMIT)
     return OverviewResponse(
-        total_runs=repository.count(),
+        total_runs=total_runs,
         recent_runs=[RunListItem.from_run_metadata(run) for run in recent_runs],
     )
 
@@ -50,21 +50,24 @@ def get_run(
     repository: Annotated[RunRepository, Depends(get_run_repository)],
     reader: Annotated[DashboardDecisionReader, Depends(get_dashboard_decision_reader)],
 ) -> RunDetailResponse:
-    run = repository.get(run_id)
-    if run is None:
+    detail = get_run_detail(
+        run_id=run_id,
+        run_repository=repository,
+        reader=reader,
+    )
+    if detail is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Run not found",
         )
 
-    detail = get_run_detail(run=run, reader=reader)
     current_response = (
         None
         if detail.current_decision is None
         else CurrentDecisionResponse.from_read_model(detail.current_decision)
     )
     return RunDetailResponse(
-        run=run,
+        run=detail.run,
         current_decision=current_response,
         decision_history=detail.decision_history,
     )
