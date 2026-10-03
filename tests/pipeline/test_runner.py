@@ -31,9 +31,11 @@ def test_runs_each_first_cycle_stage_in_order(monkeypatch: pytest.MonkeyPatch) -
     normalized_artifacts = object()
     fusion_result = object()
     stopping_trace = object()
+    runtime_config_snapshot = object()
     fusion_output = S0FusionPipelineResult(
         fusion_result=fusion_result,
         stopping_trace=stopping_trace,
+        runtime_config_snapshot=runtime_config_snapshot,
     )
     fast_result = object()
     decision_result = object()
@@ -226,9 +228,11 @@ def _configure_successful_stages(
     normalized_artifacts = object()
     fusion_result = object()
     stopping_trace = object()
+    runtime_config_snapshot = object()
     fusion_output = S0FusionPipelineResult(
         fusion_result=fusion_result,
         stopping_trace=stopping_trace,
+        runtime_config_snapshot=runtime_config_snapshot,
     )
     fast_result = object()
     decision_result = object()
