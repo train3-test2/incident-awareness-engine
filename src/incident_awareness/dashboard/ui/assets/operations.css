@@ -5,6 +5,10 @@
     --border-color: #d1d9e0;
     --surface-color: #ffffff;
     --page-background-color: #f6f8fa;
+    --running-color: #0969da;
+    --stale-color: #9a6700;
+    --completed-color: #1a7f37;
+    --failed-color: #cf222e;
 }
 
 *,
@@ -50,5 +54,70 @@ body {
 }
 
 .runtime-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr));
+    gap: 0.75rem;
     margin-top: 0.75rem;
+}
+
+.runtime-card {
+    padding: 0.75rem 1rem;
+    background-color: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-left: 0.25rem solid var(--border-color);
+    border-radius: 0.5rem;
+}
+
+.runtime-card--running {
+    border-left-color: var(--running-color);
+}
+
+.runtime-card--stale {
+    border-left-style: dashed;
+    border-left-color: var(--stale-color);
+}
+
+.runtime-card--completed {
+    border-left-color: var(--completed-color);
+}
+
+.runtime-card--failed {
+    border-left-color: var(--failed-color);
+}
+
+.runtime-card__title {
+    margin: 0 0 0.5rem;
+    font-size: 1rem;
+    overflow-wrap: anywhere;
+}
+
+.runtime-card__fields {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 0.25rem 0.75rem;
+    margin: 0;
+}
+
+.runtime-field {
+    display: contents;
+}
+
+.runtime-field__label {
+    color: var(--muted-text-color);
+}
+
+.runtime-field__value {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 30rem) {
+    .runtime-card__fields {
+        grid-template-columns: minmax(0, 1fr);
+        row-gap: 0;
+    }
+
+    .runtime-field__value {
+        margin-bottom: 0.375rem;
+    }
 }

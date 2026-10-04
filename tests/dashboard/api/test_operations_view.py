@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from incident_awareness.common.models.pipeline_runtime import (
     PipelineRuntimeState,
     PipelineRuntimeStatus,
+    PipelineStage,
 )
 from incident_awareness.dashboard.api.app import create_app
 from incident_awareness.dashboard.api.dependencies import get_pipeline_runtime_repository
@@ -127,7 +128,6 @@ def test_operations_script_preserves_runtime_items_and_query_states() -> None:
     assert "표시할 Runtime 정보가 없습니다." in script
     assert "Runtime 정보를 불러오지 못했습니다." in script
     assert "Runtime ${latestRuntimeItems.length}건을 불러왔습니다." in script
-    assert 'document.getElementById("runtime-list")' not in script
 
 
 def test_operations_script_uses_safe_status_dom_api() -> None:
@@ -179,6 +179,127 @@ def test_operations_script_skips_unchanged_runtime_status_updates() -> None:
     # Then
     assert update_body.count("runtimeStatus.textContent = message;") == 1
     assert "runtimeStatus.textContent = message;" in guarded_body
+
+
+def test_operations_script_labels_every_runtime_stage() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/operations.js").text
+    stage_labels = _between(script, "const STAGE_LABELS = new Map([", "]);")
+    stage_label_body = _block_body(script, "function getStageLabel(stage) {")
+
+    # Then
+    for stage in PipelineStage:
+        assert f'["{stage.value}", "' in stage_labels
+    assert "STAGE_LABELS.get(stage) ?? String(stage)" in stage_label_body
+
+
+def test_operations_script_renders_successful_runtime_items_into_list() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/operations.js").text
+    success_body = _block_body(_block_body(script, "async function pollRuntime() {"), "try {")
+    render_body = _block_body(script, "function renderRuntimeItems(items) {")
+
+    # Then
+    assert 'document.getElementById("runtime-list")' in script
+    assert success_body.index("renderRuntimeItems(items);") < success_body.index(
+        "latestRuntimeItems = items;"
+    )
+    assert "items.map(createRuntimeCard)" in render_body
+    assert "runtimeList.replaceChildren(...cards);" in render_body
+
+
+def test_operations_script_keeps_last_runtime_list_on_error() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/operations.js").text
+    error_body = _block_body(_block_body(script, "async function pollRuntime() {"), "} catch {")
+
+    # Then
+    assert "updateRuntimeStatus(ERROR_MESSAGE);" in error_body
+    for list_change in (
+        "latestRuntimeItems",
+        "renderRuntimeItems",
+        "replaceChildren",
+        "runtimeList",
+    ):
+        assert list_change not in error_body
+
+
+def test_operations_script_builds_runtime_cards_with_dom_api() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/operations.js").text
+    field_body = _block_body(script, "function createField(label, value) {")
+    card_body = _block_body(script, "function createRuntimeCard(runtime) {")
+
+    # Then
+    assert "document.createElement(" in field_body
+    assert "term.textContent = label;" in field_body
+    assert "description.textContent = value;" in field_body
+    assert 'document.createElement("article")' in card_body
+    assert "heading.textContent = displayValue(runtime.run_id);" in card_body
+
+
+def test_operations_script_keeps_api_runtime_order() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/operations.js").text
+
+    # Then
+    for reordering_api in (".sort(", ".toSorted(", ".reverse(", ".toReversed("):
+        assert reordering_api not in script
+
+
+def test_operations_script_presents_stale_running_without_failure_semantics() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/operations.js").text
+    presentation_body = _block_body(script, "function getRuntimeStatePresentation(runtime) {")
+    stale_body = _block_body(presentation_body, "if (runtime.is_stale === true) {")
+
+    # Then
+    assert 'modifiers: ["running", "stale"]' in stale_body
+    assert "statusLabel: RUNNING_STATUS_LABEL" in stale_body
+    assert 'livenessLabel: "확인 불가"' in stale_body
+    for failure_wording in ("실패", "중단", "종료", "failed", "stopped", "dead", "timeout"):
+        assert failure_wording not in stale_body
+    assert '"현재 실행 여부"' in script
+    assert "현재 실행 중" not in script
+    assert "has_error" not in presentation_body
+
+
+def test_operations_script_renders_batch_progress_fields() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/operations.js").text
+    card_body = _block_body(script, "function createRuntimeCard(runtime) {")
+
+    # Then
+    for progress_field in (
+        "runtime.normalization_processed_count",
+        "runtime.input_total",
+        "runtime.remaining_count",
+    ):
+        assert progress_field in card_body
+    assert '"남은 항목"' in card_body
+    for misleading_label in ("대기열", "backlog", "queue"):
+        assert misleading_label not in script
 
 
 def test_dashboard_assets_do_not_serve_operations_html_shell() -> None:
@@ -285,3 +406,8 @@ def _block_body(source: str, opening: str) -> str:
             if depth == 0:
                 return source[start:index]
     raise AssertionError(f"unterminated block: {opening}")
+
+
+def _between(source: str, start_marker: str, end_marker: str) -> str:
+    start = source.index(start_marker) + len(start_marker)
+    return source[start : source.index(end_marker, start)]
