@@ -122,11 +122,15 @@ def _policy(
         "approved-hop.exe",
         "terminal.exe",
     ),
+    *,
+    policy_id: str = "r1-target-a-lineage",
+    version: str = "v1",
+    config_hash: str = "sha256:approved-policy-v1",
 ) -> ApprovedLineagePolicy:
     return ApprovedLineagePolicy(
-        policy_id="r1-target-a-lineage",
-        version="v1",
-        config_hash="sha256:approved-policy-v1",
+        policy_id=policy_id,
+        version=version,
+        config_hash=config_hash,
         approved_lineage=approved_lineage,
     )
 
@@ -216,6 +220,8 @@ def test_writes_completed_evidence_and_summary_artifacts(tmp_path: Path) -> None
     assert summary["input_event_count"] == len(events)
     assert summary["evidence_count"] == len(records) == 2
     assert summary["telemetry_completeness"] == "not_provided"
+    assert summary["error_type"] is None
+    assert summary["error_message"] is None
     assert (
         summary["evidence_artifact_sha256"]
         == hashlib.sha256(evidence_path.read_bytes()).hexdigest()
@@ -256,6 +262,108 @@ def test_completed_extraction_with_no_evidence_is_not_failed(tmp_path: Path) -> 
     assert summary["status"] == "completed"
     assert summary["evidence_count"] == 0
     assert summary["diagnostics"] == []
+    assert summary["lineage_inputs"] == [
+        {
+            "anchor_event_id": "evt-anchor",
+            "terminal_event_id": "evt-terminal",
+            "policy_id": "r1-target-a-lineage",
+            "policy_version": "v1",
+            "policy_config_hash": "sha256:approved-policy-v1",
+        }
+    ]
+    assert summary["error_type"] is None
+    assert summary["error_message"] is None
+
+
+def test_lineage_provenance_is_deterministic_and_preserves_inputs(tmp_path: Path) -> None:
+    # Given
+    first_directory = tmp_path / "first"
+    second_directory = tmp_path / "second"
+    first_directory.mkdir()
+    second_directory.mkdir()
+    anchor, middle, terminal, _ = _events()
+    approved_lineage = ("anchor.exe", "runtime-hop.exe", "terminal.exe")
+    first_input = _lineage_input(
+        _policy(
+            approved_lineage,
+            policy_id="policy-a",
+            version="v1",
+            config_hash="sha256:policy-a",
+        )
+    )
+    second_input = _lineage_input(
+        _policy(
+            approved_lineage,
+            policy_id="policy-b",
+            version="v2",
+            config_hash="sha256:policy-b",
+        )
+    )
+
+    # When
+    first_result = run_and_write_r1_evidence_artifacts(
+        [anchor, middle, terminal],
+        run_id=_RUN_ID,
+        output_directory=first_directory,
+        lineage_inputs=[second_input, first_input, first_input],
+    )
+    second_result = run_and_write_r1_evidence_artifacts(
+        [anchor, middle, terminal],
+        run_id=_RUN_ID,
+        output_directory=second_directory,
+        lineage_inputs=[first_input, second_input, first_input],
+    )
+
+    # Then
+    first_summary = json.loads(first_result.summary_path.read_text(encoding="utf-8"))
+    second_summary = json.loads(second_result.summary_path.read_text(encoding="utf-8"))
+    expected_provenance = [
+        {
+            "anchor_event_id": "evt-anchor",
+            "terminal_event_id": "evt-terminal",
+            "policy_id": "policy-a",
+            "policy_version": "v1",
+            "policy_config_hash": "sha256:policy-a",
+        },
+        {
+            "anchor_event_id": "evt-anchor",
+            "terminal_event_id": "evt-terminal",
+            "policy_id": "policy-a",
+            "policy_version": "v1",
+            "policy_config_hash": "sha256:policy-a",
+        },
+        {
+            "anchor_event_id": "evt-anchor",
+            "terminal_event_id": "evt-terminal",
+            "policy_id": "policy-b",
+            "policy_version": "v2",
+            "policy_config_hash": "sha256:policy-b",
+        },
+    ]
+    assert first_summary["evidence_count"] == 0
+    assert first_summary["lineage_inputs"] == expected_provenance
+    assert second_summary["lineage_inputs"] == expected_provenance
+    assert first_result.summary_path.read_bytes() == second_result.summary_path.read_bytes()
+
+
+def test_empty_lineage_inputs_record_no_fail_closed_diagnostic(tmp_path: Path) -> None:
+    # Given
+    events = _events()
+
+    # When
+    result = run_and_write_r1_evidence_artifacts(
+        events,
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=(),
+    )
+
+    # Then
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+    assert result.evidences == ()
+    assert summary["lineage_inputs"] == []
+    assert summary["evidence_count"] == 0
+    assert summary["diagnostics"] == []
 
 
 @pytest.mark.parametrize(
@@ -289,6 +397,8 @@ def test_completed_fail_closed_extraction_records_diagnostic(
     assert summary["status"] == "completed"
     assert summary["evidence_count"] == 0
     assert summary["diagnostics"] == [diagnostic]
+    assert summary["error_type"] is None
+    assert summary["error_message"] is None
 
 
 def test_failed_extraction_writes_summary_and_reraises(tmp_path: Path) -> None:
@@ -316,9 +426,11 @@ def test_failed_extraction_writes_summary_and_reraises(tmp_path: Path) -> None:
     assert summary["evidence_count"] is None
     assert summary["input_event_count"] == len(events)
     assert summary["evidence_artifact_sha256"] is None
-    assert summary["diagnostics"] == [
-        "ValueError: anchor_event_id does not reference an Event in the batch: evt-missing-anchor"
-    ]
+    assert summary["diagnostics"] == []
+    assert summary["error_type"] == "ValueError"
+    assert summary["error_message"] == (
+        "anchor_event_id does not reference an Event in the batch: evt-missing-anchor"
+    )
 
 
 def test_run_id_mismatch_writes_failed_summary_without_evidence(tmp_path: Path) -> None:
@@ -346,12 +458,65 @@ def test_run_id_mismatch_writes_failed_summary_without_evidence(tmp_path: Path) 
     assert not (tmp_path / R1_EVIDENCE_FILENAME).exists()
     assert summary["status"] == "failed"
     assert summary["evidence_count"] is None
-    assert summary["diagnostics"] == [
-        (
-            "ValueError: all events must belong to the requested run_id: "
-            "evt-network belongs to RUN-20261006-002"
+    assert summary["diagnostics"] == []
+    assert summary["error_type"] == "ValueError"
+    assert summary["error_message"] == (
+        "all events must belong to the requested run_id: evt-network belongs to RUN-20261006-002"
+    )
+
+
+def test_event_materialization_failure_writes_failed_summary(tmp_path: Path) -> None:
+    # Given
+    first_event = _events()[0]
+
+    def failing_events():
+        yield first_event
+        raise RuntimeError("event stream failed")
+
+    # When / Then
+    with pytest.raises(RuntimeError, match="event stream failed"):
+        run_and_write_r1_evidence_artifacts(
+            failing_events(),
+            run_id=_RUN_ID,
+            output_directory=tmp_path,
+            lineage_inputs=[_lineage_input()],
         )
-    ]
+
+    summary = json.loads((tmp_path / R1_EXTRACTION_SUMMARY_FILENAME).read_text(encoding="utf-8"))
+    assert not (tmp_path / R1_EVIDENCE_FILENAME).exists()
+    assert summary["status"] == "failed"
+    assert summary["input_event_count"] is None
+    assert summary["lineage_inputs"] is None
+    assert summary["diagnostics"] == []
+    assert summary["error_type"] == "RuntimeError"
+    assert summary["error_message"] == "event stream failed"
+
+
+def test_lineage_input_materialization_failure_writes_failed_summary(tmp_path: Path) -> None:
+    # Given
+    events = _events()
+
+    def failing_lineage_inputs():
+        yield _lineage_input()
+        raise RuntimeError("lineage input stream failed")
+
+    # When / Then
+    with pytest.raises(RuntimeError, match="lineage input stream failed"):
+        run_and_write_r1_evidence_artifacts(
+            events,
+            run_id=_RUN_ID,
+            output_directory=tmp_path,
+            lineage_inputs=failing_lineage_inputs(),
+        )
+
+    summary = json.loads((tmp_path / R1_EXTRACTION_SUMMARY_FILENAME).read_text(encoding="utf-8"))
+    assert not (tmp_path / R1_EVIDENCE_FILENAME).exists()
+    assert summary["status"] == "failed"
+    assert summary["input_event_count"] == len(events)
+    assert summary["lineage_inputs"] is None
+    assert summary["diagnostics"] == []
+    assert summary["error_type"] == "RuntimeError"
+    assert summary["error_message"] == "lineage input stream failed"
 
 
 def test_failed_artifact_requires_a_new_output_directory_for_retry(tmp_path: Path) -> None:
