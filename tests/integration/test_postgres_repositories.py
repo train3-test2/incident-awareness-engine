@@ -48,6 +48,10 @@ from incident_awareness.integration.fast_hit_handoff import FastDetectionAdapter
 from incident_awareness.normalization.sysmon import SysmonNormalizationContext
 from incident_awareness.pipeline.event_evidence import NormalizedEvidenceArtifacts
 from incident_awareness.pipeline.persistence import DecisionConflictError, persist_s0_results
+from incident_awareness.pipeline.runtime_telemetry import (
+    PipelineRuntimeTracker,
+    PostgresPipelineRuntimeObserver,
+)
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
 from incident_awareness.storage.config import DATABASE_URL_ENV, DatabaseConfig
 from incident_awareness.storage.migrate import apply_migrations
@@ -541,6 +545,71 @@ def test_postgres_pipeline_runtime_repository_lists_operational_latest_state(
             connection.execute("SET search_path TO public")
             connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(schema))
             connection.commit()
+
+
+def test_postgres_pipeline_runtime_observer_commits_completed_status(
+    database_url: str,
+) -> None:
+    # Given
+    schema_name = f"pipeline_runtime_observer_{uuid4().hex}"
+    schema = sql.Identifier(schema_name)
+    started_at = datetime(2026, 10, 4, 3, tzinfo=UTC)
+    timestamps = iter(
+        (
+            started_at,
+            started_at + timedelta(seconds=1),
+            started_at + timedelta(seconds=2),
+            started_at + timedelta(seconds=3),
+        )
+    )
+
+    with psycopg.connect(database_url) as setup_connection:
+        setup_connection.execute(sql.SQL("CREATE SCHEMA {}").format(schema))
+        setup_connection.execute(sql.SQL("SET search_path TO {}").format(schema))
+        apply_migrations(setup_connection)
+        setup_connection.commit()
+
+    def connect_telemetry(url: str):
+        connection = psycopg.connect(url)
+        connection.execute(sql.SQL("SET search_path TO {}").format(schema))
+        return connection
+
+    try:
+        # When
+        with PostgresPipelineRuntimeObserver(
+            database_config_factory=lambda: DatabaseConfig(database_url),
+            connection_factory=connect_telemetry,
+            progress_write_interval_seconds=0.0,
+        ) as observer:
+            tracker = PipelineRuntimeTracker(
+                execution_id=f"execution-{uuid4().hex}",
+                run_id="RUN-20261004-915",
+                entity_id="WIN-OBSERVER",
+                input_total=1,
+                started_at=started_at,
+                observer=observer,
+                clock=lambda: next(timestamps),
+            )
+            tracker.start_stage(PipelineStage.NORMALIZATION)
+            tracker.record_normalization_progress(1)
+            tracker.start_stage(PipelineStage.FUSION)
+            expected = tracker.complete()
+
+        # Then
+        with psycopg.connect(database_url) as verification_connection:
+            verification_connection.execute(sql.SQL("SET search_path TO {}").format(schema))
+            stored = PipelineRuntimeStatusRepository(verification_connection).get(
+                expected.run_id,
+                expected.entity_id,
+            )
+        assert stored == expected
+        assert stored is not None
+        assert stored.status is PipelineRuntimeState.COMPLETED
+        assert stored.normalization_processed_count == stored.input_total
+    finally:
+        with psycopg.connect(database_url) as cleanup_connection:
+            cleanup_connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(schema))
+            cleanup_connection.commit()
 
 
 def test_postgres_decision_runtime_snapshot_round_trip(database_url: str) -> None:
