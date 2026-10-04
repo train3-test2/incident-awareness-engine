@@ -28,5 +28,11 @@
       "group_id": "RUN-20261004-004",
       "split": "test"
     }
-  ]
+  ],
+  "inventory_family_ids": {
+    "RUN-20261004-001": "family-a",
+    "RUN-20261004-002": "family-a",
+    "RUN-20261004-003": "family-b",
+    "RUN-20261004-004": "family-c"
+  }
 }

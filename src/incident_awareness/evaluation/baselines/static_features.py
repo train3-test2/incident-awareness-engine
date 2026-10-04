@@ -43,6 +43,7 @@ def extract_static_features(
     seen: dict[str, Evidence] = {}
     for original in active_evidence:
         row = Evidence.model_validate(original.model_dump(mode="json"))
+        validate_managed_evidence_types((row.evidence_type,))
         if row.run_id != run_id or row.entity_id != entity_id:
             raise ValueError("Evidence must belong to the requested Run/entity")
         if row.evidence_id in seen and seen[row.evidence_id] != row:

@@ -26,6 +26,9 @@ def inputs():
         manifest_version="split-v1",
         grouping_policy_version="pair-v1",
         inventory_run_ids=ids,
+        inventory_family_ids=dict(
+            zip(ids, ("family-a", "family-a", "family-b", "family-c"), strict=True)
+        ),
         assignments=[
             {"run_id": run, "group_id": run, "split": split}
             for run, split in zip(ids, ("train", "train", "validation", "test"), strict=True)
@@ -47,10 +50,10 @@ def inputs():
         model_version="lr-v1",
         label_policy_version="explicit-window-v1",
         c=1.0,
-        tolerance=1e-8,
+        tolerance=1e-08,
         max_iter=500,
     )
-    return rows, manifest, config
+    return (rows, manifest, config)
 
 
 def unlabeled(rows):
@@ -58,99 +61,166 @@ def unlabeled(rows):
 
 
 def test_json_reload_matches_sklearn_and_is_order_stable(inputs):
+    # Given
     rows, manifest, config = inputs
+
+    # When
     model = train_static_model(rows, manifest, config)
-    assert train_static_model(list(reversed(rows)), manifest, config) == model
+    actual_2 = train_static_model(list(reversed(rows)), manifest, config)
     restored = StaticModel.model_validate_json(model.model_dump_json())
-    reference = LogisticRegression(C=1, tol=1e-8, max_iter=500).fit(
+    reference = LogisticRegression(C=1, tol=1e-08, max_iter=500).fit(
         [row.values for row in rows], [0, 1]
     )
     predictions = predict_static_model(restored, unlabeled(rows))["predictions"]
-    assert [item["probability"] for item in predictions] == pytest.approx(
-        reference.predict_proba([row.values for row in rows])[:, 1]
-    )
+    actual_6 = reference.predict_proba([row.values for row in rows])
+
+    # Then
+    assert actual_2 == model
+    assert [item["probability"] for item in predictions] == pytest.approx(actual_6[:, 1])
     assert predictions[0]["probability"] < 0.5 < predictions[1]["probability"]
 
 
 @pytest.mark.parametrize("run", ["RUN-20261004-003", "RUN-20261004-004"])
 def test_validation_test_leakage_rejected(inputs, run):
+    # Given
     rows, manifest, config = inputs
     rows[0] = rows[0].model_copy(update={"run_id": run})
-    with pytest.raises(ValueError, match="train Runs"):
+
+    # When
+    with pytest.raises(ValueError) as error_1:
         train_static_model(rows, manifest, config)
+
+    # Then
+    assert "train Runs" in str(error_1.value)
 
 
 def test_missing_train_run_rejected(inputs):
+    # Given
     rows, manifest, config = inputs
-    with pytest.raises(ValueError, match="train Runs"):
+
+    # When
+    with pytest.raises(ValueError) as error_1:
         train_static_model(rows[:1], manifest, config)
+
+    # Then
+    assert "train Runs" in str(error_1.value)
 
 
 def test_single_class_rejected(inputs):
+    # Given
     rows, manifest, config = inputs
     rows[1] = rows[1].model_copy(update={"label": 0})
-    with pytest.raises(ValueError, match="both binary"):
+
+    # When
+    with pytest.raises(ValueError) as error_1:
         train_static_model(rows, manifest, config)
+
+    # Then
+    assert "both binary" in str(error_1.value)
 
 
 @pytest.mark.parametrize(
     "change", [{"feature_names": tuple(reversed(NAMES))}, {"feature_config_version": "v2"}]
 )
 def test_inference_contract_mismatch(inputs, change):
+    # Given
     rows, manifest, config = inputs
+
     model = train_static_model(rows, manifest, config)
     queries = unlabeled(rows)
     queries[0] = queries[0].model_copy(update=change)
-    with pytest.raises(ValueError, match="contract mismatch"):
+
+    # When
+    with pytest.raises(ValueError) as error_1:
         predict_static_model(model, queries)
+
+    # Then
+    assert "contract mismatch" in str(error_1.value)
 
 
 def test_training_contract_mismatch(inputs):
+    # Given
     rows, manifest, config = inputs
     rows[1] = rows[1].model_copy(update={"feature_names": tuple(reversed(NAMES))})
-    with pytest.raises(ValueError, match="contract mismatch"):
+
+    # When
+    with pytest.raises(ValueError) as error_1:
         train_static_model(rows, manifest, config)
+
+    # Then
+    assert "contract mismatch" in str(error_1.value)
 
 
 def test_unchecked_bad_binary_and_artifact_rejected(inputs):
+    # Given
     rows, manifest, config = inputs
+
     model = train_static_model(rows, manifest, config)
-    with pytest.raises(ValueError):
-        predict_static_model(model.model_copy(update={"intercept": float("nan")}), unlabeled(rows))
+    invalid_model = model.model_copy(update={"intercept": float("nan")})
+    queries = unlabeled(rows)
     rows[0] = rows[0].model_copy(update={"values": (True, 1)})
-    with pytest.raises(ValueError):
+
+    # When
+    with pytest.raises(ValueError) as error_1:
+        predict_static_model(invalid_model, queries)
+    with pytest.raises(ValueError) as error_2:
         train_static_model(rows, manifest, config)
+
+    # Then
+    assert str(error_1.value)
+    assert str(error_2.value)
 
 
 def test_duplicate_sample_rejected(inputs):
+    # Given
     rows, manifest, config = inputs
-    with pytest.raises(ValueError, match="duplicate sample"):
+
+    # When
+    with pytest.raises(ValueError) as error_1:
         train_static_model([*rows, rows[0]], manifest, config)
+
+    # Then
+    assert "duplicate sample" in str(error_1.value)
 
 
 def test_convergence_failure_produces_no_model(inputs, monkeypatch):
+    # Given
     def fail(*args, **kwargs):
         warnings.warn("not converged", ConvergenceWarning, stacklevel=2)
 
     monkeypatch.setattr(LogisticRegression, "fit", fail)
-    with pytest.raises(ValueError, match="did not converge"):
+
+    # When
+    with pytest.raises(ValueError) as error_1:
         train_static_model(*inputs)
+
+    # Then
+    assert "did not converge" in str(error_1.value)
 
 
 def test_training_hash_changes_with_label_policy_and_data(inputs):
+    # Given
     rows, manifest, config = inputs
-    original = train_static_model(rows, manifest, config)
+
     changed = [rows[0].model_copy(update={"values": (0, 1)}), rows[1]]
-    assert train_static_model(changed, manifest, config).training_sha256 != original.training_sha256
-    assert predict_static_model(original, [])["predictions"] == []
+
+    # When
+    original = train_static_model(rows, manifest, config)
+    actual_3 = train_static_model(changed, manifest, config)
+    actual_4 = predict_static_model(original, [])
+
+    # Then
+    assert actual_3.training_sha256 != original.training_sha256
+    assert actual_4["predictions"] == []
 
 
 def test_cli_train_reload_predict_and_no_overwrite(inputs, tmp_path, monkeypatch):
+    # Given
     rows, manifest, config = inputs
 
     def write(name, data):
         path = tmp_path / name
-        path.write_text(json.dumps(data))
+        path.write_text(json.dumps(data), encoding="utf-8")
         return str(path)
 
     train_path = write("train.json", [row.model_dump(mode="json") for row in rows])
@@ -172,15 +242,23 @@ def test_cli_train_reload_predict_and_no_overwrite(inputs, tmp_path, monkeypatch
             output,
         ],
     )
-    main()
-    before = (tmp_path / "model.json").read_bytes()
-    with pytest.raises(SystemExit):
-        main()
-    assert (tmp_path / "model.json").read_bytes() == before
+
     query = write("query.json", [row.model_dump(mode="json") for row in unlabeled(rows)])
     result = tmp_path / "predictions.json"
+
+    # When
+    main()
+    before = (tmp_path / "model.json").read_bytes()
+    with pytest.raises(SystemExit) as error_1:
+        main()
+    actual_10 = (tmp_path / "model.json").read_bytes()
     monkeypatch.setattr(
         "sys.argv", ["cli", "predict", "--rows", query, "--model", output, "--output", str(result)]
     )
     main()
-    assert len(json.loads(result.read_text())["predictions"]) == 2
+    actual_15 = result.read_text(encoding="utf-8")
+
+    # Then
+    assert error_1.value.code == 2
+    assert actual_10 == before
+    assert len(json.loads(actual_15)["predictions"]) == 2

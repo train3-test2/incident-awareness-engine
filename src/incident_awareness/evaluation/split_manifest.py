@@ -32,6 +32,7 @@ class SplitManifest(BaseModel):
     manifest_version: Identifier
     grouping_policy_version: Identifier
     inventory_run_ids: tuple[Identifier, ...] = Field(min_length=1)
+    inventory_family_ids: dict[Identifier, Identifier]
     assignments: tuple[SplitAssignment, ...] = Field(min_length=1)
 
     @field_validator("inventory_run_ids")
@@ -52,8 +53,15 @@ class SplitManifest(BaseModel):
             raise ValueError("assignments must exactly cover inventory")
         if {row.split for row in self.assignments} != set(SPLITS):
             raise ValueError("train, validation and test must each contain a Run")
+        if set(self.inventory_family_ids) != set(self.inventory_run_ids):
+            raise ValueError("family inventory must exactly cover Run inventory")
+        families = {}
         groups = {}
         for row in self.assignments:
+            family = self.inventory_family_ids[row.run_id]
+            previous_family = families.setdefault(family, row.split)
+            if previous_family != row.split:
+                raise ValueError("a family must not cross split boundaries")
             previous = groups.setdefault(row.group_id, row.split)
             if previous != row.split:
                 raise ValueError("a group must not cross split boundaries")
@@ -74,6 +82,13 @@ def audit_split_manifest(manifest: SplitManifest) -> dict:
         "splits": {
             split: {
                 "run_ids": sorted(row.run_id for row in manifest.assignments if row.split == split),
+                "family_ids": sorted(
+                    {
+                        manifest.inventory_family_ids[row.run_id]
+                        for row in manifest.assignments
+                        if row.split == split
+                    }
+                ),
                 "group_ids": sorted(
                     {row.group_id for row in manifest.assignments if row.split == split}
                 ),
