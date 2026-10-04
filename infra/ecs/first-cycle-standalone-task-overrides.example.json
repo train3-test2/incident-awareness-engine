@@ -1,0 +1,17 @@
+{
+  "containerOverrides": [
+    {
+      "name": "incident-awareness-engine-first-cycle",
+      "environment": [
+        {
+          "name": "INCIDENT_AWARENESS_S3_INPUT_URI",
+          "value": "s3://<bucket>/first-cycle/<source-run-id>/"
+        },
+        {
+          "name": "INCIDENT_AWARENESS_STANDALONE",
+          "value": "true"
+        }
+      ]
+    }
+  ]
+}

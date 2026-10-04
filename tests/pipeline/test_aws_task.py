@@ -152,3 +152,33 @@ def test_main_downloads_contract_paths_and_invokes_pipeline(
         "--decision-config-version",
         "parallel-v0.2",
     ]
+
+
+def test_main_invokes_standalone_cli_without_fast_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: list[object] = []
+    location = aws_task.S3InputLocation(
+        bucket="input-bucket",
+        prefix="first-cycle/RUN-20260920-001/",
+        run_id="RUN-20260920-001",
+    )
+    monkeypatch.setenv(
+        "INCIDENT_AWARENESS_S3_INPUT_URI", "s3://input-bucket/first-cycle/RUN-20260920-001/"
+    )
+    monkeypatch.setenv("INCIDENT_AWARENESS_STANDALONE", "true")
+    monkeypatch.setattr(aws_task, "_INPUT_ROOT", Path("/downloaded-inputs"))
+    monkeypatch.setattr(aws_task, "_STANDALONE_OUTPUT_ROOT", Path("/standalone-output"))
+    monkeypatch.setattr(aws_task, "download_s3_inputs", lambda *args: received.append(args))
+    monkeypatch.setattr(aws_task, "standalone_main", lambda argv: received.append(argv) or 0)
+
+    assert aws_task.main() == 0
+    assert received[0] == (location, Path("/downloaded-inputs"))
+    assert received[1] == [
+        "--sysmon-jsonl",
+        str(Path("/downloaded-inputs") / "telemetry" / "sysmon-0001.jsonl"),
+        "--output-dir",
+        str(Path("/standalone-output")),
+        "--fusion-config",
+        "/app/configs/fusion/fusion_config_s0_pair_v0.1.yaml",
+    ]

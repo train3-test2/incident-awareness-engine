@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from incident_awareness.common.models.run import RunMetadata
 from incident_awareness.pipeline.__main__ import main as pipeline_main
+from incident_awareness.pipeline.standalone import main as standalone_main
 
 _LOGGER = logging.getLogger(__name__)
 _INPUT_ROOT = Path("/inputs")
@@ -21,6 +22,8 @@ _S3_INPUT_URI_ENV = "INCIDENT_AWARENESS_S3_INPUT_URI"
 _ENTITY_ID_ENV = "INCIDENT_AWARENESS_ENTITY_ID"
 _DECISION_ID_ENV = "INCIDENT_AWARENESS_DECISION_ID"
 _DECISION_CONFIG_VERSION_ENV = "INCIDENT_AWARENESS_DECISION_CONFIG_VERSION"
+_STANDALONE_MODE_ENV = "INCIDENT_AWARENESS_STANDALONE"
+_STANDALONE_OUTPUT_ROOT = Path("/tmp/standalone")
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +40,19 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     location = parse_s3_input_location(_required_environment(_S3_INPUT_URI_ENV))
     download_s3_inputs(location, _INPUT_ROOT)
+
+    if _standalone_mode_enabled():
+        return standalone_main(
+            [
+                "--sysmon-jsonl",
+                str(_INPUT_ROOT / "telemetry" / "sysmon-0001.jsonl"),
+                "--output-dir",
+                str(_STANDALONE_OUTPUT_ROOT),
+                "--fusion-config",
+                "/app/configs/fusion/fusion_config_s0_pair_v0.1.yaml",
+            ]
+        )
+
     _validate_downloaded_run_metadata(_INPUT_ROOT, location.run_id)
 
     return pipeline_main(
@@ -162,6 +178,15 @@ def _required_environment(name: str) -> str:
     if value is None or not value.strip() or value != value.strip():
         raise ValueError(f"{name} must be a non-blank environment variable")
     return value
+
+
+def _standalone_mode_enabled() -> bool:
+    value = os.environ.get(_STANDALONE_MODE_ENV, "false")
+    if value in {"false", "0"}:
+        return False
+    if value == "true":
+        return True
+    raise ValueError(f"{_STANDALONE_MODE_ENV} must be 'true' or 'false'")
 
 
 if __name__ == "__main__":
