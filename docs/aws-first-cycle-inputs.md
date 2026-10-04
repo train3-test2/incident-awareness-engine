@@ -161,18 +161,24 @@ aws ecs run-task `
 
 ## PostgreSQL migration 실행
 
-First Cycle schema는 이미지에 포함한
-`/app/infra/postgres/migrations/001_first_cycle.sql`로 관리한다. DB 연결 환경 변수
-`INCIDENT_AWARENESS_DATABASE_URL`이 주입된 별도 Fargate 일회성 태스크에서 아래 명령을
-한 번 실행한다.
+First Cycle schema의 versioned migration은 이미지에 포함된
+`/app/infra/postgres/migrations/` 디렉터리에서 관리한다. 현재 migration은
+`001_first_cycle.sql`, `002_fusion_stopping_trace.sql`,
+`003_decision_runtime_snapshot.sql`, `004_fusion_runtime_config_snapshot.sql`이다.
+DB 연결 환경 변수 `INCIDENT_AWARENESS_DATABASE_URL`이 주입된 별도 Fargate 일회성 태스크에서
+아래 명령을 실행한다.
 
 ```text
 python -m incident_awareness.storage.migrate
 ```
 
-명령은 `schema_migrations`에 `001_first_cycle` 적용 이력을 남긴다. 같은 migration을
-다시 실행하면 DDL을 재실행하지 않고 정상 종료한다. migration 태스크는 S3 입력을
-필요로 하지 않으며, First Cycle 실행 태스크와 분리한다.
+명령은 migration 파일을 filename 순서대로 조회해 아직 적용되지 않은 migration만
+실행하고, 각 migration ID를 `schema_migrations`에 개별 기록한다. 같은 명령을 다시
+실행하면 이미 적용된 migration의 DDL은 재실행하지 않는다. runner 전체는 transaction-scoped
+advisory lock으로 직렬화된다. 지원하는 legacy schema가 존재하지만 이력이 없는 경우에는
+baseline 규칙에 따라 이력을 복구하며, 일부 artifact만 존재하는 partial schema는 오류로
+처리한다. migration 태스크는 S3 입력을 필요로 하지 않으며, First Cycle 실행 태스크와
+분리한다.
 
 `infra/ecs/task-definition.first-cycle-migrate.json`은 이 명령만 실행하는 전용 Fargate
 Task Definition 템플릿이다. S3 권한이 필요한 Pipeline Task Role을 부여하지 않는다. Pipeline

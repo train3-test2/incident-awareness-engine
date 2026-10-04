@@ -3,8 +3,10 @@ from typing import Protocol
 
 from psycopg.types.json import Jsonb
 
-from incident_awareness.common.models.fusion import FusionResult
+from incident_awareness.common.models.fusion import FusionResult, FusionStoppingTrace
+from incident_awareness.common.models.fusion_runtime_config import FusionRuntimeConfigSnapshot
 from incident_awareness.common.models.result import DecisionResult, DetectionResult
+from incident_awareness.common.models.runtime_snapshot import DecisionRuntimeSnapshot
 
 
 class _Cursor(Protocol):
@@ -35,6 +37,44 @@ ON CONFLICT (run_id, entity_id) DO UPDATE SET
 _SELECT_FUSION_RESULT_PAYLOAD = """
 SELECT payload
 FROM fusion_results
+WHERE run_id = %s AND entity_id = %s
+"""
+
+_UPSERT_FUSION_STOPPING_TRACE = """
+INSERT INTO fusion_stopping_traces (
+    run_id,
+    entity_id,
+    scoring_config_version,
+    payload
+)
+VALUES (%s, %s, %s, %s)
+ON CONFLICT (run_id, entity_id) DO UPDATE SET
+    scoring_config_version = EXCLUDED.scoring_config_version,
+    payload = EXCLUDED.payload
+"""
+
+_SELECT_FUSION_STOPPING_TRACE_PAYLOAD = """
+SELECT payload
+FROM fusion_stopping_traces
+WHERE run_id = %s AND entity_id = %s
+"""
+
+_UPSERT_FUSION_RUNTIME_CONFIG_SNAPSHOT = """
+INSERT INTO fusion_runtime_config_snapshots (
+    run_id,
+    entity_id,
+    config_version,
+    payload
+)
+VALUES (%s, %s, %s, %s)
+ON CONFLICT (run_id, entity_id) DO UPDATE SET
+    config_version = EXCLUDED.config_version,
+    payload = EXCLUDED.payload
+"""
+
+_SELECT_FUSION_RUNTIME_CONFIG_SNAPSHOT_PAYLOAD = """
+SELECT payload
+FROM fusion_runtime_config_snapshots
 WHERE run_id = %s AND entity_id = %s
 """
 
@@ -79,6 +119,41 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 _SELECT_DECISION_PAYLOAD = "SELECT payload FROM decisions WHERE decision_id = %s"
+
+_SELECT_DECISIONS_BY_SCOPE = """
+SELECT payload
+FROM decisions
+WHERE run_id = %s
+  AND entity_id = %s
+"""
+
+_INSERT_DECISION_RUNTIME_SNAPSHOT = """
+INSERT INTO decision_runtime_snapshots (
+    decision_id,
+    run_id,
+    entity_id,
+    payload
+)
+VALUES (%s, %s, %s, %s)
+"""
+
+_SELECT_DECISION_RUNTIME_SNAPSHOT_PAYLOAD = """
+SELECT payload
+FROM decision_runtime_snapshots
+WHERE decision_id = %s
+"""
+
+_SELECT_DECISION_WITH_RUNTIME_SNAPSHOT_PAYLOADS = """
+SELECT
+    decision.payload AS decision_payload,
+    snapshot.payload AS snapshot_payload
+FROM decisions AS decision
+LEFT JOIN decision_runtime_snapshots AS snapshot
+  ON snapshot.decision_id = decision.decision_id
+ AND snapshot.run_id = decision.run_id
+ AND snapshot.entity_id = decision.entity_id
+WHERE decision.decision_id = %s
+"""
 
 
 _SELECT_CURRENT_DECISION_HEADS = """
@@ -136,6 +211,70 @@ class FusionResultRepository:
             return None
 
         return FusionResult.model_validate(_payload_from_row(row, table_name="fusion_results"))
+
+
+class FusionStoppingTraceRepository:
+    """FusionStoppingTrace Contract를 최신 Runtime trace로 저장하고 복원한다."""
+
+    def __init__(self, connection: _Connection) -> None:
+        self._connection = connection
+
+    def save(self, trace: FusionStoppingTrace) -> None:
+        self._connection.execute(
+            _UPSERT_FUSION_STOPPING_TRACE,
+            (
+                trace.run_id,
+                trace.entity_id,
+                trace.scoring_config_version,
+                Jsonb(trace.model_dump(mode="json")),
+            ),
+        )
+
+    def get(self, run_id: str, entity_id: str) -> FusionStoppingTrace | None:
+        row = self._connection.execute(
+            _SELECT_FUSION_STOPPING_TRACE_PAYLOAD,
+            (run_id, entity_id),
+        ).fetchone()
+        if row is None:
+            return None
+
+        return FusionStoppingTrace.model_validate(
+            _payload_from_row(row, table_name="fusion_stopping_traces")
+        )
+
+
+class FusionRuntimeConfigSnapshotRepository:
+    """Store and restore the latest Fusion Runtime configuration snapshot."""
+
+    def __init__(self, connection: _Connection) -> None:
+        self._connection = connection
+
+    def save(self, snapshot: FusionRuntimeConfigSnapshot) -> None:
+        self._connection.execute(
+            _UPSERT_FUSION_RUNTIME_CONFIG_SNAPSHOT,
+            (
+                snapshot.run_id,
+                snapshot.entity_id,
+                snapshot.config_version,
+                Jsonb(snapshot.model_dump(mode="json")),
+            ),
+        )
+
+    def get(
+        self,
+        run_id: str,
+        entity_id: str,
+    ) -> FusionRuntimeConfigSnapshot | None:
+        row = self._connection.execute(
+            _SELECT_FUSION_RUNTIME_CONFIG_SNAPSHOT_PAYLOAD,
+            (run_id, entity_id),
+        ).fetchone()
+        if row is None:
+            return None
+
+        return FusionRuntimeConfigSnapshot.model_validate(
+            _payload_from_row(row, table_name="fusion_runtime_config_snapshots")
+        )
 
 
 class DetectionResultRepository:
@@ -201,6 +340,16 @@ class DecisionRepository:
 
         return DecisionResult.model_validate(_payload_from_row(row, table_name="decisions"))
 
+    def list_by_scope(self, run_id: str, entity_id: str) -> list[DecisionResult]:
+        rows = self._connection.execute(
+            _SELECT_DECISIONS_BY_SCOPE,
+            (run_id, entity_id),
+        ).fetchall()
+        return [
+            DecisionResult.model_validate(_payload_from_row(row, table_name="decisions"))
+            for row in rows
+        ]
+
     def get_current_head(self, run_id: str, entity_id: str) -> DecisionResult | None:
         rows = self._connection.execute(
             _SELECT_CURRENT_DECISION_HEADS,
@@ -225,6 +374,66 @@ class DecisionRepository:
             )
 
         return DecisionResult.model_validate(head_payloads[0])
+
+
+class DecisionRuntimeSnapshotRepository:
+    """Store and restore the immutable Runtime snapshot for one Decision."""
+
+    def __init__(self, connection: _Connection) -> None:
+        self._connection = connection
+
+    def save(self, snapshot: DecisionRuntimeSnapshot) -> None:
+        self._connection.execute(
+            _INSERT_DECISION_RUNTIME_SNAPSHOT,
+            (
+                snapshot.decision_id,
+                snapshot.run_id,
+                snapshot.entity_id,
+                Jsonb(snapshot.model_dump(mode="json")),
+            ),
+        )
+
+    def get(self, decision_id: str) -> DecisionRuntimeSnapshot | None:
+        row = self._connection.execute(
+            _SELECT_DECISION_RUNTIME_SNAPSHOT_PAYLOAD,
+            (decision_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        return DecisionRuntimeSnapshot.model_validate(
+            _payload_from_row(row, table_name="decision_runtime_snapshots")
+        )
+
+    def get_with_decision(
+        self,
+        decision_id: str,
+    ) -> tuple[DecisionResult, DecisionRuntimeSnapshot | None] | None:
+        row = self._connection.execute(
+            _SELECT_DECISION_WITH_RUNTIME_SNAPSHOT_PAYLOADS,
+            (decision_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        if isinstance(row, tuple):
+            decision_payload, snapshot_payload = row
+        else:
+            decision_payload = row["decision_payload"]
+            snapshot_payload = row["snapshot_payload"]
+
+        if not isinstance(decision_payload, Mapping):
+            raise TypeError("decisions.payload must be a JSON object")
+        if snapshot_payload is not None and not isinstance(snapshot_payload, Mapping):
+            raise TypeError("decision_runtime_snapshots.payload must be a JSON object")
+
+        decision = DecisionResult.model_validate(decision_payload)
+        snapshot = (
+            None
+            if snapshot_payload is None
+            else DecisionRuntimeSnapshot.model_validate(snapshot_payload)
+        )
+        return decision, snapshot
 
 
 def _scope_has_decisions_from_head_row(

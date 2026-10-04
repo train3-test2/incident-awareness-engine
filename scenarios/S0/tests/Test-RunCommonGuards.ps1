@@ -808,6 +808,79 @@ Assert-True "Wait-ForObservationEnd takes an optional Now" (
         $nowParameter.Attributes |
             Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.Mandatory }))
 
+ # ---------------------------------------------------------------------------
+ # RunMetadata repetition
+ #
+ # S0 states no repetition and records 1. Write-RunMetadata is shared with the
+ # R1 runner, whose rendered scenario states one, so the value a scenario states
+ # is recorded and a scenario that states none keeps recording 1.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== run_metadata repetition ===" -ForegroundColor Cyan
+
+function New-MetadataScenarioJson {
+    <# The keys Write-RunMetadata reads, shaped like scenarios/S0/scenario.yaml. #>
+    param([string]$ExtraLine = "")
+
+    return @"
+{
+  "scenario_version": "v1",
+  "scenario_id": "S0",
+  "family_id": "local_powershell",
+  "variation_id": "v1",
+  $ExtraLine
+  "run_metadata": {
+    "target_host": "SYNTHETIC-HOST",
+    "sysmon_config_version": "sysmonconfig-sample-v0.1",
+    "detector_set_version": null,
+    "reference_policy_version": "ref-v0.1",
+    "schema_versions": { "run_metadata": "v0.2", "event": "v0.3" }
+  }
+}
+"@
+}
+
+function Write-TestRunMetadata {
+    <# Write run_metadata.json for one scenario and return its text and its parsed value. #>
+    param([Parameter(Mandatory = $true)][string]$ScenarioJson)
+
+    $context = [ordered]@{
+        run_id           = "RUN-20300101-001"
+        run_type         = "normal"
+        scenario         = ($ScenarioJson | ConvertFrom-Json)
+        start_time       = [datetime]::new(2030, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+        ground_truth_dir = (New-TempRoot)
+        vm_snapshot      = "synthetic-snapshot"
+    }
+    $path = Write-RunMetadata -Context $context `
+        -EndTime ([datetime]::new(2030, 1, 1, 0, 11, 0, [System.DateTimeKind]::Utc)) `
+        -ReferenceTime $null -ReferenceActionId $null -ReferenceSourceEventId $null
+    $text = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    return @{ text = $text; value = ($text | ConvertFrom-Json) }
+}
+
+$s0Metadata = Write-TestRunMetadata (New-MetadataScenarioJson)
+Assert-True "a scenario that states no repetition records 1, as S0 always has" (
+    $s0Metadata.value.repetition -is [int] -and $s0Metadata.value.repetition -eq 1)
+Assert-True "the repetition of an S0 run is written exactly as before" (
+    $s0Metadata.text -match '"repetition":\s+1,')
+Assert-True "the other S0 values are written as the scenario states them" (
+    $s0Metadata.value.family_id -eq "local_powershell" -and $s0Metadata.value.variation_id -eq "v1" -and
+    $s0Metadata.value.scenario_id -eq "S0" -and $s0Metadata.value.target_host -eq "SYNTHETIC-HOST")
+
+$nullMetadata = Write-TestRunMetadata (New-MetadataScenarioJson -ExtraLine '"repetition": null,')
+Assert-True "a null repetition is not a stated one and records 1" ($nullMetadata.value.repetition -eq 1)
+
+$statedMetadata = Write-TestRunMetadata (New-MetadataScenarioJson -ExtraLine '"repetition": 3,')
+Assert-True "a stated repetition is recorded as stated" (
+    $statedMetadata.value.repetition -is [int] -and $statedMetadata.value.repetition -eq 3)
+
+foreach ($bad in @('0', '-2', '1.5', '"2"', 'true')) {
+    Assert-Throws ("a stated repetition that is not an integer of 1 or more is refused: " + $bad) {
+        Write-TestRunMetadata (New-MetadataScenarioJson -ExtraLine ('"repetition": ' + $bad + ','))
+    } "*repetition must be an integer of 1 or more*"
+}
+
 Write-Host ""
 if ($script:Failures -eq 0) {
     Write-Host "ALL $($script:Total) CHECKS PASSED" -ForegroundColor Green

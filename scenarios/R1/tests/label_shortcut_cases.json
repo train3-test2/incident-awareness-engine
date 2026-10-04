@@ -1,0 +1,159 @@
+{
+  "description": "Shared cases for the run type label check. label_words is the list both implementations hold, in this order: LABEL_WORDS in src/incident_awareness/collection/r1_pair_identity.py and $R1_LABEL_WORDS in scenarios/R1/run-common.ps1. For each case, word is the label word both report for value, or null when the value is accepted. The Python tests and the PowerShell guard read this one file. The file is ASCII: Korean is written as Unicode escapes.",
+  "label_words": [
+    "normal",
+    "attack",
+    "benign",
+    "malicious",
+    "\uc815\uc0c1",
+    "\uacf5\uaca9",
+    "\uc545\uc131"
+  ],
+  "cases": [
+    {
+      "value": "normal",
+      "word": "normal",
+      "note": "the label itself"
+    },
+    {
+      "value": "normal_ops",
+      "word": "normal",
+      "note": "a label inside an identifier"
+    },
+    {
+      "value": "Attack-set",
+      "word": "attack",
+      "note": "case is ignored"
+    },
+    {
+      "value": "BENIGN1",
+      "word": "benign",
+      "note": "case is ignored"
+    },
+    {
+      "value": "x_malicious",
+      "word": "malicious",
+      "note": "a label at the end"
+    },
+    {
+      "value": "abnormal",
+      "word": "normal",
+      "note": "a longer word that holds the label"
+    },
+    {
+      "value": "r1_attack_launch.js",
+      "word": "attack",
+      "note": "a label inside a file name"
+    },
+    {
+      "value": "\uc815\uc0c1",
+      "word": "\uc815\uc0c1",
+      "note": "the Korean label for normal"
+    },
+    {
+      "value": "\uacf5\uaca9",
+      "word": "\uacf5\uaca9",
+      "note": "the Korean label for attack"
+    },
+    {
+      "value": "\uc545\uc131",
+      "word": "\uc545\uc131",
+      "note": "the Korean label for malicious"
+    },
+    {
+      "value": "\uc815\uc0c1_family",
+      "word": "\uc815\uc0c1",
+      "note": "a Korean label at the start of an identifier"
+    },
+    {
+      "value": "V02-\uacf5\uaca9",
+      "word": "\uacf5\uaca9",
+      "note": "a Korean label at the end of an identifier"
+    },
+    {
+      "value": "r1_\uc545\uc131_launch.js",
+      "word": "\uc545\uc131",
+      "note": "a Korean label inside a file name"
+    },
+    {
+      "value": "\ube44\uc815\uc0c1",
+      "word": "\uc815\uc0c1",
+      "note": "a longer Korean word that holds the label"
+    },
+    {
+      "value": "\uacf5\uaca9\uc790",
+      "word": "\uacf5\uaca9",
+      "note": "a longer Korean word that holds the label"
+    },
+    {
+      "value": "\uc815\uc0c1_attack",
+      "word": "attack",
+      "note": "an English and a Korean label together"
+    },
+    {
+      "value": "\uacf5\uaca9\uc815\uc0c1",
+      "word": "\uc815\uc0c1",
+      "note": "two Korean labels together"
+    },
+    {
+      "value": "remote_management",
+      "word": null,
+      "note": "the family of the first Pilot"
+    },
+    {
+      "value": "V02",
+      "word": null,
+      "note": "the variation of the first Pilot"
+    },
+    {
+      "value": "family_x7",
+      "word": null,
+      "note": "an unrelated identifier"
+    },
+    {
+      "value": "holdout-b",
+      "word": null,
+      "note": "an unrelated identifier"
+    },
+    {
+      "value": "\uc6d0\uaca9\uad00\ub9ac",
+      "word": null,
+      "note": "an unrelated Korean identifier"
+    },
+    {
+      "value": "\uad00\ub9ac\ub3c4\uad6c_V02",
+      "word": null,
+      "note": "an unrelated Korean identifier"
+    },
+    {
+      "value": "\uc2e4\ud5d8\uad70A",
+      "word": null,
+      "note": "an unrelated Korean identifier"
+    },
+    {
+      "value": "\uc0c1\uc815",
+      "word": null,
+      "note": "the syllables of a label in the other order"
+    },
+    {
+      "value": "\uc131\uc545",
+      "word": null,
+      "note": "the syllables of a label in the other order"
+    },
+    {
+      "value": "\uc815 \uc0c1",
+      "word": null,
+      "note": "the syllables of a label with a space between"
+    },
+    {
+      "value": "\uc815\uaddc",
+      "word": null,
+      "note": "a word that shares one syllable with a label"
+    },
+    {
+      "value": "\uacf5\uac1c",
+      "word": null,
+      "note": "a word that shares one syllable with a label"
+    }
+  ]
+}

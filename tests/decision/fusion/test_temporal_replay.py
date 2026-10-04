@@ -70,6 +70,12 @@ def test_replays_scores_at_fixed_cadence() -> None:
         run_start=run_start,
         run_end=run_end,
     )
+    expected_without_observer = runner.stopping_policy.evaluate(
+        list(result.trajectory),
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_end=run_end,
+    )
 
     # Then
     assert [point.timestamp for point in result.trajectory] == [
@@ -87,6 +93,74 @@ def test_replays_scores_at_fixed_cadence() -> None:
 
     assert result.stopping_result.fusion_status == "detected"
     assert result.stopping_result.fusion_time == run_start + timedelta(seconds=20)
+    assert result.stopping_result == expected_without_observer
+    assert len(result.stopping_trace) == len(result.trajectory)
+    assert [(point.timestamp, point.score) for point in result.stopping_trace] == [
+        (point.timestamp, point.score) for point in result.trajectory
+    ]
+    assert [point.persistence_count for point in result.stopping_trace] == [
+        None,
+        None,
+        1,
+        None,
+    ]
+    assert [point.policy_state for point in result.stopping_trace] == [
+        "off",
+        "off",
+        "on",
+        "on",
+    ]
+
+
+def test_replay_trace_records_release_when_evidence_expires() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=5)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=1,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    evidences = [
+        make_evidence(
+            evidence_id="EVD-001",
+            seconds=0,
+            evidence_type="encoded_powershell_command",
+        ),
+    ]
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=20)
+
+    # When
+    result = runner.run(
+        evidences,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+    expected_without_observer = runner.stopping_policy.evaluate(
+        list(result.trajectory),
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_end=run_end,
+    )
+
+    # Then
+    assert [point.score for point in result.trajectory] == [1.0, 0.0, 0.0]
+    assert len(result.stopping_trace) == len(result.trajectory)
+    assert result.stopping_trace[0].policy_state == "on"
+    assert result.stopping_trace[1].policy_state == "off"
+    assert result.stopping_trace[1].persistence_count is None
+    assert result.stopping_result == expected_without_observer
+    assert len(result.stopping_result.fusion_episodes) == 1
+
+    episode = result.stopping_result.fusion_episodes[0]
+    assert episode.end_reason == "released"
+    assert episode.end_time == result.trajectory[1].timestamp
 
 
 def test_future_evidence_does_not_change_past_scores() -> None:
@@ -518,6 +592,72 @@ def test_empty_evidence_produces_zero_scores_and_miss() -> None:
     assert [point.score for point in result.trajectory] == [0.0, 0.0, 0.0]
     assert result.stopping_result.fusion_status == "miss"
     assert result.stopping_result.fusion_time is None
+
+
+def test_miss_replay_preserves_trace_and_resets_persistence() -> None:
+    # Given
+    runner = TemporalReplayRunner(
+        window_engine=WindowEngine(window_size=timedelta(seconds=5)),
+        scorer=SimpleScorer(evidence_types=["encoded_powershell_command"]),
+        stopping_policy=ThresholdStoppingPolicy(
+            threshold_on=0.8,
+            threshold_off=0.4,
+            persistence_k=2,
+        ),
+        step_size=timedelta(seconds=10),
+    )
+    evidences = [
+        make_evidence(
+            evidence_id="EVD-001",
+            seconds=0,
+            evidence_type="encoded_powershell_command",
+        ),
+        make_evidence(
+            evidence_id="EVD-002",
+            seconds=20,
+            evidence_type="encoded_powershell_command",
+        ),
+    ]
+    run_start = datetime(2026, 9, 7, 1, 0, tzinfo=UTC)
+    run_end = run_start + timedelta(seconds=20)
+
+    # When
+    result = runner.run(
+        evidences,
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_start=run_start,
+        run_end=run_end,
+    )
+    expected_without_observer = runner.stopping_policy.evaluate(
+        list(result.trajectory),
+        run_id="RUN-01",
+        entity_id="HOST-01",
+        run_end=run_end,
+    )
+
+    # Then
+    assert [point.score for point in result.trajectory] == [1.0, 0.0, 1.0]
+    assert result.stopping_trace
+    assert len(result.stopping_trace) == len(result.trajectory)
+    assert [(point.timestamp, point.score) for point in result.stopping_trace] == [
+        (point.timestamp, point.score) for point in result.trajectory
+    ]
+    assert [point.persistence_count for point in result.stopping_trace] == [
+        1,
+        None,
+        1,
+    ]
+    assert [point.policy_state for point in result.stopping_trace] == [
+        "off",
+        "off",
+        "off",
+    ]
+    assert result.stopping_result == expected_without_observer
+    assert result.stopping_result.fusion_status == "miss"
+    assert result.stopping_result.fusion_time is None
+    assert result.stopping_result.score_at_decision is None
+    assert result.stopping_result.fusion_episodes == ()
 
 
 @pytest.mark.parametrize(

@@ -9,6 +9,7 @@ from incident_awareness.collection.collector.sysmon_jsonl import (
 )
 from incident_awareness.common.models.run import RunMetadata
 from incident_awareness.normalization.sysmon import SysmonNormalizationContext
+from incident_awareness.pipeline import event_evidence
 from incident_awareness.pipeline.event_evidence import normalize_sysmon_and_extract_evidence
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
 
@@ -46,6 +47,53 @@ def test_rejects_sysmon_event_type_outside_s0_normalizer_contract() -> None:
 
     with pytest.raises(ValueError, match="unsupported EventId 2"):
         normalize_sysmon_and_extract_evidence(artifacts)
+
+
+def test_reports_progress_after_each_fully_processed_record() -> None:
+    # Given
+    artifacts = _artifacts_for_record_ids(3391, 3395)
+    progress: list[int] = []
+
+    # When
+    result = normalize_sysmon_and_extract_evidence(
+        artifacts,
+        progress_callback=progress.append,
+    )
+
+    # Then
+    assert len(result.events) == 2
+    assert progress == [1, 2]
+
+
+def test_does_not_report_a_record_when_evidence_extraction_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    artifacts = _artifacts_for_record_ids(3391, 3395)
+    original_extract_evidence = event_evidence.extract_evidence
+    expected_error = RuntimeError("evidence extraction failed")
+    calls = 0
+    progress: list[int] = []
+
+    def extract_with_second_failure(event):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise expected_error
+        return original_extract_evidence(event)
+
+    monkeypatch.setattr(event_evidence, "extract_evidence", extract_with_second_failure)
+
+    # When
+    with pytest.raises(RuntimeError) as exc_info:
+        normalize_sysmon_and_extract_evidence(
+            artifacts,
+            progress_callback=progress.append,
+        )
+
+    # Then
+    assert exc_info.value is expected_error
+    assert progress == [1]
 
 
 def _artifacts_for_record_ids(*record_ids: int) -> S0PipelineArtifacts:

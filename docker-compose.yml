@@ -9,7 +9,7 @@ services:
       - "127.0.0.1:${POSTGRES_PORT:-54329}:5432"
     volumes:
       - incident_awareness_postgres_data:/var/lib/postgresql
-      - ./infra/postgres/migrations/001_first_cycle.sql:/docker-entrypoint-initdb.d/001_first_cycle.sql:ro
+      - ./infra/postgres/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready --username=$$POSTGRES_USER --dbname=$$POSTGRES_DB"]
       interval: 5s

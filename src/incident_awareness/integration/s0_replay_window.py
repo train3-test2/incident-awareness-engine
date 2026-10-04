@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 from typing import Literal
 
 from incident_awareness.common.models.event import NormalizedEvent
-from incident_awareness.common.models.fusion import FusionResult
+from incident_awareness.common.models.fusion import FusionResult, FusionStoppingTrace
 from incident_awareness.decision.fusion.config import FusionConfig
 from incident_awareness.decision.fusion.pipeline import run_fusion_pipeline_from_config
 from incident_awareness.decision.fusion.result_builder import (
@@ -208,6 +208,7 @@ class S0RuntimeFusionResult:
     selection: S0ReplayEventSelection
     not_evaluated_reason: RuntimeNotEvaluatedReason | None
     fusion_results: tuple[FusionResult, ...]
+    stopping_traces: tuple[FusionStoppingTrace, ...]
 
 
 def run_s0_runtime_fusion(
@@ -265,23 +266,35 @@ def run_s0_runtime_fusion(
         )
 
     if not window.is_covered:
+        fusion_results = tuple(
+            build_not_evaluated_fusion_result(
+                run_id=selection.run_id,
+                entity_id=entity_id,
+                scoring_config_version=config.config_version,
+                scoring_profile_id=config.scoring.profile_id,
+                scoring_method=config.scoring.method,
+                scorer_version=config.scoring.scorer_version,
+                model_version=config.model_version,
+            )
+            for entity_id in entity_ids
+        )
+        stopping_traces = tuple(
+            FusionStoppingTrace(
+                run_id=selection.run_id,
+                entity_id=entity_id,
+                scoring_config_version=config.config_version,
+                points=[],
+            )
+            for entity_id in entity_ids
+        )
+
         return S0RuntimeFusionResult(
             run_id=selection.run_id,
             window=window,
             selection=selection,
             not_evaluated_reason="insufficient_observation",
-            fusion_results=tuple(
-                build_not_evaluated_fusion_result(
-                    run_id=selection.run_id,
-                    entity_id=entity_id,
-                    scoring_config_version=config.config_version,
-                    scoring_profile_id=config.scoring.profile_id,
-                    scoring_method=config.scoring.method,
-                    scorer_version=config.scoring.scorer_version,
-                    model_version=config.model_version,
-                )
-                for entity_id in entity_ids
-            ),
+            fusion_results=fusion_results,
+            stopping_traces=stopping_traces,
         )
 
     # Temporal replay requires non-decreasing Evidence timestamps. event_id breaks
@@ -292,7 +305,7 @@ def run_s0_runtime_fusion(
     )
     evidences = [evidence for event in ordered_events for evidence in extract_evidence(event)]
 
-    fusion_results = tuple(
+    pipeline_results = tuple(
         run_fusion_pipeline_from_config(
             [evidence for evidence in evidences if evidence.entity_id == entity_id],
             config=config,
@@ -301,9 +314,11 @@ def run_s0_runtime_fusion(
             run_start=window.replay_start,
             run_end=window.observed_end,
             replay_end=window.replay_end,
-        ).fusion_result
+        )
         for entity_id in entity_ids
     )
+    fusion_results = tuple(result.fusion_result for result in pipeline_results)
+    stopping_traces = tuple(result.stopping_trace for result in pipeline_results)
 
     return S0RuntimeFusionResult(
         run_id=selection.run_id,
@@ -311,4 +326,5 @@ def run_s0_runtime_fusion(
         selection=selection,
         not_evaluated_reason=None,
         fusion_results=fusion_results,
+        stopping_traces=stopping_traces,
     )

@@ -62,6 +62,77 @@ def _serialize_utc_milliseconds(value: datetime | None) -> str | None:
     return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+class FusionStoppingTracePoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    timestamp: datetime
+    score: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    persistence_count: int | None = Field(ge=1)
+    policy_state: Literal["off", "on"]
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def reject_numeric_timestamp(
+        cls,
+        value: object,
+    ) -> object:
+        return _reject_numeric_timestamp(
+            value,
+            field_name="FusionStoppingTracePoint timestamp",
+        )
+
+    @field_validator("timestamp")
+    @classmethod
+    def validate_timestamp(
+        cls,
+        value: datetime,
+    ) -> datetime:
+        validated = _validate_utc_datetime(
+            value,
+            field_name="FusionStoppingTracePoint timestamp",
+        )
+        assert validated is not None
+        if validated.microsecond % 1000 != 0:
+            raise ValueError(
+                "FusionStoppingTracePoint timestamp must be aligned to millisecond precision"
+            )
+        return validated
+
+    @field_serializer("timestamp", when_used="json")
+    def serialize_timestamp(
+        self,
+        value: datetime,
+    ) -> str:
+        serialized = _serialize_utc_milliseconds(value)
+        assert serialized is not None
+        return serialized
+
+
+class FusionStoppingTrace(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = Field(min_length=1)
+    entity_id: str = Field(min_length=1)
+    scoring_config_version: str = Field(min_length=1)
+    points: list[FusionStoppingTracePoint]
+
+    @field_validator("points")
+    @classmethod
+    def validate_point_timestamps(
+        cls,
+        points: list[FusionStoppingTracePoint],
+    ) -> list[FusionStoppingTracePoint]:
+        previous_timestamp: datetime | None = None
+
+        for point in points:
+            if previous_timestamp is not None and point.timestamp <= previous_timestamp:
+                raise ValueError("FusionStoppingTrace point timestamps must be strictly increasing")
+
+            previous_timestamp = point.timestamp
+
+        return points
+
+
 class FusionEpisodeResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
