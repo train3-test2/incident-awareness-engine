@@ -84,3 +84,28 @@ def test_event_repository_dependency_reuses_request_connection(
     # Then
     assert isinstance(repository, FakeEventRepository)
     assert repository_connections == [connection]
+
+
+def test_pipeline_runtime_repository_dependency_reuses_request_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    connection = FakeConnection()
+    repository_connections: list[FakeConnection] = []
+
+    class FakePipelineRuntimeStatusRepository:
+        def __init__(self, provided_connection: FakeConnection) -> None:
+            repository_connections.append(provided_connection)
+
+    monkeypatch.setattr(
+        dependencies,
+        "PipelineRuntimeStatusRepository",
+        FakePipelineRuntimeStatusRepository,
+    )
+
+    # When
+    repository = dependencies.get_pipeline_runtime_repository(connection)
+
+    # Then
+    assert isinstance(repository, FakePipelineRuntimeStatusRepository)
+    assert repository_connections == [connection]

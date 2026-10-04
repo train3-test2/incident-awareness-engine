@@ -57,6 +57,9 @@ class _Connection:
         if "CREATE TABLE fusion_runtime_config_snapshots" in query:
             self.existing_tables.add("fusion_runtime_config_snapshots")
 
+        if "CREATE TABLE pipeline_runtime_status" in query:
+            self.existing_tables.add("pipeline_runtime_status")
+
         if query == "INSERT INTO schema_migrations (migration_id) VALUES (%s)":
             self.applied_migrations.add(str(params[0]))
 
@@ -89,12 +92,14 @@ def test_applies_all_migrations_in_filename_order() -> None:
         "002_fusion_stopping_trace",
         "003_decision_runtime_snapshot",
         "004_fusion_runtime_config_snapshot",
+        "005_pipeline_runtime_status",
     )
     assert connection.applied_migrations == {
         "001_first_cycle",
         "002_fusion_stopping_trace",
         "003_decision_runtime_snapshot",
         "004_fusion_runtime_config_snapshot",
+        "005_pipeline_runtime_status",
     }
     _assert_migration_lock_precedes_history_table(connection)
     first_index = next(
@@ -115,7 +120,12 @@ def test_applies_all_migrations_in_filename_order() -> None:
         for index, (query, _) in enumerate(connection.queries)
         if "CREATE TABLE fusion_runtime_config_snapshots" in query
     )
-    assert first_index < second_index < third_index < fourth_index
+    fifth_index = next(
+        index
+        for index, (query, _) in enumerate(connection.queries)
+        if "CREATE TABLE pipeline_runtime_status" in query
+    )
+    assert first_index < second_index < third_index < fourth_index < fifth_index
 
 
 def test_skips_migrations_that_are_already_recorded() -> None:
@@ -126,6 +136,7 @@ def test_skips_migrations_that_are_already_recorded() -> None:
             "002_fusion_stopping_trace",
             "003_decision_runtime_snapshot",
             "004_fusion_runtime_config_snapshot",
+            "005_pipeline_runtime_status",
         }
     )
 
@@ -144,6 +155,9 @@ def test_skips_migrations_that_are_already_recorded() -> None:
     assert not any(
         "CREATE TABLE fusion_runtime_config_snapshots" in query for query, _ in connection.queries
     )
+    assert not any(
+        "CREATE TABLE pipeline_runtime_status" in query for query, _ in connection.queries
+    )
 
 
 def test_applies_only_second_migration_when_first_is_recorded() -> None:
@@ -158,6 +172,7 @@ def test_applies_only_second_migration_when_first_is_recorded() -> None:
         "002_fusion_stopping_trace",
         "003_decision_runtime_snapshot",
         "004_fusion_runtime_config_snapshot",
+        "005_pipeline_runtime_status",
     )
     assert not any("CREATE TABLE runs" in query for query, _ in connection.queries)
     assert any("CREATE TABLE fusion_stopping_traces" in query for query, _ in connection.queries)
@@ -167,6 +182,7 @@ def test_applies_only_second_migration_when_first_is_recorded() -> None:
     assert any(
         "CREATE TABLE fusion_runtime_config_snapshots" in query for query, _ in connection.queries
     )
+    assert any("CREATE TABLE pipeline_runtime_status" in query for query, _ in connection.queries)
 
 
 def test_applies_only_third_migration_when_first_two_are_recorded() -> None:
@@ -180,6 +196,7 @@ def test_applies_only_third_migration_when_first_two_are_recorded() -> None:
     assert applied == (
         "003_decision_runtime_snapshot",
         "004_fusion_runtime_config_snapshot",
+        "005_pipeline_runtime_status",
     )
     assert not any("CREATE TABLE runs" in query for query, _ in connection.queries)
     assert not any(
@@ -191,6 +208,7 @@ def test_applies_only_third_migration_when_first_two_are_recorded() -> None:
     assert any(
         "CREATE TABLE fusion_runtime_config_snapshots" in query for query, _ in connection.queries
     )
+    assert any("CREATE TABLE pipeline_runtime_status" in query for query, _ in connection.queries)
 
 
 def test_applies_only_fourth_migration_when_first_three_are_recorded() -> None:
@@ -207,11 +225,34 @@ def test_applies_only_fourth_migration_when_first_three_are_recorded() -> None:
     applied = apply_migrations(connection)
 
     # Then
-    assert applied == ("004_fusion_runtime_config_snapshot",)
+    assert applied == (
+        "004_fusion_runtime_config_snapshot",
+        "005_pipeline_runtime_status",
+    )
     assert not any("CREATE TABLE runs" in query for query, _ in connection.queries)
     assert any(
         "CREATE TABLE fusion_runtime_config_snapshots" in query for query, _ in connection.queries
     )
+    assert any("CREATE TABLE pipeline_runtime_status" in query for query, _ in connection.queries)
+
+
+def test_applies_only_fifth_migration_when_first_four_are_recorded() -> None:
+    # Given
+    connection = _Connection(
+        applied_migrations={
+            "001_first_cycle",
+            "002_fusion_stopping_trace",
+            "003_decision_runtime_snapshot",
+            "004_fusion_runtime_config_snapshot",
+        }
+    )
+
+    # When
+    applied = apply_migrations(connection)
+
+    # Then
+    assert applied == ("005_pipeline_runtime_status",)
+    assert any("CREATE TABLE pipeline_runtime_status" in query for query, _ in connection.queries)
 
 
 def test_baselines_complete_legacy_first_cycle_schema_before_second_migration() -> None:
@@ -227,12 +268,14 @@ def test_baselines_complete_legacy_first_cycle_schema_before_second_migration() 
         "002_fusion_stopping_trace",
         "003_decision_runtime_snapshot",
         "004_fusion_runtime_config_snapshot",
+        "005_pipeline_runtime_status",
     )
     assert connection.applied_migrations == {
         "001_first_cycle",
         "002_fusion_stopping_trace",
         "003_decision_runtime_snapshot",
         "004_fusion_runtime_config_snapshot",
+        "005_pipeline_runtime_status",
     }
     assert not any("CREATE TABLE runs" in query for query, _ in connection.queries)
     assert any("CREATE TABLE fusion_stopping_traces" in query for query, _ in connection.queries)
@@ -242,6 +285,7 @@ def test_baselines_complete_legacy_first_cycle_schema_before_second_migration() 
     assert any(
         "CREATE TABLE fusion_runtime_config_snapshots" in query for query, _ in connection.queries
     )
+    assert any("CREATE TABLE pipeline_runtime_status" in query for query, _ in connection.queries)
 
 
 def test_baselines_complete_docker_initdb_schema_without_reapplying_migrations() -> None:
@@ -252,6 +296,7 @@ def test_baselines_complete_docker_initdb_schema_without_reapplying_migrations()
             "fusion_stopping_traces",
             "decision_runtime_snapshots",
             "fusion_runtime_config_snapshots",
+            "pipeline_runtime_status",
         }
     )
 
@@ -264,12 +309,14 @@ def test_baselines_complete_docker_initdb_schema_without_reapplying_migrations()
         "002_fusion_stopping_trace",
         "003_decision_runtime_snapshot",
         "004_fusion_runtime_config_snapshot",
+        "005_pipeline_runtime_status",
     )
     assert connection.applied_migrations == {
         "001_first_cycle",
         "002_fusion_stopping_trace",
         "003_decision_runtime_snapshot",
         "004_fusion_runtime_config_snapshot",
+        "005_pipeline_runtime_status",
     }
     assert not any("CREATE TABLE runs" in query for query, _ in connection.queries)
     assert not any(
@@ -280,6 +327,9 @@ def test_baselines_complete_docker_initdb_schema_without_reapplying_migrations()
     )
     assert not any(
         "CREATE TABLE fusion_runtime_config_snapshots" in query for query, _ in connection.queries
+    )
+    assert not any(
+        "CREATE TABLE pipeline_runtime_status" in query for query, _ in connection.queries
     )
 
 
@@ -310,6 +360,9 @@ def test_rejects_partial_legacy_first_cycle_schema(existing_tables: set[str]) ->
     assert not any(
         "CREATE TABLE fusion_runtime_config_snapshots" in query for query, _ in connection.queries
     )
+    assert not any(
+        "CREATE TABLE pipeline_runtime_status" in query for query, _ in connection.queries
+    )
 
 
 def test_first_cycle_compatibility_entry_point_only_applies_first_migration() -> None:
@@ -332,6 +385,9 @@ def test_first_cycle_compatibility_entry_point_only_applies_first_migration() ->
     assert not any(
         "CREATE TABLE fusion_runtime_config_snapshots" in query for query, _ in connection.queries
     )
+    assert not any(
+        "CREATE TABLE pipeline_runtime_status" in query for query, _ in connection.queries
+    )
 
 
 def test_main_uses_connection_managed_transaction(
@@ -344,6 +400,7 @@ def test_main_uses_connection_managed_transaction(
             "002_fusion_stopping_trace",
             "003_decision_runtime_snapshot",
             "004_fusion_runtime_config_snapshot",
+            "005_pipeline_runtime_status",
         }
     )
     received: dict[str, object] = {}

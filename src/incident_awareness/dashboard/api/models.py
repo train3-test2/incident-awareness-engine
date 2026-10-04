@@ -4,6 +4,11 @@ from pydantic import BaseModel, ConfigDict
 
 from incident_awareness.common.models.event import NormalizedEvent, RawLogReference
 from incident_awareness.common.models.fusion import FusionResult, FusionStoppingTrace
+from incident_awareness.common.models.pipeline_runtime import (
+    PipelineRuntimeState,
+    PipelineRuntimeStatus,
+    PipelineStage,
+)
 from incident_awareness.common.models.result import DecisionResult, DetectionResult
 from incident_awareness.common.models.run import RunMetadata, RunType
 from incident_awareness.common.models.runtime_snapshot import DecisionRuntimeSnapshot
@@ -46,6 +51,60 @@ class OverviewResponse(BaseModel):
 
     total_runs: int
     recent_runs: list[RunListItem]
+
+
+class PipelineRuntimeItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    execution_id: str
+    run_id: str
+    entity_id: str
+    status: PipelineRuntimeState
+    current_stage: PipelineStage | None
+    input_total: int
+    normalization_processed_count: int
+    remaining_count: int
+    started_at: datetime
+    stage_started_at: datetime | None
+    updated_at: datetime
+    completed_at: datetime | None
+    failed_stage: PipelineStage | None
+    has_error: bool
+    is_stale: bool
+
+    @classmethod
+    def from_runtime_status(
+        cls,
+        runtime: PipelineRuntimeStatus,
+        *,
+        running_fresh_after: datetime,
+    ) -> "PipelineRuntimeItem":
+        return cls(
+            execution_id=runtime.execution_id,
+            run_id=runtime.run_id,
+            entity_id=runtime.entity_id,
+            status=runtime.status,
+            current_stage=runtime.current_stage,
+            input_total=runtime.input_total,
+            normalization_processed_count=runtime.normalization_processed_count,
+            remaining_count=runtime.remaining_count,
+            started_at=runtime.started_at,
+            stage_started_at=runtime.stage_started_at,
+            updated_at=runtime.updated_at,
+            completed_at=runtime.completed_at,
+            failed_stage=runtime.failed_stage,
+            has_error=runtime.has_error,
+            is_stale=(
+                runtime.status is PipelineRuntimeState.RUNNING
+                and runtime.updated_at < running_fresh_after
+            ),
+        )
+
+
+class PipelineRuntimeListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[PipelineRuntimeItem]
 
 
 class EventTimelineItem(BaseModel):

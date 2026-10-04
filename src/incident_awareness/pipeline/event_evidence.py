@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from incident_awareness.collection.collector.sysmon_jsonl import SysmonJsonlRecord
@@ -28,12 +29,13 @@ class NormalizedEvidenceArtifacts:
 
 def normalize_sysmon_and_extract_evidence(
     artifacts: S0PipelineArtifacts,
+    *,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> NormalizedEvidenceArtifacts:
     """Normalize S0 Sysmon Event IDs 1 and 3, then extract Evidence for each Event."""
     events: list[NormalizedEvent] = []
     evidences: list[Evidence] = []
-
-    for record in artifacts.sysmon_records:
+    for processed_count, record in enumerate(artifacts.sysmon_records, start=1):
         event = _normalize_sysmon_record(
             record_event_id=record.data.get("EventId"),
             record=record,
@@ -41,6 +43,8 @@ def normalize_sysmon_and_extract_evidence(
         )
         events.append(event)
         evidences.extend(extract_evidence(event))
+        if progress_callback is not None:
+            progress_callback(processed_count)
 
     return NormalizedEvidenceArtifacts(events=tuple(events), evidences=tuple(evidences))
 
