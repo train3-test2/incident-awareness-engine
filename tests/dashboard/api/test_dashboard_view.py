@@ -12,6 +12,20 @@ DASHBOARD_VIEW_PATHS = (
     "/dashboard",
     "/dashboard-assets/dashboard.css",
     "/dashboard-assets/dashboard.js",
+    "/dashboard-assets/dashboard-contract.mjs",
+)
+DASHBOARD_CONTRACT_FUNCTIONS = (
+    "displayValue",
+    "formatRunTimestamp",
+    "getOverviewQueryMessage",
+    "getRunTypeLabel",
+    "resolveOverviewQueryState",
+)
+DASHBOARD_SCRIPT_CONTRACT_FUNCTIONS = (
+    "displayValue",
+    "formatRunTimestamp",
+    "getRunTypeLabel",
+    "resolveOverviewQueryState",
 )
 
 
@@ -56,13 +70,20 @@ def test_dashboard_view_serves_html_shell_without_database_access(
     html = response.text
     assert "Incident Awareness Dashboard" in html
     assert 'href="/dashboard-assets/dashboard.css"' in html
-    assert 'src="/dashboard-assets/dashboard.js"' in html
+    assert '<script type="module" src="/dashboard-assets/dashboard.js"></script>' in html
     assert 'href="/dashboard" aria-current="page"' in html
     assert 'href="/operations"' in html
     for section in ("Overview", "Total Runs", "Recent Runs", "Runs"):
         assert section in html
-    for status_id in ("overview-status", "recent-runs-status", "runs-status"):
+    for status_id in (
+        "total-runs-value",
+        "overview-status",
+        "recent-runs-status",
+        "recent-runs-list",
+        "runs-status",
+    ):
         assert f'id="{status_id}"' in html
+    assert "Run 목록은 다음 단계에서 표시됩니다." in html
     assert database_connection_attempts == []
 
 
@@ -78,25 +99,30 @@ def test_operations_view_includes_dashboard_navigation() -> None:
     assert 'href="/operations" aria-current="page"' in html
 
 
-def test_dashboard_assets_serve_stylesheet_and_script() -> None:
+def test_dashboard_assets_serve_stylesheet_script_and_contract_module() -> None:
     # Given
     client = TestClient(create_app())
 
     # When
     stylesheet = client.get("/dashboard-assets/dashboard.css")
     script = client.get("/dashboard-assets/dashboard.js")
+    contract = client.get("/dashboard-assets/dashboard-contract.mjs")
 
     # Then
     assert stylesheet.status_code == 200
     assert stylesheet.headers["content-type"].startswith("text/css")
     assert ".dashboard-navigation" in stylesheet.text
     assert script.status_code == 200
-    media_type = script.headers["content-type"].split(";", maxsplit=1)[0].strip()
-    assert media_type in JAVASCRIPT_MEDIA_TYPES
-    assert script.text.startswith('"use strict";')
+    assert contract.status_code == 200
+    for response in (script, contract):
+        media_type = response.headers["content-type"].split(";", maxsplit=1)[0].strip()
+        assert media_type in JAVASCRIPT_MEDIA_TYPES
+    assert '} from "./dashboard-contract.mjs";' in script.text
+    for contract_function in DASHBOARD_CONTRACT_FUNCTIONS:
+        assert f"export function {contract_function}(" in contract.text
 
 
-def test_dashboard_script_is_safe_bootstrap_without_api_fetching() -> None:
+def test_dashboard_script_fetches_overview_once_without_runs_or_polling() -> None:
     # Given
     client = TestClient(create_app())
 
@@ -105,8 +131,37 @@ def test_dashboard_script_is_safe_bootstrap_without_api_fetching() -> None:
 
     # Then
     assert 'document.getElementById("dashboard-view")' in script
+    assert 'const OVERVIEW_ENDPOINT = "/overview";' in script
+    assert "fetch(OVERVIEW_ENDPOINT" in script
+    assert 'Accept: "application/json"' in script
+    assert 'cache: "no-store"' in script
+    assert script.count("void loadOverview();") == 1
+    assert '"/runs"' not in script
+    assert 'document.getElementById("runs-status")' not in script
+    for polling_api in ("setInterval(", "setTimeout("):
+        assert polling_api not in script
+
+
+def test_dashboard_script_uses_contract_and_safe_dom_rendering() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/dashboard.js").text
+
+    # Then
+    for contract_function in DASHBOARD_SCRIPT_CONTRACT_FUNCTIONS:
+        assert f"{contract_function}," in script
+        assert f"function {contract_function}(" not in script
+    for safe_api in (
+        "document.createElement(",
+        ".textContent =",
+        ".append(",
+        ".replaceChildren(",
+        ".classList.add(",
+    ):
+        assert safe_api in script
     for forbidden_api in (
-        "fetch(",
         "innerHTML",
         "outerHTML",
         "insertAdjacentHTML",
@@ -115,6 +170,32 @@ def test_dashboard_script_is_safe_bootstrap_without_api_fetching() -> None:
         "new Function",
     ):
         assert forbidden_api not in script
+    assert 'createRunField("Scenario"' in script
+    assert 'createRunField("Type"' in script
+    assert 'createRunField("Target"' in script
+    assert 'createRunField("Start"' in script
+    assert 'createRunField("End"' in script
+
+
+def test_dashboard_contract_has_no_dom_network_or_timer_access() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    contract = client.get("/dashboard-assets/dashboard-contract.mjs").text
+
+    # Then
+    for browser_api in (
+        "document",
+        "window",
+        "fetch(",
+        "AbortController",
+        "setTimeout(",
+        "setInterval(",
+    ):
+        assert browser_api not in contract
+    assert "!Number.isInteger(payload.total_runs)" in contract
+    assert "!Array.isArray(payload.recent_runs)" in contract
 
 
 def test_dashboard_assets_do_not_serve_dashboard_html_shell() -> None:
@@ -179,7 +260,7 @@ def test_dashboard_view_has_no_inline_script_or_style() -> None:
 
     # Then
     assert html.count("<script") == 1
-    assert html.count('<script src="/dashboard-assets/dashboard.js" defer>') == 1
+    assert html.count('<script type="module" src="/dashboard-assets/dashboard.js">') == 1
     assert "<style" not in html
     assert " style=" not in html
 

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Incident Awareness Dashboard</title>
     <link rel="stylesheet" href="/dashboard-assets/dashboard.css">
-    <script src="/dashboard-assets/dashboard.js" defer></script>
+    <script type="module" src="/dashboard-assets/dashboard.js"></script>
 </head>
 <body>
     <main id="dashboard-view" class="dashboard-page">
@@ -18,15 +18,17 @@
             <section class="dashboard-section" aria-labelledby="overview-heading">
                 <h2 id="overview-heading">Overview</h2>
                 <p class="dashboard-metric-label">Total Runs</p>
+                <p id="total-runs-value" class="dashboard-metric-value">-</p>
                 <div id="overview-status" class="dashboard-status" role="status" aria-live="polite">
-                    Overview 데이터는 다음 단계에서 표시됩니다.
+                    Overview 정보를 불러오는 중입니다.
                 </div>
             </section>
             <section class="dashboard-section" aria-labelledby="recent-runs-heading">
                 <h2 id="recent-runs-heading">Recent Runs</h2>
                 <div id="recent-runs-status" class="dashboard-status" role="status" aria-live="polite">
-                    Recent Runs 데이터는 다음 단계에서 표시됩니다.
+                    Overview 정보를 불러오는 중입니다.
                 </div>
+                <div id="recent-runs-list" class="recent-runs-list"></div>
             </section>
             <section class="dashboard-section dashboard-section--wide" aria-labelledby="runs-heading">
                 <h2 id="runs-heading">Runs</h2>
