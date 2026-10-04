@@ -25,7 +25,7 @@ R1-V02 첫 Pilot은 Target-A에서 관측한 host-local 프로세스 계보와 �
 - Sysmon EID 10
 - cross-host correlation
 
-PR #124의 `r1_lineage` 검증기는 Raw Pilot에서 raw Sysmon EID 1 계보와 EID 1→EID 3 연결을 재구성·검증한다. Role2는 이 기능을 raw 입력 대상으로 중복 구현하지 않고, NormalizedEvent Full 경로의 correlation과 Evidence 생성을 담당한다. 시간 순서, Normal/Attack 의미, Evidence type, Fusion 점수는 해당 검증기가 결정하지 않는다. R1 multi-event correlation 함수는 구현되었지만 production pipeline 호출 위치는 아직 정하지 않았다.
+PR #124의 `r1_lineage` 검증기는 Raw Pilot에서 raw Sysmon EID 1 계보와 EID 1→EID 3 연결을 재구성·검증한다. Role2는 이 기능을 raw 입력 대상으로 중복 구현하지 않고, NormalizedEvent Full 경로의 correlation과 Evidence 생성을 담당한다. 시간 순서, Normal/Attack 의미, Evidence type, Fusion 점수는 해당 검증기가 결정하지 않는다. R1 multi-event correlation 함수와 독립 batch pipeline API는 구현되었지만 production runner/CLI에는 아직 연결하지 않았다.
 
 NormalizedEvent v0.3에서 Sysmon EID 1은 `process.process_guid`와 `process.parent_process_guid`를 보존한다. EID 3은 `process.process_guid`를 보존하고 `process.parent_process_guid`는 `None`이다. 두 필드는 모두 공통 계약의 optional 필드다.
 
@@ -110,7 +110,9 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 | 단독 공격 판정용인지 | 아니오. 네트워크 연결 존재만으로 Normal과 Attack을 구분하지 않음 |
 | Fusion에서의 역할 | Normal/Attack 모두에서 발생하므로 단독 공격 신호가 아님. 현재 `feature_channel_group = fusion_feature`로 생성되지만, 실제 R1 scoring profile 포함 여부는 Role1이 결정 |
 
-두 후보에 필요한 NormalizedEvent Full 경로의 Event ↔ Event 의미적·인과적 correlation과 Semantic Evidence 생성은 Role2 책임이다. 현재 S0 production pipeline은 단일 `NormalizedEvent`를 받는 `extract_evidence()`만 사용하며, R1 multi-event 함수를 호출하는 위치는 아직 TBD다. 생성된 Evidence 사이의 시간차, 순서, 최근성, Window 내 공존은 Role1 Fusion이 처리한다.
+두 후보에 필요한 NormalizedEvent Full 경로의 Event ↔ Event 의미적·인과적 correlation과 Semantic Evidence 생성은 Role2 책임이다. `src/incident_awareness/pipeline/r1_evidence.py`는 NormalizedEvent batch와 명시적인 lineage input을 받아 R1 candidate Evidence 함수를 호출한다. 현재 S0 production pipeline은 단일 `NormalizedEvent`를 받는 `extract_evidence()`만 사용하며, R1 batch API를 production runner/CLI에서 호출하는 위치는 아직 TBD다. 생성된 Evidence 사이의 시간차, 순서, 최근성, Window 내 공존은 Role1 Fusion이 처리한다.
+
+현재 `anchor_event_id`와 `terminal_event_id`를 직접 지정하는 방식은 Pilot과 수동 실행을 위한 명시적 입력 방식이다. `NormalizedEvent.event_id`는 Run마다 달라질 수 있으므로 반복 평가용 frozen config에 특정 Event ID를 그대로 고정하지 않는다. 반복 평가에서는 Ground Truth나 `run_type`을 참조하지 않고 모든 Run에 동일하게 재현 가능한 anchor/terminal selector 규칙을 평가 전에 동결해야 한다. 구체적인 selector 규칙은 실제 R1 telemetry를 확인한 뒤 확정하며, 프로세스 이름 shortcut이나 Ground Truth 기반 선택은 사용하지 않는다.
 
 ## 4. 후속 구현 전 확인사항
 
@@ -121,14 +123,18 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 - R1 multi-event correlation 함수 구현
 - `remote_process_network_follow_on` Evidence 생성 함수 구현
 - lineage reconstruction 및 `remote_session_process_lineage_deviation` Evidence 생성 함수 구현
+- `src/incident_awareness/pipeline/r1_evidence.py`의 독립 R1 batch pipeline API 구현
+- Pilot·수동 실행에서 Event ID로 지정한 anchor/terminal과 동결된 policy를 전달하는 명시적 lineage input 구조
 - correlation 필수 GUID 누락 시 Evidence를 생성하지 않는 fail-closed 처리
 - lineage `event_ids`의 anchor→terminal 순서와 network follow-on `event_ids`의 EID 1→EID 3 순서
 - 결정적 `evidence_id`: 두 후보 모두 정렬한 Event ID, `run_id`, `evidence_type`, `extractor_version`을 UUIDv5 identity에 사용하고, lineage deviation은 policy의 `policy_id`, `version`, `config_hash`도 포함
 
 아직 TBD인 항목은 다음과 같다.
 
-- production pipeline에서 R1 multi-event correlation을 호출하는 위치
+- production runner/CLI에서 R1 batch pipeline API를 호출하는 위치
 - 실제 Pilot에서 `anchor_event`와 `terminal_event`를 선택해 전달할 주체와 기준
+- 반복 평가용 anchor/terminal selector 규칙
+- R1 분석 대상 Event batch의 window 계약
 - GUID 누락을 별도로 진단하는 방식
 - 실제 R1 telemetry 기반 end-to-end 검증
 - R1 Fusion profile과 Evidence 소비 규칙
@@ -140,7 +146,11 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 | 실제 telemetry | TBD | Target-A의 Normal/Attack Sysmon EID 1·3 원본과 PR #124 validator 결과 |
 | timestamp 기준 | 구현 규칙 확정 / telemetry 검증 대기 | 사용 Event 중 가장 늦은 `NormalizedEvent.timestamp` 사용. raw timestamp 선택은 Event/Normalization 계약 책임 |
 | 공식 Evidence vocabulary 등록 | Candidate / TBD | 실제 R1 telemetry와 Fusion 사용 방식 검증 |
-| production pipeline 연결 | TBD | R1 multi-event 함수 호출 위치와 `anchor_event`·`terminal_event` 선택 책임 합의 |
+| R1 batch pipeline API | 구현 완료 | `src/incident_awareness/pipeline/r1_evidence.py`에서 NormalizedEvent batch와 명시적 lineage input을 처리 |
+| production runner/CLI 연결 | TBD | R1 batch API 호출 위치와 입력 config 계약 합의 |
+| Pilot·수동 실행의 anchor/terminal 선택 | TBD | 실제 Pilot에서 Event ID를 선택해 전달할 주체와 기준 합의 |
+| 반복 평가용 anchor/terminal selector | TBD | Ground Truth와 `run_type`을 참조하지 않고 모든 Run에 동일하게 적용할 재현 가능한 규칙 합의 |
+| R1 분석 window | TBD | 실제 수집 margin과 R1 분석 대상 Event batch 범위 합의 |
 | R1 Fusion profile | TBD | 사용할 후보, feature channel, 가중치, window, stopping 영향에 대한 Role1 합의 |
 
 두 Evidence type은 구현된 candidate이며 아직 공식 vocabulary에는 등록하지 않는다. 실제 R1 telemetry와 Fusion 사용 방식을 검증한 뒤 등록 여부를 확정한다.
