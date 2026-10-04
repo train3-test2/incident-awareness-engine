@@ -12,10 +12,13 @@ from incident_awareness.dashboard.api.dependencies import (
 
 RUN_ID = "RUN-20261005-001"
 DECISION_ID = "D-TEST-001"
+JAVASCRIPT_MEDIA_TYPES = {"application/javascript", "text/javascript"}
 DETAIL_VIEW_PATHS = (
     f"/dashboard/runs/{RUN_ID}",
     f"/dashboard/decisions/{DECISION_ID}",
     "/dashboard-assets/detail.css",
+    "/dashboard-assets/run-detail.js",
+    "/dashboard-assets/run-detail-contract.mjs",
 )
 
 
@@ -70,8 +73,28 @@ def test_run_detail_view_serves_html_shell_without_database_access(
     assert 'href="/dashboard" aria-current="page"' in html
     assert 'href="/operations"' in html
     assert 'href="/dashboard-assets/detail.css"' in html
-    for section in ("Run Metadata", "Current Decision", "Decision History"):
+    assert '<script type="module" src="/dashboard-assets/run-detail.js"></script>' in html
+    for section in (
+        "Run Metadata",
+        "Current Decision",
+        "Current Detection Runtime",
+        "Current Fusion Runtime",
+        "Decision History",
+    ):
         assert section in html
+    for container_id in (
+        "run-detail-view",
+        "run-detail-status",
+        "run-metadata",
+        "current-decision-status",
+        "current-decision",
+        "detection-runtime-status",
+        "detection-runtime",
+        "fusion-runtime-status",
+        "fusion-runtime",
+    ):
+        assert f'id="{container_id}"' in html
+    assert "Decision History 데이터는 다음 단계에서 표시됩니다." in html
     assert database_connection_attempts == []
 
 
@@ -108,6 +131,142 @@ def test_detail_stylesheet_is_served_with_css_media_type() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/css")
     assert ".detail-page" in response.text
+
+
+def test_run_detail_script_and_contract_are_served_with_javascript_media_type() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    responses = [
+        client.get("/dashboard-assets/run-detail.js"),
+        client.get("/dashboard-assets/run-detail-contract.mjs"),
+    ]
+
+    # Then
+    for response in responses:
+        assert response.status_code == 200
+        media_type = response.headers["content-type"].split(";", maxsplit=1)[0].strip()
+        assert media_type in JAVASCRIPT_MEDIA_TYPES
+
+
+def test_run_detail_script_fetches_json_once_without_polling() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/run-detail.js").text
+
+    # Then
+    assert 'document.getElementById("run-detail-view")' in script
+    assert "extractRunIdFromPathname(window.location.pathname)" in script
+    assert "fetch(buildRunDetailApiPath(runId)" in script
+    assert 'Accept: "application/json"' in script
+    assert 'cache: "no-store"' in script
+    assert "response.status === 404" in script
+    assert script.count("fetch(") == 1
+    assert script.count("void loadRunDetail();") == 1
+    for polling_api in ("setInterval(", "setTimeout(", "AbortController", "WebSocket"):
+        assert polling_api not in script
+    assert 'fetch("/decisions/' not in script
+
+
+def test_run_detail_assets_use_authoritative_current_data_and_safe_dom_rendering() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/run-detail.js").text
+    contract = client.get("/dashboard-assets/run-detail-contract.mjs").text
+
+    # Then
+    assert "const current = payload.current_decision;" in script
+    assert "current.latest_detection_result" in script
+    assert "current.latest_fusion_result" in script
+    assert "decision_history" not in script
+    assert "latest_fusion_stopping_trace" not in script
+    assert "decision.t_e" in script
+    assert "Math.min(" not in script
+    assert "Date.parse(decision.t_e" not in script
+    for run_field in (
+        "run.run_id",
+        "run.scenario_id",
+        "run.run_type",
+        "run.target_host",
+        "run.start_time",
+        "run.end_time",
+        "run.family_id",
+        "run.variation_id",
+        "run.repetition",
+        "run.vm_snapshot",
+        "run.sysmon_config_version",
+        "run.detector_set_version",
+        "run.scenario_version",
+    ):
+        assert run_field in script
+    for decision_field in (
+        "decision.decision_id",
+        "decision.entity_id",
+        "decision.fast_status",
+        "decision.fusion_status",
+        "decision.detector_time",
+        "decision.fusion_time",
+        "decision.t_e",
+        "decision.decision_path",
+        "decision.winning_path",
+        "decision.decision_reason",
+        "decision.config_version",
+        "decision.model_version",
+        "decision.rule_version",
+        "decision.detector_set_version",
+    ):
+        assert decision_field in script
+    assert "Current Decision이 없습니다." in script
+    assert "저장된 최신 Detection Runtime 결과가 없습니다." in script
+    assert "저장된 최신 Fusion Runtime 결과가 없습니다." in script
+    for safe_api in (
+        "document.createElement(",
+        ".textContent =",
+        ".append(",
+        ".replaceChildren(",
+        ".classList.add(",
+    ):
+        assert safe_api in script
+    for source in (script, contract):
+        for forbidden_api in (
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+            "eval(",
+            "new Function",
+        ):
+            assert forbidden_api not in source
+        for reordering_api in (".sort(", ".toSorted(", ".reverse(", ".toReversed("):
+            assert reordering_api not in source
+
+
+def test_run_detail_contract_has_no_dom_network_location_or_timer_access() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    contract = client.get("/dashboard-assets/run-detail-contract.mjs").text
+
+    # Then
+    for browser_api in (
+        "document",
+        "window",
+        "location",
+        "fetch(",
+        "AbortController",
+        "setTimeout(",
+        "setInterval(",
+    ):
+        assert browser_api not in contract
+    assert "encodeURIComponent(" in contract
+    assert "decodeURIComponent(" in contract
+    assert "Array.isArray(payload.decision_history)" in contract
 
 
 def test_detail_views_do_not_shadow_existing_json_apis(
@@ -185,19 +344,26 @@ def test_detail_view_files_reference_no_external_resources_or_secrets(path: str)
         assert forbidden_marker not in response.text
 
 
-@pytest.mark.parametrize(
-    "path",
-    (
-        f"/dashboard/runs/{RUN_ID}",
-        f"/dashboard/decisions/{DECISION_ID}",
-    ),
-)
-def test_detail_views_have_no_inline_script_or_style(path: str) -> None:
+def test_run_detail_view_uses_only_its_external_module_script() -> None:
     # Given
     client = TestClient(create_app())
 
     # When
-    html = client.get(path).text
+    html = client.get(f"/dashboard/runs/{RUN_ID}").text
+
+    # Then
+    assert html.count("<script") == 1
+    assert html.count('<script type="module" src="/dashboard-assets/run-detail.js">') == 1
+    assert "<style" not in html
+    assert " style=" not in html
+
+
+def test_historical_decision_view_has_no_inline_script_or_style() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    html = client.get(f"/dashboard/decisions/{DECISION_ID}").text
 
     # Then
     assert "<script" not in html

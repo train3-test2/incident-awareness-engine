@@ -5,25 +5,52 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Run Detail | Incident Awareness Dashboard</title>
     <link rel="stylesheet" href="/dashboard-assets/detail.css">
+    <script type="module" src="/dashboard-assets/run-detail.js"></script>
 </head>
 <body>
-    <main class="detail-page">
+    <main id="run-detail-view" class="detail-page">
         <nav class="dashboard-navigation" aria-label="Dashboard navigation">
             <a href="/dashboard" aria-current="page">Dashboard</a>
             <a href="/operations">Operations</a>
         </nav>
         <h1 class="page-title">Run Detail</h1>
         <div id="run-detail-status" class="detail-status" role="status" aria-live="polite">
-            Run Detail 데이터는 다음 단계에서 표시됩니다.
+            Run Detail을 불러오는 중입니다.
         </div>
         <div class="detail-grid">
             <section class="detail-section" aria-labelledby="run-metadata-heading">
                 <h2 id="run-metadata-heading">Run Metadata</h2>
-                <p class="detail-placeholder">Run Metadata 데이터는 다음 단계에서 표시됩니다.</p>
+                <dl id="run-metadata" class="detail-fields"></dl>
             </section>
             <section class="detail-section" aria-labelledby="current-decision-heading">
                 <h2 id="current-decision-heading">Current Decision</h2>
-                <p class="detail-placeholder">Current Decision 데이터는 다음 단계에서 표시됩니다.</p>
+                <div
+                    id="current-decision-status"
+                    class="detail-section-status"
+                    role="status"
+                    aria-live="polite"
+                ></div>
+                <dl id="current-decision" class="detail-fields"></dl>
+            </section>
+            <section class="detail-section" aria-labelledby="detection-runtime-heading">
+                <h2 id="detection-runtime-heading">Current Detection Runtime</h2>
+                <div
+                    id="detection-runtime-status"
+                    class="detail-section-status"
+                    role="status"
+                    aria-live="polite"
+                ></div>
+                <dl id="detection-runtime" class="detail-fields"></dl>
+            </section>
+            <section class="detail-section" aria-labelledby="fusion-runtime-heading">
+                <h2 id="fusion-runtime-heading">Current Fusion Runtime</h2>
+                <div
+                    id="fusion-runtime-status"
+                    class="detail-section-status"
+                    role="status"
+                    aria-live="polite"
+                ></div>
+                <dl id="fusion-runtime" class="detail-fields"></dl>
             </section>
             <section class="detail-section" aria-labelledby="decision-history-heading">
                 <h2 id="decision-history-heading">Decision History</h2>
