@@ -2,7 +2,7 @@
 
 ## 범위
 
-Issue #168은 전통적 ML 비교 모델의 입력 계층이다. 학습·추론 모델 자체는 아직 구현하지 않는다.
+Issue #168은 전통적 ML 비교 모델의 입력 계층이다. 학습·추론은 [Static ML baseline](role5-static-ml.md)에서 이 입력 계층을 사용한다.
 `extract_static_features()`는 호출자가 고른 단일 Run/entity의 활성 window를 입력받아
 Evidence 종류별 존재 여부를 0/1 tuple로 반환한다.
 
@@ -39,6 +39,6 @@ Evidence ID는 입력 추적용이며 학습 모델의 특징 중요도나 인�
 데이터는 window 행을 무작위로 나누지 않고 Run/Pair 단위로 분리하여 누수를 방지한다.
 모델 학습은 train, 운영점 선택은 validation, 최종 보고는 동결 이후 test로 분리한다.
 
-후속 범위는 학습·추론 모델, 학습 artifact 및 버전, 실제 snapshot 입력 연결,
+학습·추론과 JSON artifact는 같은 PR에 포함한다. 후속 범위는 실제 snapshot 입력 연결,
 동일 오경보 조건에서의 최종 비교다. 이 벡터 구현이나 합성 테스트 통과는
 R1 성능 검증 완료 또는 detector freeze를 의미하지 않는다.
