@@ -51,6 +51,9 @@ DecisionResult 및 그 provenance를 수정하지 않는다. 이전 최초 hit�
 양쪽 탐지 Run만이며, 해당 Run의 시각 차이 median과 먼저 탐지한 경로별 개수를 기록한다.
 이 median은 각 경로 전체 Median TTSD의 차이가 아니다. 미탐을 horizon이나 0초로 대체하지 않는다.
 양쪽 탐지가 없으면 median은 null이다.
+`median_fusion_minus_fast_sec`는 각 Run에 동일 가중치를 부여한 탐색용 Run-level 기술통계다.
+family/variation/repetition 계층을 보정하거나 bootstrap한 값이 아니며 이 계층을 독립표본으로 가정하지 않는다.
+최종 통계적 우위 판단에는 Family별 결과 또는 계층적 재표본 절차가 별도로 필요하다.
 
 `paired_coverage_complete`는 attack Run이 있고 그 attack Run의 두 경로가 모두 평가됐다는
 뜻이다. 동일 FA/BH, 성능 우위, 충분한 표본 수 또는 최종 비교 준비 완료를 보장하지 않는다.

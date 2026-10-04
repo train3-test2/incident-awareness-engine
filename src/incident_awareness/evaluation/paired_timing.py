@@ -1,5 +1,6 @@
 """Descriptive Fast/Fusion timing on identical attack Runs, without imputation."""
 
+from datetime import UTC
 from statistics import median
 
 import pandas as pd
@@ -39,7 +40,11 @@ def compare_paired_timing(snapshot: EvaluationSnapshot) -> dict:
             )
             paths[method] = {
                 "eligible_status": status,
-                "eligible_time": time.isoformat() if time is not None else None,
+                "eligible_time": time.astimezone(UTC)
+                .isoformat(timespec="milliseconds")
+                .replace("+00:00", "Z")
+                if time is not None
+                else None,
                 "ttsd_sec": (time - run.reference_time).total_seconds()
                 if time is not None
                 else None,
@@ -69,7 +74,9 @@ def compare_paired_timing(snapshot: EvaluationSnapshot) -> dict:
                 "variation_id": run.variation_id,
                 "repetition": run.repetition,
                 "decision_id": bundle.decision.decision_id,
-                "reference_time": run.reference_time.isoformat(),
+                "reference_time": run.reference_time.astimezone(UTC)
+                .isoformat(timespec="milliseconds")
+                .replace("+00:00", "Z"),
                 "paths": paths,
                 "outcome": outcome,
                 "fusion_minus_fast_sec": delta,
