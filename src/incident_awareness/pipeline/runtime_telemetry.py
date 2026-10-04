@@ -24,6 +24,8 @@ from incident_awareness.storage.repositories.pipeline_runtime_repository import 
 
 _LOGGER = logging.getLogger(__name__)
 _NORMALIZATION_PROGRESS_WRITE_INTERVAL_SECONDS = 1.0
+_CONNECT_TIMEOUT_SECONDS = 2
+_MAX_CONSECUTIVE_FAILURES = 3
 
 type PipelineRuntimeObserver = Callable[[PipelineRuntimeStatus], None]
 type RuntimeClock = Callable[[], datetime]
@@ -46,6 +48,10 @@ class _TelemetryConnection(Protocol):
 
 class _TelemetryCursor(Protocol):
     def fetchone(self) -> tuple[object, ...] | Mapping[str, object] | None: ...
+
+
+def _connect_telemetry_database(url: str) -> _TelemetryConnection:
+    return psycopg.connect(url, connect_timeout=_CONNECT_TIMEOUT_SECONDS)
 
 
 def generate_execution_id() -> str:
@@ -235,7 +241,7 @@ class PostgresPipelineRuntimeObserver:
         self,
         *,
         database_config_factory: Callable[[], DatabaseConfig] = DatabaseConfig.from_environment,
-        connection_factory: Callable[[str], _TelemetryConnection] = psycopg.connect,
+        connection_factory: Callable[[str], _TelemetryConnection] = _connect_telemetry_database,
         monotonic_clock: MonotonicClock = monotonic,
         progress_write_interval_seconds: float = (_NORMALIZATION_PROGRESS_WRITE_INTERVAL_SECONDS),
     ) -> None:
@@ -247,6 +253,8 @@ class PostgresPipelineRuntimeObserver:
         self._last_saved_status: PipelineRuntimeStatus | None = None
         self._last_normalization_attempt_status: PipelineRuntimeStatus | None = None
         self._last_normalization_attempt_at: float | None = None
+        self._consecutive_failures = 0
+        self._disabled = False
 
     def __enter__(self) -> Self:
         return self
@@ -260,6 +268,9 @@ class PostgresPipelineRuntimeObserver:
         self.close()
 
     def __call__(self, status: PipelineRuntimeStatus) -> None:
+        if self._disabled:
+            return
+
         if self._should_throttle(status):
             return
 
@@ -272,9 +283,13 @@ class PostgresPipelineRuntimeObserver:
             saved = PipelineRuntimeStatusRepository(connection).save(status)
             connection.commit()
         except Exception:
+            self._consecutive_failures += 1
             self._discard_failed_connection()
+            if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                self._disabled = True
             raise
 
+        self._consecutive_failures = 0
         if saved:
             self._last_saved_status = status
 

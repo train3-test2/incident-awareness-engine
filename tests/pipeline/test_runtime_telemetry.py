@@ -244,6 +244,165 @@ def test_postgres_observer_connects_lazily_commits_and_closes(
     assert connection.saved == [_status()]
 
 
+def test_postgres_observer_default_connection_factory_applies_connect_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    connection = _FakeConnection()
+    connect_calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(runtime_telemetry, "PipelineRuntimeStatusRepository", _FakeRepository)
+
+    def connect(url: str, *, connect_timeout: int) -> _FakeConnection:
+        connect_calls.append((url, connect_timeout))
+        return connection
+
+    monkeypatch.setattr(runtime_telemetry.psycopg, "connect", connect)
+    observer = PostgresPipelineRuntimeObserver(
+        database_config_factory=lambda: DatabaseConfig("postgresql://runtime/test"),
+    )
+
+    # When
+    observer(_status())
+    observer.close()
+
+    # Then
+    assert connect_calls == [("postgresql://runtime/test", 2)]
+    assert connection.commits == 1
+    assert connection.closes == 1
+
+
+def test_postgres_observer_disables_after_three_consecutive_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    expected_error = RuntimeError("database unavailable")
+    connection_attempts = 0
+    monkeypatch.setattr(runtime_telemetry, "PipelineRuntimeStatusRepository", _FakeRepository)
+
+    def connect(url: str) -> _FakeConnection:
+        nonlocal connection_attempts
+        connection_attempts += 1
+        raise expected_error
+
+    observer = PostgresPipelineRuntimeObserver(
+        database_config_factory=lambda: DatabaseConfig("postgresql://runtime/test"),
+        connection_factory=connect,
+        progress_write_interval_seconds=0.0,
+    )
+
+    # When
+    raised_errors = []
+    for stage in (
+        PipelineStage.NORMALIZATION,
+        PipelineStage.FUSION,
+        PipelineStage.FAST_HANDOFF,
+    ):
+        with pytest.raises(RuntimeError) as exc_info:
+            observer(_status(stage=stage))
+        raised_errors.append(exc_info.value)
+    disabled_result = observer(_status(stage=PipelineStage.HYBRID))
+
+    # Then
+    assert raised_errors == [expected_error, expected_error, expected_error]
+    assert disabled_result is None
+    assert connection_attempts == 3
+
+
+def test_postgres_observer_success_resets_consecutive_failure_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    initial_error = RuntimeError("initial connection failure")
+    successful_connection = _FakeConnection()
+    second_failed_connection = _FakeConnection(save_error=RuntimeError("second failure"))
+    third_failed_connection = _FakeConnection(save_error=RuntimeError("third failure"))
+    available_connections = iter(
+        (successful_connection, second_failed_connection, third_failed_connection)
+    )
+    connection_attempts = 0
+    monkeypatch.setattr(runtime_telemetry, "PipelineRuntimeStatusRepository", _FakeRepository)
+
+    def connect(url: str) -> _FakeConnection:
+        nonlocal connection_attempts
+        connection_attempts += 1
+        if connection_attempts == 1:
+            raise initial_error
+        return next(available_connections)
+
+    observer = PostgresPipelineRuntimeObserver(
+        database_config_factory=lambda: DatabaseConfig("postgresql://runtime/test"),
+        connection_factory=connect,
+        progress_write_interval_seconds=0.0,
+    )
+
+    # When
+    with pytest.raises(RuntimeError) as initial_exc_info:
+        observer(_status(stage=PipelineStage.NORMALIZATION))
+    observer(_status(stage=PipelineStage.FUSION))
+    successful_connection.save_error = RuntimeError("first failure after success")
+    for stage in (
+        PipelineStage.FAST_HANDOFF,
+        PipelineStage.HYBRID,
+        PipelineStage.PERSISTENCE,
+    ):
+        with pytest.raises(RuntimeError):
+            observer(_status(stage=stage))
+    disabled_result = observer(_status(state=PipelineRuntimeState.COMPLETED, processed_count=3))
+
+    # Then
+    assert initial_exc_info.value is initial_error
+    assert successful_connection.commits == 1
+    assert disabled_result is None
+    assert connection_attempts == 4
+
+
+def test_postgres_observer_stale_save_resets_consecutive_failure_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    initial_error = RuntimeError("initial connection failure")
+    stale_connection = _FakeConnection(save_result=False)
+    second_failed_connection = _FakeConnection(save_error=RuntimeError("second failure"))
+    third_failed_connection = _FakeConnection(save_error=RuntimeError("third failure"))
+    available_connections = iter(
+        (stale_connection, second_failed_connection, third_failed_connection)
+    )
+    connection_attempts = 0
+    monkeypatch.setattr(runtime_telemetry, "PipelineRuntimeStatusRepository", _FakeRepository)
+
+    def connect(url: str) -> _FakeConnection:
+        nonlocal connection_attempts
+        connection_attempts += 1
+        if connection_attempts == 1:
+            raise initial_error
+        return next(available_connections)
+
+    observer = PostgresPipelineRuntimeObserver(
+        database_config_factory=lambda: DatabaseConfig("postgresql://runtime/test"),
+        connection_factory=connect,
+        progress_write_interval_seconds=0.0,
+    )
+
+    # When
+    with pytest.raises(RuntimeError):
+        observer(_status(stage=PipelineStage.NORMALIZATION))
+    observer(_status(stage=PipelineStage.FUSION))
+    stale_connection.save_error = RuntimeError("first failure after stale save")
+    for stage in (
+        PipelineStage.FAST_HANDOFF,
+        PipelineStage.HYBRID,
+        PipelineStage.PERSISTENCE,
+    ):
+        with pytest.raises(RuntimeError):
+            observer(_status(stage=stage))
+    disabled_result = observer(_status(state=PipelineRuntimeState.COMPLETED, processed_count=3))
+
+    # Then
+    assert stale_connection.commits == 1
+    assert disabled_result is None
+    assert connection_attempts == 4
+
+
 def test_postgres_observer_rolls_back_resets_and_reconnects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
