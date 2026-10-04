@@ -1,0 +1,128 @@
+:root {
+    color-scheme: light;
+    --text-color: #1f2328;
+    --muted-text-color: #59636e;
+    --border-color: #d1d9e0;
+    --surface-color: #ffffff;
+    --page-background-color: #f6f8fa;
+    --running-color: #0969da;
+    --stale-color: #9a6700;
+    --completed-color: #1a7f37;
+    --failed-color: #cf222e;
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: system-ui, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    line-height: 1.5;
+    color: var(--text-color);
+    background-color: var(--page-background-color);
+}
+
+.operations-page {
+    max-width: 72rem;
+    margin: 0 auto;
+    padding: 1.5rem 1rem;
+}
+
+.page-title {
+    margin: 0 0 1.5rem;
+    font-size: 1.5rem;
+}
+
+.runtime-section {
+    padding: 1rem;
+    background-color: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+}
+
+.runtime-section h2 {
+    margin: 0 0 0.75rem;
+    font-size: 1.125rem;
+}
+
+.runtime-status {
+    min-height: 1.5rem;
+    color: var(--muted-text-color);
+}
+
+.runtime-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr));
+    gap: 0.75rem;
+    margin-top: 0.75rem;
+}
+
+.runtime-card {
+    padding: 0.75rem 1rem;
+    background-color: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-left: 0.25rem solid var(--border-color);
+    border-radius: 0.5rem;
+}
+
+.runtime-card--running {
+    border-left-color: var(--running-color);
+}
+
+.runtime-card--stale {
+    border-left-style: dashed;
+    border-left-color: var(--stale-color);
+}
+
+.runtime-card--telemetry-unavailable {
+    border-left-style: dashed;
+    border-left-color: var(--muted-text-color);
+}
+
+.runtime-card--completed {
+    border-left-color: var(--completed-color);
+}
+
+.runtime-card--failed {
+    border-left-color: var(--failed-color);
+}
+
+.runtime-card__title {
+    margin: 0 0 0.5rem;
+    font-size: 1rem;
+    overflow-wrap: anywhere;
+}
+
+.runtime-card__fields {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 0.25rem 0.75rem;
+    margin: 0;
+}
+
+.runtime-field {
+    display: contents;
+}
+
+.runtime-field__label {
+    color: var(--muted-text-color);
+}
+
+.runtime-field__value {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 30rem) {
+    .runtime-card__fields {
+        grid-template-columns: minmax(0, 1fr);
+        row-gap: 0;
+    }
+
+    .runtime-field__value {
+        margin-bottom: 0.375rem;
+    }
+}
