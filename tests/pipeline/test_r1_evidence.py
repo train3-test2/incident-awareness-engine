@@ -156,12 +156,26 @@ def _lineage_input(policy: ApprovedLineagePolicy | None = None) -> R1LineageInpu
     )
 
 
+def _terminal_lineage_input(
+    terminal_event_id: str = "evt-process",
+    process_name: str = "powershell.exe",
+) -> R1LineageInput:
+    return R1LineageInput(
+        anchor_event_id=terminal_event_id,
+        terminal_event_id=terminal_event_id,
+        approved_policy=_policy(approved_lineage=(process_name,)),
+    )
+
+
 def test_extracts_network_follow_on_from_shuffled_batch() -> None:
     # Given
     process_event, network_event = _network_events()
 
     # When
-    evidences = run_r1_evidence_pipeline([network_event, process_event])
+    evidences = run_r1_evidence_pipeline(
+        [network_event, process_event],
+        lineage_inputs=[_terminal_lineage_input()],
+    )
 
     # Then
     assert len(evidences) == 1
@@ -171,7 +185,7 @@ def test_extracts_network_follow_on_from_shuffled_batch() -> None:
     assert evidence.timestamp == network_event.timestamp
 
 
-def test_passes_every_same_key_network_pair_to_extractor() -> None:
+def test_uses_only_selected_terminal_for_same_key_network_candidates() -> None:
     # Given
     process_one = _event(
         event_id="evt-process-1",
@@ -199,15 +213,43 @@ def test_passes_every_same_key_network_pair_to_extractor() -> None:
     )
 
     # When
-    evidences = run_r1_evidence_pipeline([network_two, process_two, network_one, process_one])
+    evidences = run_r1_evidence_pipeline(
+        [network_two, process_two, network_one, process_one],
+        lineage_inputs=[_terminal_lineage_input("evt-process-2")],
+    )
 
     # Then
     assert {tuple(evidence.event_ids) for evidence in evidences} == {
-        ("evt-process-1", "evt-network-1"),
-        ("evt-process-1", "evt-network-2"),
         ("evt-process-2", "evt-network-1"),
         ("evt-process-2", "evt-network-2"),
     }
+
+
+def test_ignores_unrelated_process_and_network_pair() -> None:
+    # Given
+    anchor, middle, terminal = _lineage_events()
+    unrelated_process = _event(
+        event_id="evt-unrelated-process",
+        event_type="process_create",
+        timestamp=_BASE_TIME,
+        process_guid="{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}",
+    )
+    unrelated_network = _event(
+        event_id="evt-unrelated-network",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=3),
+        process_guid="{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}",
+    )
+    matching_policy = _policy(approved_lineage=("anchor.exe", "runtime-hop.exe", "terminal.exe"))
+
+    # When
+    evidences = run_r1_evidence_pipeline(
+        [anchor, middle, terminal, unrelated_process, unrelated_network],
+        lineage_inputs=[_lineage_input(matching_policy)],
+    )
+
+    # Then
+    assert evidences == ()
 
 
 def test_extracts_lineage_deviation_from_explicit_input() -> None:
@@ -243,13 +285,13 @@ def test_matching_approved_lineage_does_not_create_evidence() -> None:
     assert evidences == ()
 
 
-def test_empty_lineage_inputs_do_not_auto_select_processes() -> None:
+def test_empty_lineage_inputs_do_not_auto_select_terminal_for_network() -> None:
     # Given
-    anchor, middle, terminal = _lineage_events()
+    process_event, network_event = _network_events()
 
     # When
     evidences = run_r1_evidence_pipeline(
-        [anchor, middle, terminal],
+        [process_event, network_event],
         lineage_inputs=(),
     )
 
@@ -273,7 +315,10 @@ def test_network_pairing_stays_within_run_host_and_guid(
     process_event, network_event = _network_events(**network_overrides)
 
     # When
-    evidences = run_r1_evidence_pipeline([process_event, network_event])
+    evidences = run_r1_evidence_pipeline(
+        [process_event, network_event],
+        lineage_inputs=[_terminal_lineage_input()],
+    )
 
     # Then
     assert evidences == ()
@@ -287,7 +332,10 @@ def test_network_event_before_process_event_does_not_create_evidence() -> None:
     )
 
     # When
-    evidences = run_r1_evidence_pipeline([process_event, network_event])
+    evidences = run_r1_evidence_pipeline(
+        [process_event, network_event],
+        lineage_inputs=[_terminal_lineage_input()],
+    )
 
     # Then
     assert evidences == ()
@@ -309,7 +357,10 @@ def test_missing_guid_is_not_a_network_pairing_candidate(
     )
 
     # When
-    evidences = run_r1_evidence_pipeline([process_event, network_event])
+    evidences = run_r1_evidence_pipeline(
+        [process_event, network_event],
+        lineage_inputs=[_terminal_lineage_input()],
+    )
 
     # Then
     assert evidences == ()
@@ -361,6 +412,56 @@ def test_duplicate_event_id_fails_fast() -> None:
             [anchor, duplicate_anchor, middle, terminal],
             lineage_inputs=[_lineage_input()],
         )
+
+
+def test_repeated_lineage_input_returns_one_lineage_evidence() -> None:
+    # Given
+    anchor, middle, terminal = _lineage_events()
+    lineage_input = _lineage_input()
+
+    # When
+    evidences = run_r1_evidence_pipeline(
+        [anchor, middle, terminal],
+        lineage_inputs=[lineage_input, lineage_input],
+    )
+
+    # Then
+    assert len(evidences) == 1
+    assert evidences[0].evidence_type == "remote_session_process_lineage_deviation"
+
+
+def test_shared_terminal_across_lineage_inputs_returns_one_network_evidence() -> None:
+    # Given
+    anchor, middle, terminal = _lineage_events()
+    network_event = _event(
+        event_id="evt-network",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=3),
+        process_guid=_TERMINAL_GUID,
+    )
+    anchor_to_terminal = _lineage_input(
+        _policy(approved_lineage=("anchor.exe", "runtime-hop.exe", "terminal.exe"))
+    )
+    middle_to_terminal = R1LineageInput(
+        anchor_event_id=middle.event_id,
+        terminal_event_id=terminal.event_id,
+        approved_policy=_policy(approved_lineage=("runtime-hop.exe", "terminal.exe")),
+    )
+
+    # When
+    evidences = run_r1_evidence_pipeline(
+        [anchor, middle, terminal, network_event],
+        lineage_inputs=[anchor_to_terminal, middle_to_terminal],
+    )
+
+    # Then
+    network_evidences = [
+        evidence
+        for evidence in evidences
+        if evidence.evidence_type == "remote_process_network_follow_on"
+    ]
+    assert len(network_evidences) == 1
+    assert network_evidences[0].event_ids == [terminal.event_id, network_event.event_id]
 
 
 def test_evidence_ids_do_not_depend_on_input_event_order() -> None:

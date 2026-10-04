@@ -12,6 +12,7 @@ from incident_awareness.evidence.r1_multi_event import (
 )
 
 type _CorrelationKey = tuple[str, str, str]
+type _ResolvedLineageInput = tuple[R1LineageInput, NormalizedEvent, NormalizedEvent]
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,22 +46,19 @@ def run_r1_evidence_pipeline(
     event_batch = tuple(events)
     lineage_input_batch = tuple(lineage_inputs)
     events_by_id = _index_events_by_id(event_batch)
+    resolved_lineage_inputs = _resolve_lineage_inputs(
+        lineage_input_batch,
+        events_by_id,
+    )
 
-    evidences = _extract_network_follow_on_candidates(event_batch)
-    for lineage_input in lineage_input_batch:
-        if not isinstance(lineage_input, R1LineageInput):
-            raise TypeError("lineage_inputs must contain R1LineageInput items")
-
-        anchor_event = _required_event(
-            events_by_id,
-            event_id=lineage_input.anchor_event_id,
-            field_name="anchor_event_id",
-        )
-        terminal_event = _required_event(
-            events_by_id,
-            event_id=lineage_input.terminal_event_id,
-            field_name="terminal_event_id",
-        )
+    terminal_events = tuple(
+        {
+            terminal_event.event_id: terminal_event
+            for _, _, terminal_event in resolved_lineage_inputs
+        }.values()
+    )
+    evidences = _extract_network_follow_on_candidates(event_batch, terminal_events)
+    for lineage_input, anchor_event, terminal_event in resolved_lineage_inputs:
         evidences.extend(
             extract_remote_session_process_lineage_deviation(
                 event_batch,
@@ -70,9 +68,13 @@ def run_r1_evidence_pipeline(
             )
         )
 
+    evidences_by_id: dict[str, Evidence] = {}
+    for evidence in evidences:
+        evidences_by_id.setdefault(evidence.evidence_id, evidence)
+
     return tuple(
         sorted(
-            evidences,
+            evidences_by_id.values(),
             key=lambda evidence: (
                 evidence.timestamp,
                 evidence.evidence_type,
@@ -96,10 +98,34 @@ def _index_events_by_id(
     return events_by_id
 
 
+def _resolve_lineage_inputs(
+    lineage_inputs: tuple[R1LineageInput, ...],
+    events_by_id: dict[str, NormalizedEvent],
+) -> tuple[_ResolvedLineageInput, ...]:
+    resolved_inputs: list[_ResolvedLineageInput] = []
+    for lineage_input in lineage_inputs:
+        if not isinstance(lineage_input, R1LineageInput):
+            raise TypeError("lineage_inputs must contain R1LineageInput items")
+
+        anchor_event = _required_event(
+            events_by_id,
+            event_id=lineage_input.anchor_event_id,
+            field_name="anchor_event_id",
+        )
+        terminal_event = _required_event(
+            events_by_id,
+            event_id=lineage_input.terminal_event_id,
+            field_name="terminal_event_id",
+        )
+        resolved_inputs.append((lineage_input, anchor_event, terminal_event))
+
+    return tuple(resolved_inputs)
+
+
 def _extract_network_follow_on_candidates(
     events: tuple[NormalizedEvent, ...],
+    terminal_events: tuple[NormalizedEvent, ...],
 ) -> list[Evidence]:
-    process_events_by_key: dict[_CorrelationKey, list[NormalizedEvent]] = {}
     network_events_by_key: dict[_CorrelationKey, list[NormalizedEvent]] = {}
 
     for event in events:
@@ -108,32 +134,33 @@ def _extract_network_follow_on_candidates(
             continue
 
         key = (event.run_id, event.host_id, process_guid)
-        if event.event_type == "process_create":
-            process_events_by_key.setdefault(key, []).append(event)
-        elif event.event_type == "network_connection":
+        if event.event_type == "network_connection":
             network_events_by_key.setdefault(key, []).append(event)
 
     evidences: list[Evidence] = []
-    shared_keys = sorted(process_events_by_key.keys() & network_events_by_key.keys())
-    for key in shared_keys:
-        process_events = sorted(
-            process_events_by_key[key],
-            key=lambda event: (event.timestamp, event.event_id),
+    for terminal_event in sorted(
+        terminal_events,
+        key=lambda event: (event.timestamp, event.event_id),
+    ):
+        process_guid = (
+            terminal_event.process.process_guid if terminal_event.process is not None else None
         )
+        if process_guid is None:
+            continue
+
+        key = (terminal_event.run_id, terminal_event.host_id, process_guid)
         network_events = sorted(
-            network_events_by_key[key],
+            network_events_by_key.get(key, ()),
             key=lambda event: (event.timestamp, event.event_id),
         )
 
-        # 같은 key의 모든 조합을 기존 extractor에 전달해 임의 선택을 피한다.
-        for process_event in process_events:
-            for network_event in network_events:
-                evidences.extend(
-                    extract_remote_process_network_follow_on(
-                        process_event,
-                        network_event,
-                    )
+        for network_event in network_events:
+            evidences.extend(
+                extract_remote_process_network_follow_on(
+                    terminal_event,
+                    network_event,
                 )
+            )
 
     return evidences
 

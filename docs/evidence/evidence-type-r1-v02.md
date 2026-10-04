@@ -112,6 +112,8 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 
 두 후보에 필요한 NormalizedEvent Full 경로의 Event ↔ Event 의미적·인과적 correlation과 Semantic Evidence 생성은 Role2 책임이다. `src/incident_awareness/pipeline/r1_evidence.py`는 NormalizedEvent batch와 명시적인 lineage input을 받아 R1 candidate Evidence 함수를 호출한다. 현재 S0 production pipeline은 단일 `NormalizedEvent`를 받는 `extract_evidence()`만 사용하며, R1 batch API를 production runner/CLI에서 호출하는 위치는 아직 TBD다. 생성된 Evidence 사이의 시간차, 순서, 최근성, Window 내 공존은 Role1 Fusion이 처리한다.
 
+현재 `anchor_event_id`와 `terminal_event_id`를 직접 지정하는 방식은 Pilot과 수동 실행을 위한 명시적 입력 방식이다. `NormalizedEvent.event_id`는 Run마다 달라질 수 있으므로 반복 평가용 frozen config에 특정 Event ID를 그대로 고정하지 않는다. 반복 평가에서는 Ground Truth나 `run_type`을 참조하지 않고 모든 Run에 동일하게 재현 가능한 anchor/terminal selector 규칙을 평가 전에 동결해야 한다. 구체적인 selector 규칙은 실제 R1 telemetry를 확인한 뒤 확정하며, 프로세스 이름 shortcut이나 Ground Truth 기반 선택은 사용하지 않는다.
+
 ## 4. 후속 구현 전 확인사항
 
 `process_guid`와 `parent_process_guid`의 NormalizedEvent 계약 및 Sysmon EID 1·3 매핑은 v0.3에서 반영되어 더 이상 blocker가 아니다.
@@ -122,7 +124,7 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 - `remote_process_network_follow_on` Evidence 생성 함수 구현
 - lineage reconstruction 및 `remote_session_process_lineage_deviation` Evidence 생성 함수 구현
 - `src/incident_awareness/pipeline/r1_evidence.py`의 독립 R1 batch pipeline API 구현
-- Event ID로 지정한 anchor/terminal과 동결된 policy를 전달하는 명시적 lineage input 구조
+- Pilot·수동 실행에서 Event ID로 지정한 anchor/terminal과 동결된 policy를 전달하는 명시적 lineage input 구조
 - correlation 필수 GUID 누락 시 Evidence를 생성하지 않는 fail-closed 처리
 - lineage `event_ids`의 anchor→terminal 순서와 network follow-on `event_ids`의 EID 1→EID 3 순서
 - 결정적 `evidence_id`: 두 후보 모두 정렬한 Event ID, `run_id`, `evidence_type`, `extractor_version`을 UUIDv5 identity에 사용하고, lineage deviation은 policy의 `policy_id`, `version`, `config_hash`도 포함
@@ -131,6 +133,7 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 
 - production runner/CLI에서 R1 batch pipeline API를 호출하는 위치
 - 실제 Pilot에서 `anchor_event`와 `terminal_event`를 선택해 전달할 주체와 기준
+- 반복 평가용 anchor/terminal selector 규칙
 - R1 분석 대상 Event batch의 window 계약
 - GUID 누락을 별도로 진단하는 방식
 - 실제 R1 telemetry 기반 end-to-end 검증
@@ -145,7 +148,8 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 | 공식 Evidence vocabulary 등록 | Candidate / TBD | 실제 R1 telemetry와 Fusion 사용 방식 검증 |
 | R1 batch pipeline API | 구현 완료 | `src/incident_awareness/pipeline/r1_evidence.py`에서 NormalizedEvent batch와 명시적 lineage input을 처리 |
 | production runner/CLI 연결 | TBD | R1 batch API 호출 위치와 입력 config 계약 합의 |
-| anchor/terminal 선택 | TBD | 실제 Pilot에서 Event ID를 선택해 전달할 주체와 기준 합의 |
+| Pilot·수동 실행의 anchor/terminal 선택 | TBD | 실제 Pilot에서 Event ID를 선택해 전달할 주체와 기준 합의 |
+| 반복 평가용 anchor/terminal selector | TBD | Ground Truth와 `run_type`을 참조하지 않고 모든 Run에 동일하게 적용할 재현 가능한 규칙 합의 |
 | R1 분석 window | TBD | 실제 수집 margin과 R1 분석 대상 Event batch 범위 합의 |
 | R1 Fusion profile | TBD | 사용할 후보, feature channel, 가중치, window, stopping 영향에 대한 Role1 합의 |
 
