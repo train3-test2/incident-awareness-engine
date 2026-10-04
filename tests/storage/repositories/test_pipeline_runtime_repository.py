@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -14,6 +14,7 @@ from incident_awareness.storage.repositories.pipeline_runtime_repository import 
     _SELECT_PIPELINE_RUNTIME_STATUS_PAYLOAD,
     _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS,
     _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_BY_STATE,
+    _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_WITH_RUNNING_FRESHNESS,
     _UPSERT_PIPELINE_RUNTIME_STATUS,
     PipelineRuntimeStatusRepository,
 )
@@ -88,6 +89,21 @@ class _Connection:
             )
             return _Cursor(rows=[(status.model_dump(mode="json"),) for status in statuses[:limit]])
 
+        if query == _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_WITH_RUNNING_FRESHNESS:
+            fresh_after = params[0]
+            assert isinstance(fresh_after, datetime)
+            limit = int(params[1])
+            statuses = list(self.statuses.values())
+            statuses.sort(
+                key=lambda status: (
+                    _freshness_group(status, fresh_after),
+                    -status.updated_at.timestamp(),
+                    status.run_id,
+                    status.entity_id,
+                )
+            )
+            return _Cursor(rows=[(status.model_dump(mode="json"),) for status in statuses[:limit]])
+
         raise AssertionError(f"unexpected query: {query}")
 
     def commit(self) -> None:
@@ -105,6 +121,12 @@ def _should_apply(
             and (stored.status is PipelineRuntimeState.RUNNING or stored.status is incoming.status)
         )
     return stored.started_at < incoming.started_at
+
+
+def _freshness_group(status: PipelineRuntimeStatus, fresh_after: datetime) -> int:
+    if status.status is not PipelineRuntimeState.RUNNING:
+        return 1
+    return 0 if status.updated_at >= fresh_after else 2
 
 
 def _running_status(
@@ -486,4 +508,185 @@ def test_list_recent_rejects_invalid_limit(limit: object) -> None:
         repository.list_recent(limit=limit)
 
     # Then
+    assert connection.statements == []
+
+
+def test_list_recent_with_running_freshness_orders_fresh_then_terminal_then_stale() -> None:
+    # Given
+    connection = _Connection()
+    repository = PipelineRuntimeStatusRepository(connection)
+    fresh_after = _BASE_TIME + timedelta(seconds=100)
+    for status in (
+        _running_status(run_id="RUN-20261004-011", updated_offset=99),
+        _completed_status(run_id="RUN-20261004-012", updated_offset=120),
+        _failed_status(run_id="RUN-20261004-013", updated_offset=50),
+        _running_status(run_id="RUN-20261004-014", updated_offset=150),
+    ):
+        repository.save(status)
+
+    # When
+    recent = repository.list_recent(limit=100, running_fresh_after=fresh_after)
+
+    # Then
+    assert [(status.run_id, status.status) for status in recent] == [
+        ("RUN-20261004-014", PipelineRuntimeState.RUNNING),
+        ("RUN-20261004-012", PipelineRuntimeState.COMPLETED),
+        ("RUN-20261004-013", PipelineRuntimeState.FAILED),
+        ("RUN-20261004-011", PipelineRuntimeState.RUNNING),
+    ]
+    assert connection.statements[-1] == (
+        _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_WITH_RUNNING_FRESHNESS,
+        (fresh_after, 100),
+    )
+
+
+def test_list_recent_with_running_freshness_keeps_terminal_ahead_of_stale_running() -> None:
+    # Given
+    connection = _Connection()
+    repository = PipelineRuntimeStatusRepository(connection)
+    fresh_after = _BASE_TIME + timedelta(seconds=100)
+    for status in (
+        _running_status(run_id="RUN-20261004-021", updated_offset=95),
+        _running_status(run_id="RUN-20261004-022", updated_offset=90),
+        _completed_status(run_id="RUN-20261004-023", updated_offset=80),
+    ):
+        repository.save(status)
+
+    # When
+    recent = repository.list_recent(limit=1, running_fresh_after=fresh_after)
+
+    # Then
+    assert [status.run_id for status in recent] == ["RUN-20261004-023"]
+    assert connection.statements[-1] == (
+        _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_WITH_RUNNING_FRESHNESS,
+        (fresh_after, 1),
+    )
+
+
+def test_list_recent_running_filter_returns_fresh_and_stale_running() -> None:
+    # Given
+    connection = _Connection()
+    repository = PipelineRuntimeStatusRepository(connection)
+    fresh_after = _BASE_TIME + timedelta(seconds=100)
+    for status in (
+        _running_status(run_id="RUN-20261004-031", updated_offset=150),
+        _running_status(run_id="RUN-20261004-032", updated_offset=99),
+        _completed_status(run_id="RUN-20261004-033", updated_offset=120),
+        _failed_status(run_id="RUN-20261004-034", updated_offset=110),
+    ):
+        repository.save(status)
+
+    # When
+    running = repository.list_recent(
+        limit=100,
+        status=PipelineRuntimeState.RUNNING,
+        running_fresh_after=fresh_after,
+    )
+
+    # Then
+    assert [(status.run_id, status.status) for status in running] == [
+        ("RUN-20261004-031", PipelineRuntimeState.RUNNING),
+        ("RUN-20261004-032", PipelineRuntimeState.RUNNING),
+    ]
+    assert connection.statements[-1] == (
+        _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_BY_STATE,
+        ("running", 100),
+    )
+
+
+@pytest.mark.parametrize(
+    ("terminal_state", "terminal_status"),
+    [
+        (PipelineRuntimeState.COMPLETED, _completed_status),
+        (PipelineRuntimeState.FAILED, _failed_status),
+    ],
+)
+def test_list_recent_terminal_filter_ignores_running_freshness(
+    terminal_state: PipelineRuntimeState,
+    terminal_status: Callable[..., PipelineRuntimeStatus],
+) -> None:
+    # Given
+    connection = _Connection()
+    repository = PipelineRuntimeStatusRepository(connection)
+    fresh_after = _BASE_TIME + timedelta(seconds=100)
+    for status in (
+        terminal_status(run_id="RUN-20261004-041", updated_offset=50),
+        terminal_status(run_id="RUN-20261004-042", updated_offset=120),
+        _running_status(run_id="RUN-20261004-043", updated_offset=150),
+    ):
+        repository.save(status)
+
+    # When
+    with_cutoff = repository.list_recent(
+        limit=100,
+        status=terminal_state,
+        running_fresh_after=fresh_after,
+    )
+    without_cutoff = repository.list_recent(limit=100, status=terminal_state)
+
+    # Then
+    assert [status.run_id for status in with_cutoff] == ["RUN-20261004-042", "RUN-20261004-041"]
+    assert with_cutoff == without_cutoff
+    assert connection.statements[-2:] == [
+        (_SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_BY_STATE, (terminal_state.value, 100)),
+        (_SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_BY_STATE, (terminal_state.value, 100)),
+    ]
+
+
+def test_list_recent_treats_running_freshness_boundary_as_fresh() -> None:
+    # Given
+    connection = _Connection()
+    repository = PipelineRuntimeStatusRepository(connection)
+    fresh_after = _BASE_TIME + timedelta(seconds=100)
+    boundary = _running_status(run_id="RUN-20261004-051", updated_offset=100)
+    completed = _completed_status(run_id="RUN-20261004-052", updated_offset=120)
+    stale = _running_status(run_id="RUN-20261004-053", updated_offset=99)
+    for status in (boundary, completed, stale):
+        repository.save(status)
+
+    # When
+    recent = repository.list_recent(limit=100, running_fresh_after=fresh_after)
+
+    # Then
+    assert boundary.updated_at == fresh_after
+    assert recent == [boundary, completed, stale]
+
+
+def test_running_freshness_orders_unfiltered_rows_without_filtering_status_queries() -> None:
+    # Given
+    unfiltered_sql = " ".join(
+        _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_WITH_RUNNING_FRESHNESS.split()
+    )
+    status_filter_sql = " ".join(_SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_BY_STATE.split())
+
+    # When
+    freshness_order = (
+        "CASE WHEN status = 'running' AND updated_at >= %s THEN 0 "
+        "WHEN status = 'running' THEN 2 ELSE 1 END, "
+        "updated_at DESC, run_id ASC, entity_id ASC"
+    )
+
+    # Then
+    assert freshness_order in unfiltered_sql
+    assert "WHERE" not in unfiltered_sql
+    assert "WHERE status = %s ORDER BY" in status_filter_sql
+    assert "updated_at >=" not in status_filter_sql
+
+
+@pytest.mark.parametrize(
+    "running_fresh_after",
+    [_BASE_TIME.replace(tzinfo=None), "2026-10-04T01:00:00Z"],
+    ids=("naive-datetime", "string"),
+)
+def test_list_recent_rejects_invalid_running_fresh_after(running_fresh_after: object) -> None:
+    # Given
+    connection = _Connection()
+    repository = PipelineRuntimeStatusRepository(connection)
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        repository.list_recent(limit=20, running_fresh_after=running_fresh_after)
+
+    # Then
+    assert "timezone-aware" in str(exc_info.value)
     assert connection.statements == []

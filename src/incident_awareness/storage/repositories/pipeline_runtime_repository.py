@@ -1,6 +1,7 @@
 """Persist and query the latest Pipeline Runtime telemetry state."""
 
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Protocol
 
 from psycopg.types.json import Jsonb
@@ -84,6 +85,21 @@ ORDER BY
 LIMIT %s
 """
 
+_SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_WITH_RUNNING_FRESHNESS = """
+SELECT payload
+FROM pipeline_runtime_status
+ORDER BY
+    CASE
+        WHEN status = 'running' AND updated_at >= %s THEN 0
+        WHEN status = 'running' THEN 2
+        ELSE 1
+    END,
+    updated_at DESC,
+    run_id ASC,
+    entity_id ASC
+LIMIT %s
+"""
+
 
 class PipelineRuntimeStatusRepository:
     """Store one mutable latest Runtime status per Run and entity scope."""
@@ -125,21 +141,33 @@ class PipelineRuntimeStatusRepository:
         *,
         limit: int,
         status: PipelineRuntimeState | None = None,
+        running_fresh_after: datetime | None = None,
     ) -> list[PipelineRuntimeStatus]:
+        """List recent Runtime states without rewriting any persisted status.
+
+        ``running_fresh_after`` only orders unfiltered results: running rows updated at or
+        after the cutoff come first, then terminal rows, then running rows without recent
+        telemetry. It never excludes rows, so a status filter returns every row persisted
+        in that state. Without a cutoff, the original running-first ordering is kept.
+        """
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             raise ValueError("limit must be an integer between 1 and 100")
+        if running_fresh_after is not None and (
+            not isinstance(running_fresh_after, datetime) or running_fresh_after.utcoffset() is None
+        ):
+            raise ValueError("running_fresh_after must be a timezone-aware datetime")
 
-        if status is None:
-            rows = self._connection.execute(
-                _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS,
-                (limit,),
-            ).fetchall()
+        if status is not None:
+            query = _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_BY_STATE
+            params: tuple[object, ...] = (status.value, limit)
+        elif running_fresh_after is not None:
+            query = _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_WITH_RUNNING_FRESHNESS
+            params = (running_fresh_after, limit)
         else:
-            rows = self._connection.execute(
-                _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_BY_STATE,
-                (status.value, limit),
-            ).fetchall()
+            query = _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS
+            params = (limit,)
 
+        rows = self._connection.execute(query, params).fetchall()
         return [
             PipelineRuntimeStatus.model_validate(
                 _payload_from_row(row, table_name="pipeline_runtime_status")

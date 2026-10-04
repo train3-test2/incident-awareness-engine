@@ -147,6 +147,7 @@ def test_first_cycle_runtime_is_available_through_dashboard_api(
         assert runtime_item["completed_at"] is not None
         assert runtime_item["failed_stage"] is None
         assert runtime_item["has_error"] is False
+        assert runtime_item["is_stale"] is False
         assert runtime_item["execution_id"].strip()
 
         started_at = _parse_api_datetime(runtime_item["started_at"])

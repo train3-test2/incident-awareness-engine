@@ -547,6 +547,149 @@ def test_postgres_pipeline_runtime_repository_lists_operational_latest_state(
             connection.commit()
 
 
+def test_postgres_pipeline_runtime_repository_orders_by_running_freshness(
+    database_url: str,
+) -> None:
+    # Given
+    schema_name = f"pipeline_runtime_freshness_{uuid4().hex}"
+    schema = sql.Identifier(schema_name)
+    fresh_after = datetime(2026, 10, 4, 4, 10, tzinfo=UTC)
+    started_at = fresh_after - timedelta(minutes=20)
+
+    with psycopg.connect(database_url) as connection:
+        try:
+            connection.execute(sql.SQL("CREATE SCHEMA {}").format(schema))
+            connection.execute(sql.SQL("SET search_path TO {}").format(schema))
+            apply_migrations(connection)
+            repository = PipelineRuntimeStatusRepository(connection)
+            fresh_running = _pipeline_running_status(
+                execution_id="execution-active",
+                run_id="RUN-20261004-921",
+                entity_id="WIN-FRESHNESS",
+                started_at=started_at,
+                updated_at=fresh_after + timedelta(seconds=30),
+            )
+            boundary_running = _pipeline_running_status(
+                execution_id="execution-boundary",
+                run_id="RUN-20261004-922",
+                entity_id="WIN-FRESHNESS",
+                started_at=started_at,
+                updated_at=fresh_after,
+            )
+            completed_recent = _pipeline_completed_status(
+                _pipeline_running_status(
+                    execution_id="execution-completed",
+                    run_id="RUN-20261004-923",
+                    entity_id="WIN-FRESHNESS",
+                    started_at=started_at,
+                    updated_at=started_at + timedelta(minutes=1),
+                ),
+                updated_at=fresh_after + timedelta(minutes=1),
+            )
+            failed_old = _pipeline_failed_status(
+                _pipeline_running_status(
+                    execution_id="execution-failed",
+                    run_id="RUN-20261004-924",
+                    entity_id="WIN-FRESHNESS",
+                    started_at=started_at,
+                    updated_at=started_at + timedelta(minutes=1),
+                ),
+                updated_at=fresh_after - timedelta(minutes=5),
+            )
+            stale_running = _pipeline_running_status(
+                execution_id="execution-stale",
+                run_id="RUN-20261004-925",
+                entity_id="WIN-FRESHNESS",
+                started_at=started_at,
+                updated_at=fresh_after - timedelta(milliseconds=1),
+            )
+            stale_running_old = _pipeline_running_status(
+                execution_id="execution-stale-old",
+                run_id="RUN-20261004-926",
+                entity_id="WIN-FRESHNESS",
+                started_at=started_at,
+                updated_at=fresh_after - timedelta(minutes=10),
+            )
+            for status in (
+                stale_running_old,
+                failed_old,
+                fresh_running,
+                stale_running,
+                completed_recent,
+                boundary_running,
+            ):
+                assert repository.save(status) is True
+            connection.commit()
+            snapshot_query = """
+                SELECT run_id, entity_id, execution_id, status, updated_at, payload
+                FROM pipeline_runtime_status
+                ORDER BY run_id, entity_id
+                """
+            rows_before = connection.execute(snapshot_query).fetchall()
+
+            # When
+            recent = repository.list_recent(limit=100, running_fresh_after=fresh_after)
+            limited = repository.list_recent(limit=4, running_fresh_after=fresh_after)
+            limited_without_cutoff = repository.list_recent(limit=4)
+            running_only = repository.list_recent(
+                limit=100,
+                status=PipelineRuntimeState.RUNNING,
+                running_fresh_after=fresh_after,
+            )
+            completed_only = repository.list_recent(
+                limit=100,
+                status=PipelineRuntimeState.COMPLETED,
+                running_fresh_after=fresh_after,
+            )
+            failed_only = repository.list_recent(
+                limit=100,
+                status=PipelineRuntimeState.FAILED,
+                running_fresh_after=fresh_after,
+            )
+            persisted_states = connection.execute(
+                """
+                SELECT status, count(*)
+                FROM pipeline_runtime_status
+                GROUP BY status
+                ORDER BY status
+                """
+            ).fetchall()
+            rows_after = connection.execute(snapshot_query).fetchall()
+
+            # Then
+            assert recent == [
+                fresh_running,
+                boundary_running,
+                completed_recent,
+                failed_old,
+                stale_running,
+                stale_running_old,
+            ]
+            assert limited == [fresh_running, boundary_running, completed_recent, failed_old]
+            assert limited_without_cutoff == [
+                fresh_running,
+                boundary_running,
+                stale_running,
+                stale_running_old,
+            ]
+            assert running_only == [
+                fresh_running,
+                boundary_running,
+                stale_running,
+                stale_running_old,
+            ]
+            assert completed_only == [completed_recent]
+            assert failed_only == [failed_old]
+            assert persisted_states == [("completed", 1), ("failed", 1), ("running", 4)]
+            assert rows_after == rows_before
+            assert repository.get(stale_running.run_id, stale_running.entity_id) == stale_running
+        finally:
+            connection.rollback()
+            connection.execute("SET search_path TO public")
+            connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(schema))
+            connection.commit()
+
+
 def test_postgres_pipeline_runtime_observer_commits_completed_status(
     database_url: str,
 ) -> None:

@@ -70,9 +70,15 @@ class PipelineRuntimeItem(BaseModel):
     completed_at: datetime | None
     failed_stage: PipelineStage | None
     has_error: bool
+    is_stale: bool
 
     @classmethod
-    def from_runtime_status(cls, runtime: PipelineRuntimeStatus) -> "PipelineRuntimeItem":
+    def from_runtime_status(
+        cls,
+        runtime: PipelineRuntimeStatus,
+        *,
+        running_fresh_after: datetime,
+    ) -> "PipelineRuntimeItem":
         return cls(
             execution_id=runtime.execution_id,
             run_id=runtime.run_id,
@@ -88,6 +94,10 @@ class PipelineRuntimeItem(BaseModel):
             completed_at=runtime.completed_at,
             failed_stage=runtime.failed_stage,
             has_error=runtime.has_error,
+            is_stale=(
+                runtime.status is PipelineRuntimeState.RUNNING
+                and runtime.updated_at < running_fresh_after
+            ),
         )
 
 

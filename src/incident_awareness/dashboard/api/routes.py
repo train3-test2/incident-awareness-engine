@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -32,6 +33,10 @@ from incident_awareness.storage.repositories.run_repository import RunRepository
 
 router = APIRouter()
 _OVERVIEW_RECENT_RUN_LIMIT = 5
+# Dashboard Runtime telemetry freshness window for displaying whether a persisted running
+# snapshot has received recent telemetry. It is not a process-liveness, heartbeat,
+# execution, or SLA timeout: an older running snapshot stays running and is marked stale.
+_PIPELINE_RUNTIME_FRESHNESS_WINDOW = timedelta(minutes=5)
 
 
 @router.get("/operations/runtime", response_model=PipelineRuntimeListResponse)
@@ -46,12 +51,20 @@ def list_pipeline_runtime(
         Query(alias="status"),
     ] = None,
 ) -> PipelineRuntimeListResponse:
+    running_fresh_after = _runtime_utc_now() - _PIPELINE_RUNTIME_FRESHNESS_WINDOW
     runtime_statuses = repository.list_recent(
         limit=limit,
         status=runtime_status,
+        running_fresh_after=running_fresh_after,
     )
     return PipelineRuntimeListResponse(
-        items=[PipelineRuntimeItem.from_runtime_status(item) for item in runtime_statuses],
+        items=[
+            PipelineRuntimeItem.from_runtime_status(
+                item,
+                running_fresh_after=running_fresh_after,
+            )
+            for item in runtime_statuses
+        ],
     )
 
 
@@ -167,3 +180,7 @@ def get_historical_decision(
         )
 
     return HistoricalDecisionResponse.from_read_model(historical)
+
+
+def _runtime_utc_now() -> datetime:
+    return datetime.now(UTC)
