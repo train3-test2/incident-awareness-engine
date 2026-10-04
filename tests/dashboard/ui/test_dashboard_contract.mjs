@@ -242,6 +242,58 @@ test("Run List error is a generalized query failure", () => {
     assert.doesNotMatch(state.message, /Pipeline failed|Run failed/i);
 });
 
+test("Overview success is preserved when Run List fails", () => {
+    // Given
+    const overviewLoading = resolveOverviewQueryState(null, { kind: "loading" });
+    const runListLoading = resolveRunListQueryState(null, { kind: "loading" });
+    const overviewPayload = {
+        total_runs: 2,
+        recent_runs: [{ run_id: "RUN-2" }],
+    };
+
+    // When
+    const overviewState = resolveOverviewQueryState(overviewLoading, {
+        kind: "success",
+        payload: overviewPayload,
+    });
+    const runListState = resolveRunListQueryState(runListLoading, { kind: "error" });
+
+    // Then
+    assert.equal(overviewState.queryState, "success");
+    assert.equal(overviewState.totalRuns, 2);
+    assert.strictEqual(overviewState.recentRuns, overviewPayload.recent_runs);
+    assert.deepEqual(overviewState.recentRuns, [{ run_id: "RUN-2" }]);
+    assert.equal(runListState.queryState, "error");
+    assert.deepEqual(runListState.items, []);
+});
+
+test("Run List success is preserved when Overview fails", () => {
+    // Given
+    const overviewLoading = resolveOverviewQueryState(null, { kind: "loading" });
+    const runListLoading = resolveRunListQueryState(null, { kind: "loading" });
+    const runListPayload = {
+        runs: [
+            { run_id: "RUN-2" },
+            { run_id: "RUN-1" },
+        ],
+    };
+
+    // When
+    const overviewState = resolveOverviewQueryState(overviewLoading, { kind: "error" });
+    const runListState = resolveRunListQueryState(runListLoading, {
+        kind: "success",
+        payload: runListPayload,
+    });
+
+    // Then
+    assert.equal(overviewState.queryState, "error");
+    assert.equal(overviewState.totalRuns, null);
+    assert.deepEqual(overviewState.recentRuns, []);
+    assert.equal(runListState.queryState, "success");
+    assert.strictEqual(runListState.items, runListPayload.runs);
+    assert.deepEqual(runListState.items.map((run) => run.run_id), ["RUN-2", "RUN-1"]);
+});
+
 test("Run List query state rejects malformed results and payloads", () => {
     // Given
     const previousState = resolveRunListQueryState(null, { kind: "loading" });
