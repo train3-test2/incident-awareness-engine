@@ -126,6 +126,7 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 - `src/incident_awareness/pipeline/r1_evidence.py`의 독립 R1 batch pipeline API 구현
 - Pilot·수동 실행에서 Event ID로 지정한 anchor/terminal과 동결된 policy를 전달하는 명시적 lineage input 구조
 - correlation 필수 GUID 누락 시 Evidence를 생성하지 않는 fail-closed 처리
+- Run별 extraction summary에 fail-closed 진단과 lineage/policy provenance 기록
 - lineage `event_ids`의 anchor→terminal 순서와 network follow-on `event_ids`의 EID 1→EID 3 순서
 - 결정적 `evidence_id`: 두 후보 모두 정렬한 Event ID, `run_id`, `evidence_type`, `extractor_version`을 UUIDv5 identity에 사용하고, lineage deviation은 policy의 `policy_id`, `version`, `config_hash`도 포함
 
@@ -135,11 +136,27 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 - 실제 Pilot에서 `anchor_event`와 `terminal_event`를 선택해 전달할 주체와 기준
 - 반복 평가용 anchor/terminal selector 규칙
 - R1 분석 대상 Event batch의 window 계약
-- GUID 누락을 별도로 진단하는 방식
 - 실제 R1 telemetry 기반 end-to-end 검증
 - R1 Fusion profile과 Evidence 소비 규칙
 
-## 5. 미확정 사항
+## 5. Run별 candidate Evidence artifact
+
+`run_and_write_r1_evidence_artifacts()`는 명시적인 `run_id`, NormalizedEvent batch, `R1LineageInput`, Run 전용 출력 디렉터리를 받아 다음 두 파일을 생성한다.
+
+```text
+<run-output-directory>/
+├── r1_evidence.jsonl
+└── r1_extraction_summary.json
+```
+
+- `r1_evidence.jsonl`: 공통 `Evidence` 모델의 JSON 직렬화를 한 줄에 한 건씩 기록하는 Role1/Role5 후속 연결용 artifact다. 실제 Fusion scorer, Weighted Rule, Static ML, 평가기 연결은 별도 후속 작업이다. 원본 telemetry, `source_event_id`, `raw_ref`는 복제하지 않으며 `event_ids → NormalizedEvent.event_id → raw_ref/source_event_id` provenance 경계를 유지한다.
+- `r1_extraction_summary.json`: `run_id`, `extractor_version`, 입력 Event 수, Evidence 수, extraction 상태, 진단, lineage/policy provenance, 오류 정보, Evidence 파일 SHA-256을 기록한다. upstream telemetry completeness 계약이 전달되지 않았으므로 `telemetry_completeness = not_provided`로 기록한다. 각 `lineage_inputs` 항목에는 `anchor_event_id`, `terminal_event_id`, `policy_id`, `policy_version`, `policy_config_hash`를 기록하고 이 필드 순으로 정렬한다. 전달된 동일 항목은 제거하지 않는다. Event iterable을 완전히 materialize하지 못하면 `input_event_count = null`, lineage input iterable을 완전히 materialize하지 못하면 `lineage_inputs = null`로 기록하며 부분 소비 개수를 정상 입력 provenance로 사용하지 않는다.
+
+downstream에서 artifact를 소비하기 전에는 summary의 `status = completed`, Evidence JSONL SHA-256 일치, `evidence_count` 일치, Evidence의 `run_id` 일치를 확인해야 한다. `status = completed`와 `evidence_count = 0`은 extractor 호출이 예외 없이 종료됐고 생성된 Evidence가 없었다는 뜻일 뿐 detector miss나 공격 부재로 해석하지 않는다. `telemetry_completeness = not_provided`이고, `lineage_inputs = []`일 수 있으며, fail-closed 조건도 존재하기 때문이다. `diagnostics = []`는 추가 fail-closed 진단이 기록되지 않았다는 의미일 뿐이며 실제 lineage 평가 여부와 no-match 여부는 `lineage_inputs`와 함께 해석한다. 특히 `lineage_inputs = []`이면 R1 lineage와 terminal 기반 network 조건이 평가되지 않았을 수 있다. 진단 값이 있으면 Evidence 생성에 필요한 입력 또는 계보 조건이 불완전해 fail-closed된 사유다. 현재 진단 값은 `missing_process_guid`, `truncated_lineage`, `lineage_cycle`, `duplicate_process_guid`, `missing_or_blank_process_name`이다. 이 진단은 공격 여부 판정이나 Raw validator 상태의 Semantic Evidence 변환이 아니다. `status = failed`는 extraction이 예외로 끝났다는 뜻이며 `evidence_count`와 Evidence 파일 SHA-256은 `null`이다. 자유형 예외 정보는 `diagnostics`에 넣지 않고 `error_type`과 `error_message`에 기록하며 completed에서는 두 필드가 `null`이다. 실패 summary를 기록한 뒤 원래 예외를 다시 발생시키므로 호출자가 실패를 정상 0건으로 오해할 수 없다. Evidence 0건과 completed·failed 상태 모두 upstream telemetry가 완전하다거나 공격 행위가 없다는 의미가 아니다.
+
+파일은 기존 artifact를 덮어쓰지 않으며 summary를 마지막 완료 표식으로 게시한다. 동일한 `output_directory`는 재사용하거나 덮어쓰지 않는다. failed Run을 재시도할 때는 새로운 빈 `output_directory`를 명시적으로 사용하며, 이번 구현은 기존 artifact 자동 삭제, 자동 overwrite, 자동 attempt 번호 생성을 하지 않는다. 실행 시각처럼 재실행마다 달라지는 값은 기록하지 않는다. 현재 API는 Pilot·수동 실행의 Event ID 직접 지정 방식만 지원하며 production runner/CLI 연결, 실제 telemetry E2E, 반복 평가용 selector는 후속 작업이다.
+
+## 6. 미확정 사항
 
 | 항목 | 현재 상태 | 확정에 필요한 근거 |
 | --- | --- | --- |

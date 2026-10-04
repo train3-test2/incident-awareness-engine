@@ -14,6 +14,13 @@ _REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION = "remote_session_process_lineage_devi
 
 LineageStatus = Literal["complete", "truncated", "cycle"]
 LineageFailureReason = Literal["missing_parent", "duplicate_process_guid"]
+R1ExtractionDiagnostic = Literal[
+    "missing_process_guid",
+    "truncated_lineage",
+    "lineage_cycle",
+    "duplicate_process_guid",
+    "missing_or_blank_process_name",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +58,14 @@ class _LineageCorrelation:
     failure_reason: LineageFailureReason | None = None
     missing_parent_process_guid: str | None = None
     duplicate_process_guid: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class R1LineageExtractionResult:
+    """기존 lineage Evidence 결과와 fail-closed 진단을 함께 반환한다."""
+
+    evidences: tuple[Evidence, ...]
+    diagnostics: tuple[R1ExtractionDiagnostic, ...]
 
 
 def extract_remote_process_network_follow_on(
@@ -112,65 +127,102 @@ def extract_remote_session_process_lineage_deviation(
     approved_policy: ApprovedLineagePolicy,
 ) -> list[Evidence]:
     """동결된 정책과 다른 complete 프로세스 계보 Evidence를 추출한다."""
+    result = extract_remote_session_process_lineage_deviation_with_diagnostics(
+        events,
+        anchor_event,
+        terminal_event,
+        approved_policy,
+    )
+    return list(result.evidences)
+
+
+def extract_remote_session_process_lineage_deviation_with_diagnostics(
+    events: Iterable[NormalizedEvent],
+    anchor_event: NormalizedEvent,
+    terminal_event: NormalizedEvent,
+    approved_policy: ApprovedLineagePolicy,
+) -> R1LineageExtractionResult:
+    """lineage Evidence와 공격 판정이 아닌 fail-closed 사유를 반환한다."""
     if not isinstance(anchor_event, NormalizedEvent) or not isinstance(
         terminal_event,
         NormalizedEvent,
     ):
-        return []
+        return R1LineageExtractionResult(evidences=(), diagnostics=())
     if not isinstance(approved_policy, ApprovedLineagePolicy):
         raise TypeError("approved_policy must be an ApprovedLineagePolicy")
 
     event_list = tuple(events)
     if not all(isinstance(event, NormalizedEvent) for event in event_list):
-        return []
+        return R1LineageExtractionResult(evidences=(), diagnostics=())
     if not _is_eligible_process_event(anchor_event) or not _is_eligible_process_event(
         terminal_event
     ):
-        return []
+        diagnostics: tuple[R1ExtractionDiagnostic, ...] = ()
+        if (
+            _has_expected_process_event_contract(anchor_event)
+            and _process_guid(anchor_event) is None
+        ) or (
+            _has_expected_process_event_contract(terminal_event)
+            and _process_guid(terminal_event) is None
+        ):
+            diagnostics = ("missing_process_guid",)
+        return R1LineageExtractionResult(evidences=(), diagnostics=diagnostics)
     if anchor_event.run_id != terminal_event.run_id:
-        return []
+        return R1LineageExtractionResult(evidences=(), diagnostics=())
     if anchor_event.host_id != terminal_event.host_id:
-        return []
+        return R1LineageExtractionResult(evidences=(), diagnostics=())
 
     correlation = _reconstruct_process_lineage(event_list, anchor_event, terminal_event)
     if correlation.status != "complete":
-        return []
+        if correlation.status == "cycle":
+            diagnostic: R1ExtractionDiagnostic = "lineage_cycle"
+        elif correlation.failure_reason == "duplicate_process_guid":
+            diagnostic = "duplicate_process_guid"
+        else:
+            diagnostic = "truncated_lineage"
+        return R1LineageExtractionResult(evidences=(), diagnostics=(diagnostic,))
 
     observed_lineage = _canonical_process_lineage(correlation.events)
     if observed_lineage is None:
-        return []
+        return R1LineageExtractionResult(
+            evidences=(),
+            diagnostics=("missing_or_blank_process_name",),
+        )
 
     approved_lineage = tuple(name.casefold() for name in approved_policy.approved_lineage)
     if observed_lineage == approved_lineage:
-        return []
+        return R1LineageExtractionResult(evidences=(), diagnostics=())
 
     event_ids = [event.event_id for event in correlation.events]
     timestamp = max(event.timestamp for event in correlation.events)
 
-    return [
-        Evidence.model_validate(
-            {
-                "evidence_id": _deterministic_lineage_deviation_id(
-                    run_id=terminal_event.run_id,
-                    event_ids=event_ids,
-                    approved_policy=approved_policy,
-                ),
-                "run_id": terminal_event.run_id,
-                "timestamp": timestamp,
-                "entity_id": terminal_event.host_id,
-                "evidence_type": _REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION,
-                "event_ids": event_ids,
-                "derived_from_source_layer": "raw_telemetry",
-                "feature_channel_group": "fusion_feature",
-                "extractor_version": EXTRACTOR_VERSION,
-                "features": {
-                    "policy_id": approved_policy.policy_id,
-                    "version": approved_policy.version,
-                    "config_hash": approved_policy.config_hash,
-                },
-            }
-        )
-    ]
+    return R1LineageExtractionResult(
+        evidences=(
+            Evidence.model_validate(
+                {
+                    "evidence_id": _deterministic_lineage_deviation_id(
+                        run_id=terminal_event.run_id,
+                        event_ids=event_ids,
+                        approved_policy=approved_policy,
+                    ),
+                    "run_id": terminal_event.run_id,
+                    "timestamp": timestamp,
+                    "entity_id": terminal_event.host_id,
+                    "evidence_type": _REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION,
+                    "event_ids": event_ids,
+                    "derived_from_source_layer": "raw_telemetry",
+                    "feature_channel_group": "fusion_feature",
+                    "extractor_version": EXTRACTOR_VERSION,
+                    "features": {
+                        "policy_id": approved_policy.policy_id,
+                        "version": approved_policy.version,
+                        "config_hash": approved_policy.config_hash,
+                    },
+                }
+            ),
+        ),
+        diagnostics=(),
+    )
 
 
 def _has_expected_event_contract(
@@ -316,11 +368,14 @@ def _is_parent_edge(*, child: NormalizedEvent, parent: NormalizedEvent) -> bool:
 
 
 def _is_eligible_process_event(event: NormalizedEvent) -> bool:
+    return _has_expected_process_event_contract(event) and _process_guid(event) is not None
+
+
+def _has_expected_process_event_contract(event: NormalizedEvent) -> bool:
     return (
         event.source == "sysmon"
         and event.source_layer == "raw_telemetry"
         and event.event_type == "process_create"
-        and _process_guid(event) is not None
     )
 
 
