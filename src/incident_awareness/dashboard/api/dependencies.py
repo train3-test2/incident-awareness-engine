@@ -8,6 +8,9 @@ from psycopg import Connection
 from incident_awareness.dashboard.decision_read_model import DashboardDecisionReader
 from incident_awareness.storage.config import DatabaseConfig
 from incident_awareness.storage.repositories.event_repository import EventRepository
+from incident_awareness.storage.repositories.pipeline_runtime_repository import (
+    PipelineRuntimeStatusRepository,
+)
 from incident_awareness.storage.repositories.result_repository import (
     DecisionRepository,
     DecisionRuntimeSnapshotRepository,
@@ -37,6 +40,12 @@ def get_event_repository(
     connection: Annotated[Connection[tuple[object, ...]], Depends(get_database_connection)],
 ) -> EventRepository:
     return EventRepository(connection)
+
+
+def get_pipeline_runtime_repository(
+    connection: Annotated[Connection[tuple[object, ...]], Depends(get_database_connection)],
+) -> PipelineRuntimeStatusRepository:
+    return PipelineRuntimeStatusRepository(connection)
 
 
 def get_dashboard_decision_reader(

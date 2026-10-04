@@ -2,9 +2,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from incident_awareness.common.models.pipeline_runtime import PipelineRuntimeState
 from incident_awareness.dashboard.api.dependencies import (
     get_dashboard_decision_reader,
     get_event_repository,
+    get_pipeline_runtime_repository,
     get_run_repository,
 )
 from incident_awareness.dashboard.api.models import (
@@ -14,6 +16,8 @@ from incident_awareness.dashboard.api.models import (
     EventTimelineResponse,
     HistoricalDecisionResponse,
     OverviewResponse,
+    PipelineRuntimeItem,
+    PipelineRuntimeListResponse,
     RunDetailResponse,
     RunListItem,
     RunListResponse,
@@ -21,10 +25,34 @@ from incident_awareness.dashboard.api.models import (
 from incident_awareness.dashboard.api.service import get_run_detail
 from incident_awareness.dashboard.decision_read_model import DashboardDecisionReader
 from incident_awareness.storage.repositories.event_repository import EventRepository
+from incident_awareness.storage.repositories.pipeline_runtime_repository import (
+    PipelineRuntimeStatusRepository,
+)
 from incident_awareness.storage.repositories.run_repository import RunRepository
 
 router = APIRouter()
 _OVERVIEW_RECENT_RUN_LIMIT = 5
+
+
+@router.get("/operations/runtime", response_model=PipelineRuntimeListResponse)
+def list_pipeline_runtime(
+    repository: Annotated[
+        PipelineRuntimeStatusRepository,
+        Depends(get_pipeline_runtime_repository),
+    ],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    runtime_status: Annotated[
+        PipelineRuntimeState | None,
+        Query(alias="status"),
+    ] = None,
+) -> PipelineRuntimeListResponse:
+    runtime_statuses = repository.list_recent(
+        limit=limit,
+        status=runtime_status,
+    )
+    return PipelineRuntimeListResponse(
+        items=[PipelineRuntimeItem.from_runtime_status(item) for item in runtime_statuses],
+    )
 
 
 @router.get("/overview", response_model=OverviewResponse)
