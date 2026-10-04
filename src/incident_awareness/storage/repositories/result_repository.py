@@ -4,6 +4,7 @@ from typing import Protocol
 from psycopg.types.json import Jsonb
 
 from incident_awareness.common.models.fusion import FusionResult, FusionStoppingTrace
+from incident_awareness.common.models.fusion_runtime_config import FusionRuntimeConfigSnapshot
 from incident_awareness.common.models.result import DecisionResult, DetectionResult
 from incident_awareness.common.models.runtime_snapshot import DecisionRuntimeSnapshot
 
@@ -55,6 +56,25 @@ ON CONFLICT (run_id, entity_id) DO UPDATE SET
 _SELECT_FUSION_STOPPING_TRACE_PAYLOAD = """
 SELECT payload
 FROM fusion_stopping_traces
+WHERE run_id = %s AND entity_id = %s
+"""
+
+_UPSERT_FUSION_RUNTIME_CONFIG_SNAPSHOT = """
+INSERT INTO fusion_runtime_config_snapshots (
+    run_id,
+    entity_id,
+    config_version,
+    payload
+)
+VALUES (%s, %s, %s, %s)
+ON CONFLICT (run_id, entity_id) DO UPDATE SET
+    config_version = EXCLUDED.config_version,
+    payload = EXCLUDED.payload
+"""
+
+_SELECT_FUSION_RUNTIME_CONFIG_SNAPSHOT_PAYLOAD = """
+SELECT payload
+FROM fusion_runtime_config_snapshots
 WHERE run_id = %s AND entity_id = %s
 """
 
@@ -220,6 +240,40 @@ class FusionStoppingTraceRepository:
 
         return FusionStoppingTrace.model_validate(
             _payload_from_row(row, table_name="fusion_stopping_traces")
+        )
+
+
+class FusionRuntimeConfigSnapshotRepository:
+    """Store and restore the latest Fusion Runtime configuration snapshot."""
+
+    def __init__(self, connection: _Connection) -> None:
+        self._connection = connection
+
+    def save(self, snapshot: FusionRuntimeConfigSnapshot) -> None:
+        self._connection.execute(
+            _UPSERT_FUSION_RUNTIME_CONFIG_SNAPSHOT,
+            (
+                snapshot.run_id,
+                snapshot.entity_id,
+                snapshot.config_version,
+                Jsonb(snapshot.model_dump(mode="json")),
+            ),
+        )
+
+    def get(
+        self,
+        run_id: str,
+        entity_id: str,
+    ) -> FusionRuntimeConfigSnapshot | None:
+        row = self._connection.execute(
+            _SELECT_FUSION_RUNTIME_CONFIG_SNAPSHOT_PAYLOAD,
+            (run_id, entity_id),
+        ).fetchone()
+        if row is None:
+            return None
+
+        return FusionRuntimeConfigSnapshot.model_validate(
+            _payload_from_row(row, table_name="fusion_runtime_config_snapshots")
         )
 
 
