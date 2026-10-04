@@ -203,14 +203,14 @@ def test_operations_script_renders_successful_runtime_items_into_list() -> None:
     # When
     script = client.get("/dashboard-assets/operations.js").text
     success_body = _block_body(_block_body(script, "async function pollRuntime() {"), "try {")
-    render_body = _block_body(script, "function renderRuntimeItems(items) {")
+    render_body = _block_body(script, "function renderRuntimeItems(items, telemetryAvailable) {")
 
     # Then
     assert 'document.getElementById("runtime-list")' in script
-    assert success_body.index("renderRuntimeItems(items);") < success_body.index(
+    assert success_body.index("renderRuntimeItems(items, true);") < success_body.index(
         "latestRuntimeItems = items;"
     )
-    assert "items.map(createRuntimeCard)" in render_body
+    assert "createRuntimeCard(runtime, telemetryAvailable)" in render_body
     assert "runtimeList.replaceChildren(...cards);" in render_body
 
 
@@ -224,13 +224,62 @@ def test_operations_script_keeps_last_runtime_list_on_error() -> None:
 
     # Then
     assert "updateRuntimeStatus(ERROR_MESSAGE);" in error_body
-    for list_change in (
-        "latestRuntimeItems",
-        "renderRuntimeItems",
-        "replaceChildren",
-        "runtimeList",
-    ):
-        assert list_change not in error_body
+    assert "renderRuntimeItems(latestRuntimeItems, false);" in error_body
+    assert "latestRuntimeItems =" not in error_body
+    assert "replaceChildren" not in error_body
+
+
+def test_operations_script_times_out_runtime_requests_and_keeps_polling() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/operations.js").text
+    fetch_body = _block_body(script, "async function fetchRuntimeItems() {")
+    fetch_cleanup = _block_body(fetch_body, "} finally {")
+    poll_cleanup = _block_body(_block_body(script, "async function pollRuntime() {"), "} finally {")
+
+    # Then
+    assert "const RUNTIME_REQUEST_TIMEOUT_MS = 10000;" in script
+    assert "const POLL_INTERVAL_MS = 5000;" in script
+    assert "const controller = new AbortController();" in fetch_body
+    assert "setTimeout(() => controller.abort(), RUNTIME_REQUEST_TIMEOUT_MS)" in fetch_body
+    assert "signal: controller.signal" in fetch_body
+    assert "POLL_INTERVAL_MS" not in fetch_body
+    assert "clearTimeout(timeoutId);" in fetch_cleanup
+    assert "setTimeout(pollRuntime, POLL_INTERVAL_MS);" in poll_cleanup
+    assert "setInterval(" not in script
+
+
+def test_operations_script_marks_retained_running_cards_as_telemetry_unavailable() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/operations.js").text
+    presentation_body = _block_body(
+        script, "function getRuntimeStatePresentation(runtime, telemetryAvailable) {"
+    )
+    running_body = _block_body(presentation_body, 'if (runtime.status === "running") {')
+    unavailable_body = _block_body(running_body, "if (!telemetryAvailable) {")
+
+    # Then
+    assert running_body.index("if (!telemetryAvailable) {") < running_body.index(
+        "if (runtime.is_stale === true) {"
+    )
+    assert 'modifiers: ["running", "telemetry-unavailable"]' in unavailable_body
+    assert "statusLabel: RUNNING_STATUS_LABEL" in unavailable_body
+    assert 'telemetryLabel: "확인 불가 (조회 실패)"' in unavailable_body
+    assert 'livenessLabel: "확인 불가"' in unavailable_body
+    for current_freshness in ("최근 갱신", "오래됨"):
+        assert current_freshness not in unavailable_body
+    for pipeline_failure in ('"failed"', 'statusLabel: "실패"', "stopped", "dead", "timeout"):
+        assert pipeline_failure not in unavailable_body
+    for terminal_status in ("completed", "failed"):
+        terminal_body = _block_body(
+            presentation_body, f'if (runtime.status === "{terminal_status}") {{'
+        )
+        assert "telemetryAvailable" not in terminal_body
 
 
 def test_operations_script_builds_runtime_cards_with_dom_api() -> None:
@@ -240,7 +289,7 @@ def test_operations_script_builds_runtime_cards_with_dom_api() -> None:
     # When
     script = client.get("/dashboard-assets/operations.js").text
     field_body = _block_body(script, "function createField(label, value) {")
-    card_body = _block_body(script, "function createRuntimeCard(runtime) {")
+    card_body = _block_body(script, "function createRuntimeCard(runtime, telemetryAvailable) {")
 
     # Then
     assert "document.createElement(" in field_body
@@ -268,7 +317,9 @@ def test_operations_script_presents_stale_running_without_failure_semantics() ->
 
     # When
     script = client.get("/dashboard-assets/operations.js").text
-    presentation_body = _block_body(script, "function getRuntimeStatePresentation(runtime) {")
+    presentation_body = _block_body(
+        script, "function getRuntimeStatePresentation(runtime, telemetryAvailable) {"
+    )
     stale_body = _block_body(presentation_body, "if (runtime.is_stale === true) {")
 
     # Then
@@ -288,7 +339,7 @@ def test_operations_script_renders_batch_progress_fields() -> None:
 
     # When
     script = client.get("/dashboard-assets/operations.js").text
-    card_body = _block_body(script, "function createRuntimeCard(runtime) {")
+    card_body = _block_body(script, "function createRuntimeCard(runtime, telemetryAvailable) {")
 
     # Then
     for progress_field in (

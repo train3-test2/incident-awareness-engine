@@ -77,6 +77,11 @@ body {
     border-left-color: var(--stale-color);
 }
 
+.runtime-card--telemetry-unavailable {
+    border-left-style: dashed;
+    border-left-color: var(--muted-text-color);
+}
+
 .runtime-card--completed {
     border-left-color: var(--completed-color);
 }
