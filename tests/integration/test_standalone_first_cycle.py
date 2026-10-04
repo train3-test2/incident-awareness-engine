@@ -69,6 +69,8 @@ def test_generated_standalone_artifacts_flow_through_pipeline_and_postgres(
             assert _table_count(connection, "runs") == 1
             assert _table_count(connection, "events") == 3
             assert _table_count(connection, "fusion_results") == 1
+            assert _table_count(connection, "fusion_stopping_traces") == 1
+            assert _table_count(connection, "fusion_runtime_config_snapshots") == 1
             assert _table_count(connection, "detection_results") == 1
             assert _table_count(connection, "decisions") == 1
             assert summary.fusion_status == "detected"
@@ -86,9 +88,22 @@ def _table_count(connection: psycopg.Connection[tuple[object, ...]], table_name:
 
 
 def _require_first_cycle_schema(connection: psycopg.Connection[tuple[object, ...]]) -> None:
-    row = connection.execute("SELECT to_regclass('public.runs')").fetchone()
-    if row is None or row[0] is None:
-        pytest.skip("First Cycle migration이 적용된 PostgreSQL에서만 실행합니다.")
+    required_tables = (
+        "runs",
+        "fusion_stopping_traces",
+        "fusion_runtime_config_snapshots",
+    )
+    missing_tables = [
+        table_name
+        for table_name in required_tables
+        if connection.execute("SELECT to_regclass(%s)", (f"public.{table_name}",)).fetchone()[0]
+        is None
+    ]
+    if missing_tables:
+        pytest.skip(
+            "최신 First Cycle migration이 적용된 PostgreSQL에서만 실행합니다: "
+            + ", ".join(missing_tables)
+        )
 
 
 def _write_sysmon_jsonl(path: Path) -> None:

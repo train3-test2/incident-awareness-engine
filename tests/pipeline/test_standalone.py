@@ -2,9 +2,11 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import incident_awareness.pipeline.standalone as standalone_module
 from incident_awareness.common.models.run import RunType
 from incident_awareness.pipeline.standalone import (
     DEFAULT_STANDALONE_DECISION_CONFIG_VERSION,
@@ -15,6 +17,7 @@ from incident_awareness.pipeline.standalone import (
     build_run_metadata_from_sysmon_jsonl,
     build_sysmon_artifacts_from_jsonl,
     prepare_standalone_run,
+    run_prepared_standalone_run,
     select_standalone_execution_config,
     validate_standalone_sysmon_jsonl,
 )
@@ -184,6 +187,69 @@ def test_atomically_reserves_next_available_standalone_output_directory(tmp_path
     assert reservation.decision_id == "DEC-RUN-20261003-002"
     assert reservation.output_dir == output_root / reservation.run_id
     assert reservation.output_dir.is_dir()
+
+
+def test_standalone_run_persists_fusion_trace_and_runtime_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = SimpleNamespace(entity_id="WIN-01")
+    prepared = SimpleNamespace(inputs=inputs)
+    artifacts = SimpleNamespace(run_metadata=SimpleNamespace(run_id="RUN-20261003-001"))
+    normalized_artifacts = object()
+    fusion_result = object()
+    stopping_trace = object()
+    runtime_config_snapshot = object()
+    fast_result = object()
+    decision_result = object()
+    summary = object()
+    persisted: dict[str, object] = {}
+
+    monkeypatch.setattr(standalone_module, "load_s0_pipeline_artifacts", lambda _: artifacts)
+    monkeypatch.setattr(
+        standalone_module,
+        "normalize_sysmon_and_extract_evidence",
+        lambda _: normalized_artifacts,
+    )
+    monkeypatch.setattr(
+        standalone_module,
+        "run_s0_fusion_with_trace",
+        lambda *_: SimpleNamespace(
+            fusion_result=fusion_result,
+            stopping_trace=stopping_trace,
+            runtime_config_snapshot=runtime_config_snapshot,
+        ),
+    )
+    monkeypatch.setattr(
+        standalone_module,
+        "build_default_standalone_fast_detection",
+        lambda **_: fast_result,
+    )
+    monkeypatch.setattr(
+        standalone_module,
+        "combine_parallel_decision",
+        lambda *_: decision_result,
+    )
+    monkeypatch.setattr(
+        standalone_module,
+        "persist_s0_results",
+        lambda *args, **kwargs: persisted.update(args=args, connection=kwargs["connection"]),
+    )
+    monkeypatch.setattr(standalone_module, "build_execution_summary", lambda *_: summary)
+
+    connection = object()
+    assert run_prepared_standalone_run(prepared, connection=connection) is summary
+    assert persisted == {
+        "args": (
+            artifacts,
+            normalized_artifacts,
+            fusion_result,
+            stopping_trace,
+            runtime_config_snapshot,
+            fast_result,
+            decision_result,
+        ),
+        "connection": connection,
+    }
 
 
 class _UnusedIdentifierConnection:

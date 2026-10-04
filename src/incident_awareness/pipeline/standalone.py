@@ -29,7 +29,7 @@ from incident_awareness.integration.fast_hit_handoff import (
 from incident_awareness.normalization.sysmon import SysmonNormalizationContext
 from incident_awareness.pipeline.cli import PipelineInputs
 from incident_awareness.pipeline.event_evidence import normalize_sysmon_and_extract_evidence
-from incident_awareness.pipeline.fusion import run_s0_fusion
+from incident_awareness.pipeline.fusion import run_s0_fusion_with_trace
 from incident_awareness.pipeline.hybrid import combine_parallel_decision
 from incident_awareness.pipeline.persistence import DatabaseConnection, persist_s0_results
 from incident_awareness.pipeline.reporting import PipelineExecutionSummary, build_execution_summary
@@ -228,7 +228,8 @@ def run_prepared_standalone_run(
     """Run the existing First Cycle stages with standalone Fast semantics."""
     artifacts = load_s0_pipeline_artifacts(prepared.inputs)
     normalized_artifacts = normalize_sysmon_and_extract_evidence(artifacts)
-    fusion_result = run_s0_fusion(prepared.inputs, artifacts, normalized_artifacts)
+    fusion_output = run_s0_fusion_with_trace(prepared.inputs, artifacts, normalized_artifacts)
+    fusion_result = fusion_output.fusion_result
     fast_result = build_default_standalone_fast_detection(
         run_id=artifacts.run_metadata.run_id,
         entity_id=prepared.inputs.entity_id,
@@ -242,6 +243,8 @@ def run_prepared_standalone_run(
         artifacts,
         normalized_artifacts,
         fusion_result,
+        fusion_output.stopping_trace,
+        fusion_output.runtime_config_snapshot,
         fast_result,
         decision_result,
         connection=connection,
