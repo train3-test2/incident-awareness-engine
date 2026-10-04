@@ -84,6 +84,33 @@ def test_first_cycle_task_overrides_supply_only_run_specific_inputs() -> None:
     }
 
 
+def test_dashboard_task_definition_contract() -> None:
+    task_definition = json.loads(
+        (ECS_DIRECTORY / "task-definition.dashboard.json").read_text(encoding="utf-8")
+    )
+
+    assert task_definition["family"] == "incident-awareness-engine-dashboard"
+    assert task_definition["requiresCompatibilities"] == ["FARGATE"]
+    assert task_definition["networkMode"] == "awsvpc"
+    assert task_definition["cpu"] == "256"
+    assert task_definition["memory"] == "512"
+    assert task_definition["executionRoleArn"].endswith(":role/ecsTaskExecutionRole")
+    assert task_definition["runtimePlatform"] == {
+        "cpuArchitecture": "X86_64",
+        "operatingSystemFamily": "LINUX",
+    }
+
+    container = task_definition["containerDefinitions"][0]
+    assert container["name"] == "incident-awareness-engine-dashboard"
+    assert container["image"] == "IMAGE_URI"
+    assert container["essential"] is True
+    assert container["logConfiguration"]["options"] == {
+        "awslogs-group": "/ecs/incident-awareness-engine-dev",
+        "awslogs-region": "ap-northeast-2",
+        "awslogs-stream-prefix": "ecs",
+    }
+
+
 def test_standalone_task_override_selects_the_jsonl_only_entrypoint() -> None:
     overrides = json.loads(
         (ECS_DIRECTORY / "first-cycle-standalone-task-overrides.example.json").read_text(
