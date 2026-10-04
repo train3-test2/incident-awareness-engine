@@ -104,6 +104,17 @@ def test_dashboard_task_definition_contract() -> None:
     assert container["name"] == "incident-awareness-engine-dashboard"
     assert container["image"] == "IMAGE_URI"
     assert container["essential"] is True
+    assert container["command"] == [
+        "uvicorn",
+        "incident_awareness.dashboard.api.app:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+    ]
+    assert container["portMappings"] == [
+        {"containerPort": 8080, "protocol": "tcp"},
+    ]
     assert container["logConfiguration"]["options"] == {
         "awslogs-group": "/ecs/incident-awareness-engine-dev",
         "awslogs-region": "ap-northeast-2",

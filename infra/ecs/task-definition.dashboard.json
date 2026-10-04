@@ -14,6 +14,20 @@
       "name": "incident-awareness-engine-dashboard",
       "image": "IMAGE_URI",
       "essential": true,
+      "command": [
+        "uvicorn",
+        "incident_awareness.dashboard.api.app:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080"
+      ],
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
