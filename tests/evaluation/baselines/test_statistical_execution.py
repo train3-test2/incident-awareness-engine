@@ -38,12 +38,19 @@ def config():
 
 
 def test_json_roundtrip_preserves_results_and_historical_reference(source, config):
-    result = run_statistical_comparison(source, config)
+    # Given
+    input_source = source
+    settings = config
+
+    # When
+    result = run_statistical_comparison(input_source, settings)
     stored = json.loads(json.dumps(result, allow_nan=False))
     rerun = run_statistical_comparison(
         StatisticalInput.model_validate(stored["input"]),
         StatisticalConfig.model_validate(stored["config"]),
     )
+
+    # Then
     assert rerun == result
     assert [p["score"] for p in result["output"]] == [0.5, 0.25]
     assert [p["input_prefix_length"] for p in result["output"]] == [1, 2]
@@ -52,6 +59,7 @@ def test_json_roundtrip_preserves_results_and_historical_reference(source, confi
 
 
 def test_cusum_uses_validated_parameters(source, config):
+    # Given
     settings = StatisticalConfig.model_validate(
         config.model_dump()
         | {
@@ -61,14 +69,24 @@ def test_cusum_uses_validated_parameters(source, config):
             "scale": 2.0,
         }
     )
+    # When
     result = run_statistical_comparison(source, settings)
+
+    # Then
     assert [p["score"] for p in result["output"]] == [0.5, 0.5]
 
 
 def test_input_and_config_changes_have_separate_hashes(source, config):
+    # Given
+    other_source = source.model_copy(update={"entity_id": "HOST-02"})
+    other_config = config.model_copy(update={"alpha": 0.25})
+
+    # When
     original = run_statistical_comparison(source, config)
-    other = run_statistical_comparison(source.model_copy(update={"entity_id": "HOST-02"}), config)
-    changed = run_statistical_comparison(source, config.model_copy(update={"alpha": 0.25}))
+    other = run_statistical_comparison(other_source, config)
+    changed = run_statistical_comparison(source, other_config)
+
+    # Then
     assert original["input_sha256"] != other["input_sha256"]
     assert original["config_sha256"] == other["config_sha256"]
     assert original["input_sha256"] == changed["input_sha256"]
@@ -76,36 +94,66 @@ def test_input_and_config_changes_have_separate_hashes(source, config):
 
 
 def test_evidence_history_changes_input_digest(source, config):
+    # Given
     points = [source.points[0].model_copy(update={"evidence_ids": ("E-002",)}), source.points[1]]
+    changed_source = source.model_copy(update={"points": tuple(points)})
+
+    # When
     original = run_statistical_comparison(source, config)
-    changed = run_statistical_comparison(
-        source.model_copy(update={"points": tuple(points)}), config
-    )
+    changed = run_statistical_comparison(changed_source, config)
+
+    # Then
     assert original["output"] == changed["output"]
     assert original["input_sha256"] != changed["input_sha256"]
 
 
 def test_bad_cross_contract_cadence_fails(source, config):
-    with pytest.raises(ValueError, match="cadence"):
-        run_statistical_comparison(source, config.model_copy(update={"step_seconds": 20.0}))
+    # Given
+    invalid_config = config.model_copy(update={"step_seconds": 20.0})
+
+    # When
+    with pytest.raises(ValueError) as error:
+        run_statistical_comparison(source, invalid_config)
+
+    # Then
+    assert "cadence" in str(error.value)
 
 
 @pytest.mark.parametrize("updates", [{"run_id": "bad"}, {"points": ()}])
 def test_unchecked_source_copy_is_revalidated(source, config, updates):
-    with pytest.raises(ValueError):
-        run_statistical_comparison(source.model_copy(update=updates), config)
+    # Given
+    invalid_source = source.model_copy(update=updates)
+
+    # When
+    with pytest.raises(ValueError) as error:
+        run_statistical_comparison(invalid_source, config)
+
+    # Then
+    assert next(iter(updates)) in str(error.value)
 
 
 def test_unchecked_config_copy_is_revalidated(source, config):
-    with pytest.raises(ValueError):
-        run_statistical_comparison(source, config.model_copy(update={"alpha": 0.0}))
+    # Given
+    invalid_config = config.model_copy(update={"alpha": 0.0})
+
+    # When
+    with pytest.raises(ValueError) as error:
+        run_statistical_comparison(source, invalid_config)
+
+    # Then
+    assert "alpha" in str(error.value)
 
 
 def test_identical_calls_do_not_share_state_or_mutate_inputs(source, config):
+    # Given
     before = source.model_dump(), config.model_dump()
+
+    # When
     first = run_statistical_comparison(source, config)
     first["input"]["points"][0]["evidence_ids"].append("E-999")
     second = run_statistical_comparison(source, config)
+
+    # Then
     assert second["input"]["points"][0]["evidence_ids"] == ["E-001"]
     assert (source.model_dump(), config.model_dump()) == before
     assert [p["score"] for p in second["output"]] == [0.5, 0.25]

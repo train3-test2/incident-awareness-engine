@@ -49,6 +49,22 @@ result = run_statistical_comparison(source, config)
 이를 출력 점수에 대한 인과적 기여도 또는 최종 판단 evidence로 새롭게 해석하지 않는다.
 시각은 UTC로 정규화되며 datetime의 마이크로초 정밀도를 유지한다. 밀리초로 임의 절삭하지 않는다.
 
+## R1 입력 statistic 동결 조건
+
+현재 기록은 동일 수치 입력의 재실행을 지원하며 R1 평가설계 준수를 자동 검증하지 않는다.
+R1 연결 전에는 CUSUM/EWMA 입력 statistic 정의를 실험 전에 명시적으로 동결해야 한다.
+Fusion 모델의 `s_t`를 baseline 입력으로 재사용하지 않는다.
+
+R1 호출자는 `input_config_version`이 statistic 정의를 포함하는 불변 upstream config
+artifact를 유일하게 식별하도록 해야 한다. 해당 artifact에는 statistic 계산식,
+입력 Evidence/feature 정의, 집계 window와 cadence를 기록하고 버전과 함께 보존한다.
+단순한 version 문자열이나 source trajectory의 hash만으로 이 관계가 검증되지는 않는다.
+현재 실행 함수는 upstream config artifact를 조회하거나 statistic의 출처를 판별하지 않는다.
+
+이 관계를 보장할 수 없는 경우 후속 실행 계약에 `input_statistic` 또는 동등한 typed
+provenance를 추가해 보존하기 전에는 R1 성능 비교에 연결하지 않는다. 이번 PR에서는
+입력 계약이나 수식을 확장하지 않으며, synthetic 수치 재현 확인과 실제 R1 평가를 구분한다.
+
 ## 검증 및 후속 연결
 
 CUSUM / EWMA 수식과 비교 한계는 [통계 baseline 문서](role5-statistical-baselines.md)를 따른다.
