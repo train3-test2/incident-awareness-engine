@@ -1,0 +1,30 @@
+[
+  {
+    "sample_id": "synthetic-0",
+    "run_id": "RUN-20261004-003",
+    "entity_id": "SYNTHETIC-HOST",
+    "feature_config_version": "synthetic-presence-v1",
+    "feature_names": [
+      "encoded_powershell_command",
+      "script_interpreter_external_connection"
+    ],
+    "values": [
+      0,
+      0
+    ]
+  },
+  {
+    "sample_id": "synthetic-1",
+    "run_id": "RUN-20261004-003",
+    "entity_id": "SYNTHETIC-HOST",
+    "feature_config_version": "synthetic-presence-v1",
+    "feature_names": [
+      "encoded_powershell_command",
+      "script_interpreter_external_connection"
+    ],
+    "values": [
+      1,
+      1
+    ]
+  }
+]
