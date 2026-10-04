@@ -48,6 +48,13 @@ FOURTH_MIGRATION_PATH = (
     / "migrations"
     / "004_fusion_runtime_config_snapshot.sql"
 )
+FIFTH_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "infra"
+    / "postgres"
+    / "migrations"
+    / "005_pipeline_runtime_status.sql"
+)
 RUN_ID = "RUN-20260912-998"
 EVENT_ID = "evt-001"
 ENTITY_ID = "WIN-01"
@@ -77,6 +84,7 @@ def migration_connection(database_url: str) -> psycopg.Connection[tuple[object, 
         connection.execute(SECOND_MIGRATION_PATH.read_text(encoding="utf-8"))
         connection.execute(THIRD_MIGRATION_PATH.read_text(encoding="utf-8"))
         connection.execute(FOURTH_MIGRATION_PATH.read_text(encoding="utf-8"))
+        connection.execute(FIFTH_MIGRATION_PATH.read_text(encoding="utf-8"))
         connection.execute(
             """
             INSERT INTO runs (
@@ -159,7 +167,8 @@ def test_baselines_migrations_applied_by_docker_initdb(
               'decisions',
               'fusion_stopping_traces',
               'decision_runtime_snapshots',
-              'fusion_runtime_config_snapshots'
+              'fusion_runtime_config_snapshots',
+              'pipeline_runtime_status'
           )
         ORDER BY table_name
         """
@@ -172,12 +181,14 @@ def test_baselines_migrations_applied_by_docker_initdb(
         "002_fusion_stopping_trace",
         "003_decision_runtime_snapshot",
         "004_fusion_runtime_config_snapshot",
+        "005_pipeline_runtime_status",
     )
     assert migration_ids == [
         ("001_first_cycle",),
         ("002_fusion_stopping_trace",),
         ("003_decision_runtime_snapshot",),
         ("004_fusion_runtime_config_snapshot",),
+        ("005_pipeline_runtime_status",),
     ]
     assert existing_tables == [
         ("decision_runtime_snapshots",),
@@ -187,6 +198,7 @@ def test_baselines_migrations_applied_by_docker_initdb(
         ("fusion_results",),
         ("fusion_runtime_config_snapshots",),
         ("fusion_stopping_traces",),
+        ("pipeline_runtime_status",),
         ("runs",),
     ]
     assert reapplied == ()
@@ -367,6 +379,276 @@ def test_fusion_runtime_config_snapshot_is_deleted_with_its_run(
     ).fetchone() == (0,)
 
 
+def test_pipeline_runtime_status_schema_matches_latest_state_contract(
+    migration_connection: psycopg.Connection[tuple[object, ...]],
+) -> None:
+    # Given
+    connection = migration_connection
+
+    # When
+    columns = connection.execute(
+        """
+        SELECT column_name, data_type, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'pipeline_runtime_status'
+        ORDER BY ordinal_position
+        """
+    ).fetchall()
+    primary_key_columns = connection.execute(
+        """
+        SELECT key_column.column_name
+        FROM information_schema.table_constraints AS table_constraint
+        JOIN information_schema.key_column_usage AS key_column
+          ON key_column.constraint_schema = table_constraint.constraint_schema
+         AND key_column.constraint_name = table_constraint.constraint_name
+        WHERE table_constraint.table_schema = current_schema()
+          AND table_constraint.table_name = 'pipeline_runtime_status'
+          AND table_constraint.constraint_type = 'PRIMARY KEY'
+        ORDER BY key_column.ordinal_position
+        """
+    ).fetchall()
+    foreign_keys = connection.execute(
+        """
+        SELECT constraint_name
+        FROM information_schema.table_constraints
+        WHERE table_schema = current_schema()
+          AND table_name = 'pipeline_runtime_status'
+          AND constraint_type = 'FOREIGN KEY'
+        """
+    ).fetchall()
+
+    # Then
+    assert len(columns) == 9
+    assert columns[:8] == [
+        ("run_id", "text", "NO", None),
+        ("entity_id", "text", "NO", None),
+        ("execution_id", "text", "NO", None),
+        ("status", "text", "NO", None),
+        ("current_stage", "text", "YES", None),
+        ("started_at", "timestamp with time zone", "NO", None),
+        ("updated_at", "timestamp with time zone", "NO", None),
+        ("payload", "jsonb", "NO", None),
+    ]
+    assert columns[8][:3] == ("created_at", "timestamp with time zone", "NO")
+    assert columns[8][3] is not None
+    assert primary_key_columns == [("run_id",), ("entity_id",)]
+    assert foreign_keys == []
+
+
+@pytest.mark.parametrize(
+    (
+        "run_id",
+        "entity_id",
+        "execution_id",
+        "status",
+        "current_stage",
+        "payload",
+    ),
+    [
+        pytest.param(
+            "",
+            ENTITY_ID,
+            "execution-001",
+            "running",
+            "normalization",
+            {
+                "run_id": "",
+                "entity_id": ENTITY_ID,
+                "execution_id": "execution-001",
+                "status": "running",
+                "current_stage": "normalization",
+            },
+            id="blank-run-id",
+        ),
+        pytest.param(
+            RUN_ID,
+            "   ",
+            "execution-001",
+            "running",
+            "normalization",
+            {
+                "run_id": RUN_ID,
+                "entity_id": "   ",
+                "execution_id": "execution-001",
+                "status": "running",
+                "current_stage": "normalization",
+            },
+            id="blank-entity-id",
+        ),
+        pytest.param(
+            RUN_ID,
+            ENTITY_ID,
+            "",
+            "running",
+            "normalization",
+            {
+                "run_id": RUN_ID,
+                "entity_id": ENTITY_ID,
+                "execution_id": "",
+                "status": "running",
+                "current_stage": "normalization",
+            },
+            id="blank-execution-id",
+        ),
+        pytest.param(
+            RUN_ID,
+            ENTITY_ID,
+            "execution-001",
+            "queued",
+            "normalization",
+            {
+                "run_id": RUN_ID,
+                "entity_id": ENTITY_ID,
+                "execution_id": "execution-001",
+                "status": "queued",
+                "current_stage": "normalization",
+            },
+            id="invalid-status",
+        ),
+        pytest.param(
+            RUN_ID,
+            ENTITY_ID,
+            "execution-001",
+            "running",
+            "detect",
+            {
+                "run_id": RUN_ID,
+                "entity_id": ENTITY_ID,
+                "execution_id": "execution-001",
+                "status": "running",
+                "current_stage": "detect",
+            },
+            id="invalid-current-stage",
+        ),
+        pytest.param(
+            RUN_ID,
+            ENTITY_ID,
+            "execution-001",
+            "running",
+            "normalization",
+            ["not", "an", "object"],
+            id="non-object-payload",
+        ),
+        pytest.param(
+            RUN_ID,
+            ENTITY_ID,
+            "execution-001",
+            "running",
+            "normalization",
+            {
+                "run_id": "RUN-20260912-997",
+                "entity_id": ENTITY_ID,
+                "execution_id": "execution-001",
+                "status": "running",
+                "current_stage": "normalization",
+            },
+            id="run-id-mismatch",
+        ),
+        pytest.param(
+            RUN_ID,
+            ENTITY_ID,
+            "execution-001",
+            "running",
+            "normalization",
+            {
+                "run_id": RUN_ID,
+                "entity_id": "WIN-02",
+                "execution_id": "execution-001",
+                "status": "running",
+                "current_stage": "normalization",
+            },
+            id="entity-id-mismatch",
+        ),
+        pytest.param(
+            RUN_ID,
+            ENTITY_ID,
+            "execution-001",
+            "running",
+            "normalization",
+            {
+                "run_id": RUN_ID,
+                "entity_id": ENTITY_ID,
+                "execution_id": "execution-002",
+                "status": "running",
+                "current_stage": "normalization",
+            },
+            id="execution-id-mismatch",
+        ),
+        pytest.param(
+            RUN_ID,
+            ENTITY_ID,
+            "execution-001",
+            "running",
+            "normalization",
+            {
+                "run_id": RUN_ID,
+                "entity_id": ENTITY_ID,
+                "execution_id": "execution-001",
+                "status": "completed",
+                "current_stage": "normalization",
+            },
+            id="status-mismatch",
+        ),
+        pytest.param(
+            RUN_ID,
+            ENTITY_ID,
+            "execution-001",
+            "running",
+            None,
+            {
+                "run_id": RUN_ID,
+                "entity_id": ENTITY_ID,
+                "execution_id": "execution-001",
+                "status": "running",
+                "current_stage": "normalization",
+            },
+            id="current-stage-mismatch",
+        ),
+    ],
+)
+def test_pipeline_runtime_status_rejects_invalid_database_contracts(
+    migration_connection: psycopg.Connection[tuple[object, ...]],
+    run_id: str,
+    entity_id: str,
+    execution_id: str,
+    status: str,
+    current_stage: str | None,
+    payload: object,
+) -> None:
+    # Given
+    statement = """
+        INSERT INTO pipeline_runtime_status (
+            run_id,
+            entity_id,
+            execution_id,
+            status,
+            current_stage,
+            started_at,
+            updated_at,
+            payload
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """
+    parameters = (
+        run_id,
+        entity_id,
+        execution_id,
+        status,
+        current_stage,
+        TIMESTAMP,
+        TIMESTAMP,
+        Jsonb(payload),
+    )
+
+    # When
+    with pytest.raises(CheckViolation) as exc_info, migration_connection.transaction():
+        migration_connection.execute(statement, parameters)
+
+    # Then
+    assert exc_info.type is CheckViolation
+
+
 def test_serializes_concurrent_migration_runners(database_url: str) -> None:
     # Given
     schema_name = f"migration_concurrency_{uuid4().hex}"
@@ -464,6 +746,7 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
                 "002_fusion_stopping_trace",
                 "003_decision_runtime_snapshot",
                 "004_fusion_runtime_config_snapshot",
+                "005_pipeline_runtime_status",
             ),
         ]
         with psycopg.connect(database_url) as verification_connection:
@@ -476,7 +759,8 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
                   AND table_name IN (
                       'fusion_stopping_traces',
                       'decision_runtime_snapshots',
-                      'fusion_runtime_config_snapshots'
+                      'fusion_runtime_config_snapshots',
+                      'pipeline_runtime_status'
                   )
                 GROUP BY table_name
                 ORDER BY table_name
@@ -486,7 +770,7 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
                 """
                 SELECT migration_id, count(*)
                 FROM schema_migrations
-                WHERE migration_id IN (%s, %s, %s)
+                WHERE migration_id IN (%s, %s, %s, %s)
                 GROUP BY migration_id
                 ORDER BY migration_id
                 """,
@@ -494,6 +778,7 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
                     "002_fusion_stopping_trace",
                     "003_decision_runtime_snapshot",
                     "004_fusion_runtime_config_snapshot",
+                    "005_pipeline_runtime_status",
                 ),
             ).fetchall()
 
@@ -501,11 +786,13 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
             ("decision_runtime_snapshots", 1),
             ("fusion_runtime_config_snapshots", 1),
             ("fusion_stopping_traces", 1),
+            ("pipeline_runtime_status", 1),
         ]
         assert migration_counts == [
             ("002_fusion_stopping_trace", 1),
             ("003_decision_runtime_snapshot", 1),
             ("004_fusion_runtime_config_snapshot", 1),
+            ("005_pipeline_runtime_status", 1),
         ]
     finally:
         setup_connection.rollback()

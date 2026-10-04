@@ -1,12 +1,13 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from threading import Barrier
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 import psycopg
 import pytest
+from psycopg import sql
 from psycopg.errors import ForeignKeyViolation, UniqueViolation
 
 from incident_awareness.collection.collector.sysmon_jsonl import SysmonJsonlRecord
@@ -23,6 +24,11 @@ from incident_awareness.common.models.fusion_runtime_config import (
     FusionRuntimeScoringSnapshot,
     FusionRuntimeStoppingSnapshot,
     FusionRuntimeWindowSnapshot,
+)
+from incident_awareness.common.models.pipeline_runtime import (
+    PipelineRuntimeState,
+    PipelineRuntimeStatus,
+    PipelineStage,
 )
 from incident_awareness.common.models.result import (
     DecisionPath,
@@ -46,6 +52,9 @@ from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
 from incident_awareness.storage.config import DATABASE_URL_ENV, DatabaseConfig
 from incident_awareness.storage.migrate import apply_migrations
 from incident_awareness.storage.repositories.event_repository import EventRepository
+from incident_awareness.storage.repositories.pipeline_runtime_repository import (
+    PipelineRuntimeStatusRepository,
+)
 from incident_awareness.storage.repositories.result_repository import (
     DecisionIntegrityError,
     DecisionRepository,
@@ -326,6 +335,211 @@ def test_postgres_runtime_config_repository_round_trip_and_latest_upsert(
             assert row_count == (1,)
         finally:
             connection.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
+            connection.commit()
+
+
+def test_postgres_pipeline_runtime_repository_enforces_latest_state_without_run_row(
+    database_url: str,
+) -> None:
+    # Given
+    schema_name = f"pipeline_runtime_repository_{uuid4().hex}"
+    schema = sql.Identifier(schema_name)
+    run_id = "RUN-20261004-901"
+    base_time = datetime(2026, 10, 4, 1, tzinfo=UTC)
+
+    with psycopg.connect(database_url) as connection:
+        try:
+            connection.execute(sql.SQL("CREATE SCHEMA {}").format(schema))
+            connection.execute(sql.SQL("SET search_path TO {}").format(schema))
+            apply_migrations(connection)
+            repository = PipelineRuntimeStatusRepository(connection)
+            assert connection.execute(
+                "SELECT count(*) FROM runs WHERE run_id = %s",
+                (run_id,),
+            ).fetchone() == (0,)
+
+            execution_a_10 = _pipeline_running_status(
+                execution_id="execution-a",
+                run_id=run_id,
+                entity_id="WIN-STALE",
+                started_at=base_time,
+                updated_at=base_time + timedelta(seconds=10),
+                processed_count=1,
+            )
+            execution_a_20 = execution_a_10.model_copy(
+                update={
+                    "updated_at": base_time + timedelta(seconds=20),
+                    "normalization_processed_count": 2,
+                }
+            )
+            execution_a_15 = execution_a_10.model_copy(
+                update={"updated_at": base_time + timedelta(seconds=15)}
+            )
+            execution_b = _pipeline_running_status(
+                execution_id="execution-b",
+                run_id=run_id,
+                entity_id="WIN-STALE",
+                started_at=base_time + timedelta(seconds=30),
+                updated_at=base_time + timedelta(seconds=40),
+                processed_count=1,
+            )
+            execution_a_late = execution_a_20.model_copy(
+                update={"updated_at": base_time + timedelta(seconds=50)}
+            )
+            equal_start_execution = execution_b.model_copy(
+                update={
+                    "execution_id": "execution-c",
+                    "updated_at": base_time + timedelta(seconds=45),
+                }
+            )
+
+            # When
+            inserted = repository.save(execution_a_10)
+            connection.commit()
+            round_tripped = repository.get(run_id, "WIN-STALE")
+            newer_same_execution = repository.save(execution_a_20)
+            stale_same_execution = repository.save(execution_a_15)
+            newer_execution = repository.save(execution_b)
+            stale_old_execution = repository.save(execution_a_late)
+            equal_start_different_execution = repository.save(equal_start_execution)
+
+            completed_running = _pipeline_running_status(
+                execution_id="execution-completed",
+                run_id=run_id,
+                entity_id="WIN-COMPLETED",
+                started_at=base_time,
+                updated_at=base_time + timedelta(seconds=10),
+            )
+            completed = _pipeline_completed_status(
+                completed_running,
+                updated_at=base_time + timedelta(seconds=20),
+            )
+            completed_applied = repository.save(completed_running) and repository.save(completed)
+            completed_regression = repository.save(
+                completed_running.model_copy(
+                    update={"updated_at": base_time + timedelta(seconds=30)}
+                )
+            )
+
+            failed_running = _pipeline_running_status(
+                execution_id="execution-failed",
+                run_id=run_id,
+                entity_id="WIN-FAILED",
+                started_at=base_time,
+                updated_at=base_time + timedelta(seconds=10),
+            )
+            failed = _pipeline_failed_status(
+                failed_running,
+                updated_at=base_time + timedelta(seconds=20),
+            )
+            failed_applied = repository.save(failed_running) and repository.save(failed)
+            failed_regression = repository.save(
+                _pipeline_completed_status(
+                    failed_running,
+                    updated_at=base_time + timedelta(seconds=30),
+                )
+            )
+            connection.commit()
+
+            # Then
+            assert inserted is True
+            assert round_tripped == execution_a_10
+            assert newer_same_execution is True
+            assert stale_same_execution is False
+            assert newer_execution is True
+            assert stale_old_execution is False
+            assert equal_start_different_execution is False
+            assert repository.get(run_id, "WIN-STALE") == execution_b
+            assert completed_applied is True
+            assert completed_regression is False
+            assert repository.get(run_id, "WIN-COMPLETED") == completed
+            assert failed_applied is True
+            assert failed_regression is False
+            assert repository.get(run_id, "WIN-FAILED") == failed
+            assert connection.execute(
+                "SELECT count(*) FROM runs WHERE run_id = %s",
+                (run_id,),
+            ).fetchone() == (0,)
+        finally:
+            connection.rollback()
+            connection.execute("SET search_path TO public")
+            connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(schema))
+            connection.commit()
+
+
+def test_postgres_pipeline_runtime_repository_lists_operational_latest_state(
+    database_url: str,
+) -> None:
+    # Given
+    schema_name = f"pipeline_runtime_list_{uuid4().hex}"
+    schema = sql.Identifier(schema_name)
+    base_time = datetime(2026, 10, 4, 2, tzinfo=UTC)
+
+    with psycopg.connect(database_url) as connection:
+        try:
+            connection.execute(sql.SQL("CREATE SCHEMA {}").format(schema))
+            connection.execute(sql.SQL("SET search_path TO {}").format(schema))
+            apply_migrations(connection)
+            repository = PipelineRuntimeStatusRepository(connection)
+            running_b = _pipeline_running_status(
+                execution_id="execution-running-b",
+                run_id="RUN-20261004-912",
+                entity_id="WIN-B",
+                started_at=base_time,
+                updated_at=base_time + timedelta(seconds=20),
+            )
+            running_a = _pipeline_running_status(
+                execution_id="execution-running-a",
+                run_id="RUN-20261004-911",
+                entity_id="WIN-A",
+                started_at=base_time,
+                updated_at=base_time + timedelta(seconds=20),
+            )
+            failed_newer = _pipeline_failed_status(
+                _pipeline_running_status(
+                    execution_id="execution-failed-newer",
+                    run_id="RUN-20261004-914",
+                    entity_id="WIN-D",
+                    started_at=base_time,
+                    updated_at=base_time + timedelta(seconds=10),
+                ),
+                updated_at=base_time + timedelta(seconds=40),
+            )
+            completed_older = _pipeline_completed_status(
+                _pipeline_running_status(
+                    execution_id="execution-completed-older",
+                    run_id="RUN-20261004-913",
+                    entity_id="WIN-C",
+                    started_at=base_time,
+                    updated_at=base_time + timedelta(seconds=10),
+                ),
+                updated_at=base_time + timedelta(seconds=30),
+            )
+            for status in (failed_newer, running_b, completed_older, running_a):
+                assert repository.save(status) is True
+            connection.commit()
+
+            # When
+            recent = repository.list_recent(limit=4)
+            failed_only = repository.list_recent(
+                limit=1,
+                status=PipelineRuntimeState.FAILED,
+            )
+            limited = repository.list_recent(limit=2)
+
+            # Then
+            assert [(status.run_id, status.entity_id) for status in recent] == [
+                ("RUN-20261004-911", "WIN-A"),
+                ("RUN-20261004-912", "WIN-B"),
+                ("RUN-20261004-914", "WIN-D"),
+                ("RUN-20261004-913", "WIN-C"),
+            ]
+            assert failed_only == [failed_newer]
+            assert limited == [running_a, running_b]
+        finally:
+            connection.rollback()
+            connection.execute("SET search_path TO public")
+            connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(schema))
             connection.commit()
 
 
@@ -1610,3 +1824,63 @@ def _first_cycle_table_counts(
         """,
         (run_id,) * 8,
     ).fetchone()
+
+
+def _pipeline_running_status(
+    *,
+    execution_id: str,
+    run_id: str,
+    entity_id: str,
+    started_at: datetime,
+    updated_at: datetime,
+    processed_count: int = 1,
+) -> PipelineRuntimeStatus:
+    return PipelineRuntimeStatus(
+        execution_id=execution_id,
+        run_id=run_id,
+        entity_id=entity_id,
+        status=PipelineRuntimeState.RUNNING,
+        current_stage=PipelineStage.NORMALIZATION,
+        input_total=3,
+        normalization_processed_count=processed_count,
+        started_at=started_at,
+        stage_started_at=started_at,
+        updated_at=updated_at,
+        completed_at=None,
+        failed_stage=None,
+    )
+
+
+def _pipeline_completed_status(
+    running: PipelineRuntimeStatus,
+    *,
+    updated_at: datetime,
+) -> PipelineRuntimeStatus:
+    return running.model_copy(
+        update={
+            "status": PipelineRuntimeState.COMPLETED,
+            "current_stage": None,
+            "normalization_processed_count": running.input_total,
+            "stage_started_at": None,
+            "updated_at": updated_at,
+            "completed_at": updated_at,
+            "failed_stage": None,
+        }
+    )
+
+
+def _pipeline_failed_status(
+    running: PipelineRuntimeStatus,
+    *,
+    updated_at: datetime,
+) -> PipelineRuntimeStatus:
+    return running.model_copy(
+        update={
+            "status": PipelineRuntimeState.FAILED,
+            "current_stage": None,
+            "stage_started_at": None,
+            "updated_at": updated_at,
+            "completed_at": None,
+            "failed_stage": PipelineStage.FUSION,
+        }
+    )
