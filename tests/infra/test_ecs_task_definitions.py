@@ -115,6 +115,16 @@ def test_dashboard_task_definition_contract() -> None:
     assert container["portMappings"] == [
         {"containerPort": 8080, "protocol": "tcp"},
     ]
+    assert container["secrets"] == [
+        {
+            "name": "INCIDENT_AWARENESS_DATABASE_URL",
+            "valueFrom": (
+                "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:"
+                "incident-awareness/first-cycle/database-url-9KGf2f:"
+                "INCIDENT_AWARENESS_DATABASE_URL::"
+            ),
+        }
+    ]
     assert container["logConfiguration"]["options"] == {
         "awslogs-group": "/ecs/incident-awareness-engine-dev",
         "awslogs-region": "ap-northeast-2",
