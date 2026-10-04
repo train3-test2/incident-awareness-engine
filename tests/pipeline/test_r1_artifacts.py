@@ -410,7 +410,7 @@ def test_failed_extraction_writes_summary_and_reraises(tmp_path: Path) -> None:
         approved_policy=_policy(),
     )
 
-    # When / Then
+    # When
     with pytest.raises(ValueError, match="anchor_event_id"):
         run_and_write_r1_evidence_artifacts(
             events,
@@ -419,6 +419,7 @@ def test_failed_extraction_writes_summary_and_reraises(tmp_path: Path) -> None:
             lineage_inputs=[invalid_input],
         )
 
+    # Then
     summary_path = tmp_path / R1_EXTRACTION_SUMMARY_FILENAME
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert not (tmp_path / R1_EVIDENCE_FILENAME).exists()
@@ -433,6 +434,45 @@ def test_failed_extraction_writes_summary_and_reraises(tmp_path: Path) -> None:
     )
 
 
+def test_failed_summary_publication_does_not_replace_extraction_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    invalid_input = R1LineageInput(
+        anchor_event_id="evt-missing-anchor",
+        terminal_event_id="evt-terminal",
+        approved_policy=_policy(),
+    )
+
+    def fail_publication(_: tuple[tuple[Path, bytes], ...]) -> None:
+        raise OSError("summary storage unavailable")
+
+    monkeypatch.setattr(
+        "incident_awareness.pipeline.r1_artifacts._publish_files",
+        fail_publication,
+    )
+
+    # When
+    with pytest.raises(ValueError, match="anchor_event_id") as error_info:
+        run_and_write_r1_evidence_artifacts(
+            _events(),
+            run_id=_RUN_ID,
+            output_directory=tmp_path,
+            lineage_inputs=[invalid_input],
+        )
+
+    # Then
+    assert str(error_info.value) == (
+        "anchor_event_id does not reference an Event in the batch: evt-missing-anchor"
+    )
+    assert error_info.value.__notes__ == [
+        "R1 failed summary publication also failed: OSError: summary storage unavailable"
+    ]
+    assert not (tmp_path / R1_EVIDENCE_FILENAME).exists()
+    assert not (tmp_path / R1_EXTRACTION_SUMMARY_FILENAME).exists()
+
+
 def test_run_id_mismatch_writes_failed_summary_without_evidence(tmp_path: Path) -> None:
     # Given
     anchor, middle, terminal, _ = _events()
@@ -445,7 +485,7 @@ def test_run_id_mismatch_writes_failed_summary_without_evidence(tmp_path: Path) 
         run_id="RUN-20261006-002",
     )
 
-    # When / Then
+    # When
     with pytest.raises(ValueError, match="requested run_id"):
         run_and_write_r1_evidence_artifacts(
             [anchor, middle, terminal, other_run_network],
@@ -454,6 +494,7 @@ def test_run_id_mismatch_writes_failed_summary_without_evidence(tmp_path: Path) 
             lineage_inputs=[_lineage_input()],
         )
 
+    # Then
     summary = json.loads((tmp_path / R1_EXTRACTION_SUMMARY_FILENAME).read_text(encoding="utf-8"))
     assert not (tmp_path / R1_EVIDENCE_FILENAME).exists()
     assert summary["status"] == "failed"
@@ -473,7 +514,7 @@ def test_event_materialization_failure_writes_failed_summary(tmp_path: Path) -> 
         yield first_event
         raise RuntimeError("event stream failed")
 
-    # When / Then
+    # When
     with pytest.raises(RuntimeError, match="event stream failed"):
         run_and_write_r1_evidence_artifacts(
             failing_events(),
@@ -482,6 +523,7 @@ def test_event_materialization_failure_writes_failed_summary(tmp_path: Path) -> 
             lineage_inputs=[_lineage_input()],
         )
 
+    # Then
     summary = json.loads((tmp_path / R1_EXTRACTION_SUMMARY_FILENAME).read_text(encoding="utf-8"))
     assert not (tmp_path / R1_EVIDENCE_FILENAME).exists()
     assert summary["status"] == "failed"
@@ -500,7 +542,7 @@ def test_lineage_input_materialization_failure_writes_failed_summary(tmp_path: P
         yield _lineage_input()
         raise RuntimeError("lineage input stream failed")
 
-    # When / Then
+    # When
     with pytest.raises(RuntimeError, match="lineage input stream failed"):
         run_and_write_r1_evidence_artifacts(
             events,
@@ -509,6 +551,7 @@ def test_lineage_input_materialization_failure_writes_failed_summary(tmp_path: P
             lineage_inputs=failing_lineage_inputs(),
         )
 
+    # Then
     summary = json.loads((tmp_path / R1_EXTRACTION_SUMMARY_FILENAME).read_text(encoding="utf-8"))
     assert not (tmp_path / R1_EVIDENCE_FILENAME).exists()
     assert summary["status"] == "failed"
@@ -539,7 +582,7 @@ def test_failed_artifact_requires_a_new_output_directory_for_retry(tmp_path: Pat
             lineage_inputs=[invalid_input],
         )
 
-    # When / Then
+    # When
     with pytest.raises(FileExistsError, match="must not already exist"):
         run_and_write_r1_evidence_artifacts(
             events,
@@ -554,6 +597,8 @@ def test_failed_artifact_requires_a_new_output_directory_for_retry(tmp_path: Pat
         output_directory=retry_directory,
         lineage_inputs=[_lineage_input()],
     )
+
+    # Then
     assert retry_result.summary.status == "completed"
     assert retry_result.evidence_path.exists()
 

@@ -105,9 +105,15 @@ def run_and_write_r1_evidence_artifacts(
             error_message=str(error),
             evidence_artifact_sha256=None,
         )
-        _publish_files(
-            ((summary_path, _serialize_summary(failed_summary)),),
-        )
+        try:
+            _publish_files(
+                ((summary_path, _serialize_summary(failed_summary)),),
+            )
+        except OSError as publication_error:
+            error.add_note(
+                "R1 failed summary publication also failed: "
+                f"{type(publication_error).__name__}: {publication_error}"
+            )
         raise
 
     evidences = pipeline_result.evidences
