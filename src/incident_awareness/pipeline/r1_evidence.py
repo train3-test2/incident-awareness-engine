@@ -7,8 +7,10 @@ from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.common.models.evidence import Evidence
 from incident_awareness.evidence.r1_multi_event import (
     ApprovedLineagePolicy,
+    R1ExtractionDiagnostic,
+    R1LineageExtractionResult,
     extract_remote_process_network_follow_on,
-    extract_remote_session_process_lineage_deviation,
+    extract_remote_session_process_lineage_deviation_with_diagnostics,
 )
 
 type _CorrelationKey = tuple[str, str, str]
@@ -37,12 +39,32 @@ class R1LineageInput:
             raise TypeError("approved_policy must be an ApprovedLineagePolicy")
 
 
+@dataclass(frozen=True, slots=True)
+class R1EvidencePipelineResult:
+    """R1 candidate Evidence와 fail-closed 입력 진단을 함께 반환한다."""
+
+    evidences: tuple[Evidence, ...]
+    diagnostics: tuple[R1ExtractionDiagnostic, ...]
+
+
 def run_r1_evidence_pipeline(
     events: Iterable[NormalizedEvent],
     *,
     lineage_inputs: Iterable[R1LineageInput] = (),
 ) -> tuple[Evidence, ...]:
     """S0 추출이나 Fusion 호출 없이 R1 candidate Evidence를 반환한다."""
+    return run_r1_evidence_pipeline_with_diagnostics(
+        events,
+        lineage_inputs=lineage_inputs,
+    ).evidences
+
+
+def run_r1_evidence_pipeline_with_diagnostics(
+    events: Iterable[NormalizedEvent],
+    *,
+    lineage_inputs: Iterable[R1LineageInput] = (),
+) -> R1EvidencePipelineResult:
+    """기존 Evidence 결과와 공격 판정이 아닌 fail-closed 진단을 반환한다."""
     event_batch = tuple(events)
     lineage_input_batch = tuple(lineage_inputs)
     events_by_id = _index_events_by_id(event_batch)
@@ -58,29 +80,35 @@ def run_r1_evidence_pipeline(
         }.values()
     )
     evidences = _extract_network_follow_on_candidates(event_batch, terminal_events)
+    diagnostics: set[R1ExtractionDiagnostic] = set()
     for lineage_input, anchor_event, terminal_event in resolved_lineage_inputs:
-        evidences.extend(
-            extract_remote_session_process_lineage_deviation(
+        lineage_result: R1LineageExtractionResult = (
+            extract_remote_session_process_lineage_deviation_with_diagnostics(
                 event_batch,
                 anchor_event,
                 terminal_event,
                 lineage_input.approved_policy,
             )
         )
+        evidences.extend(lineage_result.evidences)
+        diagnostics.update(lineage_result.diagnostics)
 
     evidences_by_id: dict[str, Evidence] = {}
     for evidence in evidences:
         evidences_by_id.setdefault(evidence.evidence_id, evidence)
 
-    return tuple(
-        sorted(
-            evidences_by_id.values(),
-            key=lambda evidence: (
-                evidence.timestamp,
-                evidence.evidence_type,
-                evidence.evidence_id,
-            ),
-        )
+    return R1EvidencePipelineResult(
+        evidences=tuple(
+            sorted(
+                evidences_by_id.values(),
+                key=lambda evidence: (
+                    evidence.timestamp,
+                    evidence.evidence_type,
+                    evidence.evidence_id,
+                ),
+            )
+        ),
+        diagnostics=tuple(sorted(diagnostics)),
     )
 
 
@@ -177,4 +205,9 @@ def _required_event(
     return event
 
 
-__all__ = ["R1LineageInput", "run_r1_evidence_pipeline"]
+__all__ = [
+    "R1EvidencePipelineResult",
+    "R1LineageInput",
+    "run_r1_evidence_pipeline",
+    "run_r1_evidence_pipeline_with_diagnostics",
+]

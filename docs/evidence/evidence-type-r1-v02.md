@@ -139,7 +139,24 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 - 실제 R1 telemetry 기반 end-to-end 검증
 - R1 Fusion profile과 Evidence 소비 규칙
 
-## 5. 미확정 사항
+## 5. Run별 candidate Evidence artifact
+
+`run_and_write_r1_evidence_artifacts()`는 명시적인 `run_id`, NormalizedEvent batch, `R1LineageInput`, Run 전용 출력 디렉터리를 받아 다음 두 파일을 생성한다.
+
+```text
+<run-output-directory>/
+├── r1_evidence.jsonl
+└── r1_extraction_summary.json
+```
+
+- `r1_evidence.jsonl`: 공통 `Evidence` 모델의 JSON 직렬화를 한 줄에 한 건씩 기록한다. Role5의 Weighted Rule, Static ML, 평가 코드는 이 파일을 Evidence 입력으로 읽는다. 원본 telemetry, `source_event_id`, `raw_ref`는 복제하지 않으며 `event_ids → NormalizedEvent.event_id → raw_ref/source_event_id` provenance 경계를 유지한다.
+- `r1_extraction_summary.json`: `run_id`, `extractor_version`, 입력 Event 수, Evidence 수, extraction 상태, 진단, Evidence 파일 SHA-256을 기록한다. upstream telemetry completeness 계약이 전달되지 않았으므로 `telemetry_completeness = not_provided`로 기록한다.
+
+`status = completed`와 `evidence_count = 0`은 extractor 호출이 예외 없이 종료됐고 생성된 Evidence가 없었다는 뜻이다. `diagnostics`가 비어 있으면 조건을 정상 평가한 no-match이고, 값이 있으면 Evidence 생성에 필요한 입력 또는 계보 조건이 불완전해 fail-closed된 사유다. 현재 진단 값은 `missing_process_guid`, `truncated_lineage`, `lineage_cycle`, `duplicate_process_guid`, `missing_or_blank_process_name`이다. 이 진단은 공격 여부 판정이나 Raw validator 상태의 Semantic Evidence 변환이 아니다. `status = failed`는 extraction이 예외로 끝났다는 뜻이며 `evidence_count`와 Evidence 파일 SHA-256은 `null`이다. 실패 summary를 기록한 뒤 원래 예외를 다시 발생시키므로 호출자가 실패를 정상 0건으로 오해할 수 없다. completed와 failed 모두 upstream telemetry가 완전하다거나 공격 행위가 없다는 의미가 아니다.
+
+파일은 기존 artifact를 덮어쓰지 않으며 summary를 마지막 완료 표식으로 게시한다. 동일한 `output_directory`는 재사용하거나 덮어쓰지 않는다. failed Run을 재시도할 때는 새로운 빈 `output_directory`를 명시적으로 사용하며, 이번 구현은 기존 artifact 자동 삭제, 자동 overwrite, 자동 attempt 번호 생성을 하지 않는다. 실행 시각처럼 재실행마다 달라지는 값은 기록하지 않는다. 현재 API는 Pilot·수동 실행의 Event ID 직접 지정 방식만 지원하며 production runner/CLI 연결, 실제 telemetry E2E, 반복 평가용 selector는 후속 작업이다.
+
+## 6. 미확정 사항
 
 | 항목 | 현재 상태 | 확정에 필요한 근거 |
 | --- | --- | --- |

@@ -1,0 +1,444 @@
+import hashlib
+import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from incident_awareness.common.models.event import NormalizedEvent
+from incident_awareness.common.models.evidence import Evidence
+from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
+from incident_awareness.pipeline.r1_artifacts import (
+    R1_EVIDENCE_FILENAME,
+    R1_EXTRACTION_SUMMARY_FILENAME,
+    run_and_write_r1_evidence_artifacts,
+)
+from incident_awareness.pipeline.r1_evidence import R1LineageInput
+
+_BASE_TIME = datetime(2026, 10, 6, 1, 0, tzinfo=UTC)
+_RUN_ID = "RUN-20261006-001"
+_HOST_ID = "TARGET-A"
+_ANCHOR_GUID = "{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}"
+_MIDDLE_GUID = "{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}"
+_TERMINAL_GUID = "{CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC}"
+
+
+def _event(
+    *,
+    event_id: str,
+    event_type: str,
+    timestamp: datetime,
+    process_guid: str | None,
+    process_name: str | None,
+    parent_process_guid: str | None = None,
+    run_id: str = _RUN_ID,
+) -> NormalizedEvent:
+    is_network_event = event_type == "network_connection"
+    return NormalizedEvent.model_validate(
+        {
+            "event_id": event_id,
+            "run_id": run_id,
+            "timestamp": timestamp,
+            "timestamp_source": "event_time",
+            "event_time": timestamp,
+            "record_time": timestamp,
+            "ingest_time": timestamp,
+            "host_id": _HOST_ID,
+            "source": "sysmon",
+            "source_layer": "raw_telemetry",
+            "source_event_id": f"record-{event_id}",
+            "event_type": event_type,
+            "raw_ref": {
+                "raw_log_id": "RAW-R1-ARTIFACT",
+                "source_record_id": f"record-{event_id}",
+                "segment_no": 1,
+                "record_no": 4 if is_network_event else 1,
+                "parser_id": "sysmon-normalizer",
+                "parser_version": "v0.3",
+            },
+            "process": {
+                "pid": 4200,
+                "process_guid": process_guid,
+                "name": process_name,
+                "path": rf"C:\Windows\System32\{process_name}" if process_name else None,
+                "command_line": process_name,
+                "parent_pid": None,
+                "parent_process_guid": parent_process_guid,
+                "parent_name": None,
+            },
+            "network": (
+                {
+                    "protocol": "tcp",
+                    "src_ip": "10.0.0.10",
+                    "src_port": 52132,
+                    "dst_ip": "10.0.0.20",
+                    "dst_port": 5985,
+                }
+                if is_network_event
+                else None
+            ),
+        }
+    )
+
+
+def _events() -> tuple[NormalizedEvent, ...]:
+    return (
+        _event(
+            event_id="evt-anchor",
+            event_type="process_create",
+            timestamp=_BASE_TIME,
+            process_guid=_ANCHOR_GUID,
+            process_name="anchor.exe",
+        ),
+        _event(
+            event_id="evt-middle",
+            event_type="process_create",
+            timestamp=_BASE_TIME + timedelta(seconds=1),
+            process_guid=_MIDDLE_GUID,
+            process_name="runtime-hop.exe",
+            parent_process_guid=_ANCHOR_GUID,
+        ),
+        _event(
+            event_id="evt-terminal",
+            event_type="process_create",
+            timestamp=_BASE_TIME + timedelta(seconds=2),
+            process_guid=_TERMINAL_GUID,
+            process_name="terminal.exe",
+            parent_process_guid=_MIDDLE_GUID,
+        ),
+        _event(
+            event_id="evt-network",
+            event_type="network_connection",
+            timestamp=_BASE_TIME + timedelta(seconds=3),
+            process_guid=_TERMINAL_GUID,
+            process_name="terminal.exe",
+        ),
+    )
+
+
+def _policy(
+    approved_lineage: tuple[str, ...] = (
+        "anchor.exe",
+        "approved-hop.exe",
+        "terminal.exe",
+    ),
+) -> ApprovedLineagePolicy:
+    return ApprovedLineagePolicy(
+        policy_id="r1-target-a-lineage",
+        version="v1",
+        config_hash="sha256:approved-policy-v1",
+        approved_lineage=approved_lineage,
+    )
+
+
+def _lineage_input(policy: ApprovedLineagePolicy | None = None) -> R1LineageInput:
+    return R1LineageInput(
+        anchor_event_id="evt-anchor",
+        terminal_event_id="evt-terminal",
+        approved_policy=policy or _policy(),
+    )
+
+
+def _read_jsonl(path: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def _diagnostic_events(diagnostic: str) -> tuple[NormalizedEvent, ...]:
+    anchor, middle, terminal, _ = _events()
+    if diagnostic == "missing_process_guid":
+        terminal = _event(
+            event_id="evt-terminal",
+            event_type="process_create",
+            timestamp=_BASE_TIME + timedelta(seconds=2),
+            process_guid=None,
+            process_name="terminal.exe",
+            parent_process_guid=_MIDDLE_GUID,
+        )
+        return anchor, middle, terminal
+    if diagnostic == "truncated_lineage":
+        return anchor, terminal
+    if diagnostic == "lineage_cycle":
+        middle = _event(
+            event_id="evt-middle",
+            event_type="process_create",
+            timestamp=_BASE_TIME + timedelta(seconds=1),
+            process_guid=_MIDDLE_GUID,
+            process_name="runtime-hop.exe",
+            parent_process_guid=_TERMINAL_GUID,
+        )
+        return anchor, middle, terminal
+    if diagnostic == "duplicate_process_guid":
+        duplicate_terminal = _event(
+            event_id="evt-duplicate-terminal",
+            event_type="process_create",
+            timestamp=_BASE_TIME + timedelta(seconds=2),
+            process_guid=_TERMINAL_GUID,
+            process_name="terminal.exe",
+            parent_process_guid=_MIDDLE_GUID,
+        )
+        return anchor, middle, terminal, duplicate_terminal
+    if diagnostic == "missing_or_blank_process_name":
+        middle = _event(
+            event_id="evt-middle",
+            event_type="process_create",
+            timestamp=_BASE_TIME + timedelta(seconds=1),
+            process_guid=_MIDDLE_GUID,
+            process_name="   ",
+            parent_process_guid=_ANCHOR_GUID,
+        )
+        return anchor, middle, terminal
+    raise AssertionError(f"unsupported test diagnostic: {diagnostic}")
+
+
+def test_writes_completed_evidence_and_summary_artifacts(tmp_path: Path) -> None:
+    # Given
+    events = _events()
+
+    # When
+    result = run_and_write_r1_evidence_artifacts(
+        events,
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+
+    # Then
+    evidence_path = tmp_path / R1_EVIDENCE_FILENAME
+    summary_path = tmp_path / R1_EXTRACTION_SUMMARY_FILENAME
+    records = _read_jsonl(evidence_path)
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+    assert result.evidence_path == evidence_path
+    assert result.summary_path == summary_path
+    assert summary["status"] == "completed"
+    assert summary["run_id"] == _RUN_ID
+    assert summary["extractor_version"] == "r1-v0.1"
+    assert summary["input_event_count"] == len(events)
+    assert summary["evidence_count"] == len(records) == 2
+    assert summary["telemetry_completeness"] == "not_provided"
+    assert (
+        summary["evidence_artifact_sha256"]
+        == hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    )
+
+    required_fields = {
+        "evidence_id",
+        "run_id",
+        "timestamp",
+        "entity_id",
+        "evidence_type",
+        "event_ids",
+        "feature_channel_group",
+        "extractor_version",
+        "features",
+    }
+    assert all(required_fields <= record.keys() for record in records)
+    assert len([Evidence.model_validate(record) for record in records]) == len(records)
+
+
+def test_completed_extraction_with_no_evidence_is_not_failed(tmp_path: Path) -> None:
+    # Given
+    anchor, middle, terminal, _ = _events()
+    matching_policy = _policy(approved_lineage=("anchor.exe", "runtime-hop.exe", "terminal.exe"))
+
+    # When
+    result = run_and_write_r1_evidence_artifacts(
+        [anchor, middle, terminal],
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input(matching_policy)],
+    )
+
+    # Then
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+    assert result.evidences == ()
+    assert result.evidence_path.read_bytes() == b""
+    assert summary["status"] == "completed"
+    assert summary["evidence_count"] == 0
+    assert summary["diagnostics"] == []
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "missing_process_guid",
+        "truncated_lineage",
+        "lineage_cycle",
+        "duplicate_process_guid",
+        "missing_or_blank_process_name",
+    ],
+)
+def test_completed_fail_closed_extraction_records_diagnostic(
+    tmp_path: Path,
+    diagnostic: str,
+) -> None:
+    # Given
+    events = _diagnostic_events(diagnostic)
+
+    # When
+    result = run_and_write_r1_evidence_artifacts(
+        events,
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+
+    # Then
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+    assert result.evidences == ()
+    assert summary["status"] == "completed"
+    assert summary["evidence_count"] == 0
+    assert summary["diagnostics"] == [diagnostic]
+
+
+def test_failed_extraction_writes_summary_and_reraises(tmp_path: Path) -> None:
+    # Given
+    events = _events()
+    invalid_input = R1LineageInput(
+        anchor_event_id="evt-missing-anchor",
+        terminal_event_id="evt-terminal",
+        approved_policy=_policy(),
+    )
+
+    # When / Then
+    with pytest.raises(ValueError, match="anchor_event_id"):
+        run_and_write_r1_evidence_artifacts(
+            events,
+            run_id=_RUN_ID,
+            output_directory=tmp_path,
+            lineage_inputs=[invalid_input],
+        )
+
+    summary_path = tmp_path / R1_EXTRACTION_SUMMARY_FILENAME
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert not (tmp_path / R1_EVIDENCE_FILENAME).exists()
+    assert summary["status"] == "failed"
+    assert summary["evidence_count"] is None
+    assert summary["input_event_count"] == len(events)
+    assert summary["evidence_artifact_sha256"] is None
+    assert summary["diagnostics"] == [
+        "ValueError: anchor_event_id does not reference an Event in the batch: evt-missing-anchor"
+    ]
+
+
+def test_run_id_mismatch_writes_failed_summary_without_evidence(tmp_path: Path) -> None:
+    # Given
+    anchor, middle, terminal, _ = _events()
+    other_run_network = _event(
+        event_id="evt-network",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=3),
+        process_guid=_TERMINAL_GUID,
+        process_name="terminal.exe",
+        run_id="RUN-20261006-002",
+    )
+
+    # When / Then
+    with pytest.raises(ValueError, match="requested run_id"):
+        run_and_write_r1_evidence_artifacts(
+            [anchor, middle, terminal, other_run_network],
+            run_id=_RUN_ID,
+            output_directory=tmp_path,
+            lineage_inputs=[_lineage_input()],
+        )
+
+    summary = json.loads((tmp_path / R1_EXTRACTION_SUMMARY_FILENAME).read_text(encoding="utf-8"))
+    assert not (tmp_path / R1_EVIDENCE_FILENAME).exists()
+    assert summary["status"] == "failed"
+    assert summary["evidence_count"] is None
+    assert summary["diagnostics"] == [
+        (
+            "ValueError: all events must belong to the requested run_id: "
+            "evt-network belongs to RUN-20261006-002"
+        )
+    ]
+
+
+def test_failed_artifact_requires_a_new_output_directory_for_retry(tmp_path: Path) -> None:
+    # Given
+    failed_directory = tmp_path / "failed-attempt"
+    retry_directory = tmp_path / "retry-attempt"
+    failed_directory.mkdir()
+    retry_directory.mkdir()
+    events = _events()
+    invalid_input = R1LineageInput(
+        anchor_event_id="evt-missing-anchor",
+        terminal_event_id="evt-terminal",
+        approved_policy=_policy(),
+    )
+    with pytest.raises(ValueError, match="anchor_event_id"):
+        run_and_write_r1_evidence_artifacts(
+            events,
+            run_id=_RUN_ID,
+            output_directory=failed_directory,
+            lineage_inputs=[invalid_input],
+        )
+
+    # When / Then
+    with pytest.raises(FileExistsError, match="must not already exist"):
+        run_and_write_r1_evidence_artifacts(
+            events,
+            run_id=_RUN_ID,
+            output_directory=failed_directory,
+            lineage_inputs=[_lineage_input()],
+        )
+
+    retry_result = run_and_write_r1_evidence_artifacts(
+        events,
+        run_id=_RUN_ID,
+        output_directory=retry_directory,
+        lineage_inputs=[_lineage_input()],
+    )
+    assert retry_result.summary.status == "completed"
+    assert retry_result.evidence_path.exists()
+
+
+def test_evidence_artifact_preserves_only_event_id_provenance(tmp_path: Path) -> None:
+    # Given
+    events = _events()
+    events_by_id = {event.event_id: event for event in events}
+
+    # When
+    run_and_write_r1_evidence_artifacts(
+        events,
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+
+    # Then
+    assert all(event_id in events_by_id for record in records for event_id in record["event_ids"])
+    assert all("source_event_id" not in record for record in records)
+    assert all("raw_ref" not in record for record in records)
+
+
+def test_same_inputs_produce_identical_artifacts(tmp_path: Path) -> None:
+    # Given
+    first_directory = tmp_path / "first"
+    second_directory = tmp_path / "second"
+    first_directory.mkdir()
+    second_directory.mkdir()
+    events = _events()
+    lineage_input = _lineage_input()
+
+    # When
+    first = run_and_write_r1_evidence_artifacts(
+        events,
+        run_id=_RUN_ID,
+        output_directory=first_directory,
+        lineage_inputs=[lineage_input],
+    )
+    second = run_and_write_r1_evidence_artifacts(
+        reversed(events),
+        run_id=_RUN_ID,
+        output_directory=second_directory,
+        lineage_inputs=[lineage_input],
+    )
+
+    # Then
+    assert first.evidence_path.read_bytes() == second.evidence_path.read_bytes()
+    assert first.summary_path.read_bytes() == second.summary_path.read_bytes()
+    assert [evidence.evidence_id for evidence in first.evidences] == [
+        evidence.evidence_id for evidence in second.evidences
+    ]
