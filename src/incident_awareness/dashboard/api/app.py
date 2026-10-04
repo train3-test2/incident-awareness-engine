@@ -30,6 +30,12 @@ async def _handle_dashboard_read_consistency_error(
 def create_app() -> FastAPI:
     """Create the Dashboard Read API and Operations View without opening external resources."""
     application = FastAPI(title="Incident Awareness Dashboard API")
+
+    @application.get("/healthz")
+    def get_health() -> dict[str, str]:
+        """Report process health without requiring a database connection."""
+        return {"status": "ok"}
+
     application.add_exception_handler(
         DecisionIntegrityError,
         _handle_decision_integrity_error,
