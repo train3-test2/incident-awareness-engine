@@ -24,6 +24,16 @@ def get_operations_view() -> FileResponse:
     return FileResponse(_UI_DIRECTORY / "operations.html", media_type="text/html")
 
 
+@operations_view_router.get("/dashboard/runs/{run_id}")
+def get_run_detail_view(run_id: str) -> FileResponse:
+    return FileResponse(_UI_DIRECTORY / "run-detail.html", media_type="text/html")
+
+
+@operations_view_router.get("/dashboard/decisions/{decision_id}")
+def get_decision_detail_view(decision_id: str) -> FileResponse:
+    return FileResponse(_UI_DIRECTORY / "decision-detail.html", media_type="text/html")
+
+
 def mount_dashboard_assets(application: FastAPI) -> None:
     """Serve CSS/JS assets, not the HTML shell, under a prefix that cannot shadow APIs."""
     # Browsers execute module scripts only with a JavaScript MIME type, and some Windows
