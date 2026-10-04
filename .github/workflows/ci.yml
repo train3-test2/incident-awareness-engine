@@ -23,10 +23,16 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
+      # Node runs the Operations View UI contract tests with its built-in test runner only;
+      # there is no package.json, npm install, or frontend build.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
       - run: uv sync --all-groups
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pytest
+      - run: node --test tests/dashboard/ui/test_operations_contract.mjs
       - name: Scan secrets with gitleaks
         run: |
           docker run --rm \

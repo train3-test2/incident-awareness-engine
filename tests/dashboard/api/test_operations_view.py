@@ -18,6 +18,14 @@ OPERATIONS_VIEW_PATHS = (
     "/operations",
     "/dashboard-assets/operations.css",
     "/dashboard-assets/operations.js",
+    "/dashboard-assets/operations-contract.mjs",
+)
+OPERATIONS_CONTRACT_FUNCTIONS = (
+    "getRuntimeProgressPresentation",
+    "getRuntimeQueryMessage",
+    "getRuntimeStatePresentation",
+    "getStageLabel",
+    "resolveRuntimeQueryState",
 )
 
 
@@ -63,7 +71,7 @@ def test_operations_view_serves_html_shell_without_database_access(
     html = response.text
     assert "Pipeline Runtime Operations" in html
     assert 'href="/dashboard-assets/operations.css"' in html
-    assert 'src="/dashboard-assets/operations.js"' in html
+    assert '<script type="module" src="/dashboard-assets/operations.js"></script>' in html
     assert 'id="runtime-status"' in html
     assert 'id="runtime-list"' in html
     assert database_connection_attempts == []
@@ -93,7 +101,41 @@ def test_dashboard_assets_serve_operations_script() -> None:
     assert response.status_code == 200
     media_type = response.headers["content-type"].split(";", maxsplit=1)[0].strip()
     assert media_type in JAVASCRIPT_MEDIA_TYPES
-    assert response.text.startswith('"use strict";')
+    assert '} from "./operations-contract.mjs";' in response.text
+
+
+def test_dashboard_assets_serve_operations_contract_module() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    response = client.get("/dashboard-assets/operations-contract.mjs")
+
+    # Then
+    assert response.status_code == 200
+    media_type = response.headers["content-type"].split(";", maxsplit=1)[0].strip()
+    assert media_type in JAVASCRIPT_MEDIA_TYPES
+    for contract_function in OPERATIONS_CONTRACT_FUNCTIONS:
+        assert f"export function {contract_function}(" in response.text
+
+
+def test_operations_contract_module_has_no_dom_network_or_timer_access() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    contract = client.get("/dashboard-assets/operations-contract.mjs").text
+
+    # Then
+    for browser_api in (
+        "document",
+        "window",
+        "fetch(",
+        "AbortController",
+        "setTimeout(",
+        "setInterval(",
+    ):
+        assert browser_api not in contract
 
 
 def test_operations_script_defines_runtime_polling_contract() -> None:
@@ -113,7 +155,7 @@ def test_operations_script_defines_runtime_polling_contract() -> None:
     assert "setInterval(" not in script
 
 
-def test_operations_script_preserves_runtime_items_and_query_states() -> None:
+def test_operations_script_keeps_latest_runtime_items_and_validates_payload() -> None:
     # Given
     client = TestClient(create_app())
 
@@ -122,36 +164,52 @@ def test_operations_script_preserves_runtime_items_and_query_states() -> None:
 
     # Then
     assert "let latestRuntimeItems = [];" in script
-    assert "latestRuntimeItems = items;" in script
+    assert "latestRuntimeItems = next.items;" in script
     assert "!Array.isArray(payload.items)" in script
-    assert "Runtime 정보를 불러오는 중입니다." in script
-    assert "표시할 Runtime 정보가 없습니다." in script
-    assert "Runtime 정보를 불러오지 못했습니다." in script
-    assert "Runtime ${latestRuntimeItems.length}건을 불러왔습니다." in script
 
 
-def test_operations_script_uses_safe_status_dom_api() -> None:
+def test_operations_script_uses_runtime_query_state_contract() -> None:
     # Given
     client = TestClient(create_app())
 
     # When
     script = client.get("/dashboard-assets/operations.js").text
+    poll_body = _block_body(script, "async function pollRuntime() {")
+    success_body = _block_body(poll_body, "try {")
+    error_body = _block_body(poll_body, "} catch {")
+
+    # Then
+    assert 'resolveRuntimeQueryState(latestRuntimeItems, { kind: "error" })' in error_body
+    assert "resolveRuntimeQueryState(" in success_body
+    assert '{ kind: "success", items }' in success_body
+
+
+def test_operations_scripts_use_safe_dom_api() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/operations.js").text
+    contract = client.get("/dashboard-assets/operations-contract.mjs").text
 
     # Then
     assert "runtimeStatus.textContent = message;" in script
-    for forbidden_api in (
-        "innerHTML",
-        "outerHTML",
-        "insertAdjacentHTML",
-        "document.write",
-        "eval(",
-    ):
-        assert forbidden_api not in script
+    for source in (script, contract):
+        for forbidden_api in (
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+            "eval(",
+            "new Function",
+        ):
+            assert forbidden_api not in source
 
 
 def test_operations_script_shows_loading_only_before_first_runtime_request() -> None:
     # Given
     client = TestClient(create_app())
+    loading_update = 'updateRuntimeStatus(getRuntimeQueryMessage("loading"));'
 
     # When
     script = client.get("/dashboard-assets/operations.js").text
@@ -159,12 +217,9 @@ def test_operations_script_shows_loading_only_before_first_runtime_request() -> 
     poll_body = _block_body(script, "async function pollRuntime() {")
 
     # Then
-    assert 'const LOADING_MESSAGE = "Runtime 정보를 불러오는 중입니다.";' in script
-    assert script.count("updateRuntimeStatus(LOADING_MESSAGE);") == 1
-    assert start_body.index("updateRuntimeStatus(LOADING_MESSAGE);") < start_body.index(
-        "void pollRuntime();"
-    )
-    assert "LOADING_MESSAGE" not in poll_body
+    assert script.count(loading_update) == 1
+    assert start_body.index(loading_update) < start_body.index("void pollRuntime();")
+    assert '"loading"' not in poll_body
 
 
 def test_operations_script_skips_unchanged_runtime_status_updates() -> None:
@@ -181,19 +236,17 @@ def test_operations_script_skips_unchanged_runtime_status_updates() -> None:
     assert "runtimeStatus.textContent = message;" in guarded_body
 
 
-def test_operations_script_labels_every_runtime_stage() -> None:
+def test_operations_contract_labels_every_runtime_stage() -> None:
     # Given
     client = TestClient(create_app())
 
     # When
-    script = client.get("/dashboard-assets/operations.js").text
-    stage_labels = _between(script, "const STAGE_LABELS = new Map([", "]);")
-    stage_label_body = _block_body(script, "function getStageLabel(stage) {")
+    contract = client.get("/dashboard-assets/operations-contract.mjs").text
+    stage_labels = _between(contract, "const STAGE_LABELS = new Map([", "]);")
 
     # Then
     for stage in PipelineStage:
         assert f'["{stage.value}", "' in stage_labels
-    assert "STAGE_LABELS.get(stage) ?? String(stage)" in stage_label_body
 
 
 def test_operations_script_renders_successful_runtime_items_into_list() -> None:
@@ -207,8 +260,11 @@ def test_operations_script_renders_successful_runtime_items_into_list() -> None:
 
     # Then
     assert 'document.getElementById("runtime-list")' in script
-    assert success_body.index("renderRuntimeItems(items, true);") < success_body.index(
-        "latestRuntimeItems = items;"
+    assert success_body.index(
+        "renderRuntimeItems(next.items, next.telemetryAvailable);"
+    ) < success_body.index("latestRuntimeItems = next.items;")
+    assert success_body.index("latestRuntimeItems = next.items;") < success_body.index(
+        "updateRuntimeStatus(next.message);"
     )
     assert "createRuntimeCard(runtime, telemetryAvailable)" in render_body
     assert "runtimeList.replaceChildren(...cards);" in render_body
@@ -223,8 +279,9 @@ def test_operations_script_keeps_last_runtime_list_on_error() -> None:
     error_body = _block_body(_block_body(script, "async function pollRuntime() {"), "} catch {")
 
     # Then
-    assert "updateRuntimeStatus(ERROR_MESSAGE);" in error_body
-    assert "renderRuntimeItems(latestRuntimeItems, false);" in error_body
+    assert error_body.index("updateRuntimeStatus(next.message);") < error_body.index(
+        "renderRuntimeItems(next.items, next.telemetryAvailable);"
+    )
     assert "latestRuntimeItems =" not in error_body
     assert "replaceChildren" not in error_body
 
@@ -251,37 +308,6 @@ def test_operations_script_times_out_runtime_requests_and_keeps_polling() -> Non
     assert "setInterval(" not in script
 
 
-def test_operations_script_marks_retained_running_cards_as_telemetry_unavailable() -> None:
-    # Given
-    client = TestClient(create_app())
-
-    # When
-    script = client.get("/dashboard-assets/operations.js").text
-    presentation_body = _block_body(
-        script, "function getRuntimeStatePresentation(runtime, telemetryAvailable) {"
-    )
-    running_body = _block_body(presentation_body, 'if (runtime.status === "running") {')
-    unavailable_body = _block_body(running_body, "if (!telemetryAvailable) {")
-
-    # Then
-    assert running_body.index("if (!telemetryAvailable) {") < running_body.index(
-        "if (runtime.is_stale === true) {"
-    )
-    assert 'modifiers: ["running", "telemetry-unavailable"]' in unavailable_body
-    assert "statusLabel: RUNNING_STATUS_LABEL" in unavailable_body
-    assert 'telemetryLabel: "확인 불가 (조회 실패)"' in unavailable_body
-    assert 'livenessLabel: "확인 불가"' in unavailable_body
-    for current_freshness in ("최근 갱신", "오래됨"):
-        assert current_freshness not in unavailable_body
-    for pipeline_failure in ('"failed"', 'statusLabel: "실패"', "stopped", "dead", "timeout"):
-        assert pipeline_failure not in unavailable_body
-    for terminal_status in ("completed", "failed"):
-        terminal_body = _block_body(
-            presentation_body, f'if (runtime.status === "{terminal_status}") {{'
-        )
-        assert "telemetryAvailable" not in terminal_body
-
-
 def test_operations_script_builds_runtime_cards_with_dom_api() -> None:
     # Given
     client = TestClient(create_app())
@@ -299,58 +325,61 @@ def test_operations_script_builds_runtime_cards_with_dom_api() -> None:
     assert "heading.textContent = displayValue(runtime.run_id);" in card_body
 
 
-def test_operations_script_keeps_api_runtime_order() -> None:
+def test_operations_script_renders_cards_from_presentation_contract() -> None:
     # Given
     client = TestClient(create_app())
 
     # When
     script = client.get("/dashboard-assets/operations.js").text
-
-    # Then
-    for reordering_api in (".sort(", ".toSorted(", ".reverse(", ".toReversed("):
-        assert reordering_api not in script
-
-
-def test_operations_script_presents_stale_running_without_failure_semantics() -> None:
-    # Given
-    client = TestClient(create_app())
-
-    # When
-    script = client.get("/dashboard-assets/operations.js").text
-    presentation_body = _block_body(
-        script, "function getRuntimeStatePresentation(runtime, telemetryAvailable) {"
-    )
-    stale_body = _block_body(presentation_body, "if (runtime.is_stale === true) {")
-
-    # Then
-    assert 'modifiers: ["running", "stale"]' in stale_body
-    assert "statusLabel: RUNNING_STATUS_LABEL" in stale_body
-    assert 'livenessLabel: "확인 불가"' in stale_body
-    for failure_wording in ("실패", "중단", "종료", "failed", "stopped", "dead", "timeout"):
-        assert failure_wording not in stale_body
-    assert '"현재 실행 여부"' in script
-    assert "현재 실행 중" not in script
-    assert "has_error" not in presentation_body
-
-
-def test_operations_script_renders_batch_progress_fields() -> None:
-    # Given
-    client = TestClient(create_app())
-
-    # When
-    script = client.get("/dashboard-assets/operations.js").text
+    imported_names = _between(script, "import {", '} from "./operations-contract.mjs";')
     card_body = _block_body(script, "function createRuntimeCard(runtime, telemetryAvailable) {")
 
     # Then
-    for progress_field in (
-        "runtime.normalization_processed_count",
-        "runtime.input_total",
-        "runtime.remaining_count",
+    for contract_function in OPERATIONS_CONTRACT_FUNCTIONS:
+        assert f"{contract_function}," in imported_names
+        assert f"function {contract_function}(" not in script
+    assert "const STAGE_LABELS" not in script
+    assert "getRuntimeStatePresentation(runtime, telemetryAvailable)" in card_body
+    assert "getRuntimeProgressPresentation(runtime)" in card_body
+    for rendered_value in (
+        "presentation.modifiers",
+        "presentation.statusLabel",
+        "presentation.telemetryLabel",
+        "presentation.livenessLabel",
+        "getStageLabel(runtime.current_stage)",
+        "progress.processed",
+        "progress.remaining",
+        "getStageLabel(runtime.failed_stage)",
     ):
-        assert progress_field in card_body
-    assert '"남은 항목"' in card_body
-    for misleading_label in ("대기열", "backlog", "queue"):
-        assert misleading_label not in script
+        assert rendered_value in card_body
+
+
+def test_operations_scripts_keep_api_runtime_order() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/operations.js").text
+    contract = client.get("/dashboard-assets/operations-contract.mjs").text
+
+    # Then
+    for source in (script, contract):
+        for reordering_api in (".sort(", ".toSorted(", ".reverse(", ".toReversed("):
+            assert reordering_api not in source
+
+
+def test_operations_scripts_avoid_liveness_and_queue_wording() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/operations.js").text
+    contract = client.get("/dashboard-assets/operations-contract.mjs").text
+
+    # Then
+    for source in (script, contract):
+        for misleading_wording in ("현재 실행 중", "대기열", "backlog", "queue"):
+            assert misleading_wording not in source
 
 
 def test_dashboard_assets_do_not_serve_operations_html_shell() -> None:
@@ -411,7 +440,7 @@ def test_operations_view_html_has_no_inline_script_or_style() -> None:
 
     # Then
     assert html.count("<script") == 1
-    assert html.count('<script src="/dashboard-assets/operations.js"') == 1
+    assert html.count('<script type="module" src="/dashboard-assets/operations.js">') == 1
     assert "<style" not in html
     assert " style=" not in html
 
@@ -442,7 +471,7 @@ def test_operations_view_does_not_depend_on_working_directory(
     responses = [client.get(path) for path in OPERATIONS_VIEW_PATHS]
 
     # Then
-    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert [response.status_code for response in responses] == [200] * len(OPERATIONS_VIEW_PATHS)
 
 
 def _block_body(source: str, opening: str) -> str:

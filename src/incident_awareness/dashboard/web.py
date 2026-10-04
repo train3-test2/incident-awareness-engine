@@ -1,5 +1,6 @@
 """Serve the Operations View shell and its static assets without database access."""
 
+import mimetypes
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI
@@ -20,6 +21,9 @@ def get_operations_view() -> FileResponse:
 
 def mount_dashboard_assets(application: FastAPI) -> None:
     """Serve CSS/JS assets, not the HTML shell, under a prefix that cannot shadow APIs."""
+    # Browsers execute module scripts only with a JavaScript MIME type, and some Windows
+    # registries map .mjs to text/plain, so register the standard type explicitly.
+    mimetypes.add_type("text/javascript", ".mjs")
     application.mount(
         _DASHBOARD_ASSETS_PATH,
         StaticFiles(directory=_ASSETS_DIRECTORY),
