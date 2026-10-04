@@ -1,0 +1,32 @@
+{
+  "manifest_version": "synthetic-split-v1",
+  "grouping_policy_version": "synthetic-run-v1",
+  "inventory_run_ids": [
+    "RUN-20261004-001",
+    "RUN-20261004-002",
+    "RUN-20261004-003",
+    "RUN-20261004-004"
+  ],
+  "assignments": [
+    {
+      "run_id": "RUN-20261004-001",
+      "group_id": "RUN-20261004-001",
+      "split": "train"
+    },
+    {
+      "run_id": "RUN-20261004-002",
+      "group_id": "RUN-20261004-002",
+      "split": "train"
+    },
+    {
+      "run_id": "RUN-20261004-003",
+      "group_id": "RUN-20261004-003",
+      "split": "validation"
+    },
+    {
+      "run_id": "RUN-20261004-004",
+      "group_id": "RUN-20261004-004",
+      "split": "test"
+    }
+  ]
+}

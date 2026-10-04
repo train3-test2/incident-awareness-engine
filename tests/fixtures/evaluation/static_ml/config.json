@@ -1,0 +1,7 @@
+{
+  "model_version": "synthetic-logistic-v1",
+  "label_policy_version": "synthetic-window-label-v1",
+  "c": 1.0,
+  "tolerance": 1e-08,
+  "max_iter": 500
+}
