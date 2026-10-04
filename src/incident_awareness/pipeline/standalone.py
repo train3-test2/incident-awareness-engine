@@ -89,6 +89,15 @@ class StandalonePreparedRun:
     inputs: PipelineInputs
 
 
+@dataclass(frozen=True, slots=True)
+class StandaloneOutputReservation:
+    """An output directory atomically reserved for one standalone execution."""
+
+    run_id: str
+    decision_id: str
+    output_dir: Path
+
+
 def build_default_standalone_fast_detection(
     *,
     run_id: str,
@@ -144,6 +153,7 @@ def prepare_standalone_run(
     target_host: str | None = None,
     entity_id: str | None = None,
     fusion_config_path: Path | None = None,
+    output_dir_reserved: bool = False,
 ) -> StandalonePreparedRun:
     """Validate JSONL and materialize the minimum runnable First Cycle inputs."""
     records = validate_standalone_sysmon_jsonl(sysmon_jsonl_path)
@@ -157,14 +167,22 @@ def prepare_standalone_run(
         raise ValueError("entity_id must match target_host for the standalone direct host mapping")
     _validate_identifier(decision_id, "decision_id")
 
-    if output_dir.exists():
-        raise ValueError(f"standalone output directory already exists: {output_dir}")
+    owns_output_dir = output_dir_reserved
+    if output_dir_reserved:
+        if not output_dir.is_dir():
+            raise ValueError(f"reserved standalone output directory is unavailable: {output_dir}")
+    else:
+        try:
+            output_dir.mkdir(parents=True)
+        except FileExistsError as error:
+            raise ValueError(f"standalone output directory already exists: {output_dir}") from error
+        owns_output_dir = True
 
-    execution_config = select_standalone_execution_config(fusion_config_path=fusion_config_path)
-    telemetry_dir = output_dir / "telemetry"
-    destination_jsonl = telemetry_dir / _SYSMON_JSONL_FILENAME
     try:
-        telemetry_dir.mkdir(parents=True)
+        execution_config = select_standalone_execution_config(fusion_config_path=fusion_config_path)
+        telemetry_dir = output_dir / "telemetry"
+        destination_jsonl = telemetry_dir / _SYSMON_JSONL_FILENAME
+        telemetry_dir.mkdir()
         shutil.copyfile(sysmon_jsonl_path, destination_jsonl)
         metadata = build_run_metadata_from_sysmon_jsonl(
             destination_jsonl,
@@ -179,7 +197,8 @@ def prepare_standalone_run(
         run_metadata_path.write_text(metadata.model_dump_json(indent=2), encoding="utf-8")
         manifest_path.write_text(json.dumps(generated.manifest, indent=2), encoding="utf-8")
     except Exception:
-        shutil.rmtree(output_dir, ignore_errors=True)
+        if owns_output_dir:
+            shutil.rmtree(output_dir, ignore_errors=True)
         raise
 
     return StandalonePreparedRun(
@@ -265,19 +284,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     database_config = DatabaseConfig.from_environment()
 
     with psycopg.connect(database_config.url, autocommit=False) as connection:
-        run_id, decision_id = _allocate_identifiers(connection, output_root)
-        prepared = prepare_standalone_run(
-            sysmon_jsonl_path=sysmon_jsonl_path,
-            output_dir=output_root / run_id,
-            run_id=run_id,
-            decision_id=decision_id,
-            scenario_id=_validate_identifier(namespace.scenario_id, "scenario_id"),
-            run_type=RunType(namespace.run_type),
-            target_host=namespace.target_host,
-            entity_id=namespace.entity_id,
-            fusion_config_path=namespace.fusion_config,
-        )
-        summary = run_prepared_standalone_run(prepared, connection=connection)
+        reservation = _allocate_identifiers(connection, output_root)
+        try:
+            prepared = prepare_standalone_run(
+                sysmon_jsonl_path=sysmon_jsonl_path,
+                output_dir=reservation.output_dir,
+                run_id=reservation.run_id,
+                decision_id=reservation.decision_id,
+                scenario_id=_validate_identifier(namespace.scenario_id, "scenario_id"),
+                run_type=RunType(namespace.run_type),
+                target_host=namespace.target_host,
+                entity_id=namespace.entity_id,
+                fusion_config_path=namespace.fusion_config,
+                output_dir_reserved=True,
+            )
+            summary = run_prepared_standalone_run(prepared, connection=connection)
+        except Exception:
+            shutil.rmtree(reservation.output_dir, ignore_errors=True)
+            raise
 
     _LOGGER.info("Standalone First Cycle output: %s", prepared.output_dir)
     print(json.dumps(asdict(summary), sort_keys=True))
@@ -289,22 +313,34 @@ def _allocate_identifiers(
     output_root: Path,
     *,
     now: datetime | None = None,
-) -> tuple[str, str]:
-    """Allocate the next unused UTC-date Run and Decision identifier."""
+) -> StandaloneOutputReservation:
+    """Atomically reserve the next unused UTC-date Run output directory."""
     date_part = (now or datetime.now(UTC)).strftime("%Y%m%d")
     for sequence in range(1, 1000):
         run_id = f"RUN-{date_part}-{sequence:03d}"
         decision_id = f"DEC-{run_id}"
-        if (output_root / run_id).exists():
+        output_dir = output_root / run_id
+        try:
+            output_dir.mkdir(parents=True)
+        except FileExistsError:
             continue
-        row = connection.execute(
-            "SELECT EXISTS (SELECT 1 FROM runs WHERE run_id = %s) "
-            "OR EXISTS (SELECT 1 FROM decisions WHERE decision_id = %s)",
-            (run_id, decision_id),
-        ).fetchone()
+        try:
+            row = connection.execute(
+                "SELECT EXISTS (SELECT 1 FROM runs WHERE run_id = %s) "
+                "OR EXISTS (SELECT 1 FROM decisions WHERE decision_id = %s)",
+                (run_id, decision_id),
+            ).fetchone()
+        except Exception:
+            shutil.rmtree(output_dir, ignore_errors=True)
+            raise
         exists = row[0] if isinstance(row, tuple) else row["exists"] if row else None
         if exists is False:
-            return run_id, decision_id
+            return StandaloneOutputReservation(
+                run_id=run_id,
+                decision_id=decision_id,
+                output_dir=output_dir,
+            )
+        shutil.rmtree(output_dir, ignore_errors=True)
 
     raise RuntimeError("no unused standalone run_id remains for the current UTC date")
 
@@ -557,6 +593,7 @@ __all__ = [
     "DEFAULT_STANDALONE_FUSION_CONFIG_PATH",
     "DEFAULT_STANDALONE_SCHEMA_VERSIONS",
     "StandaloneExecutionConfig",
+    "StandaloneOutputReservation",
     "StandalonePreparedRun",
     "StandaloneSysmonArtifacts",
     "build_default_standalone_fast_detection",

@@ -10,6 +10,7 @@ from incident_awareness.pipeline.standalone import (
     DEFAULT_STANDALONE_DECISION_CONFIG_VERSION,
     DEFAULT_STANDALONE_FAST_MODE,
     DEFAULT_STANDALONE_FUSION_CONFIG_PATH,
+    _allocate_identifiers,
     build_default_standalone_fast_detection,
     build_run_metadata_from_sysmon_jsonl,
     build_sysmon_artifacts_from_jsonl,
@@ -167,6 +168,35 @@ def test_materializes_runnable_standalone_artifacts(tmp_path: Path) -> None:
     manifest = json.loads(prepared.inputs.manifest_path.read_text(encoding="utf-8"))
     assert manifest["run_id"] == "RUN-20261003-001"
     assert manifest["items"][1]["path"] == "raw/RUN-20261003-001/telemetry/sysmon-0001.jsonl"
+
+
+def test_atomically_reserves_next_available_standalone_output_directory(tmp_path: Path) -> None:
+    output_root = tmp_path / "output"
+    (output_root / "RUN-20261003-001").mkdir(parents=True)
+
+    reservation = _allocate_identifiers(
+        _UnusedIdentifierConnection(),
+        output_root,
+        now=datetime(2026, 10, 3, tzinfo=UTC),
+    )
+
+    assert reservation.run_id == "RUN-20261003-002"
+    assert reservation.decision_id == "DEC-RUN-20261003-002"
+    assert reservation.output_dir == output_root / reservation.run_id
+    assert reservation.output_dir.is_dir()
+
+
+class _UnusedIdentifierConnection:
+    def execute(self, query: str, parameters: tuple[str, str]) -> "_UnusedIdentifierCursor":
+        assert "SELECT EXISTS" in query
+        assert parameters[0].startswith("RUN-20261003-")
+        assert parameters[1] == f"DEC-{parameters[0]}"
+        return _UnusedIdentifierCursor()
+
+
+class _UnusedIdentifierCursor:
+    def fetchone(self) -> tuple[bool]:
+        return (False,)
 
 
 def test_rejects_standalone_target_or_entity_outside_direct_host_mapping(tmp_path: Path) -> None:
