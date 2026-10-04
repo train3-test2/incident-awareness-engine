@@ -1,0 +1,100 @@
+:root {
+    color-scheme: light;
+    --text-color: #1f2328;
+    --muted-text-color: #59636e;
+    --border-color: #d1d9e0;
+    --surface-color: #ffffff;
+    --page-background-color: #f6f8fa;
+    --accent-color: #0969da;
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: system-ui, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    line-height: 1.5;
+    color: var(--text-color);
+    background-color: var(--page-background-color);
+}
+
+.dashboard-page {
+    max-width: 72rem;
+    margin: 0 auto;
+    padding: 1.5rem 1rem;
+}
+
+.dashboard-navigation {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.dashboard-navigation a {
+    padding: 0.375rem 0.625rem;
+    color: var(--accent-color);
+    text-decoration: none;
+    border-radius: 0.375rem;
+}
+
+.dashboard-navigation a:hover,
+.dashboard-navigation a:focus-visible {
+    text-decoration: underline;
+}
+
+.dashboard-navigation a[aria-current="page"] {
+    color: var(--surface-color);
+    background-color: var(--accent-color);
+}
+
+.page-title {
+    margin: 0 0 1.5rem;
+    font-size: 1.5rem;
+}
+
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+}
+
+.dashboard-section {
+    padding: 1rem;
+    background-color: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+}
+
+.dashboard-section--wide {
+    grid-column: 1 / -1;
+}
+
+.dashboard-section h2 {
+    margin: 0 0 0.75rem;
+    font-size: 1.125rem;
+}
+
+.dashboard-metric-label {
+    margin: 0 0 0.375rem;
+    font-weight: 600;
+}
+
+.dashboard-status {
+    min-height: 1.5rem;
+    color: var(--muted-text-color);
+}
+
+@media (max-width: 40rem) {
+    .dashboard-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .dashboard-section--wide {
+        grid-column: auto;
+    }
+}

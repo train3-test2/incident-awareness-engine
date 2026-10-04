@@ -1,4 +1,4 @@
-"""Serve the Operations View shell and its static assets without database access."""
+"""Serve Dashboard UI shells and static assets without database access."""
 
 import mimetypes
 from pathlib import Path
@@ -12,6 +12,11 @@ _ASSETS_DIRECTORY = _UI_DIRECTORY / "assets"
 _DASHBOARD_ASSETS_PATH = "/dashboard-assets"
 
 operations_view_router = APIRouter(include_in_schema=False)
+
+
+@operations_view_router.get("/dashboard")
+def get_dashboard_view() -> FileResponse:
+    return FileResponse(_UI_DIRECTORY / "dashboard.html", media_type="text/html")
 
 
 @operations_view_router.get("/operations")
