@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { buildDecisionDetailViewPath } from "../../../src/incident_awareness/dashboard/ui/assets/decision-detail-contract.mjs";
 import {
     buildRunDetailApiPath,
     buildRunDetailViewPath,
@@ -161,6 +162,30 @@ test("Run Detail success preserves the payload and Decision History order", () =
         ["DEC-002", "DEC-001"],
     );
     assert.deepEqual(payload, payloadSnapshot);
+});
+
+test("Run Detail Decision History links preserve order and URL-encode Decision IDs", () => {
+    // Given
+    const payload = makePayload();
+    payload.decision_history = [
+        { decision_id: "DEC 002/child" },
+        { decision_id: "DEC-001" },
+    ];
+
+    // When
+    const paths = payload.decision_history.map(
+        (decision) => buildDecisionDetailViewPath(decision.decision_id),
+    );
+
+    // Then
+    assert.deepEqual(paths, [
+        "/dashboard/decisions/DEC%20002%2Fchild",
+        "/dashboard/decisions/DEC-001",
+    ]);
+    assert.deepEqual(
+        payload.decision_history.map((decision) => decision.decision_id),
+        ["DEC 002/child", "DEC-001"],
+    );
 });
 
 test("Run Detail success accepts an absent Current Decision", () => {

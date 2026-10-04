@@ -19,6 +19,8 @@ DETAIL_VIEW_PATHS = (
     "/dashboard-assets/detail.css",
     "/dashboard-assets/run-detail.js",
     "/dashboard-assets/run-detail-contract.mjs",
+    "/dashboard-assets/decision-detail.js",
+    "/dashboard-assets/decision-detail-contract.mjs",
 )
 
 
@@ -92,9 +94,10 @@ def test_run_detail_view_serves_html_shell_without_database_access(
         "detection-runtime",
         "fusion-runtime-status",
         "fusion-runtime",
+        "decision-history-status",
+        "decision-history-list",
     ):
         assert f'id="{container_id}"' in html
-    assert "Decision History 데이터는 다음 단계에서 표시됩니다." in html
     assert database_connection_attempts == []
 
 
@@ -115,8 +118,26 @@ def test_historical_decision_view_serves_html_shell_without_database_access(
     assert 'href="/dashboard" aria-current="page"' in html
     assert 'href="/operations"' in html
     assert 'href="/dashboard-assets/detail.css"' in html
-    for section in ("Decision", "Historical Runtime Snapshot"):
+    assert '<script type="module" src="/dashboard-assets/decision-detail.js"></script>' in html
+    for section in (
+        "Decision",
+        "Historical Runtime Snapshot",
+        "Historical Detection Runtime",
+        "Historical Fusion Runtime",
+    ):
         assert section in html
+    for container_id in (
+        "decision-detail-view",
+        "decision-detail-status",
+        "historical-decision",
+        "runtime-snapshot-status",
+        "historical-detection-status",
+        "historical-detection",
+        "historical-fusion-status",
+        "historical-fusion",
+        "run-detail-back-navigation",
+    ):
+        assert f'id="{container_id}"' in html
     assert database_connection_attempts == []
 
 
@@ -133,7 +154,7 @@ def test_detail_stylesheet_is_served_with_css_media_type() -> None:
     assert ".detail-page" in response.text
 
 
-def test_run_detail_script_and_contract_are_served_with_javascript_media_type() -> None:
+def test_detail_scripts_and_contracts_are_served_with_javascript_media_type() -> None:
     # Given
     client = TestClient(create_app())
 
@@ -141,6 +162,8 @@ def test_run_detail_script_and_contract_are_served_with_javascript_media_type() 
     responses = [
         client.get("/dashboard-assets/run-detail.js"),
         client.get("/dashboard-assets/run-detail-contract.mjs"),
+        client.get("/dashboard-assets/decision-detail.js"),
+        client.get("/dashboard-assets/decision-detail-contract.mjs"),
     ]
 
     # Then
@@ -183,7 +206,9 @@ def test_run_detail_assets_use_authoritative_current_data_and_safe_dom_rendering
     assert "const current = payload.current_decision;" in script
     assert "current.latest_detection_result" in script
     assert "current.latest_fusion_result" in script
-    assert "decision_history" not in script
+    assert "renderDecisionHistory(payload.decision_history);" in script
+    assert "buildDecisionDetailViewPath(decision.decision_id)" in script
+    assert "decision_history[" not in script
     assert "latest_fusion_stopping_trace" not in script
     assert "decision.t_e" in script
     assert "Math.min(" not in script
@@ -244,6 +269,89 @@ def test_run_detail_assets_use_authoritative_current_data_and_safe_dom_rendering
             assert forbidden_api not in source
         for reordering_api in (".sort(", ".toSorted(", ".reverse(", ".toReversed("):
             assert reordering_api not in source
+
+
+def test_historical_decision_script_fetches_snapshot_json_once_without_fallback() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/decision-detail.js").text
+
+    # Then
+    assert 'document.getElementById("decision-detail-view")' in script
+    assert "extractDecisionIdFromPathname(window.location.pathname)" in script
+    assert "fetch(buildDecisionDetailApiPath(decisionId)" in script
+    assert 'Accept: "application/json"' in script
+    assert 'cache: "no-store"' in script
+    assert "response.status === 404" in script
+    assert script.count("fetch(") == 1
+    assert script.count("void loadDecisionDetail();") == 1
+    assert "const snapshot = payload.runtime_snapshot;" in script
+    assert "snapshot.detection_result" in script
+    assert "snapshot.fusion_result" in script
+    assert "buildRunDetailViewPath(runId)" in script
+    for forbidden_source in (
+        "latest_detection_result",
+        "latest_fusion_result",
+        "latest_fusion_stopping_trace",
+        "buildRunDetailApiPath",
+        'fetch("/runs/',
+        'fetch("/overview',
+        'fetch("/operations/runtime',
+    ):
+        assert forbidden_source not in script
+    for polling_api in (
+        "setInterval(",
+        "setTimeout(",
+        "AbortController",
+        "WebSocket",
+        "EventSource",
+    ):
+        assert polling_api not in script
+
+
+def test_historical_decision_assets_use_safe_dom_and_pure_contract() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/decision-detail.js").text
+    contract = client.get("/dashboard-assets/decision-detail-contract.mjs").text
+
+    # Then
+    assert "decision.t_e" in script
+    assert "Math.min(" not in script
+    assert "Date.parse(decision.t_e" not in script
+    assert "저장된 Historical Runtime Snapshot이 없습니다." in script
+    for safe_api in (
+        "document.createElement(",
+        ".textContent =",
+        ".append(",
+        ".replaceChildren(",
+        ".classList.add(",
+    ):
+        assert safe_api in script
+    for source in (script, contract):
+        for forbidden_api in (
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+            "eval(",
+            "new Function",
+        ):
+            assert forbidden_api not in source
+    for browser_api in (
+        "document",
+        "window",
+        "location",
+        "fetch(",
+        "AbortController",
+        "setTimeout(",
+        "setInterval(",
+    ):
+        assert browser_api not in contract
 
 
 def test_run_detail_contract_has_no_dom_network_location_or_timer_access() -> None:
@@ -366,6 +474,7 @@ def test_historical_decision_view_has_no_inline_script_or_style() -> None:
     html = client.get(f"/dashboard/decisions/{DECISION_ID}").text
 
     # Then
-    assert "<script" not in html
+    assert html.count("<script") == 1
+    assert html.count('<script type="module" src="/dashboard-assets/decision-detail.js">') == 1
     assert "<style" not in html
     assert " style=" not in html

@@ -112,6 +112,33 @@ body {
     overflow-wrap: anywhere;
 }
 
+.decision-history-list {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.decision-history-card {
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+}
+
+.decision-history-card__title {
+    margin: 0 0 0.625rem;
+    font-size: 1rem;
+    overflow-wrap: anywhere;
+}
+
+.decision-history-card__title a,
+.detail-back-navigation a {
+    color: var(--accent-color);
+}
+
+.detail-back-navigation {
+    margin-top: 1rem;
+    overflow-wrap: anywhere;
+}
+
 @media (max-width: 40rem) {
     .detail-page {
         padding: 1rem 0.75rem;

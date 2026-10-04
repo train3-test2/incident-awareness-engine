@@ -54,7 +54,13 @@
             </section>
             <section class="detail-section" aria-labelledby="decision-history-heading">
                 <h2 id="decision-history-heading">Decision History</h2>
-                <p class="detail-placeholder">Decision History 데이터는 다음 단계에서 표시됩니다.</p>
+                <div
+                    id="decision-history-status"
+                    class="detail-section-status"
+                    role="status"
+                    aria-live="polite"
+                ></div>
+                <div id="decision-history-list" class="decision-history-list"></div>
             </section>
         </div>
     </main>

@@ -9,6 +9,7 @@ import {
     getWinningPathLabel,
     resolveRunDetailQueryState,
 } from "./run-detail-contract.mjs";
+import { buildDecisionDetailViewPath } from "./decision-detail-contract.mjs";
 
 const runDetailView = document.getElementById("run-detail-view");
 const runDetailStatus = document.getElementById("run-detail-status");
@@ -19,6 +20,8 @@ const detectionRuntimeStatus = document.getElementById("detection-runtime-status
 const detectionRuntime = document.getElementById("detection-runtime");
 const fusionRuntimeStatus = document.getElementById("fusion-runtime-status");
 const fusionRuntime = document.getElementById("fusion-runtime");
+const decisionHistoryStatus = document.getElementById("decision-history-status");
+const decisionHistoryList = document.getElementById("decision-history-list");
 
 function createDetailField(label, value) {
     const field = document.createElement("div");
@@ -114,18 +117,66 @@ function renderFusionRuntime(fusion) {
     ]);
 }
 
+function createDecisionHistoryCard(decision) {
+    const card = document.createElement("article");
+    card.classList.add("decision-history-card");
+
+    const heading = document.createElement("h3");
+    heading.classList.add("decision-history-card__title");
+    if (typeof decision.decision_id === "string" && decision.decision_id.trim()) {
+        const link = document.createElement("a");
+        link.href = buildDecisionDetailViewPath(decision.decision_id);
+        link.textContent = decision.decision_id;
+        heading.append(link);
+    } else {
+        heading.textContent = displayValue(decision.decision_id);
+    }
+
+    const fields = document.createElement("dl");
+    fields.classList.add("detail-fields");
+    fields.append(
+        createDetailField("Fast Status", getStatusLabel(decision.fast_status)),
+        createDetailField("Fusion Status", getStatusLabel(decision.fusion_status)),
+        createDetailField("기술적 판정 시각 (t_e)", formatRunTimestamp(decision.t_e)),
+        createDetailField("Decision Path", getDecisionPathLabel(decision.decision_path)),
+        createDetailField("Winning Path", getWinningPathLabel(decision.winning_path)),
+        createDetailField(
+            "Supersedes Decision ID",
+            displayValue(decision.supersedes_decision_id),
+        ),
+    );
+
+    card.append(heading, fields);
+    return card;
+}
+
+function renderDecisionHistory(history) {
+    if (history.length === 0) {
+        decisionHistoryStatus.textContent = "Decision History가 없습니다.";
+        decisionHistoryList.replaceChildren();
+        return;
+    }
+    decisionHistoryStatus.textContent = `Decision History ${history.length}건을 불러왔습니다.`;
+    decisionHistoryList.replaceChildren(
+        ...history.map((decision) => createDecisionHistoryCard(decision)),
+    );
+}
+
 function clearDetailContent() {
     runMetadata.replaceChildren();
     currentDecision.replaceChildren();
     detectionRuntime.replaceChildren();
     fusionRuntime.replaceChildren();
+    decisionHistoryList.replaceChildren();
     currentDecisionStatus.textContent = "";
     detectionRuntimeStatus.textContent = "";
     fusionRuntimeStatus.textContent = "";
+    decisionHistoryStatus.textContent = "";
 }
 
 function renderSuccess(payload) {
     renderRunMetadata(payload.run);
+    renderDecisionHistory(payload.decision_history);
 
     const current = payload.current_decision;
     if (current === null) {
@@ -214,6 +265,8 @@ if (
     && detectionRuntime !== null
     && fusionRuntimeStatus !== null
     && fusionRuntime !== null
+    && decisionHistoryStatus !== null
+    && decisionHistoryList !== null
 ) {
     void loadRunDetail();
 }
