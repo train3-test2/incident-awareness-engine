@@ -20,12 +20,14 @@ DASHBOARD_CONTRACT_FUNCTIONS = (
     "getOverviewQueryMessage",
     "getRunTypeLabel",
     "resolveOverviewQueryState",
+    "resolveRunListQueryState",
 )
 DASHBOARD_SCRIPT_CONTRACT_FUNCTIONS = (
     "displayValue",
     "formatRunTimestamp",
     "getRunTypeLabel",
     "resolveOverviewQueryState",
+    "resolveRunListQueryState",
 )
 
 
@@ -81,9 +83,10 @@ def test_dashboard_view_serves_html_shell_without_database_access(
         "recent-runs-status",
         "recent-runs-list",
         "runs-status",
+        "runs-list",
     ):
         assert f'id="{status_id}"' in html
-    assert "Run 목록은 다음 단계에서 표시됩니다." in html
+    assert "Run 목록은 다음 단계에서 표시됩니다." not in html
     assert database_connection_attempts == []
 
 
@@ -122,7 +125,7 @@ def test_dashboard_assets_serve_stylesheet_script_and_contract_module() -> None:
         assert f"export function {contract_function}(" in contract.text
 
 
-def test_dashboard_script_fetches_overview_once_without_runs_or_polling() -> None:
+def test_dashboard_script_fetches_overview_and_runs_once_without_polling() -> None:
     # Given
     client = TestClient(create_app())
 
@@ -132,13 +135,16 @@ def test_dashboard_script_fetches_overview_once_without_runs_or_polling() -> Non
     # Then
     assert 'document.getElementById("dashboard-view")' in script
     assert 'const OVERVIEW_ENDPOINT = "/overview";' in script
+    assert 'const RUNS_ENDPOINT = "/runs";' in script
     assert "fetch(OVERVIEW_ENDPOINT" in script
-    assert 'Accept: "application/json"' in script
-    assert 'cache: "no-store"' in script
+    assert "fetch(RUNS_ENDPOINT" in script
+    assert script.count('Accept: "application/json"') == 2
+    assert script.count('cache: "no-store"') == 2
     assert script.count("void loadOverview();") == 1
-    assert '"/runs"' not in script
-    assert 'document.getElementById("runs-status")' not in script
-    for polling_api in ("setInterval(", "setTimeout("):
+    assert script.count("void loadRuns();") == 1
+    assert 'document.getElementById("runs-status")' in script
+    assert 'document.getElementById("runs-list")' in script
+    for polling_api in ("setInterval(", "setTimeout(", "AbortController"):
         assert polling_api not in script
 
 
@@ -175,6 +181,25 @@ def test_dashboard_script_uses_contract_and_safe_dom_rendering() -> None:
     assert 'createRunField("Target"' in script
     assert 'createRunField("Start"' in script
     assert 'createRunField("End"' in script
+    assert 'document.createElement("a")' not in script
+
+
+def test_dashboard_script_keeps_overview_and_runs_state_independent() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/dashboard.js").text
+
+    # Then
+    assert "async function loadOverview()" in script
+    assert "async function loadRuns()" in script
+    assert "renderOverviewState(state);" in script
+    assert "renderRunListState(state);" in script
+    assert "overviewStatus.textContent = state.totalMessage;" in script
+    assert "recentRunsStatus.textContent = state.message;" in script
+    assert "runsStatus.textContent = state.message;" in script
+    assert script.count("catch {") == 2
 
 
 def test_dashboard_contract_has_no_dom_network_or_timer_access() -> None:
@@ -196,6 +221,22 @@ def test_dashboard_contract_has_no_dom_network_or_timer_access() -> None:
         assert browser_api not in contract
     assert "!Number.isInteger(payload.total_runs)" in contract
     assert "!Array.isArray(payload.recent_runs)" in contract
+    assert "!Array.isArray(payload.runs)" in contract
+    assert "payload.runs.some(" in contract
+
+
+def test_dashboard_assets_do_not_reorder_api_results() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/dashboard.js").text
+    contract = client.get("/dashboard-assets/dashboard-contract.mjs").text
+
+    # Then
+    for source in (script, contract):
+        for reordering_api in (".sort(", ".toSorted(", ".reverse(", ".toReversed("):
+            assert reordering_api not in source
 
 
 def test_dashboard_assets_do_not_serve_dashboard_html_shell() -> None:

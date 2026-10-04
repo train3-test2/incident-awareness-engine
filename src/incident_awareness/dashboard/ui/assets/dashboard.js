@@ -3,15 +3,19 @@ import {
     formatRunTimestamp,
     getRunTypeLabel,
     resolveOverviewQueryState,
+    resolveRunListQueryState,
 } from "./dashboard-contract.mjs";
 
 const OVERVIEW_ENDPOINT = "/overview";
+const RUNS_ENDPOINT = "/runs";
 
 const dashboardView = document.getElementById("dashboard-view");
 const totalRunsValue = document.getElementById("total-runs-value");
 const overviewStatus = document.getElementById("overview-status");
 const recentRunsStatus = document.getElementById("recent-runs-status");
 const recentRunsList = document.getElementById("recent-runs-list");
+const runsStatus = document.getElementById("runs-status");
+const runsList = document.getElementById("runs-list");
 
 function createRunField(label, value) {
     const field = document.createElement("div");
@@ -29,7 +33,7 @@ function createRunField(label, value) {
     return field;
 }
 
-function createRecentRunCard(run) {
+function createRunCard(run) {
     const card = document.createElement("article");
     card.classList.add("recent-run-card");
 
@@ -53,10 +57,16 @@ function createRecentRunCard(run) {
 
 function renderOverviewState(state) {
     totalRunsValue.textContent = displayValue(state.totalRuns);
-    overviewStatus.textContent = state.message;
+    overviewStatus.textContent = state.totalMessage;
     recentRunsStatus.textContent = state.message;
-    const cards = state.recentRuns.map((run) => createRecentRunCard(run));
+    const cards = state.recentRuns.map((run) => createRunCard(run));
     recentRunsList.replaceChildren(...cards);
+}
+
+function renderRunListState(state) {
+    runsStatus.textContent = state.message;
+    const cards = state.items.map((run) => createRunCard(run));
+    runsList.replaceChildren(...cards);
 }
 
 async function fetchOverview() {
@@ -85,6 +95,32 @@ async function loadOverview() {
     renderOverviewState(state);
 }
 
+async function fetchRuns() {
+    const response = await fetch(RUNS_ENDPOINT, {
+        headers: {
+            Accept: "application/json",
+        },
+        cache: "no-store",
+    });
+    if (!response.ok) {
+        throw new Error("Run List API request failed");
+    }
+    return response.json();
+}
+
+async function loadRuns() {
+    let state = resolveRunListQueryState(null, { kind: "loading" });
+    renderRunListState(state);
+
+    try {
+        const payload = await fetchRuns();
+        state = resolveRunListQueryState(state, { kind: "success", payload });
+    } catch {
+        state = resolveRunListQueryState(state, { kind: "error" });
+    }
+    renderRunListState(state);
+}
+
 if (
     dashboardView !== null
     && totalRunsValue !== null
@@ -93,4 +129,12 @@ if (
     && recentRunsList !== null
 ) {
     void loadOverview();
+}
+
+if (
+    dashboardView !== null
+    && runsStatus !== null
+    && runsList !== null
+) {
+    void loadRuns();
 }

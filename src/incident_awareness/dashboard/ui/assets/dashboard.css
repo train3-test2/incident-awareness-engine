@@ -95,7 +95,7 @@ body {
     color: var(--muted-text-color);
 }
 
-.recent-runs-list {
+.run-card-list {
     display: grid;
     gap: 0.75rem;
     margin-top: 0.75rem;

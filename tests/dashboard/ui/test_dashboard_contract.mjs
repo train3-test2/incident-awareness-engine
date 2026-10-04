@@ -9,6 +9,7 @@ import {
     getOverviewQueryMessage,
     getRunTypeLabel,
     resolveOverviewQueryState,
+    resolveRunListQueryState,
 } from "../../../src/incident_awareness/dashboard/ui/assets/dashboard-contract.mjs";
 
 test("Run Type presentation maps the persisted vocabulary with a safe fallback", () => {
@@ -50,7 +51,8 @@ test("Overview loading has no data and a loading message", () => {
         queryState: "loading",
         totalRuns: null,
         recentRuns: [],
-        message: "Overview 정보를 불러오는 중입니다.",
+        totalMessage: "Total Runs를 불러오는 중입니다.",
+        message: "Recent Runs를 불러오는 중입니다.",
     });
 });
 
@@ -79,7 +81,8 @@ test("Overview success preserves total and recent Runs without mutation", () => 
     assert.equal(state.queryState, "success");
     assert.equal(state.totalRuns, 3);
     assert.strictEqual(state.recentRuns, payload.recent_runs);
-    assert.equal(state.message, "Overview 정보를 불러왔습니다.");
+    assert.equal(state.totalMessage, "Total Runs를 불러왔습니다.");
+    assert.equal(state.message, "Recent Runs를 불러왔습니다.");
     assert.deepEqual(payload, payloadSnapshot);
 });
 
@@ -104,6 +107,7 @@ test("Overview empty preserves the reported total and shows the empty message", 
         queryState: "empty",
         totalRuns: 0,
         recentRuns: [],
+        totalMessage: "Total Runs를 불러왔습니다.",
         message: "최근 Run이 없습니다.",
     });
     assert.equal(nonzeroTotal.queryState, "empty");
@@ -123,7 +127,8 @@ test("Overview error is a query failure without Pipeline or Run failure semantic
         queryState: "error",
         totalRuns: null,
         recentRuns: [],
-        message: "Overview 정보를 불러오지 못했습니다.",
+        totalMessage: "Total Runs를 불러오지 못했습니다.",
+        message: "Recent Runs를 불러오지 못했습니다.",
     });
     assert.doesNotMatch(state.message, /Pipeline failed|Run failed/i);
 });
@@ -161,6 +166,106 @@ test("Overview query state rejects malformed results and payloads", () => {
             () => resolveOverviewQueryState(previousState, {
                 kind: "success",
                 payload: { total_runs: 1, recent_runs: [invalidItem] },
+            }),
+            TypeError,
+        );
+    }
+});
+
+test("Run List loading has no items and a loading message", () => {
+    // Given
+    const previousState = null;
+
+    // When
+    const state = resolveRunListQueryState(previousState, { kind: "loading" });
+
+    // Then
+    assert.deepEqual(state, {
+        queryState: "loading",
+        items: [],
+        message: "Run 목록을 불러오는 중입니다.",
+    });
+});
+
+test("Run List success preserves API order and reports the item count", () => {
+    // Given
+    const previousState = resolveRunListQueryState(null, { kind: "loading" });
+    const payload = {
+        runs: [
+            { run_id: "RUN-2" },
+            { run_id: "RUN-1" },
+        ],
+    };
+    const payloadSnapshot = structuredClone(payload);
+
+    // When
+    const state = resolveRunListQueryState(previousState, { kind: "success", payload });
+
+    // Then
+    assert.equal(state.queryState, "success");
+    assert.strictEqual(state.items, payload.runs);
+    assert.deepEqual(state.items.map((run) => run.run_id), ["RUN-2", "RUN-1"]);
+    assert.equal(state.message, "Run 2건을 불러왔습니다.");
+    assert.deepEqual(payload, payloadSnapshot);
+});
+
+test("Run List empty returns no items and an empty message", () => {
+    // Given
+    const previousState = resolveRunListQueryState(null, { kind: "loading" });
+    const payload = { runs: [] };
+
+    // When
+    const state = resolveRunListQueryState(previousState, { kind: "success", payload });
+
+    // Then
+    assert.deepEqual(state, {
+        queryState: "empty",
+        items: [],
+        message: "표시할 Run이 없습니다.",
+    });
+    assert.strictEqual(state.items, payload.runs);
+});
+
+test("Run List error is a generalized query failure", () => {
+    // Given
+    const previousState = resolveRunListQueryState(null, { kind: "loading" });
+
+    // When
+    const state = resolveRunListQueryState(previousState, { kind: "error" });
+
+    // Then
+    assert.deepEqual(state, {
+        queryState: "error",
+        items: [],
+        message: "Run 목록을 불러오지 못했습니다.",
+    });
+    assert.doesNotMatch(state.message, /Pipeline failed|Run failed/i);
+});
+
+test("Run List query state rejects malformed results and payloads", () => {
+    // Given
+    const previousState = resolveRunListQueryState(null, { kind: "loading" });
+    const invalidCalls = [
+        () => resolveRunListQueryState([], { kind: "error" }),
+        () => resolveRunListQueryState(previousState, null),
+        () => resolveRunListQueryState(previousState, { kind: "success", payload: null }),
+        () => resolveRunListQueryState(previousState, {
+            kind: "success",
+            payload: { runs: null },
+        }),
+        () => resolveRunListQueryState(previousState, { kind: "unknown" }),
+    ];
+    const invalidRunItems = [null, []];
+
+    // When / Then
+    for (const invalidCall of invalidCalls) {
+        assert.throws(invalidCall);
+    }
+    for (const invalidItem of invalidRunItems) {
+        assert.throws(
+            () => resolveRunListQueryState(previousState, {
+                kind: "success",
+                payload: { runs: [invalidItem] },
             }),
             TypeError,
         );
