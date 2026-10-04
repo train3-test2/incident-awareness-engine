@@ -1,0 +1,54 @@
+:root {
+    color-scheme: light;
+    --text-color: #1f2328;
+    --muted-text-color: #59636e;
+    --border-color: #d1d9e0;
+    --surface-color: #ffffff;
+    --page-background-color: #f6f8fa;
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: system-ui, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    line-height: 1.5;
+    color: var(--text-color);
+    background-color: var(--page-background-color);
+}
+
+.operations-page {
+    max-width: 72rem;
+    margin: 0 auto;
+    padding: 1.5rem 1rem;
+}
+
+.page-title {
+    margin: 0 0 1.5rem;
+    font-size: 1.5rem;
+}
+
+.runtime-section {
+    padding: 1rem;
+    background-color: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+}
+
+.runtime-section h2 {
+    margin: 0 0 0.75rem;
+    font-size: 1.125rem;
+}
+
+.runtime-status {
+    min-height: 1.5rem;
+    color: var(--muted-text-color);
+}
+
+.runtime-list {
+    margin-top: 0.75rem;
+}
