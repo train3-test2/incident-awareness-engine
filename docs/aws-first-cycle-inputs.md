@@ -172,6 +172,28 @@ DLQ의 redrive 허용 정책은 `infra/sqs/first-cycle-ingest-dlq-attributes.jso
 Worker 구현 전에는 DLQ 메시지를 자동으로 삭제하거나 재처리하지 않는다. 운영자가 실패 원인을
 확인한 뒤 수정된 입력을 새 `ING-<uuidv4>`로 다시 업로드하는 방식으로 재제출한다.
 
+### Worker SQS 메시지 입력
+
+S3가 SQS에 직접 전달하는 JSON Event Notification body를 Worker 입력으로 사용한다. SNS
+envelope 또는 임의의 애플리케이션 메시지 형식은 허용하지 않는다. Worker는 한 SQS 메시지의
+`Records` 배열에 포함된 각 S3 record를 독립적인 입력으로 해석한다.
+
+각 record는 아래 값을 모두 가져야 한다.
+
+| JSON 경로 | 규칙 |
+| --- | --- |
+| `eventSource` | 정확히 `aws:s3` |
+| `eventName` | `ObjectCreated:`로 시작 |
+| `s3.bucket.name` | Worker에 구성한 입력 bucket과 일치 |
+| `s3.object.key` | URL decoding 후 자동 처리 입력 key 계약과 일치 |
+| `s3.object.eTag` | 비어 있지 않은 opaque object version 식별값 |
+| `s3.object.sequencer` | 비어 있지 않은 S3 event 순서 식별값 |
+
+`src/incident_awareness/pipeline/sqs_worker.py`의
+`parse_s3_sysmon_inputs()`가 이 계약을 검증하고 `bucket`, decoded `key`, `ingest_id`,
+`e_tag`, `sequencer`를 반환한다. 이 단계에서는 S3 object를 내려받거나 First Cycle을
+실행하지 않는다. 실제 SQS polling·다운로드·실행은 Worker entrypoint 단계의 책임이다.
+
 ## ECS Task Definition과 실행 override
 
 `infra/ecs/task-definition.first-cycle.json`은 Pipeline 실행용 Fargate Task Definition
