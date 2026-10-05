@@ -169,6 +169,21 @@ def test_worker_logs_failed_status_and_retains_message_when_standalone_execution
     }
 
 
+def test_worker_retains_message_when_standalone_rejects_invalid_sysmon_jsonl() -> None:
+    sqs = _FakeSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}])
+
+    run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=sqs,
+        s3_client=_FakeS3(),
+        run_standalone=_reject_invalid_sysmon_jsonl,
+        once=True,
+    )
+
+    assert sqs.deleted_receipts == []
+
+
 def test_worker_processes_duplicate_object_versions_once_per_sqs_message() -> None:
     duplicate_record = _s3_event()["Records"][0]
     sqs = _FakeSqs(
@@ -276,3 +291,7 @@ def _successful_standalone(calls: list[list[str]]) -> Callable[[Sequence[str]], 
         return 0
 
     return run
+
+
+def _reject_invalid_sysmon_jsonl(_: Sequence[str]) -> int:
+    raise ValueError("standalone Sysmon JSONL EventData.UtcTime must be in non-decreasing order")
