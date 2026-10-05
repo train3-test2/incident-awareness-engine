@@ -63,7 +63,9 @@ def run(number, values, normal=False):
     points = rows(values)
     identifier = f"RUN-20261004-{number:03d}"
     points = [p.model_copy(update={"run_id": identifier}) for p in points]
-    payload = json.loads(Path("tests/fixtures/pipeline/first_cycle/run_metadata.json").read_text())
+    payload = json.loads(
+        Path("tests/fixtures/pipeline/first_cycle/run_metadata.json").read_text(encoding="utf-8")
+    )
     payload.update(
         run_id=identifier,
         target_host="HOST",
@@ -85,32 +87,52 @@ def evaluate(runs, mapping, **kwargs):
             key: "a" * 64 for key, value in mapping.items() if value is not None
         },
         evaluation_horizon_sec=20,
-        purpose="smoke",
+        purpose=kwargs.pop("purpose", "smoke"),
         **kwargs,
     )
 
 
 def test_end_to_end_episode_metrics_and_burden():
+    # Given
     attack, a = run(2, [0, 1, 1, 0, 0])
     normal, n = run(3, [0, 1, 1, 0, 0], True)
+
+    # When
     report = evaluate([attack, normal], {attack.run_id: a, normal.run_id: n})
+
+    # Then
     assert report["metrics"]["run_recall"] == 1
     assert report["metrics"]["median_ttsd_sec"] == 0
     assert report["metrics"]["benign_run_fpr"] == 1
+    assert report["per_run"][0]["pre_reference_false_alerts"] == 0
+    assert report["per_run"][1]["pre_reference_false_alerts"] is None
+    assert report["alert_burden"]["pre_reference_false_alerts"] == 0
     assert report["alert_burden"]["false_alerts_per_benign_run_hour"] == 90
     assert report["replays"][attack.run_id]["episodes"][0]["source_sample_id"] == "s-2"
 
 
 def test_pre_reference_episode_is_not_new_detection():
+    # Given
     attack, a = run(2, [1, 1, 1, 1, 1])
+
+    # When
     report = evaluate([attack], {attack.run_id: a})
+
+    # Then
     assert report["metrics"]["run_recall"] == 0
+    assert report["per_run"][0]["pre_reference_false_alerts"] == 1
+    assert report["alert_burden"]["pre_reference_false_alerts"] == 1
     assert report["alert_burden"]["false_alerts_per_benign_run_hour"] is None
 
 
 def test_not_evaluated_is_excluded_not_miss():
+    # Given
     attack, _ = run(2, [0, 0, 0])
+
+    # When
     report = evaluate([attack], {attack.run_id: None})
+
+    # Then
     assert report["metrics"] is None
     assert not report["comparison_ready"]
     assert report["exclusions"][0]["reason"] == "not_evaluated"
@@ -118,6 +140,7 @@ def test_not_evaluated_is_excluded_not_miss():
 
 @pytest.mark.parametrize("case", ["missing", "empty", "partial", "host", "duplicate"])
 def test_bad_inventory_and_coverage_fail(case):
+    # Given
     attack, a = run(2, [0, 0, 0, 0, 0])
     inventory, mapping = [attack], {attack.run_id: a}
     if case == "missing":
@@ -130,13 +153,21 @@ def test_bad_inventory_and_coverage_fail(case):
         mapping[attack.run_id][0] = a[0].model_copy(update={"entity_id": "OTHER"})
     else:
         inventory.append(attack)
-    with pytest.raises(ValueError):
+
+    # When
+    with pytest.raises(ValueError) as error:
         evaluate(inventory, mapping)
+
+    # Then
+    assert str(error.value)
 
 
 def test_coverage_reference_required():
+    # Given
     attack, a = run(2, [0, 0, 0])
-    with pytest.raises(ValueError, match="coverage artifact"):
+
+    # When
+    with pytest.raises(ValueError) as error:
         evaluate_static_model(
             model(),
             [attack],
@@ -147,10 +178,16 @@ def test_coverage_reference_required():
             purpose="smoke",
         )
 
+    # Then
+    assert "coverage artifact" in str(error.value)
+
 
 def test_s0_cannot_be_performance():
+    # Given
     attack, a = run(2, [0, 0, 0])
-    with pytest.raises(ValueError, match="smoke-only"):
+
+    # When
+    with pytest.raises(ValueError) as error:
         evaluate_static_model(
             model(),
             [attack],
@@ -161,13 +198,19 @@ def test_s0_cannot_be_performance():
             purpose="performance",
         )
 
+    # Then
+    assert "smoke-only" in str(error.value)
+
 
 def test_unicode_model_hash_matches_nested_replay():
+    # Given
     attack, points = run(2, [0, 1, 1])
     original = model()
     unicode_model = original.model_copy(
         update={"config": original.config.model_copy(update={"model_version": "모델-v1"})}
     )
+
+    # When
     report = evaluate_static_model(
         unicode_model,
         [attack],
@@ -177,4 +220,141 @@ def test_unicode_model_hash_matches_nested_replay():
         evaluation_horizon_sec=20,
         purpose="smoke",
     )
+
+    # Then
     assert report["model_sha256"] == report["replays"][attack.run_id]["model_sha256"]
+
+
+@pytest.mark.parametrize("evaluated", [True, False])
+def test_performance_rejects_training_run_in_inventory(evaluated):
+    # Given
+    attack, points = run(1, [0, 1, 1])
+    attack.scenario_id = "R1"
+    mapping = {attack.run_id: points if evaluated else None}
+
+    # When
+    with pytest.raises(ValueError) as error:
+        evaluate([attack], mapping, purpose="performance")
+
+    # Then
+    assert "performance evaluation must not reuse training Runs" in str(error.value)
+
+
+def test_smoke_allows_training_replay_and_preserves_provenance():
+    # Given
+    attack, points = run(1, [0, 1, 1])
+    expected_model = model()
+
+    # When
+    report = evaluate([attack], {attack.run_id: points})
+
+    # Then
+    assert report["training_run_ids"] == list(expected_model.training_run_ids)
+    assert report["split_sha256"] == expected_model.split_sha256
+
+
+def test_performance_accepts_disjoint_training_runs():
+    # Given
+    attack, points = run(2, [0, 1, 1])
+    attack.scenario_id = "R1"
+
+    # When
+    report = evaluate([attack], {attack.run_id: points}, purpose="performance")
+
+    # Then
+    assert report["metrics"]["run_recall"] == 1
+
+
+@pytest.mark.parametrize("evaluated", [True, False])
+@pytest.mark.parametrize("side", ["before", "after"])
+def test_reference_outside_measured_run_is_rejected(evaluated, side):
+    # Given
+    attack, points = run(2, [0, 1, 1])
+    reference = (
+        attack.start_time - timedelta(milliseconds=1)
+        if side == "before"
+        else attack.end_time + timedelta(milliseconds=1)
+    )
+    attack = attack.model_copy(update={"reference_time": reference})
+    mapping = {attack.run_id: points if evaluated else None}
+
+    # When
+    with pytest.raises(ValueError) as error:
+        evaluate([attack], mapping)
+
+    # Then
+    assert "reference_time must be within the measured Run" in str(error.value)
+
+
+@pytest.mark.parametrize("side", ["start_time", "end_time"])
+def test_reference_at_run_boundary_is_allowed(side):
+    # Given
+    attack, points = run(2, [0, 1, 1])
+    attack.reference_time = getattr(attack, side)
+
+    # When
+    report = evaluate([attack], {attack.run_id: points})
+
+    # Then
+    assert report["metrics"]["run_recall"] == 1
+
+
+@pytest.mark.parametrize("milliseconds", [0, 999])
+def test_eligible_time_is_canonical_utc_milliseconds(milliseconds):
+    # Given
+    attack, points = run(2, [0, 1, 1])
+    shift = timedelta(milliseconds=milliseconds)
+    attack = attack.model_copy(
+        update={
+            key: getattr(attack, key) + shift
+            for key in ("start_time", "end_time", "reference_time")
+        }
+    )
+    points = [p.model_copy(update={"timestamp": p.timestamp + shift}) for p in points]
+
+    # When
+    report = evaluate([attack], {attack.run_id: points})
+
+    # Then
+    assert report["per_run"][0]["eligible_time"] == f"2026-10-04T00:00:20.{milliseconds:03d}Z"
+
+
+@pytest.mark.parametrize("values", [[1, 1, 1, 1, 1], [1, 1, 1, 0, 0]])
+def test_post_reference_release_does_not_change_pre_reference_count(values):
+    # Given
+    attack, points = run(2, values)
+
+    # When
+    report = evaluate([attack], {attack.run_id: points})
+
+    # Then
+    assert report["alert_burden"]["pre_reference_false_alerts"] == 1
+    assert report["per_run"][0]["pre_reference_false_alerts"] == 1
+    assert (
+        report["replays"][attack.run_id]["episodes"][0]["start_time"] == "2026-10-04T00:00:10.000Z"
+    )
+    assert report["replays"][attack.run_id]["episodes"][0]["end_time"] > "2026-10-04T00:00:20.000Z"
+    assert report["alert_burden"]["false_alert_episodes"] == 0
+
+
+@pytest.mark.parametrize("reference_seconds,expected", [(0, 0), (1, 1), (21, 2)])
+def test_pre_reference_counts_use_half_open_start_interval(reference_seconds, expected):
+    # Given
+    attack, points = run(2, [1, 0, 1, 0, 0])
+    attack.reference_time = attack.start_time + timedelta(seconds=reference_seconds)
+    policy = config().model_copy(update={"persistence_k": 1})
+
+    # When
+    report = evaluate_static_model(
+        model(),
+        [attack],
+        {attack.run_id: points},
+        policy,
+        coverage_sha256_by_run={attack.run_id: "a" * 64},
+        evaluation_horizon_sec=20,
+        purpose="smoke",
+    )
+
+    # Then
+    assert report["per_run"][0]["pre_reference_false_alerts"] == expected
+    assert report["alert_burden"]["pre_reference_false_alerts"] == expected

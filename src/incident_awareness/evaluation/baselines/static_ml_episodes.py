@@ -9,6 +9,7 @@ from typing import Annotated
 
 from pydantic import Field, field_validator, model_validator
 
+from incident_awareness.common.models.result import _serialize_utc_datetime
 from incident_awareness.decision.fusion.stopping_policy import ScorePoint, ThresholdStoppingPolicy
 from incident_awareness.evaluation.baselines.provenance import InputPoint
 from incident_awareness.evaluation.baselines.static_ml import (
@@ -104,8 +105,8 @@ def replay_static_model(
     sample_by_time = {r.timestamp: r.sample_id for r in rows}
     for episode in result.fusion_episodes:
         item = asdict(episode)
-        item["start_time"] = episode.start_time.isoformat()
-        item["end_time"] = episode.end_time.isoformat()
+        item["start_time"] = _serialize_utc_datetime(episode.start_time)
+        item["end_time"] = _serialize_utc_datetime(episode.end_time)
         item["source_sample_id"] = sample_by_time[episode.start_time]
         episodes.append(item)
     return {
@@ -117,13 +118,15 @@ def replay_static_model(
         "input_sha256": _hash([r.model_dump(mode="json") for r in rows]),
         "config_sha256": _hash(config.model_dump(mode="json")),
         "config": config.model_dump(mode="json"),
-        "replay_start": first.timestamp.isoformat(),
-        "replay_end": rows[-1].timestamp.isoformat(),
+        "replay_start": _serialize_utc_datetime(first.timestamp),
+        "replay_end": _serialize_utc_datetime(rows[-1].timestamp),
         "status": result.fusion_status,
-        "first_episode_time": result.fusion_time.isoformat() if result.fusion_time else None,
+        "first_episode_time": _serialize_utc_datetime(result.fusion_time)
+        if result.fusion_time
+        else None,
         "episodes": episodes,
         "trajectory": [
-            dict(p, timestamp=r.timestamp.isoformat())
+            dict(p, timestamp=_serialize_utc_datetime(r.timestamp))
             for r, p in zip(rows, prediction["predictions"], strict=True)
         ],
     }

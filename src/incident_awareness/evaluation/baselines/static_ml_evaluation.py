@@ -5,6 +5,7 @@ from typing import Literal
 
 import pandas as pd
 
+from incident_awareness.common.models.result import _serialize_utc_datetime
 from incident_awareness.common.models.run import RunMetadata
 from incident_awareness.evaluation.baselines.static_ml import StaticModel
 from incident_awareness.evaluation.baselines.static_ml_episodes import (
@@ -46,6 +47,8 @@ def evaluate_static_model(
     ids = [r.run_id for r in inventory]
     if not ids or len(ids) != len(set(ids)) or set(ids) != set(rows_by_run):
         raise ValueError("unique nonempty inventory must exactly match rows_by_run")
+    if purpose != "smoke" and set(ids) & set(model.training_run_ids):
+        raise ValueError("performance evaluation must not reuse training Runs")
     evaluated_ids = {key for key, value in rows_by_run.items() if value is not None}
     if set(coverage_sha256_by_run) != evaluated_ids or any(
         not isinstance(value, str)
@@ -56,6 +59,7 @@ def evaluate_static_model(
         raise ValueError("evaluated Runs require coverage artifact SHA-256 references")
     frames, per_run, exclusions, artifacts = [], [], [], {}
     benign_seconds = benign_episodes = 0
+    pre_reference_false_alerts = 0
     step = timedelta(seconds=config.step_seconds)
     for run in inventory:
         if purpose != "smoke" and run.scenario_id == "S0":
@@ -67,6 +71,8 @@ def evaluate_static_model(
                 raise ValueError("Run times must be UTC milliseconds")
         if run.run_type == "attack" and run.reference_time is None:
             raise ValueError("attack requires reference_time")
+        if run.run_type == "attack" and not (run.start_time <= run.reference_time <= run.end_time):
+            raise ValueError("attack reference_time must be within the measured Run")
         source = rows_by_run[run.run_id]
         if source is None:
             exclusions.append({"run_id": run.run_id, "reason": "not_evaluated"})
@@ -100,6 +106,13 @@ def evaluate_static_model(
                 "method": "StaticML",
             }
         )
+        pre_reference_count = (
+            sum(run.start_time <= t < run.reference_time for t in starts)
+            if run.run_type == "attack"
+            else None
+        )
+        if pre_reference_count is not None:
+            pre_reference_false_alerts += pre_reference_count
         count = len(starts)
         seconds = (run.end_time - run.start_time).total_seconds()
         if run.run_type == "normal":
@@ -110,8 +123,9 @@ def evaluate_static_model(
                 "run_id": run.run_id,
                 "entity_id": run.target_host,
                 "eligible_status": "detected" if eligible else "miss",
-                "eligible_time": eligible.isoformat() if eligible else None,
+                "eligible_time": _serialize_utc_datetime(eligible),
                 "episode_count": count,
+                "pre_reference_false_alerts": pre_reference_count,
                 "observation_seconds": seconds,
             }
         )
@@ -127,12 +141,15 @@ def evaluate_static_model(
         "config": config.model_dump(mode="json"),
         "evaluation_horizon_sec": evaluation_horizon_sec,
         "inventory_run_ids": ids,
+        "training_run_ids": list(model.training_run_ids),
+        "split_sha256": model.split_sha256,
         "coverage_sha256_by_run": coverage_sha256_by_run,
         "exclusions": exclusions,
         "comparison_ready": not exclusions,
         "metrics": evaluate(frame, evaluation_horizon=pd.Timedelta(horizon)) if frames else None,
         "alert_burden": {
             "false_alert_episodes": benign_episodes,
+            "pre_reference_false_alerts": pre_reference_false_alerts,
             "benign_run_hours": benign_seconds / 3600,
             "false_alerts_per_benign_run_hour": benign_episodes * 3600 / benign_seconds
             if benign_seconds

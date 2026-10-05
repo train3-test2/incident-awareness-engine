@@ -61,7 +61,10 @@ pickle을 사용하지 않는다. JSON 스키마와 유한 수·차원을 검증
 training_sha256은 sample_id 순으로 정렬한 전체 TrainingRow JSON 해시다.
 모델 및 추론 입력 해시는 실제 사용한 JSON 내용의 정규화 해시다.
 분할 원본과 sample_id별 window/Evidence 매핑도 실험 artifact로 함께 보존해야 한다.
-추론은 신규 Run도 허용한다. 평가 시 train Run을 다시 사용하는지는 호출자가 manifest로 검사한다.
+추론은 신규 Run도 허용한다. `evaluate_static_model()`의 performance 평가는 전체 inventory와
+model.training_run_ids의 중복을 거부한다. 미평가 Run도 이 검사에 포함한다.
+smoke는 학습 Run 재생을 허용한다. report에 training_run_ids와 split_sha256을 보존한다.
+Family 수준의 SplitManifest 교차 검증은 후속 범위다.
 
 ## 후속 순서
 
@@ -117,4 +120,21 @@ reference_time에 새 탐지한 것으로 보지 않는다. Normal은 전체 관
 replay·coverage 참조·모델 및 입력 해시를 보존한다. S0는 smoke만 허용한다.
 `comparison_ready`는 이 입력 집합에 미평가 Run이 없다는 뜻으로, 다른 방법과의
 동일 데이터·동일 오경보 조건이나 성능 검증 완료를 보증하지 않는다.
-분할 manifest 검증, train Run 재사용 차단, validation 운영점 선택은 호출 측 후속 단계다.
+Family 수준의 분할 manifest 교차 검증과 validation 운영점 선택은 호출 측 후속 단계다.
+performance에서 train Run 재사용 차단은 이 평가 API가 수행한다.
+
+
+### 평가 경계와 외부 시각 형식
+
+Attack의 reference_time은 measured Run의 `[start_time, end_time]` 안에 있어야 한다.
+미평가로 표시한 Run도 inventory 검증을 통과해야 하며, 잘못된 기준 시각을 제외 사유로 숨기지 않는다.
+모든 외부 timestamp(episode 시작/종료, replay 시작/종료, 최초 episode, trajectory,
+eligible_time)는 공통 Result 직렬화 helper로 `YYYY-MM-DDTHH:MM:SS.mmmZ` 형식으로 출력한다.
+
+Attack의 `[run_start, reference_time)`에 시작한 episode는 per_run과 alert_burden의
+`pre_reference_false_alerts`에 별도 집계한다. reference_time에 시작한 episode는 포함하지 않는다.
+reference 시점에 ACTIVE인 episode도 1건이며, 이후 release 시각은 이 count를 바꾸지 않는다.
+원본 episode를 reference_time에서 자르거나 다시 생성하지 않는다. Primary FA/BH의
+false_alert_episodes와 benign_run_hours는 계속 normal Run만 사용한다.
+normal Run의 per_run.pre_reference_false_alerts는 null이고, 미평가 Run은 exclusions에만 남긴다.
+전체 pre_reference_false_alerts는 평가된 Attack Run의 합계이며 제외 Run의 0건을 뜻하지 않는다.
