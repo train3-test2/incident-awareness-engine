@@ -94,7 +94,7 @@ def test_dashboard_task_definition_contract() -> None:
     assert task_definition["networkMode"] == "awsvpc"
     assert task_definition["cpu"] == "256"
     assert task_definition["memory"] == "512"
-    assert task_definition["executionRoleArn"].endswith(":role/ecsTaskExecutionRole")
+    assert task_definition["executionRoleArn"].endswith(":role/ecsDashboardTaskExecutionRole")
     assert task_definition["runtimePlatform"] == {
         "cpuArchitecture": "X86_64",
         "operatingSystemFamily": "LINUX",
@@ -120,7 +120,7 @@ def test_dashboard_task_definition_contract() -> None:
             "name": "INCIDENT_AWARENESS_DATABASE_URL",
             "valueFrom": (
                 "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:"
-                "incident-awareness/first-cycle/database-url-9KGf2f:"
+                "incident-awareness/dashboard/database-url-sB3qor:"
                 "INCIDENT_AWARENESS_DATABASE_URL::"
             ),
         }
@@ -165,6 +165,29 @@ def test_execution_role_secret_policy_is_scoped_to_first_cycle_database_url() ->
                 "Resource": (
                     "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:"
                     "incident-awareness/first-cycle/database-url-9KGf2f"
+                ),
+            }
+        ],
+    }
+
+
+def test_dashboard_execution_role_secret_policy_is_scoped_to_dashboard_database_url() -> None:
+    policy = json.loads(
+        (IAM_DIRECTORY / "ecs-dashboard-task-execution-secrets-policy.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert policy == {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "ReadDashboardDatabaseUrl",
+                "Effect": "Allow",
+                "Action": "secretsmanager:GetSecretValue",
+                "Resource": (
+                    "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:"
+                    "incident-awareness/dashboard/database-url-sB3qor"
                 ),
             }
         ],

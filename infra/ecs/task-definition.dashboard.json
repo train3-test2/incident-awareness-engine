@@ -4,7 +4,7 @@
   "networkMode": "awsvpc",
   "cpu": "256",
   "memory": "512",
-  "executionRoleArn": "arn:aws:iam::998301375101:role/ecsTaskExecutionRole",
+  "executionRoleArn": "arn:aws:iam::998301375101:role/ecsDashboardTaskExecutionRole",
   "runtimePlatform": {
     "cpuArchitecture": "X86_64",
     "operatingSystemFamily": "LINUX"
@@ -31,7 +31,7 @@
       "secrets": [
         {
           "name": "INCIDENT_AWARENESS_DATABASE_URL",
-          "valueFrom": "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:incident-awareness/first-cycle/database-url-9KGf2f:INCIDENT_AWARENESS_DATABASE_URL::"
+          "valueFrom": "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:incident-awareness/dashboard/database-url-sB3qor:INCIDENT_AWARENESS_DATABASE_URL::"
         }
       ],
       "logConfiguration": {
