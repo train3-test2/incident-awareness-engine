@@ -1,6 +1,7 @@
 {
   "VisibilityTimeout": "3600",
   "ReceiveMessageWaitTimeSeconds": "20",
-  "MessageRetentionPeriod": "1209600",
+  "MessageRetentionPeriod": "345600",
+  "RedrivePolicy": "{\"deadLetterTargetArn\":\"arn:aws:sqs:ap-northeast-2:998301375101:incident-awareness-first-cycle-ingest-dlq\",\"maxReceiveCount\":\"3\"}",
   "Policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"AllowFirstCycleInputBucketToSendMessages\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"s3.amazonaws.com\"},\"Action\":\"sqs:SendMessage\",\"Resource\":\"arn:aws:sqs:ap-northeast-2:998301375101:incident-awareness-first-cycle-ingest\",\"Condition\":{\"ArnEquals\":{\"aws:SourceArn\":\"arn:aws:s3:::incident-awareness-first-cycle-998301375101-ap-northeast-2-an\"},\"StringEquals\":{\"aws:SourceAccount\":\"998301375101\"}}}]}"
 }

@@ -1,0 +1,4 @@
+{
+  "MessageRetentionPeriod": "1209600",
+  "RedriveAllowPolicy": "{\"redrivePermission\":\"byQueue\",\"sourceQueueArns\":[\"arn:aws:sqs:ap-northeast-2:998301375101:incident-awareness-first-cycle-ingest\"]}"
+}

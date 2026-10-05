@@ -163,8 +163,14 @@ Queue로 전달한다. 따라서 수동 실행용 `first-cycle/` 객체와 Worke
 객체는 자동 처리 메시지를 만들지 않는다.
 
 Queue의 visibility timeout은 Worker가 이후 First Cycle을 처리하는 동안 동일 메시지를
-다른 Worker가 받지 않도록 1시간으로 설정한다. 재시도 횟수와 Dead Letter Queue는 다음
-구성 단계에서 추가한다.
+다른 Worker가 받지 않도록 1시간으로 설정한다. source Queue는 4일 동안 메시지를 보관하고,
+3회 수신 후에도 삭제되지 않은 메시지는
+`incident-awareness-first-cycle-ingest-dlq`로 이동한다. DLQ는 14일 동안 메시지를 보관하며,
+source Queue인 `incident-awareness-first-cycle-ingest`만 redrive 대상으로 허용한다.
+
+DLQ의 redrive 허용 정책은 `infra/sqs/first-cycle-ingest-dlq-attributes.json`에서 관리한다.
+Worker 구현 전에는 DLQ 메시지를 자동으로 삭제하거나 재처리하지 않는다. 운영자가 실패 원인을
+확인한 뒤 수정된 입력을 새 `ING-<uuidv4>`로 다시 업로드하는 방식으로 재제출한다.
 
 ## ECS Task Definition과 실행 override
 
