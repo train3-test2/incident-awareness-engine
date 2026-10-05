@@ -19,8 +19,7 @@ scenarios/R1/
 `run_metadata` · Manifest 작성은 새로 만들지 않고 `scenarios/S0/run-common.ps1` 의 함수를 그대로
 쓴다. R1 의 `run-common.ps1` 이 그 파일을 불러오며, 불러오는 것만으로는 아무것도 실행되지 않는다.
 
-**이 실행기는 아직 VM 에서 끝까지 실행된 적이 없다(§8).** 사전 세션 뒤의 단계는 호스트에서 fake
-transport 로만 검증한 상태다.
+**로컬 VM 에서 diagnostic 으로 끝까지 실행했다(§8).** 정식 수집 Run 은 아직 없다.
 
 ## 1. 무엇을 실행하는가
 
@@ -452,9 +451,17 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
 
 ## 8. 검증 상태
 
-**VM 에서 끝까지 실행된 적이 없다.** 첫 VM rehearsal 은 사전 세션의 Sysmon 조회에서 멈췄고(§8-1),
-고친 사전 세션 단계만 Target-A 에서 따로 실행해 확인했다. 그 뒤의 단계 — 시나리오 세션 · 수집 ·
-변환 · 계보 확인 — 는 여전히 호스트에서 fake 로만 검증했다.
+**로컬 VM 에서 diagnostic 으로 끝까지 실행했다. 정식 수집 Run 은 아직 없다.** 첫 VM rehearsal 은 사전
+세션의 Sysmon 조회에서 멈췄고(§8-1), 그 결함을 고친 뒤 수집 모드(`-Rehearsal` 없음, offset
+0/120/300/480/600 초, 관측 창 660 초)로 Normal · Attack 한 Pair 를 실행했다.
+
+- 두 Run 모두 §7 의 검증기를 통과했다. 기준 환경(Python 3.13, `uv` lock)에서 반출한 원본 zip 으로
+  돌린 결과다.
+- 두 Run 을 원본 JSONL 로 비교해 `r1.md` §8-1 의 S-1 ~ S-6 · S-8 을 만족함을 확인했다. S-7 은 t+8 판정
+  구간이 정해지지 않아(`r1.md` §11-11) 판정하지 않았다.
+- 이 Pair 는 diagnostic 이다. 데이터셋 · 평가 · Pilot 판정에 넣지 않으며, 산출물과 기록은 저장소 밖에 둔다.
+
+호스트에서 도는 검사(VM · WinRM · Sysmon 불필요):
 
 - `scenarios/R1/tests/Test-R1RunGuards.ps1` — Windows PowerShell 5.1. transport · 시계 · sleeper ·
   TCP client 가 모두 fake 라 세션·시나리오 프로세스·소켓을 만들지 않는다. 사전 세션 단계의 Sysmon
@@ -474,18 +481,18 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
   guard 와 `tests/collection/test_r1_pair_identity.py` 가 같은 파일을 읽는다. PowerShell 5.1 이 읽을 수
   있게 ASCII 로 두고 한국어는 escape 로 적는다.
 
-첫 VM rehearsal 에서 확인해야 하는 가정:
+VM 실행에 걸려 있던 가정과, 위 diagnostic Pair 에서 확인한 결과:
 
-| 가정 | 틀리면 |
-| --- | --- |
-| 원격 세션 host 의 Image 가 `wsmprovhost.exe` 다 (`r1.md` §11-7) | `scenario.yaml` 의 `planned_lineage.session_host.image` 를 고친다 |
-| 세션 host → 중간 프로세스 → 최종 관리 도구가 두 Run 모두 **직접 부모-자식**으로 기록된다 | 계보가 3 단계가 아니게 되므로 launcher 방식을 다시 정한다 |
-| Target-A 의 보안 설정이 두 중간 프로세스의 최종 관리 도구 실행을 막지 않는다 | 최종 도구가 준비 신호를 내지 못해 Run 이 중단된다. 실험 VM 정책은 역할 4 가 확인한다(§10) |
-| 최종 관리 도구의 내부 연결이 같은 `ProcessGuid` 의 EID 3 으로 남는다 (`r1.md` §11-9) | 연결 방식 또는 수집 설정을 역할 4 가 다시 확인한다(§10) |
-| Sysmon `Computer` 값이 `target_host` 와 같다 (대소문자 무시) | 사전 세션이 먼저 비교해 바로 중단한다. 렌더링할 때 `--target-host` 를 그 값으로 준다 |
-| Controller 가 Sysmon 없이도 가져온 EVTX 를 읽어 JSONL 로 변환한다 | 변환을 Target-A 쪽 단계로 옮긴다 |
-| 세션을 닫으면 Target-A 에 남은 작업 프로세스가 끝난다 | 작업은 최대 1 시간 뒤 스스로 끝난다 |
-| 목적지 host 가 그 포트에서 TCP 연결을 받는다 | 연결이 실패하면 수집 모드 Run 은 중단된다 |
+| 가정 | 확인 | 틀리면 |
+| --- | --- | --- |
+| 원격 세션 host 의 Image 가 `wsmprovhost.exe` 다 (`r1.md` §11-7) | 확인 | `scenario.yaml` 의 `planned_lineage.session_host.image` 를 고친다 |
+| 세션 host → 중간 프로세스 → 최종 관리 도구가 두 Run 모두 **직접 부모-자식**으로 기록된다 | 확인 | 계보가 3 단계가 아니게 되므로 launcher 방식을 다시 정한다 |
+| Target-A 의 보안 설정이 두 중간 프로세스의 최종 관리 도구 실행을 막지 않는다 | 확인 (로컬 실험 VM) | 최종 도구가 준비 신호를 내지 못해 Run 이 중단된다. 실험 VM 정책은 역할 4 가 확인한다(§10) |
+| 최종 관리 도구의 내부 연결이 같은 `ProcessGuid` 의 EID 3 으로 남는다 (`r1.md` §11-9) | 확인 | 연결 방식 또는 수집 설정을 역할 4 가 다시 확인한다(§10) |
+| Sysmon `Computer` 값이 `target_host` 와 같다 (대소문자 무시) | 확인 | 사전 세션이 먼저 비교해 바로 중단한다. 렌더링할 때 `--target-host` 를 그 값으로 준다 |
+| Controller 가 Sysmon 없이도 가져온 EVTX 를 읽어 JSONL 로 변환한다 | 확인 | 변환을 Target-A 쪽 단계로 옮긴다 |
+| 세션을 닫으면 Target-A 에 남은 작업 프로세스가 끝난다 | **미확인** | 작업은 최대 1 시간 뒤 스스로 끝난다 |
+| 목적지 host 가 그 포트에서 TCP 연결을 받는다 | 확인 | 연결이 실패하면 수집 모드 Run 은 중단된다 |
 
 ### 8-1. 첫 VM rehearsal 에서 드러난 결함과 조치
 
@@ -501,6 +508,13 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
 고친 단계는 Target-A 에서 실행기가 보내는 방식 그대로(WinRM 세션, 같은 인자) 실행해, 세 필드를 읽고
 적용 설정 해시가 파일 해시와 같음을 확인했다. 이 확인은 diagnostic 이며 Run 이 아니다. 두 결함과
 실패 경로는 `Test-R1RunGuards.ps1` 의 `probe step: Sysmon query` 절이 회귀 검사한다.
+
+### 8-2. rehearsal 로는 연결 증거를 확인하지 않는다
+
+rehearsal 은 관측 창을 건너뛰어 마지막 행위 직후에 Sysmon 을 export 한다. rehearsal 한 번에서, 최종
+관리 도구의 연결 EID 3 이 Target-A 의 로그에는 있는데 실행기가 가져온 export 에는 없었다. 원인은
+확인하지 못했고, 수집 모드 Pair 에서는 재현되지 않았다. rehearsal 의 계보 결과가 `mismatched` 여도 이
+경우일 수 있으므로, 연결 증거는 수집 모드 Run 으로 확인한다.
 
 ## 9. 남은 것
 
