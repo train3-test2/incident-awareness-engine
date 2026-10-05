@@ -105,6 +105,48 @@ S3 객체를 모두 내려받기 전에 CLI를 실행하거나, 임의의 호스
 3. Fargate 태스크를 실행하고 종료 코드 `0` 및 CloudWatch Logs의 JSON summary를 확인한다.
 4. summary의 새 `run_id`로 PostgreSQL의 Run·Event·Fusion·Detection·Decision 저장 결과를 조회한다.
 
+## S3 Event 자동 처리 입력 계약
+
+S3 Event·SQS Worker 경로는 수동 실행용 `first-cycle/<run_id>/`와 다른 입력 prefix를
+사용한다. `first-cycle/`는 이미 완성된 Artifact 묶음과 명시적 ECS 실행을 위한 경로이므로,
+자동 입력 감지 대상으로 사용하지 않는다.
+
+자동 처리에 제출하는 Sysmon JSONL 객체는 다음 단일 객체 형태를 사용한다.
+
+```text
+s3://<bucket>/incoming/first-cycle/sysmon/ING-<uuidv4>/sysmon.jsonl
+```
+
+`<uuidv4>`는 소문자 UUID v4이며, Producer가 업로드마다 새 값을 생성한다. 예를 들어
+`ING-550e8400-e29b-41d4-a716-446655440000`은 유효한 ingest 식별자다. 이 식별자는
+Pipeline의 `run_id`가 아니다. Worker는 입력 객체를 검증한 뒤 새 `run_id`와 `decision_id`를
+할당한다.
+
+| 항목 | 계약 |
+| --- | --- |
+| 입력 prefix | `incoming/first-cycle/sysmon/` |
+| 입력 객체 이름 | `ING-<uuidv4>/sysmon.jsonl` |
+| 업로드 단위 | 완성된 JSONL 파일 하나 |
+| 파일 형식 | UTF-8 JSONL, 한 줄에 Sysmon JSON object 하나 |
+| 지원 이벤트 | 현재 `EventId` 1, 3 |
+| 시간·Host 규칙 | 단일 `Computer`, `EventData.UtcTime` 비감소 순서 |
+| 덮어쓰기 | 금지. 같은 ingest 식별자를 재사용하지 않는다. |
+
+Producer는 파일을 작성 중인 상태로 이 final key에 업로드해서는 안 된다. 완성된 파일을
+한 번만 업로드하며, 수정본을 다시 제출할 때는 새 `ING-<uuidv4>` prefix를 사용한다. 이
+규칙으로 S3 `ObjectCreated` 이벤트 하나가 처리 대상 파일 하나를 의미하도록 한다.
+
+S3 Event Notification은 prefix `incoming/first-cycle/sysmon/`와 suffix `sysmon.jsonl`로
+필터링한다. 이후 Worker는 Event에 포함된 bucket·object key만 신뢰 경계 입력으로 받고,
+객체를 로컬의 `telemetry/sysmon-0001.jsonl`로 내려받아 standalone CLI를 호출한다.
+Worker가 생성한 Run·Manifest·결과는 이 `incoming/` prefix에 쓰지 않는다. 결과는
+PostgreSQL과 CloudWatch Logs에 저장하며, 생성 Artifact를 S3에 장기 보관하는 정책은 별도
+계약으로 정의한다.
+
+현재 이 절은 자동 처리 Worker가 구현될 때 적용할 입력 계약이다. 현재 제공되는 수동 ECS
+실행은 계속 `first-cycle/<source-run-id>/telemetry/sysmon-0001.jsonl` 경로와
+`INCIDENT_AWARENESS_STANDALONE=true` override를 사용한다.
+
 ## ECS Task Definition과 실행 override
 
 `infra/ecs/task-definition.first-cycle.json`은 Pipeline 실행용 Fargate Task Definition
