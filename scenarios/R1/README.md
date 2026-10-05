@@ -19,7 +19,7 @@ scenarios/R1/
 `run_metadata` · Manifest 작성은 새로 만들지 않고 `scenarios/S0/run-common.ps1` 의 함수를 그대로
 쓴다. R1 의 `run-common.ps1` 이 그 파일을 불러오며, 불러오는 것만으로는 아무것도 실행되지 않는다.
 
-**이 실행기는 아직 VM 에서 실행한 적이 없다(§8).** 호스트에서 fake transport 로 검증한 상태다.
+**로컬 VM 에서 diagnostic 으로 끝까지 실행했다(§8).** 정식 수집 Run 은 아직 없다.
 
 ## 1. 무엇을 실행하는가
 
@@ -288,6 +288,7 @@ $credential = Get-Credential
 | 조건 | 비고 |
 | --- | --- |
 | Target-A 가 Sysmon 레코드에 남기는 컴퓨터 이름이 `target_host` 와 다름 | 사전 세션이 최근 Sysmon 레코드의 `Computer` 를 읽어 비교한다(읽지 못하면 `COMPUTERNAME`). 시나리오 세션은 열지 않는다 |
+| Target-A 의 `Sysmon64 -c` 가 0 이 아닌 코드로 끝남, stdout 이 비었거나 읽을 수 없는 인코딩임 | 사전 세션에서 중단하며 rehearsal 도 중단한다. stderr 에 무엇이 쓰였는지는 판단에 쓰지 않는다 |
 | Sysmon 설정 해시 불일치 또는 비교 불가 | rehearsal 은 경고 후 진행 |
 | 최종 관리 도구가 준비 신호를 내지 않음 | |
 | 내부 연결 실패, 다른 목적지·포트로 연결, 시도 횟수가 1 이 아님 | |
@@ -295,7 +296,7 @@ $credential = Get-Credential
 | `t+0` 기록 시각이 세션이 열린 뒤 Target-A 가 찍은 시각보다 늦음 | 시계가 움직였다는 뜻이다(§6) |
 | 계보 확인 결과가 `matched` 가 아님 | rehearsal 은 결과만 출력하고 산출물을 쓴다 |
 
-사전 세션의 확인(위 표의 첫 두 행)에서 멈춘 Run 은 아무것도 남기지 않는다. 그 확인을 통과한 뒤
+사전 세션의 확인(위 표의 첫 세 행)에서 멈춘 Run 은 아무것도 남기지 않는다. 그 확인을 통과한 뒤
 실패한 Run 은 `raw\<run_id>` · `ground_truth\<run_id>` 디렉터리(와 수집까지 갔다면 telemetry 파일),
 그리고 operator trace 를 남긴다. Ground Truth 와 Manifest 가 없으므로 유효한 Run 으로 읽히지 않으며,
 그 `run_id` 는 다시 쓸 수 없다. 새 `run_id` 를 발급한다.
@@ -450,10 +451,22 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
 
 ## 8. 검증 상태
 
-**VM 에서 실행한 적이 없다.** 지금까지의 검증은 모두 호스트에서 fake 로 한 것이다.
+**로컬 VM 에서 diagnostic 으로 끝까지 실행했다. 정식 수집 Run 은 아직 없다.** 첫 VM rehearsal 은 사전
+세션의 Sysmon 조회에서 멈췄고(§8-1), 그 결함을 고친 뒤 수집 모드(`-Rehearsal` 없음, offset
+0/120/300/480/600 초, 관측 창 660 초)로 Normal · Attack 한 Pair 를 실행했다.
+
+- 두 Run 모두 §7 의 검증기를 통과했다. 기준 환경(Python 3.13, `uv` lock)에서 반출한 원본 zip 으로
+  돌린 결과다.
+- 두 Run 을 원본 JSONL 로 비교해 `r1.md` §8-1 의 S-1 ~ S-6 · S-8 을 만족함을 확인했다. S-7 은 t+8 판정
+  구간이 정해지지 않아(`r1.md` §11-11) 판정하지 않았다.
+- 이 Pair 는 diagnostic 이다. 데이터셋 · 평가 · Pilot 판정에 넣지 않으며, 산출물과 기록은 저장소 밖에 둔다.
+
+호스트에서 도는 검사(VM · WinRM · Sysmon 불필요):
 
 - `scenarios/R1/tests/Test-R1RunGuards.ps1` — Windows PowerShell 5.1. transport · 시계 · sleeper ·
-  TCP client 가 모두 fake 라 세션·프로세스·소켓을 만들지 않는다.
+  TCP client 가 모두 fake 라 세션·시나리오 프로세스·소켓을 만들지 않는다. 사전 세션 단계의 Sysmon
+  조회만은 실제로 실행한다. background job 안에서, 정해 둔 바이트를 그대로 내보내는 대역 `.cmd` 를
+  상대로 하며 Sysmon 은 쓰지 않는다.
 
   ```powershell
   powershell -ExecutionPolicy Bypass -File scenarios\R1\tests\Test-R1RunGuards.ps1
@@ -468,18 +481,45 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
   guard 와 `tests/collection/test_r1_pair_identity.py` 가 같은 파일을 읽는다. PowerShell 5.1 이 읽을 수
   있게 ASCII 로 두고 한국어는 escape 로 적는다.
 
-첫 VM rehearsal 에서 확인해야 하는 가정:
+VM 실행에 걸려 있던 가정과, 위 diagnostic Pair 에서 확인한 결과:
 
-| 가정 | 틀리면 |
+| 가정 | 확인 | 틀리면 |
+| --- | --- | --- |
+| 원격 세션 host 의 Image 가 `wsmprovhost.exe` 다 (`r1.md` §11-7) | 확인 | `scenario.yaml` 의 `planned_lineage.session_host.image` 를 고친다 |
+| 세션 host → 중간 프로세스 → 최종 관리 도구가 두 Run 모두 **직접 부모-자식**으로 기록된다 | 확인 | 계보가 3 단계가 아니게 되므로 launcher 방식을 다시 정한다 |
+| Target-A 의 보안 설정이 두 중간 프로세스의 최종 관리 도구 실행을 막지 않는다 | 확인 (로컬 실험 VM) | 최종 도구가 준비 신호를 내지 못해 Run 이 중단된다. 실험 VM 정책은 역할 4 가 확인한다(§10) |
+| 최종 관리 도구의 내부 연결이 같은 `ProcessGuid` 의 EID 3 으로 남는다 (`r1.md` §11-9) | 확인 | 연결 방식 또는 수집 설정을 역할 4 가 다시 확인한다(§10) |
+| Sysmon `Computer` 값이 `target_host` 와 같다 (대소문자 무시) | 확인 | 사전 세션이 먼저 비교해 바로 중단한다. 렌더링할 때 `--target-host` 를 그 값으로 준다 |
+| Controller 가 Sysmon 없이도 가져온 EVTX 를 읽어 JSONL 로 변환한다 | 확인 | 변환을 Target-A 쪽 단계로 옮긴다 |
+| 세션을 닫으면 Target-A 에 남은 작업 프로세스가 끝난다 | **미확인** | 작업은 최대 1 시간 뒤 스스로 끝난다 |
+| 목적지 host 가 그 포트에서 TCP 연결을 받는다 | 확인 | 연결이 실패하면 수집 모드 Run 은 중단된다 |
+
+### 8-1. 첫 VM rehearsal 에서 드러난 결함과 조치
+
+첫 VM rehearsal 은 사전 세션의 Sysmon 조회에서 멈췄다. 시나리오 세션은 열리지 않았고 산출물도 없다.
+두 결함 모두 원격 세션에서 드러났다. 호스트 guard 는 transport 를 fake 로 바꾸므로 그때까지 이 단계를
+실행한 적이 없었다.
+
+| 결함 | 조치 |
 | --- | --- |
-| 원격 세션 host 의 Image 가 `wsmprovhost.exe` 다 (`r1.md` §11-7) | `scenario.yaml` 의 `planned_lineage.session_host.image` 를 고친다 |
-| 세션 host → 중간 프로세스 → 최종 관리 도구가 두 Run 모두 **직접 부모-자식**으로 기록된다 | 계보가 3 단계가 아니게 되므로 launcher 방식을 다시 정한다 |
-| Target-A 의 보안 설정이 두 중간 프로세스의 최종 관리 도구 실행을 막지 않는다 | 최종 도구가 준비 신호를 내지 못해 Run 이 중단된다. 실험 VM 정책은 역할 4 가 확인한다(§10) |
-| 최종 관리 도구의 내부 연결이 같은 `ProcessGuid` 의 EID 3 으로 남는다 (`r1.md` §11-9) | 연결 방식 또는 수집 설정을 역할 4 가 다시 확인한다(§10) |
-| Sysmon `Computer` 값이 `target_host` 와 같다 (대소문자 무시) | 사전 세션이 먼저 비교해 바로 중단한다. 렌더링할 때 `--target-host` 를 그 값으로 준다 |
-| Controller 가 Sysmon 없이도 가져온 EVTX 를 읽어 JSONL 로 변환한다 | 변환을 Target-A 쪽 단계로 옮긴다 |
-| 세션을 닫으면 Target-A 에 남은 작업 프로세스가 끝난다 | 작업은 최대 1 시간 뒤 스스로 끝난다 |
-| 목적지 host 가 그 포트에서 TCP 연결을 받는다 | 연결이 실패하면 수집 모드 Run 은 중단된다 |
+| `Sysmon64 -c` 는 종료 코드 0 으로 끝나면서도 stderr 에 빈 줄을 쓴다. 원격 세션의 native 파이프라인에서는 그 줄이 오류 레코드가 되고, 단계가 `$ErrorActionPreference = "Stop"` 이라 거기서 끝났다 | 조회를 별도 프로세스로 시작해 두 스트림을 바이트로 읽는다. stderr 에 무엇이 쓰였는지는 판단에 쓰지 않고, 종료 코드가 0 이 아니면 중단한다 |
+| 같은 조회의 stdout 은 BOM 없는 UTF-16 이다. 원격 세션의 native 파이프라인으로 읽으면 글자마다 NUL 이 끼어 `Config file` · `Config hash` · `HashingAlgorithms` 줄을 하나도 찾지 못한다 | 바이트를 보고 인코딩을 정한다(UTF-16 BOM, 0 바이트가 없으면 시스템 코드 페이지, 그 밖에는 유효한 UTF-16LE). NUL 을 지우거나 읽지 못한 바이트를 다른 글자로 바꿔서 맞추지 않으며, 읽을 수 없는 stdout 은 거부한다 |
+
+고친 단계는 Target-A 에서 실행기가 보내는 방식 그대로(WinRM 세션, 같은 인자) 실행해, 세 필드를 읽고
+적용 설정 해시가 파일 해시와 같음을 확인했다. 이 확인은 diagnostic 이며 Run 이 아니다. 두 결함과
+실패 경로는 `Test-R1RunGuards.ps1` 의 `probe step: Sysmon query` 절이 회귀 검사한다.
+
+코드 페이지로 읽는 경로가 읽지 못한 바이트를 거부하게 한 것은 diagnostic Pair 뒤의 변경이며, VM 에서 다시
+실행하지 않았다. Target-A 에서 `Sysmon64 -c` 의 stdout 은 UTF-16 이라 이 경로를 지나지 않는다. 이 거부의
+회귀 검사는 그런 바이트가 있는 시스템 코드 페이지(예: 949)에서만 돌고, 모든 바이트를 읽는 코드 페이지(예:
+1252)에서는 건너뛴다.
+
+### 8-2. rehearsal 로는 연결 증거를 확인하지 않는다
+
+rehearsal 은 관측 창을 건너뛰어 마지막 행위 직후에 Sysmon 을 export 한다. rehearsal 한 번에서, 최종
+관리 도구의 연결 EID 3 이 Target-A 의 로그에는 있는데 실행기가 가져온 export 에는 없었다. 원인은
+확인하지 못했고, 수집 모드 Pair 에서는 재현되지 않았다. rehearsal 의 계보 결과가 `mismatched` 여도 이
+경우일 수 있으므로, 연결 증거는 수집 모드 Run 으로 확인한다.
 
 ## 9. 남은 것
 

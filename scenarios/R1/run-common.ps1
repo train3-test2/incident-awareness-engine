@@ -702,8 +702,9 @@ function Assert-R1RunInputs {
 # Remote steps - production only
 #
 # Each script block runs on Target-A inside a remote session and returns exactly
-# one hashtable. The guard tests never execute them: they replace the transport
-# that would send them.
+# one hashtable. The guard tests replace the transport that would send them and
+# execute one of them, the probe step, in a background job against a stand-in
+# for Sysmon64.
 # ---------------------------------------------------------------------------
 
 $R1_REMOTE_STEPS = @{
@@ -714,8 +715,63 @@ $R1_REMOTE_STEPS = @{
         Set-StrictMode -Version Latest
         $ErrorActionPreference = "Stop"
 
+        # "Sysmon64 -c" is started as a process of its own and its two streams are
+        # read as bytes. Through the native pipeline of a remote session the line
+        # Sysmon writes to stderr becomes an error record, which ends this step
+        # under "Stop", and its UTF-16 stdout is read with the code page of the
+        # session, which leaves a NUL after every character and matches none of
+        # the lines below. Whether stderr carried anything decides nothing here:
+        # the exit code and the fields do.
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = [string]$Arguments.sysmon_binary
+        $startInfo.Arguments = "-c"
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.CreateNoWindow = $true
+        $query = [System.Diagnostics.Process]::Start($startInfo)
+        $stderrBytes = New-Object System.IO.MemoryStream
+        $stderrCopy = $query.StandardError.BaseStream.CopyToAsync($stderrBytes)
+        $stdoutBytes = New-Object System.IO.MemoryStream
+        $query.StandardOutput.BaseStream.CopyTo($stdoutBytes)
+        $query.WaitForExit()
+        $stderrCopy.Wait()
+        $exitCode = $query.ExitCode
+        $query.Dispose()
+        if ($exitCode -ne 0) {
+            throw ("Sysmon64 -c exited with code " + $exitCode + " (stdout " + $stdoutBytes.Length +
+                " bytes, stderr " + $stderrBytes.Length + " bytes)")
+        }
+
+        # The encoding is decided from the bytes, and nothing is dropped or
+        # replaced to make them fit: a UTF-16 byte order mark, or no zero byte at
+        # all (read with the system code page), or bytes that are valid UTF-16LE.
+        # Both decoders throw on bytes they cannot decode. Text that still holds
+        # U+0000, and anything else, is refused, so a stream this step cannot
+        # read is never taken for an answer.
+        $bytes = $stdoutBytes.ToArray()
+        if ($bytes.Length -eq 0) { throw "Sysmon64 -c wrote nothing to stdout" }
+        $output = $null
+        $strictUtf16 = New-Object System.Text.UnicodeEncoding($false, $false, $true)
+        $strictCodePage = [System.Text.Encoding]::GetEncoding([System.Text.Encoding]::Default.CodePage,
+            [System.Text.EncoderFallback]::ExceptionFallback, [System.Text.DecoderFallback]::ExceptionFallback)
+        try {
+            if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+                $output = $strictUtf16.GetString($bytes, 2, $bytes.Length - 2)
+            } elseif ([System.Array]::IndexOf($bytes, [byte]0) -lt 0) {
+                $output = $strictCodePage.GetString($bytes)
+            } elseif ($bytes.Length % 2 -eq 0) {
+                $output = $strictUtf16.GetString($bytes)
+            }
+        } catch [System.ArgumentException] {
+            $output = $null
+        }
+        if ($null -eq $output -or $output.IndexOf([char]0) -ge 0) {
+            throw ("the stdout of Sysmon64 -c is in no encoding this step reads (" + $bytes.Length +
+                " bytes)")
+        }
+
         $sysmon = @{ config_file = $null; config_hash = $null; hashing_algorithms = $null }
-        $output = & $Arguments.sysmon_binary -c | Out-String
         foreach ($line in ($output -split "`r?`n")) {
             if ($line -match '^\s*-?\s*Config file:\s*(.+?)\s*$') { $sysmon.config_file = $Matches[1] }
             if ($line -match '^\s*-?\s*Config hash:\s*(.+?)\s*$') { $sysmon.config_hash = $Matches[1] }
