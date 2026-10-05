@@ -19,7 +19,8 @@ scenarios/R1/
 `run_metadata` · Manifest 작성은 새로 만들지 않고 `scenarios/S0/run-common.ps1` 의 함수를 그대로
 쓴다. R1 의 `run-common.ps1` 이 그 파일을 불러오며, 불러오는 것만으로는 아무것도 실행되지 않는다.
 
-**로컬 VM 에서 diagnostic 으로 끝까지 실행했다(§8).** 정식 수집 Run 은 아직 없다.
+**로컬 VM 에서 diagnostic Pair 와 development Pair 하나를 수집 모드로 끝까지 실행했다(§8).** 기준 환경
+검증과 역할 5 의 최종 승인은 아직이다.
 
 ## 1. 무엇을 실행하는가
 
@@ -512,15 +513,26 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
 
 ## 8. 검증 상태
 
-**로컬 VM 에서 diagnostic 으로 끝까지 실행했다. 정식 수집 Run 은 아직 없다.** 첫 VM rehearsal 은 사전
-세션의 Sysmon 조회에서 멈췄고(§8-1), 그 결함을 고친 뒤 수집 모드(`-Rehearsal` 없음, offset
-0/120/300/480/600 초, 관측 창 660 초)로 Normal · Attack 한 Pair 를 실행했다.
+**로컬 VM 에서 diagnostic Pair 와 development Pair 하나를 수집 모드로 끝까지 실행했다.** 첫 VM rehearsal 은
+사전 세션의 Sysmon 조회에서 멈췄고(§8-1), 그 결함을 고친 뒤 수집 모드(`-Rehearsal` 없음, offset
+0/120/300/480/600 초, 관측 창 660 초)로 Normal · Attack 한 Pair 를 diagnostic 으로 실행했다.
 
 - 두 Run 모두 §7 의 검증기를 통과했다. 기준 환경(Python 3.13, `uv` lock)에서 반출한 원본 zip 으로
   돌린 결과다.
 - 두 Run 을 원본 JSONL 로 비교해 `r1.md` §8-1 의 S-1 ~ S-6 · S-8 을 만족함을 확인했다. S-7 은 t+8 판정
   구간이 정해지지 않아(`r1.md` §11-11) 판정하지 않았다.
 - 이 Pair 는 diagnostic 이다. 데이터셋 · 평가 · Pilot 판정에 넣지 않으며, 산출물과 기록은 저장소 밖에 둔다.
+
+그 뒤 dataset tier 와 Attack reference(§1-3, §5-1)를 넣은 실행기로 development Pair
+`R1-PAIR-20261005-002` 를 같은 수집 모드로 수집했다.
+
+- 수집에 쓴 실행기 · 검증기는 commit `28900924ed03049e0d44ae058158040eec7d690c` 의 것이다. 수집 당시 이
+  commit 은 push 와 리뷰를 거치지 않은 로컬 commit 이었다.
+- 두 Run 모두 호스트의 Python 3.11 에서 §7 의 검증기를 `--dataset-tier development` 로 통과했다. 기준
+  환경(Python 3.13) 검증은 아직 하지 않았다.
+- 역할 5 의 최종 승인은 아직 받지 않았다.
+- 이 Pair 는 development 데이터다. holdout 이 아니고 최종 성능 평가 결과도 아니다. 산출물과 기록은
+  저장소 밖에 둔다.
 
 호스트에서 도는 검사(VM · WinRM · Sysmon 불필요):
 
