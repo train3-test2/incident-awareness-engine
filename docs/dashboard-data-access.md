@@ -35,6 +35,19 @@ aws iam get-role-policy \
   --policy-name ecsDashboardTaskExecutionSecretsPolicy
 ```
 
+Dashboard Secret은 JSON 객체여야 하며, `INCIDENT_AWARENESS_DATABASE_URL` key에 비어 있지
+않은 URL 문자열을 포함해야 한다. Task Definition의
+`DATABASE_URL_SECRET_ARN:INCIDENT_AWARENESS_DATABASE_URL::` 참조는 이 key를 선택한다.
+다음 검증은 Secret 값 자체를 출력하지 않고 key 존재와 빈 값 여부만 확인한다.
+
+```text
+aws secretsmanager get-secret-value \
+  --secret-id "<dashboard-database-url-secret-arn>" \
+  --query SecretString \
+  --output text \
+  | python -c "import json, sys; secret=json.load(sys.stdin); value=secret.get('INCIDENT_AWARENESS_DATABASE_URL') if isinstance(secret, dict) else None; valid=isinstance(value, str) and bool(value.strip()); print('INCIDENT_AWARENESS_DATABASE_URL is configured' if valid else 'INCIDENT_AWARENESS_DATABASE_URL is missing'); raise SystemExit(0 if valid else 1)"
+```
+
 Secret이 고객 관리형 KMS 키로 암호화된 경우에는 해당 키에만 `kms:Decrypt` 권한도 추가한다.
 AWS 관리형 `aws/secretsmanager` 키를 사용하는 경우에는 별도 `kms:Decrypt` 권한이 필요 없다.
 
