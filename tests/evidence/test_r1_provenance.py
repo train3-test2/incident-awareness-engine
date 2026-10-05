@@ -101,6 +101,27 @@ def test_resolves_multiple_evidences_and_preserves_semantic_event_order() -> Non
     assert [event.event_id for event in result[1].resolved_events] == network_evidence.event_ids
 
 
+def test_preserves_event_ids_order_when_it_reverses_timestamp_order() -> None:
+    # Given
+    earlier_event = _event("evt-earlier", offset_seconds=1)
+    later_event = _event("evt-later", offset_seconds=10)
+    evidence = _evidence(
+        "E-reverse-timestamp-order",
+        [later_event.event_id, earlier_event.event_id],
+    )
+
+    # When
+    result = resolve_r1_evidence_provenance(
+        [evidence],
+        [earlier_event, later_event],
+    )
+
+    # Then
+    resolved_events = result[0].resolved_events
+    assert resolved_events[0].timestamp > resolved_events[1].timestamp
+    assert [event.event_id for event in resolved_events] == evidence.event_ids
+
+
 def test_rejects_missing_referenced_event_without_returning_partial_result() -> None:
     # Given
     process_event = _event("evt-process", offset_seconds=0)
