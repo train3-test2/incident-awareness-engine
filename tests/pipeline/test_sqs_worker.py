@@ -10,6 +10,7 @@ from incident_awareness.pipeline.sqs_worker import (
     PermanentWorkerError,
     RetryableWorkerError,
     S3SysmonInput,
+    _PostgresSuccessfulReceiptStore,
     _process_message,
     parse_s3_sysmon_inputs,
     run_worker,
@@ -240,7 +241,30 @@ def test_worker_skips_a_successfully_receipted_s3_object_version(
 
     assert len(calls) == 1
     assert receipts.successful_run_ids == {(_BUCKET, _KEY, "opaque-etag"): "RUN-20261005-001"}
+    assert receipts.acquired_inputs == [(_BUCKET, _KEY, "opaque-etag")] * 2
+    assert receipts.released_executions == 1
     assert any('"status": "skipped"' in record.getMessage() for record in caplog.records)
+
+
+def test_postgres_receipt_store_acquires_an_object_lock_before_lookup() -> None:
+    connection = _ReceiptConnection(rows=[None, ("RUN-20261005-001",)])
+    store = _PostgresSuccessfulReceiptStore(connection)  # type: ignore[arg-type]
+    input_object = S3SysmonInput(
+        bucket=_BUCKET,
+        key=_KEY,
+        ingest_id=_INGEST_ID,
+        e_tag="opaque-etag",
+        sequencer="001",
+    )
+
+    run_id = store.acquire_execution(input_object)
+    store.release_execution()
+
+    assert run_id == "RUN-20261005-001"
+    assert "pg_advisory_xact_lock" in connection.queries[0][0]
+    assert connection.queries[0][1] == (f"{_BUCKET}\x00{_KEY}\x00opaque-etag",)
+    assert "FROM s3_object_receipts" in connection.queries[1][0]
+    assert connection.commits == 1
 
 
 def test_classifies_invalid_s3_event_as_permanent_error() -> None:
@@ -311,20 +335,50 @@ class _FailingS3:
         raise self._error
 
 
+class _ReceiptCursor:
+    def __init__(self, row: tuple[str] | None) -> None:
+        self._row = row
+
+    def fetchone(self) -> tuple[str] | None:
+        return self._row
+
+
+class _ReceiptConnection:
+    def __init__(self, *, rows: list[tuple[str] | None]) -> None:
+        self._rows = rows
+        self.queries: list[tuple[str, tuple[object, ...]]] = []
+        self.commits = 0
+
+    def execute(self, query: str, params: tuple[object, ...]) -> _ReceiptCursor:
+        self.queries.append((query, params))
+        return _ReceiptCursor(self._rows.pop(0))
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        return None
+
+
 class _FakeReceiptStore:
     def __init__(self) -> None:
         self.successful_run_ids: dict[tuple[str, str, str], str] = {}
+        self.acquired_inputs: list[tuple[str, str, str]] = []
+        self.released_executions = 0
         self.rollbacks = 0
 
-    def get_successful_run_id(self, input_object: S3SysmonInput) -> str | None:
-        return self.successful_run_ids.get(
-            (input_object.bucket, input_object.key, input_object.e_tag)
-        )
+    def acquire_execution(self, input_object: S3SysmonInput) -> str | None:
+        identity = (input_object.bucket, input_object.key, input_object.e_tag)
+        self.acquired_inputs.append(identity)
+        return self.successful_run_ids.get(identity)
 
     def save_success(self, input_object: S3SysmonInput, *, run_id: str) -> None:
         self.successful_run_ids[(input_object.bucket, input_object.key, input_object.e_tag)] = (
             run_id
         )
+
+    def release_execution(self) -> None:
+        self.released_executions += 1
 
     def rollback(self) -> None:
         self.rollbacks += 1

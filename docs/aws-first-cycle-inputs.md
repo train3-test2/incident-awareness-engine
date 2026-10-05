@@ -215,7 +215,9 @@ bucket + decoded object key + eTag
 `bucket + key + eTag`와 생성된 `run_id`를 receipt로 기록한다. 같은 identity의 receipt가 이미
 있으면 standalone Pipeline을 다시 실행하지 않고 기존 `run_id`와 `status=skipped`를 기록한 뒤
 메시지만 삭제한다. 실패한 객체에는 성공 receipt를 만들지 않으므로 재시도·DLQ 정책에 따라
-같은 identity로 다시 처리한다.
+같은 identity로 다시 처리한다. Worker는 receipt 조회 전에 이 identity의 PostgreSQL transaction
+advisory lock을 확보하고, Pipeline 실행·receipt 기록 또는 skip 처리 뒤 transaction을 끝내 lock을
+해제한다. 따라서 두 Worker가 같은 S3 object version을 동시에 실행하지 않는다.
 
 ### 재시도와 영구 실패 처리 정책
 

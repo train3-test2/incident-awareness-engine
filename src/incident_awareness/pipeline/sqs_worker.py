@@ -39,6 +39,7 @@ _WORKER_LONG_POLL_SECONDS = 20
 
 _LOGGER = logging.getLogger(__name__)
 _PERMANENT_S3_ERROR_CODES = frozenset({"AccessDenied", "NoSuchBucket", "NoSuchKey", "403", "404"})
+_ACQUIRE_S3_OBJECT_RECEIPT_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
 
 
 class PermanentWorkerError(Exception):
@@ -52,9 +53,11 @@ class RetryableWorkerError(Exception):
 class SuccessfulReceiptStore(Protocol):
     """Durably track immutable S3 object versions processed by the Worker."""
 
-    def get_successful_run_id(self, input_object: S3SysmonInput) -> str | None: ...
+    def acquire_execution(self, input_object: S3SysmonInput) -> str | None: ...
 
     def save_success(self, input_object: S3SysmonInput, *, run_id: str) -> None: ...
+
+    def release_execution(self) -> None: ...
 
     def rollback(self) -> None: ...
 
@@ -77,7 +80,11 @@ class _PostgresSuccessfulReceiptStore:
         self._connection = connection
         self._repository = S3ObjectReceiptRepository(connection)
 
-    def get_successful_run_id(self, input_object: S3SysmonInput) -> str | None:
+    def acquire_execution(self, input_object: S3SysmonInput) -> str | None:
+        self._connection.execute(
+            _ACQUIRE_S3_OBJECT_RECEIPT_LOCK,
+            (_receipt_lock_key(input_object),),
+        )
         return self._repository.get_successful_run_id(
             bucket=input_object.bucket,
             object_key=input_object.key,
@@ -91,6 +98,9 @@ class _PostgresSuccessfulReceiptStore:
             e_tag=input_object.e_tag,
             run_id=run_id,
         )
+        self._connection.commit()
+
+    def release_execution(self) -> None:
         self._connection.commit()
 
     def rollback(self) -> None:
@@ -230,12 +240,11 @@ def _process_message(
         work_root = Path(directory)
         for input_object in _unique_inputs(inputs):
             prior_run_id = (
-                receipt_store.get_successful_run_id(input_object)
-                if receipt_store is not None
-                else None
+                receipt_store.acquire_execution(input_object) if receipt_store is not None else None
             )
             if prior_run_id is not None:
                 _log_input_status("skipped", input_uri=_s3_uri(input_object), run_id=prior_run_id)
+                receipt_store.release_execution()
                 continue
             input_dir = work_root / input_object.ingest_id
             input_dir.mkdir()
@@ -314,6 +323,10 @@ def _download_sysmon_jsonl(
 
 def _s3_uri(input_object: S3SysmonInput) -> str:
     return f"s3://{input_object.bucket}/{input_object.key}"
+
+
+def _receipt_lock_key(input_object: S3SysmonInput) -> str:
+    return f"{input_object.bucket}\x00{input_object.key}\x00{input_object.e_tag}"
 
 
 def _read_generated_run_id(output_dir: Path) -> str:
