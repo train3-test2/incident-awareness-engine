@@ -20,7 +20,7 @@ scenarios/R1/
 쓴다. R1 의 `run-common.ps1` 이 그 파일을 불러오며, 불러오는 것만으로는 아무것도 실행되지 않는다.
 
 **로컬 VM 에서 diagnostic Pair 와 development Pair 하나를 수집 모드로 끝까지 실행했다(§8).** 기준 환경
-검증과 역할 5 의 최종 승인은 아직이다.
+검증과 역할 5 의 reference · evaluation criteria 승인은 아직이다.
 
 ## 1. 무엇을 실행하는가
 
@@ -321,7 +321,7 @@ $credential = Get-Credential
 | `t+0` 기록 시각이 세션이 열린 뒤 Target-A 가 찍은 시각보다 늦음 | 시계가 움직였다는 뜻이다(§6) |
 | 계보 확인 결과가 `matched` 가 아님 | rehearsal 은 결과만 출력하고 산출물을 쓴다 |
 | Attack Run 의 reference 를 정하지 못함 | 후보 없음 · 복수 후보 · `UtcTime` · `ProcessGuid` · `RecordId` 를 읽지 못함 · 계보의 세션 host 와 다름. rehearsal 도 중단한다(§5-1) |
-| Attack Run 의 `end_time` 이 `reference_time + evaluation_horizon_sec` 보다 이름 | rehearsal 은 면제(§5-1) |
+| Attack Run 의 `end_time` 이 `reference_time + evaluation_horizon_sec` 보다 빠름 | rehearsal 은 면제(§5-1) |
 
 사전 세션의 확인(위 표의 첫 세 행)에서 멈춘 Run 은 아무것도 남기지 않는다. 그 확인을 통과한 뒤
 실패한 Run 은 `raw\<run_id>` · `ground_truth\<run_id>` 디렉터리(와 수집까지 갔다면 telemetry 파일),
@@ -532,7 +532,7 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
   commit 은 push 와 리뷰를 거치지 않은 로컬 commit 이었다.
 - 두 Run 모두 호스트의 Python 3.11 에서 §7 의 검증기를 `--dataset-tier development` 로 통과했다. 기준
   환경(Python 3.13) 검증은 아직 하지 않았다.
-- 역할 5 의 최종 승인은 아직 받지 않았다.
+- 역할 5 의 reference · evaluation criteria 승인은 아직 받지 않았다.
 - 이 Pair 는 development 데이터다. holdout 이 아니고 최종 성능 평가 결과도 아니다. 산출물과 기록은
   저장소 밖에 둔다.
 
