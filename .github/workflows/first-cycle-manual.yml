@@ -163,6 +163,9 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION }}
       ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
       IMAGE_TAG: ${{ inputs.image_tag }}
+      ECS_EXECUTION_ROLE_ARN: ${{ vars.ECS_EXECUTION_ROLE_ARN }}
+      ECS_FIRST_CYCLE_TASK_ROLE_ARN: ${{ vars.ECS_FIRST_CYCLE_TASK_ROLE_ARN }}
+      FIRST_CYCLE_DATABASE_URL_SECRET_ARN: ${{ vars.FIRST_CYCLE_DATABASE_URL_SECRET_ARN }}
     steps:
       - uses: actions/checkout@v6
 
@@ -171,6 +174,18 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate task definition identifiers
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for value in ECS_EXECUTION_ROLE_ARN ECS_FIRST_CYCLE_TASK_ROLE_ARN FIRST_CYCLE_DATABASE_URL_SECRET_ARN; do
+            if [[ -z "${!value//[[:space:]]/}" ]]; then
+              echo "GitHub Actions variable $value must be configured."
+              exit 1
+            fi
+          done
 
       - name: Build image URI
         id: image
@@ -183,10 +198,21 @@ jobs:
           echo "uri=$image_uri" >> "$GITHUB_OUTPUT"
 
       - name: Render First Cycle task definition
+        shell: bash
+        run: |
+          python scripts/render_ecs_task_definition.py \
+            --template infra/ecs/task-definition.first-cycle.json \
+            --output "$RUNNER_TEMP/task-definition.first-cycle.json" \
+            --image-uri "${{ steps.image.outputs.uri }}" \
+            --execution-role-arn "$ECS_EXECUTION_ROLE_ARN" \
+            --task-role-arn "$ECS_FIRST_CYCLE_TASK_ROLE_ARN" \
+            --database-url-secret-arn "$FIRST_CYCLE_DATABASE_URL_SECRET_ARN"
+
+      - name: Render First Cycle task definition image
         id: render
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
-          task-definition: infra/ecs/task-definition.first-cycle.json
+          task-definition: ${{ runner.temp }}/task-definition.first-cycle.json
           container-name: incident-awareness-engine-first-cycle
           image: ${{ steps.image.outputs.uri }}
 

@@ -41,12 +41,15 @@ def test_first_cycle_task_definition_contract(
     assert task_definition["family"] == family
     assert task_definition["requiresCompatibilities"] == ["FARGATE"]
     assert task_definition["networkMode"] == "awsvpc"
-    assert task_definition["executionRoleArn"].endswith(":role/ecsTaskExecutionRole")
+    assert task_definition["executionRoleArn"] == "EXECUTION_ROLE_ARN"
     assert task_definition["runtimePlatform"] == {
         "cpuArchitecture": "X86_64",
         "operatingSystemFamily": "LINUX",
     }
-    assert ("taskRoleArn" in task_definition) is requires_task_role
+    if requires_task_role:
+        assert task_definition["taskRoleArn"] == "TASK_ROLE_ARN"
+    else:
+        assert "taskRoleArn" not in task_definition
 
     container = task_definition["containerDefinitions"][0]
     assert container["name"] == container_name
@@ -55,11 +58,7 @@ def test_first_cycle_task_definition_contract(
     assert container["secrets"] == [
         {
             "name": "INCIDENT_AWARENESS_DATABASE_URL",
-            "valueFrom": (
-                "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:"
-                "incident-awareness/first-cycle/database-url-9KGf2f:"
-                "INCIDENT_AWARENESS_DATABASE_URL::"
-            ),
+            "valueFrom": ("DATABASE_URL_SECRET_ARN:INCIDENT_AWARENESS_DATABASE_URL::"),
         }
     ]
     assert container["logConfiguration"]["options"] == {
@@ -81,6 +80,50 @@ def test_first_cycle_task_overrides_supply_only_run_specific_inputs() -> None:
         "INCIDENT_AWARENESS_ENTITY_ID",
         "INCIDENT_AWARENESS_DECISION_ID",
         "INCIDENT_AWARENESS_DECISION_CONFIG_VERSION",
+    }
+
+
+def test_dashboard_task_definition_contract() -> None:
+    task_definition = json.loads(
+        (ECS_DIRECTORY / "task-definition.dashboard.json").read_text(encoding="utf-8")
+    )
+
+    assert task_definition["family"] == "incident-awareness-engine-dashboard"
+    assert task_definition["requiresCompatibilities"] == ["FARGATE"]
+    assert task_definition["networkMode"] == "awsvpc"
+    assert task_definition["cpu"] == "256"
+    assert task_definition["memory"] == "512"
+    assert task_definition["executionRoleArn"] == "EXECUTION_ROLE_ARN"
+    assert task_definition["runtimePlatform"] == {
+        "cpuArchitecture": "X86_64",
+        "operatingSystemFamily": "LINUX",
+    }
+
+    container = task_definition["containerDefinitions"][0]
+    assert container["name"] == "incident-awareness-engine-dashboard"
+    assert container["image"] == "IMAGE_URI"
+    assert container["essential"] is True
+    assert container["command"] == [
+        "uvicorn",
+        "incident_awareness.dashboard.api.app:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+    ]
+    assert container["portMappings"] == [
+        {"containerPort": 8080, "protocol": "tcp"},
+    ]
+    assert container["secrets"] == [
+        {
+            "name": "INCIDENT_AWARENESS_DATABASE_URL",
+            "valueFrom": ("DATABASE_URL_SECRET_ARN:INCIDENT_AWARENESS_DATABASE_URL::"),
+        }
+    ]
+    assert container["logConfiguration"]["options"] == {
+        "awslogs-group": "/ecs/incident-awareness-engine-dev",
+        "awslogs-region": "ap-northeast-2",
+        "awslogs-stream-prefix": "ecs",
     }
 
 
@@ -114,10 +157,27 @@ def test_execution_role_secret_policy_is_scoped_to_first_cycle_database_url() ->
                 "Sid": "ReadFirstCycleDatabaseUrl",
                 "Effect": "Allow",
                 "Action": "secretsmanager:GetSecretValue",
-                "Resource": (
-                    "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:"
-                    "incident-awareness/first-cycle/database-url-9KGf2f"
-                ),
+                "Resource": ("DATABASE_URL_SECRET_ARN"),
+            }
+        ],
+    }
+
+
+def test_dashboard_execution_role_secret_policy_is_scoped_to_dashboard_database_url() -> None:
+    policy = json.loads(
+        (IAM_DIRECTORY / "ecs-dashboard-task-execution-secrets-policy.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert policy == {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "ReadDashboardDatabaseUrl",
+                "Effect": "Allow",
+                "Action": "secretsmanager:GetSecretValue",
+                "Resource": ("DATABASE_URL_SECRET_ARN"),
             }
         ],
     }

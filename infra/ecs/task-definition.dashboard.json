@@ -1,21 +1,33 @@
 {
-  "family": "incident-awareness-engine-first-cycle",
+  "family": "incident-awareness-engine-dashboard",
   "requiresCompatibilities": ["FARGATE"],
   "networkMode": "awsvpc",
-  "cpu": "512",
-  "memory": "1024",
+  "cpu": "256",
+  "memory": "512",
   "executionRoleArn": "EXECUTION_ROLE_ARN",
-  "taskRoleArn": "TASK_ROLE_ARN",
   "runtimePlatform": {
     "cpuArchitecture": "X86_64",
     "operatingSystemFamily": "LINUX"
   },
   "containerDefinitions": [
     {
-      "name": "incident-awareness-engine-first-cycle",
+      "name": "incident-awareness-engine-dashboard",
       "image": "IMAGE_URI",
       "essential": true,
-      "command": ["python", "-m", "incident_awareness.pipeline.aws_task"],
+      "command": [
+        "uvicorn",
+        "incident_awareness.dashboard.api.app:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080"
+      ],
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
       "secrets": [
         {
           "name": "INCIDENT_AWARENESS_DATABASE_URL",

@@ -70,7 +70,7 @@ AWS IAM에 GitHub OIDC provider `https://token.actions.githubusercontent.com`를
     {
       "Effect": "Allow",
       "Principal": {
-        "Federated": "arn:aws:iam::998301375101:oidc-provider/token.actions.githubusercontent.com"
+        "Federated": "GITHUB_OIDC_PROVIDER_ARN"
       },
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {
@@ -84,7 +84,7 @@ AWS IAM에 GitHub OIDC provider `https://token.actions.githubusercontent.com`를
 }
 ```
 
-역할에는 ECR 이미지 업로드·조회, First Cycle S3 Artifact 메타데이터 조회, ECS Task
+`GITHUB_OIDC_PROVIDER_ARN`은 실제 계정의 GitHub OIDC provider ARN으로 치환한다. 역할에는 ECR 이미지 업로드·조회, First Cycle S3 Artifact 메타데이터 조회, ECS Task
 Definition 등록·실행·상태 조회, 그리고 `ecsTaskExecutionRole`·
 `ecsFirstCycleTaskRole` 전달에 필요한 최소 권한만 부여한다. 신뢰 정책과 권한 정책은
 각각 `infra/iam/github-actions-smoke-deploy-trust-policy.json`,
@@ -106,11 +106,16 @@ GitHub 저장소의 **Settings → Secrets and variables → Actions → Variabl
 | `ECS_CLUSTER` | `incident-awareness-engine-dev` |
 | `ECS_SUBNET_IDS` | Fargate 실행에 사용하는 subnet ID를 쉼표로 구분한 값 |
 | `ECS_SECURITY_GROUP_IDS` | Fargate 실행에 사용하는 security group ID를 쉼표로 구분한 값 |
+| `ECS_EXECUTION_ROLE_ARN` | smoke 및 First Cycle migration Task Definition에 주입할 Execution Role ARN |
+| `ECS_FIRST_CYCLE_TASK_ROLE_ARN` | First Cycle Task Definition에 주입할 S3 읽기 Task Role ARN |
+| `FIRST_CYCLE_DATABASE_URL_SECRET_ARN` | First Cycle·migration DB URL Secret 전체 ARN |
 | `FIRST_CYCLE_S3_BUCKET` | First Cycle 입력 Artifact 버킷 이름 |
 
 워크플로는 필요한 변수 중 하나라도 비어 있으면 AWS 인증 전에 실패한다. 정책 파일을
 변경한 뒤에는 동일 내용을 GitHub OIDC 역할의 인라인 정책 또는 연결된 정책에도
-반영해야 한다. 저장소의 정책 파일 변경만으로 AWS IAM 권한이 자동 변경되지는 않는다.
+반영해야 한다. `infra/iam/`의 IAM 정책 템플릿도 실제 적용 전에 각 ARN placeholder를
+해당 환경의 정확한 ARN으로 치환한다. 저장소의 정책 파일 변경만으로 AWS IAM 권한이
+자동 변경되지는 않는다.
 
 ## 실패 확인과 재실행
 

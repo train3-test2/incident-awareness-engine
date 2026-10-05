@@ -85,6 +85,7 @@ jobs:
       ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
       ECS_SECURITY_GROUP_IDS: ${{ vars.ECS_SECURITY_GROUP_IDS }}
       ECS_SUBNET_IDS: ${{ vars.ECS_SUBNET_IDS }}
+      ECS_EXECUTION_ROLE_ARN: ${{ vars.ECS_EXECUTION_ROLE_ARN }}
 
     steps:
       - uses: actions/checkout@v6
@@ -94,7 +95,7 @@ jobs:
           AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
         run: |
           set -euo pipefail
-          for value in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SUBNET_IDS ECS_SECURITY_GROUP_IDS; do
+          for value in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SUBNET_IDS ECS_SECURITY_GROUP_IDS ECS_EXECUTION_ROLE_ARN; do
             if [ -z "${!value}" ]; then
               echo "GitHub Actions variable $value must be configured."
               exit 1
@@ -123,10 +124,18 @@ jobs:
           echo "uri=$image" >> "$GITHUB_OUTPUT"
 
       - name: Render ECS task definition
+        run: |
+          python scripts/render_ecs_task_definition.py \
+            --template infra/ecs/task-definition.smoke.json \
+            --output "$RUNNER_TEMP/task-definition.smoke.json" \
+            --image-uri "${{ steps.image.outputs.uri }}" \
+            --execution-role-arn "$ECS_EXECUTION_ROLE_ARN"
+
+      - name: Render ECS task definition image
         id: render-task-definition
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
-          task-definition: infra/ecs/task-definition.smoke.json
+          task-definition: ${{ runner.temp }}/task-definition.smoke.json
           container-name: incident-awareness-engine-smoke
           image: ${{ steps.image.outputs.uri }}
 
