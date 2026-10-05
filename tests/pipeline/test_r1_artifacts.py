@@ -181,6 +181,17 @@ def _replace_evidence_content(
         _write_summary_payload(output_directory, summary)
 
 
+def _replace_evidence_records(
+    output_directory: Path,
+    records: list[dict[str, object]],
+) -> None:
+    content = "".join(f"{json.dumps(record)}\n" for record in records).encode("utf-8")
+    _replace_evidence_content(output_directory, content, synchronize_hash=True)
+    summary = _read_summary_payload(output_directory)
+    summary["evidence_count"] = len(records)
+    _write_summary_payload(output_directory, summary)
+
+
 def _diagnostic_events(diagnostic: str) -> tuple[NormalizedEvent, ...]:
     anchor, middle, terminal, _ = _events()
     if diagnostic == "missing_process_guid":
@@ -953,6 +964,56 @@ def test_rejects_evidence_count_mismatch(tmp_path: Path) -> None:
 
     # Then
     assert "Evidence count" in str(error_info.value)
+
+
+def test_rejects_identical_duplicate_evidence_id_with_matching_integrity(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    records.append(records[0].copy())
+    _replace_evidence_records(tmp_path, records)
+    evidence_content = (tmp_path / R1_EVIDENCE_FILENAME).read_bytes()
+    summary = _read_summary_payload(tmp_path)
+    assert summary["evidence_count"] == len(records)
+    assert summary["evidence_artifact_sha256"] == hashlib.sha256(evidence_content).hexdigest()
+
+    # When
+    with pytest.raises(ValueError, match="duplicate evidence_id") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "duplicate evidence_id" in str(error_info.value)
+
+
+def test_rejects_duplicate_evidence_id_collision_with_matching_integrity(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    collision = records[0].copy()
+    collision["entity_id"] = "TARGET-B"
+    records.append(collision)
+    _replace_evidence_records(tmp_path, records)
+    evidence_content = (tmp_path / R1_EVIDENCE_FILENAME).read_bytes()
+    summary = _read_summary_payload(tmp_path)
+    assert summary["evidence_count"] == len(records)
+    assert summary["evidence_artifact_sha256"] == hashlib.sha256(evidence_content).hexdigest()
+
+    # When
+    with pytest.raises(ValueError, match="duplicate evidence_id") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "duplicate evidence_id" in str(error_info.value)
 
 
 def test_rejects_evidence_run_id_mismatch(tmp_path: Path) -> None:

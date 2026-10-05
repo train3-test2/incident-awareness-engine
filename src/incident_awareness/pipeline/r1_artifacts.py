@@ -412,7 +412,14 @@ def _validate_completed_artifacts(
 ) -> None:
     if summary.evidence_count != len(evidences):
         raise ValueError("R1 Evidence count does not match the extraction summary")
+
+    seen_evidence_ids: set[str] = set()
     for evidence in evidences:
+        if evidence.evidence_id in seen_evidence_ids:
+            raise ValueError(
+                f"R1 Evidence JSONL contains duplicate evidence_id: {evidence.evidence_id}"
+            )
+        seen_evidence_ids.add(evidence.evidence_id)
         if evidence.run_id != summary.run_id:
             raise ValueError("Evidence run_id does not match the extraction summary")
         if evidence.extractor_version != summary.extractor_version:
