@@ -150,7 +150,7 @@ def _process_message(
 
     with tempfile.TemporaryDirectory(prefix="incident-awareness-sqs-worker-") as directory:
         work_root = Path(directory)
-        for input_object in inputs:
+        for input_object in _unique_inputs(inputs):
             input_dir = work_root / input_object.ingest_id
             input_dir.mkdir()
             sysmon_jsonl_path = input_dir / "sysmon.jsonl"
@@ -167,6 +167,24 @@ def _process_message(
                 raise RuntimeError(
                     f"standalone First Cycle failed for S3 object {input_object.bucket}/{input_object.key}"
                 )
+
+
+def _unique_inputs(inputs: Sequence[S3SysmonInput]) -> tuple[S3SysmonInput, ...]:
+    """Keep one input per immutable S3 object version in an SQS message.
+
+    S3 event notifications are at-least-once.  The immutable object identity is
+    the bucket, decoded key, and ETag; the sequencer describes event ordering
+    and is intentionally not part of that identity.  Cross-message delivery
+    deduplication is handled by the Worker receipt policy.
+    """
+    unique_inputs: list[S3SysmonInput] = []
+    seen: set[tuple[str, str, str]] = set()
+    for input_object in inputs:
+        identity = (input_object.bucket, input_object.key, input_object.e_tag)
+        if identity not in seen:
+            seen.add(identity)
+            unique_inputs.append(input_object)
+    return tuple(unique_inputs)
 
 
 def _message_string(message: Mapping[str, object], name: str) -> str:

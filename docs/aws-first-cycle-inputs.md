@@ -194,6 +194,26 @@ envelope 또는 임의의 애플리케이션 메시지 형식은 허용하지 �
 `e_tag`, `sequencer`를 반환한다. 이 단계에서는 S3 object를 내려받거나 First Cycle을
 실행하지 않는다. 실제 SQS polling·다운로드·실행은 Worker entrypoint 단계의 책임이다.
 
+### S3 object 중복 실행 식별 규칙
+
+S3 Event Notification과 SQS는 at-least-once 전달을 제공하므로 같은 객체 생성 이벤트가
+중복될 수 있다. Worker는 아래의 immutable object identity가 같은 record를 같은 입력으로
+해석한다.
+
+```text
+bucket + decoded object key + eTag
+```
+
+`sequencer`는 S3 event의 순서 정보이며 중복 실행 식별자에는 포함하지 않는다. 같은 SQS
+메시지에 같은 identity가 여러 번 포함되면 Worker는 JSONL 다운로드와 standalone Pipeline
+실행을 한 번만 수행한다. 같은 key라도 ETag가 달라지면 다른 object version이므로 새 입력으로
+처리한다. 다만 Producer는 final key 덮어쓰기를 금지하고 수정본은 새 `ING-<uuidv4>` key로
+제출해야 한다.
+
+서로 다른 SQS 메시지로 재전달된 identity의 영속 중복 방지는 Worker receipt 정책에서
+처리한다. receipt가 성공 상태인 객체는 다시 실행하지 않고 메시지만 삭제하며, 실패한 객체는
+재시도·DLQ 정책에 따라 같은 identity로 다시 처리한다.
+
 ### Worker entrypoint
 
 Worker 컨테이너의 실행 명령은 아래와 같다.

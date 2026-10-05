@@ -126,6 +126,33 @@ def test_worker_retains_message_when_standalone_execution_fails() -> None:
     assert sqs.deleted_receipts == []
 
 
+def test_worker_processes_duplicate_object_versions_once_per_sqs_message() -> None:
+    duplicate_record = _s3_event()["Records"][0]
+    sqs = _FakeSqs(
+        [
+            {
+                "Body": json.dumps({"Records": [duplicate_record, duplicate_record]}),
+                "ReceiptHandle": "receipt-1",
+            }
+        ]
+    )
+    s3 = _FakeS3()
+    calls: list[list[str]] = []
+
+    run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=sqs,
+        s3_client=s3,
+        run_standalone=lambda arguments: calls.append(list(arguments)) or 0,
+        once=True,
+    )
+
+    assert s3.downloads == [(_BUCKET, _KEY)]
+    assert len(calls) == 1
+    assert sqs.deleted_receipts == ["receipt-1"]
+
+
 class _FakeSqs:
     def __init__(self, messages: list[dict[str, str]]) -> None:
         self._messages = messages
