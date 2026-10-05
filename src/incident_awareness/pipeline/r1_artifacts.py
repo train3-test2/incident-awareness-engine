@@ -16,10 +16,14 @@ from incident_awareness.common.models.evidence import Evidence
 from incident_awareness.common.models.run import RunMetadata
 from incident_awareness.evidence.r1_multi_event import (
     EXTRACTOR_VERSION,
+    R1_CANDIDATE_EVIDENCE_TYPES_BY_EXTRACTOR_VERSION,
+    REMOTE_PROCESS_NETWORK_FOLLOW_ON,
+    REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION,
     R1ExtractionDiagnostic,
 )
 from incident_awareness.pipeline.r1_evidence import (
     R1LineageInput,
+    r1_evidence_sort_key,
     run_r1_evidence_pipeline_with_diagnostics,
 )
 
@@ -412,6 +416,18 @@ def _validate_completed_artifacts(
 ) -> None:
     if summary.evidence_count != len(evidences):
         raise ValueError("R1 Evidence count does not match the extraction summary")
+    if evidences != tuple(sorted(evidences, key=r1_evidence_sort_key)):
+        raise ValueError("R1 Evidence JSONL does not use the writer's canonical ordering")
+
+    allowed_evidence_types = R1_CANDIDATE_EVIDENCE_TYPES_BY_EXTRACTOR_VERSION.get(
+        summary.extractor_version
+    )
+    if allowed_evidence_types is None:
+        raise ValueError(
+            f"unsupported R1 extractor_version in extraction summary: {summary.extractor_version}"
+        )
+    if summary.lineage_inputs is None:
+        raise ValueError("completed summary requires lineage_inputs provenance")
 
     seen_evidence_ids: set[str] = set()
     for evidence in evidences:
@@ -424,6 +440,45 @@ def _validate_completed_artifacts(
             raise ValueError("Evidence run_id does not match the extraction summary")
         if evidence.extractor_version != summary.extractor_version:
             raise ValueError("Evidence extractor_version does not match the extraction summary")
+        if evidence.evidence_type not in allowed_evidence_types:
+            raise ValueError(
+                "Evidence evidence_type is not supported by the R1 extractor_version: "
+                f"{evidence.evidence_type}"
+            )
+        _validate_evidence_lineage_provenance(evidence, summary.lineage_inputs)
+
+
+def _validate_evidence_lineage_provenance(
+    evidence: Evidence,
+    lineage_inputs: tuple[R1LineageInputProvenance, ...],
+) -> None:
+    if evidence.evidence_type == REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION:
+        if not any(
+            _matches_lineage_deviation_provenance(evidence, provenance)
+            for provenance in lineage_inputs
+        ):
+            raise ValueError(
+                "lineage deviation Evidence does not match summary lineage/policy provenance"
+            )
+        return
+
+    if evidence.evidence_type == REMOTE_PROCESS_NETWORK_FOLLOW_ON and not any(
+        evidence.event_ids[0] == provenance.terminal_event_id for provenance in lineage_inputs
+    ):
+        raise ValueError("network follow-on Evidence does not match summary terminal provenance")
+
+
+def _matches_lineage_deviation_provenance(
+    evidence: Evidence,
+    provenance: R1LineageInputProvenance,
+) -> bool:
+    return (
+        evidence.event_ids[0] == provenance.anchor_event_id
+        and evidence.event_ids[-1] == provenance.terminal_event_id
+        and evidence.features.get("policy_id") == provenance.policy_id
+        and evidence.features.get("version") == provenance.policy_version
+        and evidence.features.get("config_hash") == provenance.policy_config_hash
+    )
 
 
 def _lineage_provenance_key(

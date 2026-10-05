@@ -7,7 +7,11 @@ import pytest
 
 from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.common.models.evidence import Evidence
-from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
+from incident_awareness.evidence.r1_multi_event import (
+    REMOTE_PROCESS_NETWORK_FOLLOW_ON,
+    REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION,
+    ApprovedLineagePolicy,
+)
 from incident_awareness.pipeline.r1_artifacts import (
     R1_EVIDENCE_FILENAME,
     R1_EXTRACTION_SUMMARY_FILENAME,
@@ -966,6 +970,155 @@ def test_rejects_evidence_count_mismatch(tmp_path: Path) -> None:
     assert "Evidence count" in str(error_info.value)
 
 
+def test_rejects_noncanonical_evidence_order_with_matching_integrity(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    records.reverse()
+    _replace_evidence_records(tmp_path, records)
+
+    # When
+    with pytest.raises(ValueError, match="canonical ordering") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "canonical ordering" in str(error_info.value)
+
+
+def test_rejects_unsupported_candidate_type_with_matching_integrity(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    records[0]["evidence_type"] = "unsupported_r1_candidate"
+    _replace_evidence_records(tmp_path, records)
+
+    # When
+    with pytest.raises(ValueError, match="not supported") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "evidence_type" in str(error_info.value)
+
+
+def test_rejects_lineage_policy_provenance_mismatch(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    lineage_record = next(
+        record
+        for record in records
+        if record["evidence_type"] == REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION
+    )
+    features = lineage_record["features"]
+    assert isinstance(features, dict)
+    features["config_hash"] = "sha256:different-policy"
+    _replace_evidence_records(tmp_path, records)
+
+    # When
+    with pytest.raises(ValueError, match="lineage/policy provenance") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "lineage/policy provenance" in str(error_info.value)
+
+
+def test_rejects_lineage_anchor_provenance_mismatch(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    summary = _read_summary_payload(tmp_path)
+    lineage_inputs = summary["lineage_inputs"]
+    assert isinstance(lineage_inputs, list)
+    assert isinstance(lineage_inputs[0], dict)
+    lineage_inputs[0]["anchor_event_id"] = "evt-unrelated-anchor"
+    _write_summary_payload(tmp_path, summary)
+
+    # When
+    with pytest.raises(ValueError, match="lineage/policy provenance") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "lineage/policy provenance" in str(error_info.value)
+
+
+def test_rejects_network_terminal_provenance_mismatch(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    network_record = next(
+        record for record in records if record["evidence_type"] == REMOTE_PROCESS_NETWORK_FOLLOW_ON
+    )
+    event_ids = network_record["event_ids"]
+    assert isinstance(event_ids, list)
+    event_ids[0] = "evt-unrelated-terminal"
+    _replace_evidence_records(tmp_path, records)
+
+    # When
+    with pytest.raises(ValueError, match="terminal provenance") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "terminal provenance" in str(error_info.value)
+
+
+def test_accepts_evidence_matching_one_of_multiple_lineage_inputs(tmp_path: Path) -> None:
+    # Given
+    matching_runtime_policy = _policy(
+        approved_lineage=("anchor.exe", "runtime-hop.exe", "terminal.exe"),
+        policy_id="policy-a-no-deviation",
+        config_hash="sha256:policy-a",
+    )
+    deviation_policy = _policy(
+        policy_id="policy-z-deviation",
+        config_hash="sha256:policy-z",
+    )
+    written = run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[
+            _lineage_input(matching_runtime_policy),
+            _lineage_input(deviation_policy),
+        ],
+    )
+
+    # When
+    loaded = load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert loaded.evidences == written.evidences
+    lineage_evidence = next(
+        evidence
+        for evidence in loaded.evidences
+        if evidence.evidence_type == REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION
+    )
+    assert lineage_evidence.features["policy_id"] == "policy-z-deviation"
+
+
 def test_rejects_identical_duplicate_evidence_id_with_matching_integrity(tmp_path: Path) -> None:
     # Given
     run_and_write_r1_evidence_artifacts(
@@ -975,7 +1128,7 @@ def test_rejects_identical_duplicate_evidence_id_with_matching_integrity(tmp_pat
         lineage_inputs=[_lineage_input()],
     )
     records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
-    records.append(records[0].copy())
+    records.insert(1, records[0].copy())
     _replace_evidence_records(tmp_path, records)
     evidence_content = (tmp_path / R1_EVIDENCE_FILENAME).read_bytes()
     summary = _read_summary_payload(tmp_path)
@@ -1001,7 +1154,7 @@ def test_rejects_duplicate_evidence_id_collision_with_matching_integrity(tmp_pat
     records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
     collision = records[0].copy()
     collision["entity_id"] = "TARGET-B"
-    records.append(collision)
+    records.insert(1, collision)
     _replace_evidence_records(tmp_path, records)
     evidence_content = (tmp_path / R1_EVIDENCE_FILENAME).read_bytes()
     summary = _read_summary_payload(tmp_path)

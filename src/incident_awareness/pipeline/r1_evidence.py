@@ -2,6 +2,7 @@
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 
 from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.common.models.evidence import Evidence
@@ -101,15 +102,16 @@ def run_r1_evidence_pipeline_with_diagnostics(
         evidences=tuple(
             sorted(
                 evidences_by_id.values(),
-                key=lambda evidence: (
-                    evidence.timestamp,
-                    evidence.evidence_type,
-                    evidence.evidence_id,
-                ),
+                key=r1_evidence_sort_key,
             )
         ),
         diagnostics=tuple(sorted(diagnostics)),
     )
+
+
+def r1_evidence_sort_key(evidence: Evidence) -> tuple[datetime, str, str]:
+    """Writer와 reader가 공유하는 R1 Evidence canonical 정렬 키."""
+    return evidence.timestamp, evidence.evidence_type, evidence.evidence_id
 
 
 def _index_events_by_id(
@@ -208,6 +210,7 @@ def _required_event(
 __all__ = [
     "R1EvidencePipelineResult",
     "R1LineageInput",
+    "r1_evidence_sort_key",
     "run_r1_evidence_pipeline",
     "run_r1_evidence_pipeline_with_diagnostics",
 ]

@@ -9,8 +9,16 @@ from incident_awareness.common.models.evidence import Evidence
 
 EXTRACTOR_VERSION = "r1-v0.1"
 
-_REMOTE_PROCESS_NETWORK_FOLLOW_ON = "remote_process_network_follow_on"
-_REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION = "remote_session_process_lineage_deviation"
+REMOTE_PROCESS_NETWORK_FOLLOW_ON = "remote_process_network_follow_on"
+REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION = "remote_session_process_lineage_deviation"
+R1_CANDIDATE_EVIDENCE_TYPES_BY_EXTRACTOR_VERSION = {
+    EXTRACTOR_VERSION: frozenset(
+        {
+            REMOTE_PROCESS_NETWORK_FOLLOW_ON,
+            REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION,
+        }
+    )
+}
 
 LineageStatus = Literal["complete", "truncated", "cycle"]
 LineageFailureReason = Literal["missing_parent", "duplicate_process_guid"]
@@ -110,7 +118,7 @@ def extract_remote_process_network_follow_on(
                 "run_id": process_event.run_id,
                 "timestamp": max(process_event.timestamp, network_event.timestamp),
                 "entity_id": process_event.host_id,
-                "evidence_type": _REMOTE_PROCESS_NETWORK_FOLLOW_ON,
+                "evidence_type": REMOTE_PROCESS_NETWORK_FOLLOW_ON,
                 "event_ids": event_ids,
                 "derived_from_source_layer": "raw_telemetry",
                 "feature_channel_group": "fusion_feature",
@@ -208,7 +216,7 @@ def extract_remote_session_process_lineage_deviation_with_diagnostics(
                     "run_id": terminal_event.run_id,
                     "timestamp": timestamp,
                     "entity_id": terminal_event.host_id,
-                    "evidence_type": _REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION,
+                    "evidence_type": REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION,
                     "event_ids": event_ids,
                     "derived_from_source_layer": "raw_telemetry",
                     "feature_channel_group": "fusion_feature",
@@ -411,7 +419,7 @@ def _deterministic_evidence_id(*, run_id: str, event_ids: list[str]) -> str:
     # Provenance 표시 순서와 무관하게 같은 Event 집합은 같은 ID를 사용한다.
     canonical_event_ids = sorted(event_ids)
     identity = json.dumps(
-        [run_id, canonical_event_ids, _REMOTE_PROCESS_NETWORK_FOLLOW_ON, EXTRACTOR_VERSION],
+        [run_id, canonical_event_ids, REMOTE_PROCESS_NETWORK_FOLLOW_ON, EXTRACTOR_VERSION],
         ensure_ascii=True,
         separators=(",", ":"),
     )
@@ -430,7 +438,7 @@ def _deterministic_lineage_deviation_id(
         [
             run_id,
             canonical_event_ids,
-            _REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION,
+            REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION,
             EXTRACTOR_VERSION,
             approved_policy.policy_id,
             approved_policy.version,
