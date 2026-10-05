@@ -44,9 +44,9 @@ test("Decision Detail view and API paths URL-encode the Decision ID", () => {
     assert.equal(apiPath, "/decisions/DEC%20002%2Fchild");
 });
 
-test("Decision Detail path builders reject missing and blank identifiers", () => {
+test("Decision Detail path builders reject missing, blank, and dot-segment identifiers", () => {
     // Given
-    const invalidDecisionIds = [null, undefined, "", "   "];
+    const invalidDecisionIds = [null, undefined, "", "   ", ".", ".."];
 
     // When / Then
     for (const decisionId of invalidDecisionIds) {

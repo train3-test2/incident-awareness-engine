@@ -32,6 +32,9 @@ function requireDecisionId(decisionId) {
     if (!decisionId.trim()) {
         throw new RangeError("decisionId must not be blank");
     }
+    if (decisionId === "." || decisionId === "..") {
+        throw new RangeError("decisionId must not be a dot segment");
+    }
     return decisionId;
 }
 

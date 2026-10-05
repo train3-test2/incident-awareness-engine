@@ -270,6 +270,14 @@ class DecisionResult(BaseModel):
     detector_set_version: str | None = None
     supersedes_decision_id: str | None = None
 
+    @field_validator("decision_id", "supersedes_decision_id")
+    @classmethod
+    def reject_dot_segment_decision_id(cls, value: str | None) -> str | None:
+        if value in {".", ".."}:
+            raise ValueError("Decision ID cannot be a dot segment")
+
+        return value
+
     @field_validator("run_id")
     @classmethod
     def validate_run_id(cls, value: str) -> str:
