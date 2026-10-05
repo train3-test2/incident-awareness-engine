@@ -18,6 +18,26 @@ Dashboard browser → Dashboard API / backend → PostgreSQL
 DB URL, DB 비밀번호, Bastion SSH 개인 키는 서버 측 비밀 값으로만 관리한다. 이 값들을
 프론트엔드 번들, 브라우저 저장소, Git 저장소 또는 API 응답에 포함해서는 안 된다.
 
+## ECS Dashboard Secret 주입
+
+Dashboard Task Definition을 등록하기 전에 `ecsDashboardTaskExecutionRole`에 AWS 관리형
+`AmazonECSTaskExecutionRolePolicy`와 Dashboard DB URL Secret 읽기 정책을 실제로
+연결해야 한다. `infra/iam/ecs-dashboard-task-execution-secrets-policy.json`은 정책
+템플릿일 뿐이며, 파일을 저장소에 추가하는 것만으로 IAM Role 권한이 부여되지는 않는다.
+
+배포 담당자는 정책의 `DATABASE_URL_SECRET_ARN`을 Dashboard 전용 Secret 전체 ARN으로
+치환한 뒤, `ecsDashboardTaskExecutionRole`의 인라인 정책으로 연결한다. 이후 다음 명령으로
+정책 연결을 확인한 뒤에만 Dashboard Task Definition revision을 등록한다.
+
+```text
+aws iam get-role-policy \
+  --role-name ecsDashboardTaskExecutionRole \
+  --policy-name ecsDashboardTaskExecutionSecretsPolicy
+```
+
+Secret이 고객 관리형 KMS 키로 암호화된 경우에는 해당 키에만 `kms:Decrypt` 권한도 추가한다.
+AWS 관리형 `aws/secretsmanager` 키를 사용하는 경우에는 별도 `kms:Decrypt` 권한이 필요 없다.
+
 ## 연결 키와 조회 범위
 
 모든 First Cycle 결과는 `run_id`로 연결한다. 단일 Run에서 Endpoint별 결과를 구분할
