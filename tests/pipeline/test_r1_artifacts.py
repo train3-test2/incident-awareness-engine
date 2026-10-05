@@ -7,10 +7,16 @@ import pytest
 
 from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.common.models.evidence import Evidence
-from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
+from incident_awareness.evidence.r1_multi_event import (
+    REMOTE_PROCESS_NETWORK_FOLLOW_ON,
+    REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION,
+    ApprovedLineagePolicy,
+)
 from incident_awareness.pipeline.r1_artifacts import (
     R1_EVIDENCE_FILENAME,
     R1_EXTRACTION_SUMMARY_FILENAME,
+    load_r1_evidence_artifacts,
+    load_r1_extraction_summary,
     run_and_write_r1_evidence_artifacts,
 )
 from incident_awareness.pipeline.r1_evidence import R1LineageInput
@@ -145,6 +151,49 @@ def _lineage_input(policy: ApprovedLineagePolicy | None = None) -> R1LineageInpu
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def _read_summary_payload(output_directory: Path) -> dict[str, object]:
+    path = output_directory / R1_EXTRACTION_SUMMARY_FILENAME
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    return payload
+
+
+def _write_summary_payload(
+    output_directory: Path,
+    payload: dict[str, object],
+) -> None:
+    path = output_directory / R1_EXTRACTION_SUMMARY_FILENAME
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _replace_evidence_content(
+    output_directory: Path,
+    content: bytes,
+    *,
+    synchronize_hash: bool,
+) -> None:
+    evidence_path = output_directory / R1_EVIDENCE_FILENAME
+    evidence_path.write_bytes(content)
+    if synchronize_hash:
+        summary = _read_summary_payload(output_directory)
+        summary["evidence_artifact_sha256"] = hashlib.sha256(content).hexdigest()
+        _write_summary_payload(output_directory, summary)
+
+
+def _replace_evidence_records(
+    output_directory: Path,
+    records: list[dict[str, object]],
+) -> None:
+    content = "".join(f"{json.dumps(record)}\n" for record in records).encode("utf-8")
+    _replace_evidence_content(output_directory, content, synchronize_hash=True)
+    summary = _read_summary_payload(output_directory)
+    summary["evidence_count"] = len(records)
+    _write_summary_payload(output_directory, summary)
 
 
 def _diagnostic_events(diagnostic: str) -> tuple[NormalizedEvent, ...]:
@@ -652,3 +701,511 @@ def test_same_inputs_produce_identical_artifacts(tmp_path: Path) -> None:
     assert [evidence.evidence_id for evidence in first.evidences] == [
         evidence.evidence_id for evidence in second.evidences
     ]
+
+
+def test_loads_writer_artifacts_round_trip(tmp_path: Path) -> None:
+    # Given
+    written = run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+
+    # When
+    loaded = load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert loaded.evidences == written.evidences
+    assert loaded.summary == written.summary
+    assert loaded.evidence_path == written.evidence_path
+    assert loaded.summary_path == written.summary_path
+    assert [evidence.model_dump() for evidence in loaded.evidences] == [
+        evidence.model_dump() for evidence in written.evidences
+    ]
+
+
+def test_loads_completed_empty_evidence_artifact(tmp_path: Path) -> None:
+    # Given
+    written = run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=(),
+    )
+
+    # When
+    loaded = load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert written.evidences == loaded.evidences == ()
+    assert loaded.summary.status == "completed"
+    assert loaded.summary.evidence_count == 0
+    assert loaded.summary.diagnostics == ()
+    assert loaded.summary.lineage_inputs == ()
+
+
+def test_rejects_failed_artifact_but_preserves_readable_summary(tmp_path: Path) -> None:
+    # Given
+    invalid_input = R1LineageInput(
+        anchor_event_id="evt-missing-anchor",
+        terminal_event_id="evt-terminal",
+        approved_policy=_policy(),
+    )
+    with pytest.raises(ValueError, match="anchor_event_id"):
+        run_and_write_r1_evidence_artifacts(
+            _events(),
+            run_id=_RUN_ID,
+            output_directory=tmp_path,
+            lineage_inputs=[invalid_input],
+        )
+
+    # When
+    summary = load_r1_extraction_summary(tmp_path)
+    with pytest.raises(ValueError, match="failed R1 extraction artifact") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert summary.status == "failed"
+    assert summary.error_type == "ValueError"
+    assert summary.error_message == (
+        "anchor_event_id does not reference an Event in the batch: evt-missing-anchor"
+    )
+    assert "failed R1 extraction artifact" in str(error_info.value)
+
+
+def test_rejects_missing_summary_file(tmp_path: Path) -> None:
+    # Given
+    (tmp_path / R1_EVIDENCE_FILENAME).write_bytes(b"")
+
+    # When
+    with pytest.raises(ValueError, match="summary is not valid JSON"):
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert not (tmp_path / R1_EXTRACTION_SUMMARY_FILENAME).exists()
+
+
+def test_rejects_missing_evidence_file(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    (tmp_path / R1_EVIDENCE_FILENAME).unlink()
+
+    # When
+    with pytest.raises(ValueError, match="Evidence JSONL is not readable"):
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert (tmp_path / R1_EXTRACTION_SUMMARY_FILENAME).exists()
+
+
+def test_rejects_malformed_summary_json(tmp_path: Path) -> None:
+    # Given
+    (tmp_path / R1_EXTRACTION_SUMMARY_FILENAME).write_text("{", encoding="utf-8")
+
+    # When
+    with pytest.raises(ValueError, match="summary is not valid JSON") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "summary is not valid JSON" in str(error_info.value)
+
+
+def test_rejects_summary_schema_mismatch(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    summary = _read_summary_payload(tmp_path)
+    summary.pop("diagnostics")
+    _write_summary_payload(tmp_path, summary)
+
+    # When
+    with pytest.raises(ValueError, match="writer contract") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "writer contract" in str(error_info.value)
+
+
+def test_rejects_damaged_lineage_provenance(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    summary = _read_summary_payload(tmp_path)
+    lineage_inputs = summary["lineage_inputs"]
+    assert isinstance(lineage_inputs, list)
+    assert isinstance(lineage_inputs[0], dict)
+    lineage_inputs[0].pop("policy_config_hash")
+    _write_summary_payload(tmp_path, summary)
+
+    # When
+    with pytest.raises(ValueError, match="writer contract") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "writer contract" in str(error_info.value)
+
+
+def test_rejects_noncanonical_lineage_provenance_order(tmp_path: Path) -> None:
+    # Given
+    first_input = _lineage_input(_policy(policy_id="policy-a"))
+    second_input = _lineage_input(_policy(policy_id="policy-b"))
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[second_input, first_input],
+    )
+    summary = _read_summary_payload(tmp_path)
+    lineage_inputs = summary["lineage_inputs"]
+    assert isinstance(lineage_inputs, list)
+    lineage_inputs.reverse()
+    _write_summary_payload(tmp_path, summary)
+
+    # When
+    with pytest.raises(ValueError, match="writer contract") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "writer contract" in str(error_info.value)
+
+
+def test_rejects_malformed_evidence_jsonl(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    _replace_evidence_content(tmp_path, b"{not-json\n", synchronize_hash=True)
+
+    # When
+    with pytest.raises(ValueError, match="invalid Evidence JSON at line 1") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "invalid Evidence JSON at line 1" in str(error_info.value)
+
+
+def test_rejects_evidence_schema_mismatch(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    records[0].pop("entity_id")
+    content = "".join(f"{json.dumps(record)}\n" for record in records).encode("utf-8")
+    _replace_evidence_content(tmp_path, content, synchronize_hash=True)
+
+    # When
+    with pytest.raises(ValueError, match="invalid Evidence JSON at line 1") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "invalid Evidence JSON at line 1" in str(error_info.value)
+
+
+def test_rejects_evidence_sha256_mismatch_without_rewriting_artifacts(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    evidence_path = tmp_path / R1_EVIDENCE_FILENAME
+    summary_path = tmp_path / R1_EXTRACTION_SUMMARY_FILENAME
+    _replace_evidence_content(
+        tmp_path,
+        evidence_path.read_bytes() + b" ",
+        synchronize_hash=False,
+    )
+    evidence_before = evidence_path.read_bytes()
+    summary_before = summary_path.read_bytes()
+
+    # When
+    with pytest.raises(ValueError, match="SHA-256"):
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert evidence_path.read_bytes() == evidence_before
+    assert summary_path.read_bytes() == summary_before
+
+
+def test_rejects_evidence_count_mismatch(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    summary = _read_summary_payload(tmp_path)
+    assert isinstance(summary["evidence_count"], int)
+    summary["evidence_count"] += 1
+    _write_summary_payload(tmp_path, summary)
+
+    # When
+    with pytest.raises(ValueError, match="Evidence count") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "Evidence count" in str(error_info.value)
+
+
+def test_rejects_noncanonical_evidence_order_with_matching_integrity(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    records.reverse()
+    _replace_evidence_records(tmp_path, records)
+
+    # When
+    with pytest.raises(ValueError, match="canonical ordering") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "canonical ordering" in str(error_info.value)
+
+
+def test_rejects_unsupported_candidate_type_with_matching_integrity(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    records[0]["evidence_type"] = "unsupported_r1_candidate"
+    _replace_evidence_records(tmp_path, records)
+
+    # When
+    with pytest.raises(ValueError, match="not supported") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "evidence_type" in str(error_info.value)
+
+
+def test_rejects_lineage_policy_provenance_mismatch(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    lineage_record = next(
+        record
+        for record in records
+        if record["evidence_type"] == REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION
+    )
+    features = lineage_record["features"]
+    assert isinstance(features, dict)
+    features["config_hash"] = "sha256:different-policy"
+    _replace_evidence_records(tmp_path, records)
+
+    # When
+    with pytest.raises(ValueError, match="lineage/policy provenance") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "lineage/policy provenance" in str(error_info.value)
+
+
+def test_rejects_lineage_anchor_provenance_mismatch(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    summary = _read_summary_payload(tmp_path)
+    lineage_inputs = summary["lineage_inputs"]
+    assert isinstance(lineage_inputs, list)
+    assert isinstance(lineage_inputs[0], dict)
+    lineage_inputs[0]["anchor_event_id"] = "evt-unrelated-anchor"
+    _write_summary_payload(tmp_path, summary)
+
+    # When
+    with pytest.raises(ValueError, match="lineage/policy provenance") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "lineage/policy provenance" in str(error_info.value)
+
+
+def test_rejects_network_terminal_provenance_mismatch(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    network_record = next(
+        record for record in records if record["evidence_type"] == REMOTE_PROCESS_NETWORK_FOLLOW_ON
+    )
+    event_ids = network_record["event_ids"]
+    assert isinstance(event_ids, list)
+    event_ids[0] = "evt-unrelated-terminal"
+    _replace_evidence_records(tmp_path, records)
+
+    # When
+    with pytest.raises(ValueError, match="terminal provenance") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "terminal provenance" in str(error_info.value)
+
+
+def test_accepts_evidence_matching_one_of_multiple_lineage_inputs(tmp_path: Path) -> None:
+    # Given
+    matching_runtime_policy = _policy(
+        approved_lineage=("anchor.exe", "runtime-hop.exe", "terminal.exe"),
+        policy_id="policy-a-no-deviation",
+        config_hash="sha256:policy-a",
+    )
+    deviation_policy = _policy(
+        policy_id="policy-z-deviation",
+        config_hash="sha256:policy-z",
+    )
+    written = run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[
+            _lineage_input(matching_runtime_policy),
+            _lineage_input(deviation_policy),
+        ],
+    )
+
+    # When
+    loaded = load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert loaded.evidences == written.evidences
+    lineage_evidence = next(
+        evidence
+        for evidence in loaded.evidences
+        if evidence.evidence_type == REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION
+    )
+    assert lineage_evidence.features["policy_id"] == "policy-z-deviation"
+
+
+def test_rejects_identical_duplicate_evidence_id_with_matching_integrity(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    records.insert(1, records[0].copy())
+    _replace_evidence_records(tmp_path, records)
+    evidence_content = (tmp_path / R1_EVIDENCE_FILENAME).read_bytes()
+    summary = _read_summary_payload(tmp_path)
+    assert summary["evidence_count"] == len(records)
+    assert summary["evidence_artifact_sha256"] == hashlib.sha256(evidence_content).hexdigest()
+
+    # When
+    with pytest.raises(ValueError, match="duplicate evidence_id") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "duplicate evidence_id" in str(error_info.value)
+
+
+def test_rejects_duplicate_evidence_id_collision_with_matching_integrity(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    collision = records[0].copy()
+    collision["entity_id"] = "TARGET-B"
+    records.insert(1, collision)
+    _replace_evidence_records(tmp_path, records)
+    evidence_content = (tmp_path / R1_EVIDENCE_FILENAME).read_bytes()
+    summary = _read_summary_payload(tmp_path)
+    assert summary["evidence_count"] == len(records)
+    assert summary["evidence_artifact_sha256"] == hashlib.sha256(evidence_content).hexdigest()
+
+    # When
+    with pytest.raises(ValueError, match="duplicate evidence_id") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "duplicate evidence_id" in str(error_info.value)
+
+
+def test_rejects_evidence_run_id_mismatch(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    records[0]["run_id"] = "RUN-20261006-002"
+    content = "".join(f"{json.dumps(record)}\n" for record in records).encode("utf-8")
+    _replace_evidence_content(tmp_path, content, synchronize_hash=True)
+
+    # When
+    with pytest.raises(ValueError, match="run_id") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "run_id" in str(error_info.value)
+
+
+def test_rejects_evidence_extractor_version_mismatch(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    records[0]["extractor_version"] = "r1-v9.9"
+    content = "".join(f"{json.dumps(record)}\n" for record in records).encode("utf-8")
+    _replace_evidence_content(tmp_path, content, synchronize_hash=True)
+
+    # When
+    with pytest.raises(ValueError, match="extractor_version") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "extractor_version" in str(error_info.value)
