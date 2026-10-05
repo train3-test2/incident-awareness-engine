@@ -11,14 +11,20 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 from urllib.parse import unquote_plus
 
 import boto3
+import psycopg
 from botocore.client import BaseClient
 from botocore.exceptions import BotoCoreError, ClientError
 from psycopg import OperationalError
 
 from incident_awareness.pipeline.standalone import main as standalone_main
+from incident_awareness.storage.config import DatabaseConfig
+from incident_awareness.storage.repositories.s3_object_receipt_repository import (
+    S3ObjectReceiptRepository,
+)
 
 _AUTOMATED_INPUT_PREFIX = "incoming/first-cycle/sysmon/"
 _AUTOMATED_INPUT_KEY_PATTERN = re.compile(
@@ -43,6 +49,16 @@ class RetryableWorkerError(Exception):
     """An operational error that may succeed on a later SQS delivery."""
 
 
+class SuccessfulReceiptStore(Protocol):
+    """Durably track immutable S3 object versions processed by the Worker."""
+
+    def get_successful_run_id(self, input_object: S3SysmonInput) -> str | None: ...
+
+    def save_success(self, input_object: S3SysmonInput, *, run_id: str) -> None: ...
+
+    def rollback(self) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class S3SysmonInput:
     """One validated Sysmon JSONL object announced through SQS."""
@@ -52,6 +68,33 @@ class S3SysmonInput:
     ingest_id: str
     e_tag: str
     sequencer: str
+
+
+class _PostgresSuccessfulReceiptStore:
+    """Commit successful Worker receipts separately from standalone persistence."""
+
+    def __init__(self, connection: psycopg.Connection[tuple[object, ...]]) -> None:
+        self._connection = connection
+        self._repository = S3ObjectReceiptRepository(connection)
+
+    def get_successful_run_id(self, input_object: S3SysmonInput) -> str | None:
+        return self._repository.get_successful_run_id(
+            bucket=input_object.bucket,
+            object_key=input_object.key,
+            e_tag=input_object.e_tag,
+        )
+
+    def save_success(self, input_object: S3SysmonInput, *, run_id: str) -> None:
+        self._repository.save_success(
+            bucket=input_object.bucket,
+            object_key=input_object.key,
+            e_tag=input_object.e_tag,
+            run_id=run_id,
+        )
+        self._connection.commit()
+
+    def rollback(self) -> None:
+        self._connection.rollback()
 
 
 def parse_s3_sysmon_inputs(message_body: str, *, expected_bucket: str) -> tuple[S3SysmonInput, ...]:
@@ -96,13 +139,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the SQS Worker using its ECS-provided environment configuration."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     namespace = build_parser().parse_args(argv)
-    return run_worker(
-        queue_url=_required_environment(_QUEUE_URL_ENV),
-        expected_bucket=_required_environment(_INPUT_BUCKET_ENV),
-        sqs_client=boto3.client("sqs"),
-        s3_client=boto3.client("s3"),
-        once=namespace.once,
-    )
+    database_config = DatabaseConfig.from_environment()
+    with psycopg.connect(database_config.url, autocommit=False) as connection:
+        return run_worker(
+            queue_url=_required_environment(_QUEUE_URL_ENV),
+            expected_bucket=_required_environment(_INPUT_BUCKET_ENV),
+            sqs_client=boto3.client("sqs"),
+            s3_client=boto3.client("s3"),
+            receipt_store=_PostgresSuccessfulReceiptStore(connection),
+            once=namespace.once,
+        )
 
 
 def run_worker(
@@ -112,6 +158,7 @@ def run_worker(
     sqs_client: BaseClient,
     s3_client: BaseClient,
     run_standalone: Callable[[Sequence[str]], int] = standalone_main,
+    receipt_store: SuccessfulReceiptStore | None = None,
     once: bool = False,
 ) -> int:
     """Poll one SQS message at a time and delete only successful messages."""
@@ -133,18 +180,22 @@ def run_worker(
                     expected_bucket=expected_bucket,
                     s3_client=s3_client,
                     run_standalone=run_standalone,
+                    receipt_store=receipt_store,
                 )
             except PermanentWorkerError:
+                _rollback_receipt_store(receipt_store)
                 _LOGGER.exception(
                     "First Cycle Worker rejected permanent input error; retaining for DLQ"
                 )
                 continue
             except RetryableWorkerError:
+                _rollback_receipt_store(receipt_store)
                 _LOGGER.exception(
                     "First Cycle Worker failed transiently; retaining SQS message for retry"
                 )
                 continue
             except Exception:
+                _rollback_receipt_store(receipt_store)
                 _LOGGER.exception(
                     "First Cycle Worker failed unexpectedly; retaining SQS message for retry"
                 )
@@ -164,6 +215,7 @@ def _process_message(
     expected_bucket: str,
     s3_client: BaseClient,
     run_standalone: Callable[[Sequence[str]], int],
+    receipt_store: SuccessfulReceiptStore | None = None,
 ) -> None:
     if not isinstance(message, Mapping):
         raise ValueError("SQS message must be a JSON object")  # noqa: TRY004
@@ -177,6 +229,14 @@ def _process_message(
     with tempfile.TemporaryDirectory(prefix="incident-awareness-sqs-worker-") as directory:
         work_root = Path(directory)
         for input_object in _unique_inputs(inputs):
+            prior_run_id = (
+                receipt_store.get_successful_run_id(input_object)
+                if receipt_store is not None
+                else None
+            )
+            if prior_run_id is not None:
+                _log_input_status("skipped", input_uri=_s3_uri(input_object), run_id=prior_run_id)
+                continue
             input_dir = work_root / input_object.ingest_id
             input_dir.mkdir()
             sysmon_jsonl_path = input_dir / "sysmon.jsonl"
@@ -207,6 +267,8 @@ def _process_message(
                 _log_input_status("failed", input_uri=input_uri)
                 raise
             else:
+                if receipt_store is not None:
+                    receipt_store.save_success(input_object, run_id=run_id)
                 _log_input_status("succeeded", input_uri=input_uri, run_id=run_id)
 
 
@@ -280,6 +342,11 @@ def _log_input_status(status: str, *, input_uri: str, run_id: str | None = None)
     _LOGGER.info("%s", json.dumps(payload, sort_keys=True))
 
 
+def _rollback_receipt_store(receipt_store: SuccessfulReceiptStore | None) -> None:
+    if receipt_store is not None:
+        receipt_store.rollback()
+
+
 def _message_string(message: Mapping[str, object], name: str) -> str:
     value = message.get(name)
     if not isinstance(value, str) or not value:
@@ -345,6 +412,7 @@ __all__ = [
     "PermanentWorkerError",
     "RetryableWorkerError",
     "S3SysmonInput",
+    "SuccessfulReceiptStore",
     "build_parser",
     "main",
     "parse_s3_sysmon_inputs",

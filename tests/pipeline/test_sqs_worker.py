@@ -9,6 +9,7 @@ from botocore.exceptions import ClientError
 from incident_awareness.pipeline.sqs_worker import (
     PermanentWorkerError,
     RetryableWorkerError,
+    S3SysmonInput,
     _process_message,
     parse_s3_sysmon_inputs,
     run_worker,
@@ -211,6 +212,37 @@ def test_worker_processes_duplicate_object_versions_once_per_sqs_message() -> No
     assert sqs.deleted_receipts == ["receipt-1"]
 
 
+def test_worker_skips_a_successfully_receipted_s3_object_version(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="incident_awareness.pipeline.sqs_worker")
+    receipts = _FakeReceiptStore()
+    calls: list[list[str]] = []
+
+    run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=_FakeSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}]),
+        s3_client=_FakeS3(),
+        run_standalone=_successful_standalone(calls),
+        receipt_store=receipts,
+        once=True,
+    )
+    run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=_FakeSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-2"}]),
+        s3_client=_FakeS3(),
+        run_standalone=_successful_standalone(calls),
+        receipt_store=receipts,
+        once=True,
+    )
+
+    assert len(calls) == 1
+    assert receipts.successful_run_ids == {(_BUCKET, _KEY, "opaque-etag"): "RUN-20261005-001"}
+    assert any('"status": "skipped"' in record.getMessage() for record in caplog.records)
+
+
 def test_classifies_invalid_s3_event_as_permanent_error() -> None:
     with pytest.raises(PermanentWorkerError, match="ObjectCreated"):
         _process_message(
@@ -277,6 +309,25 @@ class _FailingS3:
 
     def download_file(self, bucket: str, key: str, filename: str) -> None:
         raise self._error
+
+
+class _FakeReceiptStore:
+    def __init__(self) -> None:
+        self.successful_run_ids: dict[tuple[str, str, str], str] = {}
+        self.rollbacks = 0
+
+    def get_successful_run_id(self, input_object: S3SysmonInput) -> str | None:
+        return self.successful_run_ids.get(
+            (input_object.bucket, input_object.key, input_object.e_tag)
+        )
+
+    def save_success(self, input_object: S3SysmonInput, *, run_id: str) -> None:
+        self.successful_run_ids[(input_object.bucket, input_object.key, input_object.e_tag)] = (
+            run_id
+        )
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
 
 
 def _successful_standalone(calls: list[list[str]]) -> Callable[[Sequence[str]], int]:

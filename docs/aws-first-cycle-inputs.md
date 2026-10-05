@@ -210,9 +210,12 @@ bucket + decoded object key + eTag
 처리한다. 다만 Producer는 final key 덮어쓰기를 금지하고 수정본은 새 `ING-<uuidv4>` key로
 제출해야 한다.
 
-서로 다른 SQS 메시지로 재전달된 identity의 영속 중복 방지는 Worker receipt 정책에서
-처리한다. receipt가 성공 상태인 객체는 다시 실행하지 않고 메시지만 삭제하며, 실패한 객체는
-재시도·DLQ 정책에 따라 같은 identity로 다시 처리한다.
+서로 다른 SQS 메시지로 재전달된 identity의 영속 중복 방지는 PostgreSQL
+`s3_object_receipts`에서 처리한다. Worker는 Pipeline과 결과 저장이 성공한 뒤
+`bucket + key + eTag`와 생성된 `run_id`를 receipt로 기록한다. 같은 identity의 receipt가 이미
+있으면 standalone Pipeline을 다시 실행하지 않고 기존 `run_id`와 `status=skipped`를 기록한 뒤
+메시지만 삭제한다. 실패한 객체에는 성공 receipt를 만들지 않으므로 재시도·DLQ 정책에 따라
+같은 identity로 다시 처리한다.
 
 ### 재시도와 영구 실패 처리 정책
 
@@ -367,7 +370,8 @@ aws ecs run-task `
 First Cycle schema의 versioned migration은 이미지에 포함된
 `/app/infra/postgres/migrations/` 디렉터리에서 관리한다. 현재 migration은
 `001_first_cycle.sql`, `002_fusion_stopping_trace.sql`,
-`003_decision_runtime_snapshot.sql`, `004_fusion_runtime_config_snapshot.sql`이다.
+`003_decision_runtime_snapshot.sql`, `004_fusion_runtime_config_snapshot.sql`,
+`005_pipeline_runtime_status.sql`, `006_s3_object_receipts.sql`이다.
 DB 연결 환경 변수 `INCIDENT_AWARENESS_DATABASE_URL`이 주입된 별도 Fargate 일회성 태스크에서
 아래 명령을 실행한다.
 
