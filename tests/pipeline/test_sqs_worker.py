@@ -81,6 +81,18 @@ def test_parses_every_record_in_a_batched_s3_event() -> None:
         (_s3_event(event_name="ObjectRemoved:Delete"), "ObjectCreated"),
         (_s3_event(key="first-cycle/RUN-20261004-001/telemetry/sysmon-0001.jsonl"), "object key"),
         (_s3_event(key="incoming/first-cycle/sysmon/ING-not-a-uuid/sysmon.jsonl"), "object key"),
+        (
+            _s3_event(
+                key="incoming/first-cycle/sysmon/ING-550e8400-e29b-51d4-a716-446655440000/sysmon.jsonl"
+            ),
+            "object key",
+        ),
+        (
+            _s3_event(
+                key="incoming/first-cycle/sysmon/ING-550e8400-e29b-41d4-c716-446655440000/sysmon.jsonl"
+            ),
+            "object key",
+        ),
         (_s3_event(e_tag=""), "eTag"),
     ],
 )

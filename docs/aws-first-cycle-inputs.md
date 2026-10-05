@@ -117,7 +117,8 @@ S3 Event·SQS Worker 경로는 수동 실행용 `first-cycle/<run_id>/`와 다�
 s3://<bucket>/incoming/first-cycle/sysmon/ING-<uuidv4>/sysmon.jsonl
 ```
 
-`<uuidv4>`는 소문자 UUID v4이며, Producer가 업로드마다 새 값을 생성한다. 예를 들어
+`<uuidv4>`는 소문자 UUID v4이며, Producer가 업로드마다 새 값을 생성한다. Worker는 UUID의
+version `4`와 RFC 4122 variant(`8`, `9`, `a`, `b`)까지 검증한다. 예를 들어
 `ING-550e8400-e29b-41d4-a716-446655440000`은 유효한 ingest 식별자다. 이 식별자는
 Pipeline의 `run_id`가 아니다. Worker는 입력 객체를 검증한 뒤 새 `run_id`와 `decision_id`를
 할당한다.

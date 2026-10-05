@@ -29,7 +29,7 @@ from incident_awareness.storage.repositories.s3_object_receipt_repository import
 _AUTOMATED_INPUT_PREFIX = "incoming/first-cycle/sysmon/"
 _AUTOMATED_INPUT_KEY_PATTERN = re.compile(
     r"^incoming/first-cycle/sysmon/"
-    r"(?P<ingest_id>ING-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/"
+    r"(?P<ingest_id>ING-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/"
     r"sysmon\.jsonl$"
 )
 _QUEUE_URL_ENV = "INCIDENT_AWARENESS_SQS_QUEUE_URL"
