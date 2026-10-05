@@ -223,6 +223,34 @@ def test_worker_processes_duplicate_object_versions_once_per_sqs_message() -> No
     assert sqs.deleted_receipts == ["receipt-1"]
 
 
+def test_worker_uses_distinct_workspaces_for_different_versions_of_one_ingest() -> None:
+    first_record = _s3_event(e_tag="first-version")["Records"][0]
+    second_record = _s3_event(e_tag="second-version")["Records"][0]
+    sqs = _FakeSqs(
+        [
+            {
+                "Body": json.dumps({"Records": [first_record, second_record]}),
+                "ReceiptHandle": "receipt-1",
+            }
+        ]
+    )
+    calls: list[tuple[Path, Path]] = []
+
+    run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=sqs,
+        s3_client=_FakeS3(),
+        run_standalone=_successful_standalone(calls),
+        once=True,
+    )
+
+    assert len(calls) == 2
+    assert calls[0][0].parent != calls[1][0].parent
+    assert calls[0][0].parent.name.startswith(f"{_INGEST_ID}-")
+    assert calls[1][0].parent.name.startswith(f"{_INGEST_ID}-")
+
+
 def test_worker_skips_a_successfully_receipted_s3_object_version(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -256,7 +257,7 @@ def _process_message(
                 _log_input_status("skipped", input_uri=_s3_uri(input_object), run_id=prior_run_id)
                 receipt_store.release_execution()
                 continue
-            input_dir = work_root / input_object.ingest_id
+            input_dir = _input_directory(work_root, input_object)
             input_dir.mkdir()
             sysmon_jsonl_path = input_dir / "sysmon.jsonl"
             input_uri = _s3_uri(input_object)
@@ -296,6 +297,12 @@ def _unique_inputs(inputs: Sequence[S3SysmonInput]) -> tuple[S3SysmonInput, ...]
             seen.add(identity)
             unique_inputs.append(input_object)
     return tuple(unique_inputs)
+
+
+def _input_directory(work_root: Path, input_object: S3SysmonInput) -> Path:
+    """Return a safe, per-object-version workspace directory."""
+    e_tag_digest = hashlib.sha256(input_object.e_tag.encode("utf-8")).hexdigest()[:16]
+    return work_root / f"{input_object.ingest_id}-{e_tag_digest}"
 
 
 def _download_sysmon_jsonl(
