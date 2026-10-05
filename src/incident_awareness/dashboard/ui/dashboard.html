@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Incident Awareness Dashboard</title>
+    <link rel="stylesheet" href="/dashboard-assets/dashboard.css">
+    <script type="module" src="/dashboard-assets/dashboard.js"></script>
+</head>
+<body>
+    <main id="dashboard-view" class="dashboard-page">
+        <nav class="dashboard-navigation" aria-label="Dashboard navigation">
+            <a href="/dashboard" aria-current="page">Dashboard</a>
+            <a href="/operations">Operations</a>
+        </nav>
+        <h1 class="page-title">Incident Awareness Dashboard</h1>
+        <div class="dashboard-grid">
+            <section class="dashboard-section" aria-labelledby="overview-heading">
+                <h2 id="overview-heading">Overview</h2>
+                <p class="dashboard-metric-label">Total Runs</p>
+                <p id="total-runs-value" class="dashboard-metric-value">-</p>
+                <div id="overview-status" class="dashboard-status" role="status" aria-live="polite">
+                    Total Runs를 불러오는 중입니다.
+                </div>
+            </section>
+            <section class="dashboard-section" aria-labelledby="recent-runs-heading">
+                <h2 id="recent-runs-heading">Recent Runs</h2>
+                <div id="recent-runs-status" class="dashboard-status" role="status" aria-live="polite">
+                    Recent Runs를 불러오는 중입니다.
+                </div>
+                <div id="recent-runs-list" class="run-card-list"></div>
+            </section>
+            <section class="dashboard-section dashboard-section--wide" aria-labelledby="runs-heading">
+                <h2 id="runs-heading">Runs</h2>
+                <div id="runs-status" class="dashboard-status" role="status" aria-live="polite">
+                    Run 목록을 불러오는 중입니다.
+                </div>
+                <div id="runs-list" class="run-card-list"></div>
+            </section>
+        </div>
+    </main>
+</body>
+</html>
