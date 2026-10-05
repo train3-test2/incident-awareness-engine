@@ -147,6 +147,25 @@ PostgreSQL과 CloudWatch Logs에 저장하며, 생성 Artifact를 S3에 장기 �
 실행은 계속 `first-cycle/<source-run-id>/telemetry/sysmon-0001.jsonl` 경로와
 `INCIDENT_AWARENESS_STANDALONE=true` override를 사용한다.
 
+### S3 Event와 SQS 연결
+
+자동 처리 Queue 이름은 `incident-awareness-first-cycle-ingest`이며, Queue policy와 S3
+notification 구성은 각각 아래 파일에서 관리한다.
+
+- `infra/sqs/first-cycle-ingest-queue-policy.json`
+- `infra/sqs/first-cycle-ingest-queue-attributes.json`
+- `infra/s3/first-cycle-ingest-notification.json`
+
+Queue policy는 이 계정의 `incident-awareness-first-cycle-998301375101-ap-northeast-2-an`
+버킷만 `sqs:SendMessage`를 호출하도록 제한한다. S3 notification은
+`incoming/first-cycle/sysmon/` prefix와 `sysmon.jsonl` suffix의 `ObjectCreated` 이벤트만
+Queue로 전달한다. 따라서 수동 실행용 `first-cycle/` 객체와 Worker가 향후 기록할 다른
+객체는 자동 처리 메시지를 만들지 않는다.
+
+Queue의 visibility timeout은 Worker가 이후 First Cycle을 처리하는 동안 동일 메시지를
+다른 Worker가 받지 않도록 1시간으로 설정한다. 재시도 횟수와 Dead Letter Queue는 다음
+구성 단계에서 추가한다.
+
 ## ECS Task Definition과 실행 override
 
 `infra/ecs/task-definition.first-cycle.json`은 Pipeline 실행용 Fargate Task Definition
