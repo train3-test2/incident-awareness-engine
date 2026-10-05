@@ -35,6 +35,30 @@ def test_render_replaces_all_first_cycle_identifiers() -> None:
     assert "DATABASE_URL_SECRET_ARN" not in rendered
 
 
+def test_render_replaces_all_worker_identifiers() -> None:
+    template = (ROOT / "infra" / "ecs" / "task-definition.first-cycle-worker.json").read_text(
+        encoding="utf-8"
+    )
+
+    rendered = MODULE.render(
+        template,
+        {
+            "IMAGE_URI": "registry.example/engine:abc123",
+            "EXECUTION_ROLE_ARN": "arn:aws:iam::123456789012:role/execution",
+            "TASK_ROLE_ARN": "arn:aws:iam::123456789012:role/task",
+            "DATABASE_URL_SECRET_ARN": "arn:aws:secretsmanager:region:123456789012:secret:db",
+        },
+    )
+
+    for placeholder in (
+        "IMAGE_URI",
+        "EXECUTION_ROLE_ARN",
+        "TASK_ROLE_ARN",
+        "DATABASE_URL_SECRET_ARN",
+    ):
+        assert placeholder not in rendered
+
+
 def test_render_requires_identifiers_used_by_a_template() -> None:
     template = (ROOT / "infra" / "ecs" / "task-definition.dashboard.json").read_text(
         encoding="utf-8"

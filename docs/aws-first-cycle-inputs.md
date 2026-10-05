@@ -267,9 +267,14 @@ CloudWatch Logs에는 각 입력마다 JSON 로그를 남긴다. 시작 시 `inp
 ### Worker Fargate 실행과 PostgreSQL 저장 확인
 
 `infra/ecs/task-definition.first-cycle-worker.json`은 SQS Worker 전용 Fargate Task Definition
-템플릿이다. `IMAGE_URI`를 ECR의 현재 이미지 URI로 교체해 등록한다. Worker는 source Queue와
-자동 입력 S3 prefix를 환경 변수로 고정하고, PostgreSQL URL은 기존 First Cycle Task와 같은
-Secrets Manager secret으로 주입한다.
+템플릿이다. `IMAGE_URI`, Execution Role ARN, Task Role ARN, PostgreSQL Secret ARN을 배포 시
+주입해 등록한다. Worker는 source Queue와 자동 입력 S3 prefix를 환경 변수로 고정하고,
+PostgreSQL URL은 기존 First Cycle Task와 같은 Secrets Manager secret으로 주입한다.
+
+`develop` push의 CI workflow는 `incident-awareness-engine-first-cycle-worker` ECS Service를
+`desiredCount=1`로 생성하거나 갱신한다. Service는 `--once` 없이 Worker를 실행하므로 source
+Queue 메시지를 계속 polling하며, 비정상 종료 시 ECS가 replacement task를 시작한다. 수동
+`--once` 실행은 진단·검증 용도로만 사용한다.
 
 배포 전 검증은 컨테이너 명령을 아래 배열로 override해 한 메시지만 처리하도록 실행한다.
 
