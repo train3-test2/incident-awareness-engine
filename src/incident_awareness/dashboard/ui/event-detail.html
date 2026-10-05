@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Event Detail | Incident Awareness Dashboard</title>
+    <link rel="stylesheet" href="/dashboard-assets/detail.css">
+</head>
+<body>
+    <main id="event-detail-view" class="detail-page">
+        <nav class="dashboard-navigation" aria-label="Dashboard navigation">
+            <a href="/dashboard" aria-current="page">Dashboard</a>
+            <a href="/operations">Operations</a>
+        </nav>
+        <h1 class="page-title">Event Detail</h1>
+        <div id="event-detail-status" class="detail-status" role="status" aria-live="polite">
+            Event Detail is prepared for loading.
+        </div>
+        <div class="detail-grid">
+            <section class="detail-section" aria-labelledby="event-detail-heading">
+                <h2 id="event-detail-heading">Event Metadata</h2>
+                <dl id="event-detail-fields" class="detail-fields"></dl>
+            </section>
+            <section class="detail-section" aria-labelledby="raw-log-reference-heading">
+                <h2 id="raw-log-reference-heading">Raw Log Reference</h2>
+                <div
+                    id="raw-log-reference-status"
+                    class="detail-section-status"
+                    role="status"
+                    aria-live="polite"
+                >
+                    Raw Log Reference is prepared for loading.
+                </div>
+                <dl id="raw-log-reference-fields" class="detail-fields"></dl>
+            </section>
+        </div>
+        <nav
+            id="event-timeline-back-navigation"
+            class="detail-back-navigation"
+            aria-label="Event Timeline navigation"
+        ></nav>
+        <nav
+            id="run-detail-back-navigation"
+            class="detail-back-navigation"
+            aria-label="Run Detail navigation"
+        ></nav>
+    </main>
+</body>
+</html>

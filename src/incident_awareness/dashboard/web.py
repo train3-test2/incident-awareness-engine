@@ -2,8 +2,10 @@
 
 import mimetypes
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import APIRouter, FastAPI
+from fastapi import Path as ApiPath
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -27,6 +29,19 @@ def get_operations_view() -> FileResponse:
 @operations_view_router.get("/dashboard/runs/{run_id}")
 def get_run_detail_view(run_id: str) -> FileResponse:
     return FileResponse(_UI_DIRECTORY / "run-detail.html", media_type="text/html")
+
+
+@operations_view_router.get("/dashboard/runs/{run_id}/timeline")
+def get_event_timeline_view(run_id: str) -> FileResponse:
+    return FileResponse(_UI_DIRECTORY / "event-timeline.html", media_type="text/html")
+
+
+@operations_view_router.get("/dashboard/runs/{run_id}/events/{event_id:path}")
+def get_event_detail_view(
+    run_id: str,
+    event_id: Annotated[str, ApiPath(min_length=1)],
+) -> FileResponse:
+    return FileResponse(_UI_DIRECTORY / "event-detail.html", media_type="text/html")
 
 
 @operations_view_router.get("/dashboard/decisions/{decision_id:path}")

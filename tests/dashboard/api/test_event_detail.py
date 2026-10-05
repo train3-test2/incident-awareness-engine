@@ -16,6 +16,8 @@ from incident_awareness.storage.repositories.event_repository import EventLookup
 
 RUN_ID = "RUN-20261003-001"
 EVENT_ID = "evt-001"
+EVENT_ID_WITH_SLASH = "evt group/child"
+ENCODED_EVENT_ID_WITH_SLASH = "evt%20group%2Fchild"
 
 
 class FakeEventRepository:
@@ -141,6 +143,46 @@ def test_get_event_returns_scoped_404(
     assert response.status_code == 404
     assert response.json() == {"detail": expected_detail}
     assert repository.detail_calls == [(RUN_ID, EVENT_ID)]
+
+
+def test_encoded_slash_event_id_reaches_json_application_route() -> None:
+    # Given
+    repository = FakeEventRepository(EventLookupResult(run_exists=True, event=None))
+    client = _client(repository)
+
+    # When
+    response = client.get(f"/runs/{RUN_ID}/events/{ENCODED_EVENT_ID_WITH_SLASH}")
+
+    # Then
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json() == {"detail": "Event not found"}
+    assert repository.detail_calls == [(RUN_ID, EVENT_ID_WITH_SLASH)]
+
+
+def test_empty_event_id_is_rejected_before_repository_lookup() -> None:
+    # Given
+    repository = FakeEventRepository(EventLookupResult(run_exists=True, event=None))
+    client = _client(repository)
+
+    # When
+    response = client.get(f"/runs/{RUN_ID}/events/")
+
+    # Then
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json() == {
+        "detail": [
+            {
+                "type": "string_too_short",
+                "loc": ["path", "event_id"],
+                "msg": "String should have at least 1 character",
+                "input": "",
+                "ctx": {"min_length": 1},
+            }
+        ]
+    }
+    assert repository.detail_calls == []
 
 
 def _client(repository: FakeEventRepository) -> TestClient:

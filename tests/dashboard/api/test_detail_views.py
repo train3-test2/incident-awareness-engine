@@ -11,12 +11,17 @@ from incident_awareness.dashboard.api.dependencies import (
 )
 
 RUN_ID = "RUN-20261005-001"
+EVENT_VIEW_RUN_ID = "RUN-20260920-001"
 DECISION_ID = "D-TEST-001"
 DECISION_ID_WITH_SLASH = "DEC 002/child"
 ENCODED_DECISION_ID_WITH_SLASH = "DEC%20002%2Fchild"
+EVENT_ID = "evt-001"
+ENCODED_EVENT_ID_WITH_SLASH = "evt%20group%2Fchild"
 JAVASCRIPT_MEDIA_TYPES = {"application/javascript", "text/javascript"}
 DETAIL_VIEW_PATHS = (
     f"/dashboard/runs/{RUN_ID}",
+    f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/timeline",
+    f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/events/{EVENT_ID}",
     f"/dashboard/decisions/{DECISION_ID}",
     "/dashboard-assets/detail.css",
     "/dashboard-assets/run-detail.js",
@@ -140,6 +145,95 @@ def test_historical_decision_view_serves_html_shell_without_database_access(
         "run-detail-back-navigation",
     ):
         assert f'id="{container_id}"' in html
+    assert database_connection_attempts == []
+
+
+def test_event_timeline_view_serves_html_shell_without_database_access(
+    database_connection_attempts: list[str],
+) -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    response = client.get(f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/timeline")
+
+    # Then
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    html = response.text
+    assert "Event Timeline" in html
+    assert 'href="/dashboard" aria-current="page"' in html
+    assert 'href="/operations"' in html
+    assert 'href="/dashboard-assets/detail.css"' in html
+    for container_id in (
+        "event-timeline-view",
+        "event-timeline-status",
+        "event-timeline-summary",
+        "event-timeline-list",
+        "event-timeline-pagination",
+        "run-detail-back-navigation",
+    ):
+        assert f'id="{container_id}"' in html
+    assert database_connection_attempts == []
+
+
+@pytest.mark.parametrize(
+    "event_path",
+    [EVENT_ID, ENCODED_EVENT_ID_WITH_SLASH],
+    ids=["normal-event-id", "encoded-slash-event-id"],
+)
+def test_event_detail_view_serves_html_shell_without_database_access(
+    event_path: str,
+    database_connection_attempts: list[str],
+) -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    response = client.get(f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/events/{event_path}")
+
+    # Then
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    html = response.text
+    assert "Event Detail" in html
+    assert "Event Metadata" in html
+    assert "Raw Log Reference" in html
+    assert 'href="/dashboard" aria-current="page"' in html
+    assert 'href="/operations"' in html
+    assert 'href="/dashboard-assets/detail.css"' in html
+    for container_id in (
+        "event-detail-view",
+        "event-detail-status",
+        "event-detail-fields",
+        "raw-log-reference-status",
+        "raw-log-reference-fields",
+        "event-timeline-back-navigation",
+        "run-detail-back-navigation",
+    ):
+        assert f'id="{container_id}"' in html
+    assert database_connection_attempts == []
+
+
+def test_empty_event_id_does_not_serve_event_detail_html_shell(
+    database_connection_attempts: list[str],
+) -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    response = client.get(f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/events/")
+
+    # Then
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/json")
+    detail = response.json()["detail"]
+    assert len(detail) == 1
+    assert detail[0]["type"] == "string_too_short"
+    assert detail[0]["loc"] == ["path", "event_id"]
+    assert detail[0]["input"] == ""
+    assert detail[0]["ctx"] == {"min_length": 1}
+    assert "Event Detail" not in response.text
     assert database_connection_attempts == []
 
 
@@ -441,8 +535,12 @@ def test_detail_view_routes_are_hidden_from_openapi() -> None:
     assert response.status_code == 200
     paths = set(response.json()["paths"])
     assert "/dashboard/runs/{run_id}" not in paths
+    assert "/dashboard/runs/{run_id}/timeline" not in paths
+    assert "/dashboard/runs/{run_id}/events/{event_id}" not in paths
     assert "/dashboard/decisions/{decision_id}" not in paths
     assert "/runs/{run_id}" in paths
+    assert "/runs/{run_id}/timeline" in paths
+    assert "/runs/{run_id}/events/{event_id}" in paths
     assert "/decisions/{decision_id}" in paths
     assert not any(path.startswith("/dashboard-assets") for path in paths)
 
@@ -502,5 +600,25 @@ def test_historical_decision_view_has_no_inline_script_or_style() -> None:
     # Then
     assert html.count("<script") == 1
     assert html.count('<script type="module" src="/dashboard-assets/decision-detail.js">') == 1
+    assert "<style" not in html
+    assert " style=" not in html
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/timeline",
+        f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/events/{EVENT_ID}",
+    ],
+)
+def test_event_views_have_no_script_or_inline_style(path: str) -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    html = client.get(path).text
+
+    # Then
+    assert "<script" not in html
     assert "<style" not in html
     assert " style=" not in html
