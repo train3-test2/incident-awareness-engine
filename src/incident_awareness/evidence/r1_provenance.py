@@ -37,6 +37,7 @@ def resolve_r1_evidence_provenance(
             )
             for event_id in evidence.event_ids
         )
+        _validate_evidence_timestamp(evidence, resolved_events)
         resolved.append(
             ResolvedR1EvidenceProvenance(
                 evidence=evidence,
@@ -85,6 +86,18 @@ def _resolve_referenced_event(
         )
 
     return event
+
+
+def _validate_evidence_timestamp(
+    evidence: Evidence,
+    resolved_events: tuple[NormalizedEvent, ...],
+) -> None:
+    latest_event_timestamp = max(event.timestamp for event in resolved_events)
+    if evidence.timestamp != latest_event_timestamp:
+        raise ValueError(
+            f"Evidence {evidence.evidence_id} timestamp does not match "
+            "the latest referenced NormalizedEvent.timestamp"
+        )
 
 
 __all__ = [
