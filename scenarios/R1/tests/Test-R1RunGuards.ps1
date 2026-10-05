@@ -1611,6 +1611,10 @@ function New-ProbeTool {
         A stand-in for Sysmon64 -c: a .cmd file that writes the given bytes to its
         stdout and its stderr and ends with the given exit code.
 
+        The probe starts this path through ProcessStartInfo with
+        UseShellExecute = false, exactly as the production step does. The
+        supported Windows PowerShell 5.1 runners execute this .cmd fixture.
+
         cmd's "type" copies a file as it is unless the file starts with a UTF-16
         byte order mark, which it converts. The first byte of stdout is therefore
         kept in a file of its own, so that no file starts with one.
@@ -1677,10 +1681,10 @@ function Get-ProbeAnswer {
 
 function Test-ProbeAnswer {
     <# True when an answer of the probe step carries the three fields of $probeText and the hash of the config file. #>
-    param([AllowNull()]$Answer)
+    param([AllowNull()]$Answer, [string]$ConfigFile = "C:\synthetic\config.xml")
 
     if ($null -eq $Answer) { return $false }
-    return ([string]$Answer.sysmon.config_file -ceq "C:\synthetic\config.xml" -and
+    return ([string]$Answer.sysmon.config_file -ceq $ConfigFile -and
         [string]$Answer.sysmon.config_hash -ceq ("SHA256=" + $probeConfigSha.ToUpper()) -and
         [string]$Answer.sysmon.hashing_algorithms -ceq "SHA256" -and
         [string]$Answer.config_sha256 -ceq $probeConfigSha)
@@ -1743,6 +1747,37 @@ Assert-Throws "stdout that is not valid UTF-16 is refused" {
     Invoke-ProbeStep (New-ProbeTool "half-pair" -Stdout (
         [byte[]]($utf16.GetBytes($probeText) + @(0x00, 0xD8, 0x41, 0x00))))
 } "*in no encoding this step reads*"
+
+ # Stdout without a zero byte is read with the system code page, and as strictly
+ # as UTF-16 is: a byte that code page cannot decode is not turned into another
+ # character. Which letters a code page holds and which bytes it cannot decode
+ # differ from one to the next, so both are looked for here. A code page that
+ # decodes every byte, such as 1252, has no stdout to refuse.
+$codePage = [System.Text.Encoding]::GetEncoding([System.Text.Encoding]::Default.CodePage,
+    [System.Text.EncoderFallback]::ExceptionFallback, [System.Text.DecoderFallback]::ExceptionFallback)
+$codePagePath = $null
+foreach ($letter in @(0x00E9, 0xD55C, 0x3042, 0x4E2D, 0x0416, 0x03A9, 0x05D0, 0x0E01, 0x0627)) {
+    $candidate = "C:\synthetic\" + [char]$letter + "\config.xml"
+    try { [void]$codePage.GetBytes($candidate); $codePagePath = $candidate; break } catch { continue }
+}
+Assert-True "stdout in the system code page is read, a letter outside ASCII included" (
+    $null -ne $codePagePath -and (Test-ProbeAnswer -ConfigFile $codePagePath -Answer (Get-ProbeAnswer (
+        New-ProbeTool "code-page" -Stdout $codePage.GetBytes(
+            $probeText.Replace("C:\synthetic\config.xml", $codePagePath))))))
+
+$undecodable = $null
+foreach ($value in 0x80..0xFF) {
+    try { [void]$codePage.GetString([byte[]]@([byte]$value)) } catch { $undecodable = [byte]$value; break }
+}
+if ($null -ne $undecodable) {
+    Assert-Throws "stdout the system code page cannot decode is refused, not patched" {
+        Invoke-ProbeStep (New-ProbeTool "code-page-undecodable" -Stdout (
+            [byte[]]($ascii.GetBytes($probeText) + @($undecodable))))
+    } "*in no encoding this step reads*"
+} else {
+    Write-Host ("       not run here: code page " + $codePage.CodePage +
+        " decodes every byte, so it has no stdout to refuse") -ForegroundColor Yellow
+}
 
  # A field the step does not find stays empty and a hash is passed on as it was
  # reported. The comparison the run makes with the answer decides both.

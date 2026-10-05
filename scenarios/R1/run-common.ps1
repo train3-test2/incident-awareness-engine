@@ -743,20 +743,23 @@ $R1_REMOTE_STEPS = @{
                 " bytes, stderr " + $stderrBytes.Length + " bytes)")
         }
 
-        # The encoding is decided from the bytes, and nothing is dropped to make
-        # them fit: a UTF-16 byte order mark, or no zero byte at all (read with the
-        # system code page), or bytes that are valid UTF-16LE. Text that still
-        # holds U+0000, and anything else, is refused, so a stream this step
-        # cannot read is never taken for an answer.
+        # The encoding is decided from the bytes, and nothing is dropped or
+        # replaced to make them fit: a UTF-16 byte order mark, or no zero byte at
+        # all (read with the system code page), or bytes that are valid UTF-16LE.
+        # Both decoders throw on bytes they cannot decode. Text that still holds
+        # U+0000, and anything else, is refused, so a stream this step cannot
+        # read is never taken for an answer.
         $bytes = $stdoutBytes.ToArray()
         if ($bytes.Length -eq 0) { throw "Sysmon64 -c wrote nothing to stdout" }
         $output = $null
         $strictUtf16 = New-Object System.Text.UnicodeEncoding($false, $false, $true)
+        $strictCodePage = [System.Text.Encoding]::GetEncoding([System.Text.Encoding]::Default.CodePage,
+            [System.Text.EncoderFallback]::ExceptionFallback, [System.Text.DecoderFallback]::ExceptionFallback)
         try {
             if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
                 $output = $strictUtf16.GetString($bytes, 2, $bytes.Length - 2)
             } elseif ([System.Array]::IndexOf($bytes, [byte]0) -lt 0) {
-                $output = [System.Text.Encoding]::Default.GetString($bytes)
+                $output = $strictCodePage.GetString($bytes)
             } elseif ($bytes.Length % 2 -eq 0) {
                 $output = $strictUtf16.GetString($bytes)
             }

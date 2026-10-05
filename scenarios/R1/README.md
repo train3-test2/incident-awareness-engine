@@ -503,11 +503,16 @@ VM 실행에 걸려 있던 가정과, 위 diagnostic Pair 에서 확인한 결�
 | 결함 | 조치 |
 | --- | --- |
 | `Sysmon64 -c` 는 종료 코드 0 으로 끝나면서도 stderr 에 빈 줄을 쓴다. 원격 세션의 native 파이프라인에서는 그 줄이 오류 레코드가 되고, 단계가 `$ErrorActionPreference = "Stop"` 이라 거기서 끝났다 | 조회를 별도 프로세스로 시작해 두 스트림을 바이트로 읽는다. stderr 에 무엇이 쓰였는지는 판단에 쓰지 않고, 종료 코드가 0 이 아니면 중단한다 |
-| 같은 조회의 stdout 은 BOM 없는 UTF-16 이다. 원격 세션의 native 파이프라인으로 읽으면 글자마다 NUL 이 끼어 `Config file` · `Config hash` · `HashingAlgorithms` 줄을 하나도 찾지 못한다 | 바이트를 보고 인코딩을 정한다(UTF-16 BOM, 0 바이트가 없으면 시스템 코드 페이지, 그 밖에는 유효한 UTF-16LE). NUL 을 지워서 맞추지 않으며, 읽을 수 없는 stdout 은 거부한다 |
+| 같은 조회의 stdout 은 BOM 없는 UTF-16 이다. 원격 세션의 native 파이프라인으로 읽으면 글자마다 NUL 이 끼어 `Config file` · `Config hash` · `HashingAlgorithms` 줄을 하나도 찾지 못한다 | 바이트를 보고 인코딩을 정한다(UTF-16 BOM, 0 바이트가 없으면 시스템 코드 페이지, 그 밖에는 유효한 UTF-16LE). NUL 을 지우거나 읽지 못한 바이트를 다른 글자로 바꿔서 맞추지 않으며, 읽을 수 없는 stdout 은 거부한다 |
 
 고친 단계는 Target-A 에서 실행기가 보내는 방식 그대로(WinRM 세션, 같은 인자) 실행해, 세 필드를 읽고
 적용 설정 해시가 파일 해시와 같음을 확인했다. 이 확인은 diagnostic 이며 Run 이 아니다. 두 결함과
 실패 경로는 `Test-R1RunGuards.ps1` 의 `probe step: Sysmon query` 절이 회귀 검사한다.
+
+코드 페이지로 읽는 경로가 읽지 못한 바이트를 거부하게 한 것은 diagnostic Pair 뒤의 변경이며, VM 에서 다시
+실행하지 않았다. Target-A 에서 `Sysmon64 -c` 의 stdout 은 UTF-16 이라 이 경로를 지나지 않는다. 이 거부의
+회귀 검사는 그런 바이트가 있는 시스템 코드 페이지(예: 949)에서만 돌고, 모든 바이트를 읽는 코드 페이지(예:
+1252)에서는 건너뛴다.
 
 ### 8-2. rehearsal 로는 연결 증거를 확인하지 않는다
 
