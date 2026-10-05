@@ -251,6 +251,11 @@ Worker는 long polling으로 한 번에 SQS 메시지 하나를 받고, 각 S3 r
 삭제하지 않는다. 해당 메시지는 visibility timeout 이후 재시도되며, 3회 처리 실패 뒤 DLQ로
 이동한다.
 
+CloudWatch Logs에는 각 입력마다 JSON 로그를 남긴다. 시작 시 `input_s3_uri`와
+`status=started`를 기록하고, 성공 시에는 같은 URI, `status=succeeded`, standalone이 생성한
+`run_id`를 기록한다. 따라서 운영자는 URI 또는 run ID로 Worker 실행과 PostgreSQL 저장 결과를
+연결해 조회할 수 있다.
+
 `--once`는 테스트·진단용 옵션으로 한 번만 polling하고 종료한다. 운영 Worker는 옵션 없이
 지속 실행한다.
 

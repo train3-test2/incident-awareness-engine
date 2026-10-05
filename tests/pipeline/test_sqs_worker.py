@@ -1,4 +1,6 @@
 import json
+import logging
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -95,7 +97,10 @@ def test_rejects_non_json_or_empty_s3_event() -> None:
         parse_s3_sysmon_inputs(json.dumps({"Records": []}), expected_bucket=_BUCKET)
 
 
-def test_worker_downloads_and_deletes_a_successful_message() -> None:
+def test_worker_downloads_and_deletes_a_successful_message(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="incident_awareness.pipeline.sqs_worker")
     sqs = _FakeSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}])
     s3 = _FakeS3()
     calls: list[list[str]] = []
@@ -105,7 +110,7 @@ def test_worker_downloads_and_deletes_a_successful_message() -> None:
         expected_bucket=_BUCKET,
         sqs_client=sqs,
         s3_client=s3,
-        run_standalone=lambda arguments: calls.append(list(arguments)) or 0,
+        run_standalone=_successful_standalone(calls),
         once=True,
     )
 
@@ -116,9 +121,30 @@ def test_worker_downloads_and_deletes_a_successful_message() -> None:
     assert Path(calls[0][1]).name == "sysmon.jsonl"
     assert calls[0][2] == "--output-dir"
     assert Path(calls[0][3]).name == "output"
+    statuses = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.getMessage().startswith('{"event": "first_cycle_worker_input"')
+    ]
+    assert statuses == [
+        {
+            "event": "first_cycle_worker_input",
+            "input_s3_uri": f"s3://{_BUCKET}/{_KEY}",
+            "status": "started",
+        },
+        {
+            "event": "first_cycle_worker_input",
+            "input_s3_uri": f"s3://{_BUCKET}/{_KEY}",
+            "run_id": "RUN-20261005-001",
+            "status": "succeeded",
+        },
+    ]
 
 
-def test_worker_retains_message_when_standalone_execution_fails() -> None:
+def test_worker_logs_failed_status_and_retains_message_when_standalone_execution_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="incident_awareness.pipeline.sqs_worker")
     sqs = _FakeSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}])
 
     run_worker(
@@ -131,6 +157,16 @@ def test_worker_retains_message_when_standalone_execution_fails() -> None:
     )
 
     assert sqs.deleted_receipts == []
+    statuses = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.getMessage().startswith('{"event": "first_cycle_worker_input"')
+    ]
+    assert statuses[-1] == {
+        "event": "first_cycle_worker_input",
+        "input_s3_uri": f"s3://{_BUCKET}/{_KEY}",
+        "status": "failed",
+    }
 
 
 def test_worker_processes_duplicate_object_versions_once_per_sqs_message() -> None:
@@ -151,7 +187,7 @@ def test_worker_processes_duplicate_object_versions_once_per_sqs_message() -> No
         expected_bucket=_BUCKET,
         sqs_client=sqs,
         s3_client=s3,
-        run_standalone=lambda arguments: calls.append(list(arguments)) or 0,
+        run_standalone=_successful_standalone(calls),
         once=True,
     )
 
@@ -226,3 +262,17 @@ class _FailingS3:
 
     def download_file(self, bucket: str, key: str, filename: str) -> None:
         raise self._error
+
+
+def _successful_standalone(calls: list[list[str]]) -> Callable[[Sequence[str]], int]:
+    def run(arguments: Sequence[str]) -> int:
+        calls.append(list(arguments))
+        output_dir = Path(arguments[3])
+        output_dir.mkdir()
+        (output_dir / "run_metadata.json").write_text(
+            '{"run_id": "RUN-20261005-001"}',
+            encoding="utf-8",
+        )
+        return 0
+
+    return run

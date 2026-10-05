@@ -180,24 +180,34 @@ def _process_message(
             input_dir = work_root / input_object.ingest_id
             input_dir.mkdir()
             sysmon_jsonl_path = input_dir / "sysmon.jsonl"
-            _download_sysmon_jsonl(s3_client, input_object, sysmon_jsonl_path)
+            input_uri = _s3_uri(input_object)
+            _log_input_status("started", input_uri=input_uri)
             try:
-                exit_code = run_standalone(
-                    [
-                        "--sysmon-jsonl",
-                        str(sysmon_jsonl_path),
-                        "--output-dir",
-                        str(input_dir / "output"),
-                    ]
-                )
-            except ValueError as error:
-                raise PermanentWorkerError(str(error)) from error
-            except (OperationalError, OSError) as error:
-                raise RetryableWorkerError(str(error)) from error
-            if exit_code != 0:
-                raise RetryableWorkerError(
-                    f"standalone First Cycle failed for S3 object {input_object.bucket}/{input_object.key}"
-                )
+                _download_sysmon_jsonl(s3_client, input_object, sysmon_jsonl_path)
+                try:
+                    exit_code = run_standalone(
+                        [
+                            "--sysmon-jsonl",
+                            str(sysmon_jsonl_path),
+                            "--output-dir",
+                            str(input_dir / "output"),
+                        ]
+                    )
+                except ValueError as error:
+                    raise PermanentWorkerError(str(error)) from error
+                except (OperationalError, OSError) as error:
+                    raise RetryableWorkerError(str(error)) from error
+                if exit_code != 0:
+                    raise RetryableWorkerError(
+                        "standalone First Cycle failed for S3 object "
+                        f"{input_object.bucket}/{input_object.key}"
+                    )
+                run_id = _read_generated_run_id(input_dir / "output")
+            except Exception:
+                _log_input_status("failed", input_uri=input_uri)
+                raise
+            else:
+                _log_input_status("succeeded", input_uri=input_uri, run_id=run_id)
 
 
 def _unique_inputs(inputs: Sequence[S3SysmonInput]) -> tuple[S3SysmonInput, ...]:
@@ -238,6 +248,36 @@ def _download_sysmon_jsonl(
         raise RetryableWorkerError(
             f"S3 download failed for {input_object.bucket}/{input_object.key}"
         ) from error
+
+
+def _s3_uri(input_object: S3SysmonInput) -> str:
+    return f"s3://{input_object.bucket}/{input_object.key}"
+
+
+def _read_generated_run_id(output_dir: Path) -> str:
+    try:
+        payload = json.loads((output_dir / "run_metadata.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RetryableWorkerError(
+            "standalone output is missing readable run_metadata.json"
+        ) from error
+    if not isinstance(payload, Mapping):
+        raise RetryableWorkerError("standalone run_metadata.json must be a JSON object")
+    run_id = payload.get("run_id")
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise RetryableWorkerError("standalone run_metadata.json must contain a non-blank run_id")
+    return run_id
+
+
+def _log_input_status(status: str, *, input_uri: str, run_id: str | None = None) -> None:
+    payload: dict[str, str] = {
+        "event": "first_cycle_worker_input",
+        "input_s3_uri": input_uri,
+        "status": status,
+    }
+    if run_id is not None:
+        payload["run_id"] = run_id
+    _LOGGER.info("%s", json.dumps(payload, sort_keys=True))
 
 
 def _message_string(message: Mapping[str, object], name: str) -> str:
