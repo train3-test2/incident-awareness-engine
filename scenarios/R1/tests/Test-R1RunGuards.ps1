@@ -6,7 +6,9 @@
         Runs on the host. It needs no VM, no WinRM, no Sysmon and no Administrator
         rights, and it starts no scenario process and opens no socket: the
         transport, the clock, the sleeper and the TCP client are fakes, and every
-        case works on temporary directories.
+        case works on temporary directories. The one program it starts is a
+        stand-in for Sysmon64 - a .cmd file that writes prepared bytes - for the
+        probe step (7), which runs in a background job.
 
         Covered:
 
@@ -25,7 +27,12 @@
         6. the identity of a Pair (Get-R1PairIdentity): family, variation and
            repetition are read from the scenario, refused when missing, malformed
            or named after a run type, and written to RunMetadata unchanged by
-           both runs.
+           both runs,
+        7. the probe step's query of Sysmon64, the one remote step executed here:
+           UTF-16 and code-page stdout are read whether or not stderr carried
+           anything, and a non-zero exit code, an empty or unreadable stdout, a
+           missing config hash and a hash that is not the file's still stop the
+           run.
 
         The repository has no PowerShell test harness, so this script is a plain
         runner: it prints one line per case and exits non-zero when any case fails.
@@ -351,11 +358,11 @@ function New-FakeTransport {
                     utc                    = $utc
                     computer_name          = (Get-FakeOption "ComputerName" $TEST_HOST)
                     recorded_computer_name = (Get-FakeOption "RecordedComputerName" $null)
-                    sysmon                 = @{
+                    sysmon                 = (Get-FakeOption "SysmonState" @{
                         config_file        = "synthetic.xml"
                         config_hash        = ("SHA256=" + (Get-FakeOption "AppliedConfigSha" $TEST_CONFIG_SHA))
                         hashing_algorithms = "SHA256"
-                    }
+                    })
                     config_sha256          = $TEST_CONFIG_SHA
                 }
             }
@@ -1579,6 +1586,189 @@ $rehearsalWithTarget = Invoke-FakeRun -RunId "RUN-20300101-021" -DataRoot (New-T
     -ScenarioPath $goodScenario -Transport (New-FakeTransport)
 Assert-True "a rehearsal with an internal destination makes the one connection" (
     (Get-CallCount "invoke:trigger") -eq 1 -and $rehearsalWithTarget.lineage.status -eq "matched")
+
+ # ---------------------------------------------------------------------------
+ # 10. The probe step's query of Sysmon
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== probe step: Sysmon query ===" -ForegroundColor Cyan
+
+ # The one remote step that is executed here and not replaced, because what it
+ # has to get right is how the two streams of a native program reach it. It runs
+ # in a background job - like a remote session a host without a console, with
+ # its argument passed through serialization - against a stand-in for Sysmon64:
+ # a .cmd file that writes prepared bytes and starts nothing else. Every value in
+ # those bytes is synthetic.
+
+$script:ProbeRoot = New-TempRoot
+$script:ProbeTools = New-Object System.Collections.Generic.List[object]
+$probeConfig = Join-Path $script:ProbeRoot "config.xml"
+[System.IO.File]::WriteAllText($probeConfig, "<Sysmon/>")
+$probeConfigSha = Get-FileSha256 $probeConfig
+
+function New-ProbeTool {
+    <#
+        A stand-in for Sysmon64 -c: a .cmd file that writes the given bytes to its
+        stdout and its stderr and ends with the given exit code.
+
+        cmd's "type" copies a file as it is unless the file starts with a UTF-16
+        byte order mark, which it converts. The first byte of stdout is therefore
+        kept in a file of its own, so that no file starts with one.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Name, [byte[]]$Stdout = @(), [byte[]]$Stderr = @(),
+        [int]$ExitCode = 0)
+
+    $folder = Join-Path $script:ProbeRoot $Name
+    New-Item -ItemType Directory -Path $folder | Out-Null
+    [System.IO.File]::WriteAllBytes((Join-Path $folder "stdout-0.bin"), [byte[]]@($Stdout | Select-Object -First 1))
+    [System.IO.File]::WriteAllBytes((Join-Path $folder "stdout-1.bin"), [byte[]]@($Stdout | Select-Object -Skip 1))
+    [System.IO.File]::WriteAllBytes((Join-Path $folder "stderr.bin"), $Stderr)
+    $tool = Join-Path $folder "tool.cmd"
+    Set-Content -LiteralPath $tool -Encoding ASCII -Value @(
+        "@echo off", 'type "%~dp0stderr.bin" 1>&2', 'type "%~dp0stdout-0.bin"', 'type "%~dp0stdout-1.bin"',
+        ("exit /b " + $ExitCode))
+    $script:ProbeTools.Add(@{ tool = $tool; stdout = $Stdout; stderr = $Stderr; exit_code = $ExitCode })
+    return $tool
+}
+
+function Test-ProbeToolFaithful {
+    <# True when a stand-in, with its two streams sent to files, wrote its bytes unchanged and ended with its exit code. #>
+    param([Parameter(Mandatory = $true)][hashtable]$Entry)
+
+    $folder = Split-Path -Parent $Entry.tool
+    $readBack = Join-Path $folder "read-back.cmd"
+    Set-Content -LiteralPath $readBack -Encoding ASCII -Value @(
+        "@echo off", 'call "%~dp0tool.cmd" -c 1>"%~dp0seen-stdout.bin" 2>"%~dp0seen-stderr.bin"',
+        "exit /b %ERRORLEVEL%")
+    & $readBack | Out-Null
+    $exitCode = $LASTEXITCODE
+    $seenStdout = [System.IO.File]::ReadAllBytes((Join-Path $folder "seen-stdout.bin"))
+    $seenStderr = [System.IO.File]::ReadAllBytes((Join-Path $folder "seen-stderr.bin"))
+    return ($exitCode -eq $Entry.exit_code -and
+        [System.Convert]::ToBase64String($seenStdout) -ceq [System.Convert]::ToBase64String($Entry.stdout) -and
+        [System.Convert]::ToBase64String($seenStderr) -ceq [System.Convert]::ToBase64String($Entry.stderr))
+}
+
+function Invoke-ProbeStep {
+    <# Runs the probe step against a stand-in the way the runner sends it. Returns its answer, or throws what it threw. #>
+    param([Parameter(Mandatory = $true)][string]$Tool)
+
+    $arguments = @{ sysmon_binary = $Tool; sysmon_config_path = $probeConfig; log_name = "R1-Guard-No-Such-Log" }
+    $job = Start-Job -ScriptBlock $R1_REMOTE_STEPS.probe -ArgumentList (, $arguments)
+    try {
+        if (-not (Wait-Job -Job $job -Timeout 120)) { throw "the probe step did not end within 120 seconds" }
+        return (Receive-Job -Job $job -ErrorAction Stop)
+    } finally {
+        Remove-Job -Job $job -Force
+    }
+}
+
+function Get-ProbeAnswer {
+    <# The answer of the probe step for a stand-in, or $null when the step threw, so that the case fails by its name. #>
+    param([Parameter(Mandatory = $true)][string]$Tool)
+
+    try {
+        return (Invoke-ProbeStep $Tool)
+    } catch {
+        Write-Host ("       the probe step threw: " + $_.Exception.Message) -ForegroundColor Yellow
+        return $null
+    }
+}
+
+function Test-ProbeAnswer {
+    <# True when an answer of the probe step carries the three fields of $probeText and the hash of the config file. #>
+    param([AllowNull()]$Answer)
+
+    if ($null -eq $Answer) { return $false }
+    return ([string]$Answer.sysmon.config_file -ceq "C:\synthetic\config.xml" -and
+        [string]$Answer.sysmon.config_hash -ceq ("SHA256=" + $probeConfigSha.ToUpper()) -and
+        [string]$Answer.sysmon.hashing_algorithms -ceq "SHA256" -and
+        [string]$Answer.config_sha256 -ceq $probeConfigSha)
+}
+
+ # What the first run on a VM met, in synthetic form: text that starts with an
+ # empty line, written to stdout as UTF-16 without a byte order mark, and one
+ # empty line on stderr although the exit code is 0. The step used to end on the
+ # line on stderr, and it could not have read a field from that stdout.
+$probeLines = @("", "Stand-in Monitor", "Current configuration:",
+    " - Config file:                   C:\synthetic\config.xml",
+    (" - Config hash:                   SHA256=" + $probeConfigSha.ToUpper()),
+    " - HashingAlgorithms:             SHA256", "")
+$probeText = $probeLines -join "`r`n"
+$utf16 = [System.Text.Encoding]::Unicode
+$ascii = [System.Text.Encoding]::ASCII
+$emptyLine = [byte[]](0x0D, 0x0A)
+
+$asMet = Get-ProbeAnswer (New-ProbeTool "utf16-and-stderr" -Stdout $utf16.GetBytes($probeText) -Stderr $emptyLine)
+Assert-True "UTF-16 stdout is read while a line arrives on stderr" (Test-ProbeAnswer $asMet)
+Assert-True "the answer keeps the shape the run reads" (
+    $null -ne $asMet -and [string]$asMet.computer_name -eq $env:COMPUTERNAME -and
+    $asMet.ContainsKey("recorded_computer_name") -and $null -eq $asMet.recorded_computer_name -and
+    (ConvertTo-R1Utc $asMet.utc "probe utc") -is [datetime])
+$accepted = $true
+try {
+    Test-SysmonConfigApplied -ConfigSha256 $asMet.config_sha256 -ConfigState $asMet.sysmon
+} catch { $accepted = $false }
+Assert-True "a collection run accepts that answer" $accepted
+
+ # Each of the two alone, so that a regression names itself.
+Assert-True "a line on stderr does not end the step" (Test-ProbeAnswer (Get-ProbeAnswer (
+    New-ProbeTool "stderr-alone" -Stdout $ascii.GetBytes($probeText) -Stderr $emptyLine)))
+Assert-True "UTF-16 stdout without a byte order mark is read" (Test-ProbeAnswer (Get-ProbeAnswer (
+    New-ProbeTool "utf16-alone" -Stdout $utf16.GetBytes($probeText))))
+Assert-True "UTF-16 stdout with a byte order mark is read" (Test-ProbeAnswer (Get-ProbeAnswer (
+    New-ProbeTool "utf16-bom" -Stdout ([byte[]](@(0xFF, 0xFE) + $utf16.GetBytes($probeText))))))
+
+ # What still ends the step. Text on stderr never does.
+Assert-Throws "an exit code other than 0 ends the step, whatever stdout holds" {
+    Invoke-ProbeStep (New-ProbeTool "exit-code" -Stdout $utf16.GetBytes($probeText) -ExitCode 3)
+} "*exited with code 3 (stdout * bytes, stderr 0 bytes)*"
+Assert-Throws "an empty stdout ends the step" {
+    Invoke-ProbeStep (New-ProbeTool "no-stdout" -Stderr $ascii.GetBytes("only stderr`r`n"))
+} "*wrote nothing to stdout*"
+Assert-Throws "a Sysmon64 that is not there ends the step" {
+    Invoke-ProbeStep (Join-Path $script:ProbeRoot "no-such-tool.exe")
+}
+
+ # Nothing is removed to make a stream readable: a byte too many, a U+0000 in
+ # the text and half a surrogate pair each leave the step without an answer.
+Assert-Throws "UTF-16 stdout with one byte too many is refused" {
+    Invoke-ProbeStep (New-ProbeTool "odd-length" -Stdout ([byte[]]($utf16.GetBytes($probeText) + @(0x58))))
+} "*in no encoding this step reads*"
+Assert-Throws "stdout that holds U+0000 is refused, not cleaned" {
+    Invoke-ProbeStep (New-ProbeTool "nul-character" -Stdout $utf16.GetBytes(
+        $probeText.Replace("SHA256=", ("SHA256=" + [char]0))))
+} "*in no encoding this step reads*"
+Assert-Throws "stdout that is not valid UTF-16 is refused" {
+    Invoke-ProbeStep (New-ProbeTool "half-pair" -Stdout (
+        [byte[]]($utf16.GetBytes($probeText) + @(0x00, 0xD8, 0x41, 0x00))))
+} "*in no encoding this step reads*"
+
+ # A field the step does not find stays empty and a hash is passed on as it was
+ # reported. The comparison the run makes with the answer decides both.
+$withoutHash = Get-ProbeAnswer (New-ProbeTool "no-config-hash" -Stderr $emptyLine -Stdout $utf16.GetBytes(
+    (@($probeLines | Where-Object { $_ -notlike "*Config hash:*" }) -join "`r`n")))
+Assert-True "a missing Config hash line leaves the field empty" (
+    $null -ne $withoutHash -and $null -eq $withoutHash.sysmon.config_hash -and
+    [string]$withoutHash.sysmon.hashing_algorithms -ceq "SHA256")
+if ($null -ne $withoutHash) {
+    Assert-FailedRun "an answer without a config hash stops a collection run" `
+        @{ SysmonState = $withoutHash.sysmon } "*Sysmon reported no config hash*" "normal" "open,invoke:probe,close"
+}
+
+$otherHash = Get-ProbeAnswer (New-ProbeTool "other-hash" -Stderr $emptyLine -Stdout $utf16.GetBytes(
+    $probeText.Replace($probeConfigSha.ToUpper(), ("F" * 64))))
+Assert-True "a reported hash is passed on as it was written" (
+    $null -ne $otherHash -and [string]$otherHash.sysmon.config_hash -ceq ("SHA256=" + ("F" * 64)) -and
+    [string]$otherHash.config_sha256 -ceq $probeConfigSha)
+Assert-Throws "a collection run refuses a reported hash that is not the file's" {
+    Test-SysmonConfigApplied -ConfigSha256 $otherHash.config_sha256 -ConfigState $otherHash.sysmon
+} "*Sysmon applied config differs from the config file*"
+
+ # The cases above rest on the stand-ins doing what they were given to do.
+Assert-True "every stand-in wrote the bytes and the exit code it was given" (
+    $script:ProbeTools.Count -gt 0 -and
+    @($script:ProbeTools | Where-Object { -not (Test-ProbeToolFaithful $_) }).Count -eq 0)
 
 Write-Host ""
 if ($script:Failures -eq 0) {

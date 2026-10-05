@@ -19,7 +19,8 @@ scenarios/R1/
 `run_metadata` · Manifest 작성은 새로 만들지 않고 `scenarios/S0/run-common.ps1` 의 함수를 그대로
 쓴다. R1 의 `run-common.ps1` 이 그 파일을 불러오며, 불러오는 것만으로는 아무것도 실행되지 않는다.
 
-**이 실행기는 아직 VM 에서 실행한 적이 없다(§8).** 호스트에서 fake transport 로 검증한 상태다.
+**이 실행기는 아직 VM 에서 끝까지 실행된 적이 없다(§8).** 사전 세션 뒤의 단계는 호스트에서 fake
+transport 로만 검증한 상태다.
 
 ## 1. 무엇을 실행하는가
 
@@ -288,6 +289,7 @@ $credential = Get-Credential
 | 조건 | 비고 |
 | --- | --- |
 | Target-A 가 Sysmon 레코드에 남기는 컴퓨터 이름이 `target_host` 와 다름 | 사전 세션이 최근 Sysmon 레코드의 `Computer` 를 읽어 비교한다(읽지 못하면 `COMPUTERNAME`). 시나리오 세션은 열지 않는다 |
+| Target-A 의 `Sysmon64 -c` 가 0 이 아닌 코드로 끝남, stdout 이 비었거나 읽을 수 없는 인코딩임 | 사전 세션에서 중단하며 rehearsal 도 중단한다. stderr 에 무엇이 쓰였는지는 판단에 쓰지 않는다 |
 | Sysmon 설정 해시 불일치 또는 비교 불가 | rehearsal 은 경고 후 진행 |
 | 최종 관리 도구가 준비 신호를 내지 않음 | |
 | 내부 연결 실패, 다른 목적지·포트로 연결, 시도 횟수가 1 이 아님 | |
@@ -295,7 +297,7 @@ $credential = Get-Credential
 | `t+0` 기록 시각이 세션이 열린 뒤 Target-A 가 찍은 시각보다 늦음 | 시계가 움직였다는 뜻이다(§6) |
 | 계보 확인 결과가 `matched` 가 아님 | rehearsal 은 결과만 출력하고 산출물을 쓴다 |
 
-사전 세션의 확인(위 표의 첫 두 행)에서 멈춘 Run 은 아무것도 남기지 않는다. 그 확인을 통과한 뒤
+사전 세션의 확인(위 표의 첫 세 행)에서 멈춘 Run 은 아무것도 남기지 않는다. 그 확인을 통과한 뒤
 실패한 Run 은 `raw\<run_id>` · `ground_truth\<run_id>` 디렉터리(와 수집까지 갔다면 telemetry 파일),
 그리고 operator trace 를 남긴다. Ground Truth 와 Manifest 가 없으므로 유효한 Run 으로 읽히지 않으며,
 그 `run_id` 는 다시 쓸 수 없다. 새 `run_id` 를 발급한다.
@@ -450,10 +452,14 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
 
 ## 8. 검증 상태
 
-**VM 에서 실행한 적이 없다.** 지금까지의 검증은 모두 호스트에서 fake 로 한 것이다.
+**VM 에서 끝까지 실행된 적이 없다.** 첫 VM rehearsal 은 사전 세션의 Sysmon 조회에서 멈췄고(§8-1),
+고친 사전 세션 단계만 Target-A 에서 따로 실행해 확인했다. 그 뒤의 단계 — 시나리오 세션 · 수집 ·
+변환 · 계보 확인 — 는 여전히 호스트에서 fake 로만 검증했다.
 
 - `scenarios/R1/tests/Test-R1RunGuards.ps1` — Windows PowerShell 5.1. transport · 시계 · sleeper ·
-  TCP client 가 모두 fake 라 세션·프로세스·소켓을 만들지 않는다.
+  TCP client 가 모두 fake 라 세션·시나리오 프로세스·소켓을 만들지 않는다. 사전 세션 단계의 Sysmon
+  조회만은 실제로 실행한다. background job 안에서, 정해 둔 바이트를 그대로 내보내는 대역 `.cmd` 를
+  상대로 하며 Sysmon 은 쓰지 않는다.
 
   ```powershell
   powershell -ExecutionPolicy Bypass -File scenarios\R1\tests\Test-R1RunGuards.ps1
@@ -480,6 +486,21 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
 | Controller 가 Sysmon 없이도 가져온 EVTX 를 읽어 JSONL 로 변환한다 | 변환을 Target-A 쪽 단계로 옮긴다 |
 | 세션을 닫으면 Target-A 에 남은 작업 프로세스가 끝난다 | 작업은 최대 1 시간 뒤 스스로 끝난다 |
 | 목적지 host 가 그 포트에서 TCP 연결을 받는다 | 연결이 실패하면 수집 모드 Run 은 중단된다 |
+
+### 8-1. 첫 VM rehearsal 에서 드러난 결함과 조치
+
+첫 VM rehearsal 은 사전 세션의 Sysmon 조회에서 멈췄다. 시나리오 세션은 열리지 않았고 산출물도 없다.
+두 결함 모두 원격 세션에서 드러났다. 호스트 guard 는 transport 를 fake 로 바꾸므로 그때까지 이 단계를
+실행한 적이 없었다.
+
+| 결함 | 조치 |
+| --- | --- |
+| `Sysmon64 -c` 는 종료 코드 0 으로 끝나면서도 stderr 에 빈 줄을 쓴다. 원격 세션의 native 파이프라인에서는 그 줄이 오류 레코드가 되고, 단계가 `$ErrorActionPreference = "Stop"` 이라 거기서 끝났다 | 조회를 별도 프로세스로 시작해 두 스트림을 바이트로 읽는다. stderr 에 무엇이 쓰였는지는 판단에 쓰지 않고, 종료 코드가 0 이 아니면 중단한다 |
+| 같은 조회의 stdout 은 BOM 없는 UTF-16 이다. 원격 세션의 native 파이프라인으로 읽으면 글자마다 NUL 이 끼어 `Config file` · `Config hash` · `HashingAlgorithms` 줄을 하나도 찾지 못한다 | 바이트를 보고 인코딩을 정한다(UTF-16 BOM, 0 바이트가 없으면 시스템 코드 페이지, 그 밖에는 유효한 UTF-16LE). NUL 을 지워서 맞추지 않으며, 읽을 수 없는 stdout 은 거부한다 |
+
+고친 단계는 Target-A 에서 실행기가 보내는 방식 그대로(WinRM 세션, 같은 인자) 실행해, 세 필드를 읽고
+적용 설정 해시가 파일 해시와 같음을 확인했다. 이 확인은 diagnostic 이며 Run 이 아니다. 두 결함과
+실패 경로는 `Test-R1RunGuards.ps1` 의 `probe step: Sysmon query` 절이 회귀 검사한다.
 
 ## 9. 남은 것
 
