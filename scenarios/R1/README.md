@@ -33,8 +33,10 @@ scenarios/R1/
 | Normal | `wsmprovhost.exe` → `cmd.exe` → `powershell.exe` |
 | Attack | `wsmprovhost.exe` → `cscript.exe` → `powershell.exe` |
 
-- 이 조합은 **첫 Pilot 에만 쓰는 조건부 승인안**이며, 실제 telemetry 로 Pilot 을 검증하기 전까지는
-  후보다. 이후 family 에서는 특정 프로세스 이름이 한 라벨에만 대응하지 않도록 교차 설계한다. 그래서
+- 이 조합은 **R1-V02 development 수집에서 실제 telemetry 로 검증하고 사용한 조합**이다(§8).
+  **holdout 에는 쓰지 않는다.** 여기서 검증은 두 Run 이 계획한 계보대로 기록됐다는 뜻이며, 승인 계보
+  정책의 판단이 아니다(§1-1). 이후 family 에서는 특정 프로세스 이름이 한 라벨에만 대응하지 않도록 교차
+  설계한다. 그래서
   도구 이름은 코드가 아니라 `scenario.yaml` 의 `planned_lineage` 에만 있고, 실행기와 검증기는 이름을
   하나도 고정하지 않는다.
 - 최종 관리 도구의 실행 파일·인자·작업 내용은 두 Run 에서 같다. 두 Run 모두 중간 프로세스를
