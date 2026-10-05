@@ -277,6 +277,31 @@ CloudWatch Logs에 `status=succeeded`와 `run_id`가 남은 뒤, 해당 `run_id`
 확인한다. `--once` 실행은 메시지가 없을 때도 정상 종료하므로, 검증 전 자동 입력 prefix에
 유효한 Sysmon JSONL을 업로드해 source Queue에 메시지가 있는지 확인해야 한다.
 
+### Worker 운영 및 실패 재처리 절차
+
+자동 입력의 정상 처리는 아래 순서로 확인한다.
+
+1. S3 객체가 `incoming/first-cycle/sysmon/ING-<uuidv4>/sysmon.jsonl` 계약에 맞는지 확인한다.
+2. source Queue `incident-awareness-first-cycle-ingest`의 수신 가능 메시지 수를 확인한다.
+3. CloudWatch Logs 그룹 `/ecs/incident-awareness-engine-dev`에서 `first_cycle_worker_input`의
+   `input_s3_uri`를 검색한다.
+4. 같은 로그의 `status=succeeded`와 `run_id`를 확인하고, 그 `run_id`로 PostgreSQL 저장 결과를
+   조회한다.
+
+실패한 메시지는 source Queue에서 최대 3회 처리된 뒤
+`incident-awareness-first-cycle-ingest-dlq`로 이동한다. `status=failed` 로그와 ECS task의
+stopped reason을 먼저 확인한 뒤 아래 기준으로 조치한다.
+
+| 실패 유형 | 조치 |
+| --- | --- |
+| JSONL 형식·시간 순서·단일 Host·지원 Event ID 위반 | 원본 JSONL을 수정하고 새 `ING-<uuidv4>` prefix로 다시 업로드한다. 기존 객체를 덮어쓰거나 DLQ 메시지를 그대로 redrive하지 않는다. |
+| S3 key·bucket·ETag 계약 위반 또는 접근 거부 | 객체 경로 또는 `ecsFirstCycleTaskRole`의 최소 권한을 수정한 뒤 새 객체를 업로드한다. |
+| S3 일시 오류·DB 연결 오류·컨테이너 종료 | source Queue의 visibility timeout 이후 자동 재시도를 기다린다. 3회 모두 실패하면 네트워크·RDS·CloudWatch Logs를 확인하고 수정 후 재제출한다. |
+
+DLQ 메시지는 문제 원인을 고치기 전에는 redrive하지 않는다. 수정된 입력은 새 ingest key로
+제출해 원본 실패 Artifact와 재실행 입력을 구분한다. 운영자가 수동으로 `--once` Worker를
+실행해 조사할 때도 같은 Task Role·Task Definition과 CloudWatch Logs 설정을 사용한다.
+
 ## ECS Task Definition과 실행 override
 
 `infra/ecs/task-definition.first-cycle.json`은 Pipeline 실행용 Fargate Task Definition
