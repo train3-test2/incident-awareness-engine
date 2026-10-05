@@ -118,6 +118,14 @@ class NormalizedEvent(BaseModel):
     process: ProcessInfo | None = None
     network: NetworkInfo | None = None
 
+    @field_validator("event_id")
+    @classmethod
+    def reject_dot_segment_event_id(cls, value: str) -> str:
+        if value in {".", ".."}:
+            raise ValueError("event_id must not be a dot segment")
+
+        return value
+
     @field_validator("event_type")
     @classmethod
     def validate_event_type(cls, value: str) -> str:

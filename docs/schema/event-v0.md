@@ -76,6 +76,8 @@
 
 `event_id`, `run_id`, `host_id`, `source_event_id`는 빈 문자열을 허용하지 않는다.
 
+`event_id`는 Dashboard URL path 안전성을 위한 최소 제한으로 dot segment인 `"."`, `".."`를 허용하지 않는다. 이 규칙은 slash(`/`) 자체를 Event ID에서 금지하는 계약이 아니다.
+
 ---
 
 ## 4. 시간 규칙

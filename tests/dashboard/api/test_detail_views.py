@@ -11,18 +11,27 @@ from incident_awareness.dashboard.api.dependencies import (
 )
 
 RUN_ID = "RUN-20261005-001"
+EVENT_VIEW_RUN_ID = "RUN-20260920-001"
 DECISION_ID = "D-TEST-001"
 DECISION_ID_WITH_SLASH = "DEC 002/child"
 ENCODED_DECISION_ID_WITH_SLASH = "DEC%20002%2Fchild"
+EVENT_ID = "evt-001"
+ENCODED_EVENT_ID_WITH_SLASH = "evt%20group%2Fchild"
 JAVASCRIPT_MEDIA_TYPES = {"application/javascript", "text/javascript"}
 DETAIL_VIEW_PATHS = (
     f"/dashboard/runs/{RUN_ID}",
+    f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/timeline",
+    f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/events/{EVENT_ID}",
     f"/dashboard/decisions/{DECISION_ID}",
     "/dashboard-assets/detail.css",
     "/dashboard-assets/run-detail.js",
     "/dashboard-assets/run-detail-contract.mjs",
     "/dashboard-assets/decision-detail.js",
     "/dashboard-assets/decision-detail-contract.mjs",
+    "/dashboard-assets/event-timeline.js",
+    "/dashboard-assets/event-timeline-contract.mjs",
+    "/dashboard-assets/event-detail.js",
+    "/dashboard-assets/event-detail-contract.mjs",
 )
 
 
@@ -98,6 +107,7 @@ def test_run_detail_view_serves_html_shell_without_database_access(
         "fusion-runtime",
         "decision-history-status",
         "decision-history-list",
+        "event-timeline-navigation",
     ):
         assert f'id="{container_id}"' in html
     assert database_connection_attempts == []
@@ -140,6 +150,97 @@ def test_historical_decision_view_serves_html_shell_without_database_access(
         "run-detail-back-navigation",
     ):
         assert f'id="{container_id}"' in html
+    assert database_connection_attempts == []
+
+
+def test_event_timeline_view_serves_html_shell_without_database_access(
+    database_connection_attempts: list[str],
+) -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    response = client.get(f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/timeline")
+
+    # Then
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    html = response.text
+    assert "Event Timeline" in html
+    assert 'href="/dashboard" aria-current="page"' in html
+    assert 'href="/operations"' in html
+    assert 'href="/dashboard-assets/detail.css"' in html
+    assert '<script type="module" src="/dashboard-assets/event-timeline.js"></script>' in html
+    for container_id in (
+        "event-timeline-view",
+        "event-timeline-status",
+        "event-timeline-summary",
+        "event-timeline-list",
+        "event-timeline-pagination",
+        "run-detail-back-navigation",
+    ):
+        assert f'id="{container_id}"' in html
+    assert database_connection_attempts == []
+
+
+@pytest.mark.parametrize(
+    "event_path",
+    [EVENT_ID, ENCODED_EVENT_ID_WITH_SLASH],
+    ids=["normal-event-id", "encoded-slash-event-id"],
+)
+def test_event_detail_view_serves_html_shell_without_database_access(
+    event_path: str,
+    database_connection_attempts: list[str],
+) -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    response = client.get(f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/events/{event_path}")
+
+    # Then
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    html = response.text
+    assert "Event Detail" in html
+    assert "Event Metadata" in html
+    assert "Raw Log Reference" in html
+    assert 'href="/dashboard" aria-current="page"' in html
+    assert 'href="/operations"' in html
+    assert 'href="/dashboard-assets/detail.css"' in html
+    assert '<script type="module" src="/dashboard-assets/event-detail.js"></script>' in html
+    for container_id in (
+        "event-detail-view",
+        "event-detail-status",
+        "event-detail-fields",
+        "raw-log-reference-status",
+        "raw-log-reference-fields",
+        "event-timeline-back-navigation",
+        "run-detail-back-navigation",
+    ):
+        assert f'id="{container_id}"' in html
+    assert database_connection_attempts == []
+
+
+def test_empty_event_id_does_not_serve_event_detail_html_shell(
+    database_connection_attempts: list[str],
+) -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    response = client.get(f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/events/")
+
+    # Then
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/json")
+    detail = response.json()["detail"]
+    assert len(detail) == 1
+    assert detail[0]["type"] == "string_too_short"
+    assert detail[0]["loc"] == ["path", "event_id"]
+    assert detail[0]["input"] == ""
+    assert detail[0]["ctx"] == {"min_length": 1}
+    assert "Event Detail" not in response.text
     assert database_connection_attempts == []
 
 
@@ -190,6 +291,10 @@ def test_detail_scripts_and_contracts_are_served_with_javascript_media_type() ->
         client.get("/dashboard-assets/run-detail-contract.mjs"),
         client.get("/dashboard-assets/decision-detail.js"),
         client.get("/dashboard-assets/decision-detail-contract.mjs"),
+        client.get("/dashboard-assets/event-timeline.js"),
+        client.get("/dashboard-assets/event-timeline-contract.mjs"),
+        client.get("/dashboard-assets/event-detail.js"),
+        client.get("/dashboard-assets/event-detail-contract.mjs"),
     ]
 
     # Then
@@ -215,9 +320,218 @@ def test_run_detail_script_fetches_json_once_without_polling() -> None:
     assert "response.status === 404" in script
     assert script.count("fetch(") == 1
     assert script.count("void loadRunDetail();") == 1
+    assert 'document.getElementById("event-timeline-navigation")' in script
+    assert "buildEventTimelineViewPath(runId)" in script
     for polling_api in ("setInterval(", "setTimeout(", "AbortController", "WebSocket"):
         assert polling_api not in script
     assert 'fetch("/decisions/' not in script
+
+
+def test_event_timeline_script_fetches_only_timeline_pages_without_polling() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/event-timeline.js").text
+
+    # Then
+    assert 'document.getElementById("event-timeline-view")' in script
+    assert "extractTimelineRunIdFromPathname(window.location.pathname)" in script
+    assert "fetch(buildEventTimelineApiPath(runId, DEFAULT_LIMIT, offset)" in script
+    assert 'Accept: "application/json"' in script
+    assert 'cache: "no-store"' in script
+    assert "response.status === 404" in script
+    assert script.count("fetch(") == 1
+    assert script.count("loadEventTimeline();") == 1
+    assert "buildEventDetailViewPath(runId, event.event_id)" in script
+    assert "buildRunDetailViewPath(runId)" in script
+    assert '"이전"' in script
+    assert '"다음"' in script
+    assert "button.disabled = disabled" in script
+    assert "setPaginationDisabled(true)" in script
+    for polling_api in (
+        "setInterval(",
+        "setTimeout(",
+        "AbortController",
+        "WebSocket",
+        "EventSource",
+    ):
+        assert polling_api not in script
+    for forbidden_source in (
+        "buildEventDetailApiPath",
+        "buildRunDetailApiPath",
+        'fetch("/runs/',
+        'fetch("/decisions/',
+        'fetch("/overview',
+        'fetch("/operations/runtime',
+    ):
+        assert forbidden_source not in script
+
+
+def test_event_timeline_assets_preserve_api_order_with_safe_dom_rendering() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/event-timeline.js").text
+    contract = client.get("/dashboard-assets/event-timeline-contract.mjs").text
+
+    # Then
+    assert "...payload.items.map((event) => createEventCard(runId, event))" in script
+    assert "formatRunTimestamp(event.timestamp)" in script
+    for event_field in (
+        "event.event_id",
+        "event.timestamp",
+        "event.host_id",
+        "event.event_type",
+    ):
+        assert event_field in script
+    for safe_api in (
+        "document.createElement(",
+        ".textContent =",
+        ".append(",
+        ".replaceChildren(",
+        ".classList.add(",
+    ):
+        assert safe_api in script
+    for source in (script, contract):
+        for forbidden_api in (
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+            "eval(",
+            "new Function",
+            ".sort(",
+            ".toSorted(",
+            ".reverse(",
+            ".toReversed(",
+        ):
+            assert forbidden_api not in source
+    for browser_api in (
+        "document",
+        "window",
+        "fetch(",
+        "setInterval(",
+        "setTimeout(",
+        "AbortController",
+    ):
+        assert browser_api not in contract
+
+
+def test_event_detail_script_fetches_only_event_detail_without_polling() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/event-detail.js").text
+
+    # Then
+    assert 'document.getElementById("event-detail-view")' in script
+    assert "extractEventDetailIdsFromPathname(window.location.pathname)" in script
+    assert "fetch(buildEventDetailApiPath(runId, eventId)" in script
+    assert 'Accept: "application/json"' in script
+    assert 'cache: "no-store"' in script
+    assert "response.status === 404" in script
+    assert script.count("fetch(") == 1
+    assert script.count("void loadEventDetail();") == 1
+    assert "buildEventTimelineViewPath(runId)" in script
+    assert "buildRunDetailViewPath(runId)" in script
+    for polling_api in (
+        "setInterval(",
+        "setTimeout(",
+        "AbortController",
+        "WebSocket",
+        "EventSource",
+    ):
+        assert polling_api not in script
+    for forbidden_source in (
+        "buildEventTimelineApiPath",
+        "buildRunDetailApiPath",
+        "buildDecisionDetailApiPath",
+        'fetch("/runs/',
+        'fetch("/decisions/',
+        'fetch("/overview',
+        'fetch("/operations/runtime',
+    ):
+        assert forbidden_source not in script
+
+
+def test_event_detail_assets_render_only_api_fields_with_safe_dom() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/event-detail.js").text
+    contract = client.get("/dashboard-assets/event-detail-contract.mjs").text
+
+    # Then
+    for event_field in (
+        "event.event_id",
+        "event.run_id",
+        "event.timestamp",
+        "event.host_id",
+        "event.event_type",
+        "event.source",
+        "event.source_layer",
+        "event.source_event_id",
+        "event.timestamp_source",
+    ):
+        assert event_field in script
+    for raw_reference_field in (
+        "rawReference.raw_log_id",
+        "rawReference.source_record_id",
+        "rawReference.segment_no",
+        "rawReference.record_no",
+        "rawReference.parser_id",
+        "rawReference.parser_version",
+    ):
+        assert raw_reference_field in script
+    assert "formatRunTimestamp(event.timestamp)" in script
+    assert "getSourceLayerLabel(event.source_layer)" in script
+    assert "displayValue(rawReference.source_record_id)" in script
+    assert "displayValue(rawReference.parser_id)" in script
+    assert "displayValue(rawReference.parser_version)" in script
+    for forbidden_field in (
+        "event.user",
+        "event.process",
+        "event.network",
+        "command_line",
+        "src_ip",
+        "dst_ip",
+        "evidence",
+        "detection",
+        "fusion",
+    ):
+        assert forbidden_field not in script
+    for safe_api in (
+        "document.createElement(",
+        ".textContent =",
+        ".append(",
+        ".replaceChildren(",
+        ".classList.add(",
+    ):
+        assert safe_api in script
+    for source in (script, contract):
+        for forbidden_api in (
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+            "eval(",
+            "new Function",
+        ):
+            assert forbidden_api not in source
+    for browser_api in (
+        "document",
+        "window",
+        "location",
+        "fetch(",
+        "setTimeout(",
+        "setInterval(",
+        "AbortController",
+    ):
+        assert browser_api not in contract
 
 
 def test_run_detail_assets_use_authoritative_current_data_and_safe_dom_rendering() -> None:
@@ -441,8 +755,12 @@ def test_detail_view_routes_are_hidden_from_openapi() -> None:
     assert response.status_code == 200
     paths = set(response.json()["paths"])
     assert "/dashboard/runs/{run_id}" not in paths
+    assert "/dashboard/runs/{run_id}/timeline" not in paths
+    assert "/dashboard/runs/{run_id}/events/{event_id}" not in paths
     assert "/dashboard/decisions/{decision_id}" not in paths
     assert "/runs/{run_id}" in paths
+    assert "/runs/{run_id}/timeline" in paths
+    assert "/runs/{run_id}/events/{event_id}" in paths
     assert "/decisions/{decision_id}" in paths
     assert not any(path.startswith("/dashboard-assets") for path in paths)
 
@@ -492,6 +810,20 @@ def test_run_detail_view_uses_only_its_external_module_script() -> None:
     assert " style=" not in html
 
 
+def test_event_timeline_view_uses_only_its_external_module_script() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    html = client.get(f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/timeline").text
+
+    # Then
+    assert html.count("<script") == 1
+    assert html.count('<script type="module" src="/dashboard-assets/event-timeline.js">') == 1
+    assert "<style" not in html
+    assert " style=" not in html
+
+
 def test_historical_decision_view_has_no_inline_script_or_style() -> None:
     # Given
     client = TestClient(create_app())
@@ -502,5 +834,19 @@ def test_historical_decision_view_has_no_inline_script_or_style() -> None:
     # Then
     assert html.count("<script") == 1
     assert html.count('<script type="module" src="/dashboard-assets/decision-detail.js">') == 1
+    assert "<style" not in html
+    assert " style=" not in html
+
+
+def test_event_detail_view_uses_only_its_external_module_script() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    html = client.get(f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/events/{EVENT_ID}").text
+
+    # Then
+    assert html.count("<script") == 1
+    assert html.count('<script type="module" src="/dashboard-assets/event-detail.js">') == 1
     assert "<style" not in html
     assert " style=" not in html

@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 
 from incident_awareness.common.models.pipeline_runtime import PipelineRuntimeState
 from incident_awareness.dashboard.api.dependencies import (
@@ -146,10 +146,10 @@ def get_event_timeline(
     )
 
 
-@router.get("/runs/{run_id}/events/{event_id}", response_model=EventDetailResponse)
+@router.get("/runs/{run_id}/events/{event_id:path}", response_model=EventDetailResponse)
 def get_event(
     run_id: str,
-    event_id: str,
+    event_id: Annotated[str, Path(min_length=1)],
     repository: Annotated[EventRepository, Depends(get_event_repository)],
 ) -> EventDetailResponse:
     result = repository.get_by_run(run_id, event_id)

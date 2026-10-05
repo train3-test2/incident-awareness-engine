@@ -268,6 +268,33 @@ def test_normalized_event_rejects_empty_required_identifier(identifier_field: st
         NormalizedEvent.model_validate(invalid_payload)
 
 
+@pytest.mark.parametrize("event_id", [".", ".."])
+def test_normalized_event_rejects_dot_segment_event_id(event_id: str) -> None:
+    # Given
+    invalid_payload = _valid_normalized_event_payload()
+    invalid_payload["event_id"] = event_id
+
+    # When
+    with pytest.raises(ValidationError) as exc_info:
+        NormalizedEvent.model_validate(invalid_payload)
+
+    # Then
+    assert "event_id must not be a dot segment" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("event_id", ["evt-001", "evt/group-001"])
+def test_normalized_event_accepts_normal_and_slash_event_id(event_id: str) -> None:
+    # Given
+    valid_payload = _valid_normalized_event_payload()
+    valid_payload["event_id"] = event_id
+
+    # When
+    event = NormalizedEvent.model_validate(valid_payload)
+
+    # Then
+    assert event.event_id == event_id
+
+
 def test_normalized_event_rejects_analysis_result_field() -> None:
     # given: Event Contract에 정의되지 않은 분석 결과 필드
     timestamp = datetime(2026, 9, 6, 1, 0, tzinfo=UTC)
