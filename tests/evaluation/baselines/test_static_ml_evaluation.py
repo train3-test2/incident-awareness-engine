@@ -160,3 +160,21 @@ def test_s0_cannot_be_performance():
             evaluation_horizon_sec=20,
             purpose="performance",
         )
+
+
+def test_unicode_model_hash_matches_nested_replay():
+    attack, points = run(2, [0, 1, 1])
+    original = model()
+    unicode_model = original.model_copy(
+        update={"config": original.config.model_copy(update={"model_version": "모델-v1"})}
+    )
+    report = evaluate_static_model(
+        unicode_model,
+        [attack],
+        {attack.run_id: points},
+        config(),
+        coverage_sha256_by_run={attack.run_id: "a" * 64},
+        evaluation_horizon_sec=20,
+        purpose="smoke",
+    )
+    assert report["model_sha256"] == report["replays"][attack.run_id]["model_sha256"]
