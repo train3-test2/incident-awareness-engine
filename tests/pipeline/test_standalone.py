@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import incident_awareness.pipeline.standalone as standalone_module
+from incident_awareness.collection.collector.sysmon_jsonl import SysmonJsonlRecord
 from incident_awareness.common.models.run import RunType
 from incident_awareness.normalization.sysmon import SysmonNormalizationContext
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
@@ -197,9 +198,22 @@ def test_standalone_run_persists_fusion_trace_and_runtime_config(
 ) -> None:
     inputs = SimpleNamespace(entity_id="WIN-01")
     prepared = SimpleNamespace(inputs=inputs)
+    source_records = (
+        SysmonJsonlRecord(
+            record_no=1,
+            data=_record("2026-10-03 00:00:10.000", time_created="2026-10-03T00:00:10Z"),
+        ),
+        SysmonJsonlRecord(
+            record_no=2,
+            data={
+                **_record("2026-10-03 00:00:00.000", time_created="2026-10-03T00:00:00Z"),
+                "RecordId": 2,
+            },
+        ),
+    )
     artifacts = S0PipelineArtifacts(
         run_metadata=SimpleNamespace(run_id="RUN-20261003-001"),
-        sysmon_records=(),
+        sysmon_records=source_records,
         normalization_context=SysmonNormalizationContext(
             run_id="RUN-20261003-001",
             raw_log_id="RAW-RUN-20261003-001-SYSMON-001",
@@ -214,13 +228,17 @@ def test_standalone_run_persists_fusion_trace_and_runtime_config(
     decision_result = object()
     summary = object()
     persisted: dict[str, object] = {}
+    normalized_record_ids: list[int] = []
 
     monkeypatch.setattr(standalone_module, "load_s0_pipeline_artifacts", lambda _: artifacts)
-    monkeypatch.setattr(
-        standalone_module,
-        "normalize_sysmon_and_extract_evidence",
-        lambda _: normalized_artifacts,
-    )
+
+    def normalize(ordered_artifacts: S0PipelineArtifacts) -> object:
+        normalized_record_ids.extend(
+            record.data["RecordId"] for record in ordered_artifacts.sysmon_records
+        )
+        return normalized_artifacts
+
+    monkeypatch.setattr(standalone_module, "normalize_sysmon_and_extract_evidence", normalize)
     monkeypatch.setattr(
         standalone_module,
         "run_s0_fusion_with_trace",
@@ -249,18 +267,17 @@ def test_standalone_run_persists_fusion_trace_and_runtime_config(
 
     connection = object()
     assert run_prepared_standalone_run(prepared, connection=connection) is summary
-    assert persisted == {
-        "args": (
-            artifacts,
-            normalized_artifacts,
-            fusion_result,
-            stopping_trace,
-            runtime_config_snapshot,
-            fast_result,
-            decision_result,
-        ),
-        "connection": connection,
-    }
+    assert normalized_record_ids == [2, 1]
+    assert [record.data["RecordId"] for record in persisted["args"][0].sysmon_records] == [2, 1]
+    assert persisted["args"][1:] == (
+        normalized_artifacts,
+        fusion_result,
+        stopping_trace,
+        runtime_config_snapshot,
+        fast_result,
+        decision_result,
+    )
+    assert persisted["connection"] is connection
 
 
 class _UnusedIdentifierConnection:
