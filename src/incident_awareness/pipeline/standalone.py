@@ -8,7 +8,7 @@ import json
 import logging
 import shutil
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -227,6 +227,10 @@ def run_prepared_standalone_run(
 ) -> PipelineExecutionSummary:
     """Run the existing First Cycle stages with standalone Fast semantics."""
     artifacts = load_s0_pipeline_artifacts(prepared.inputs)
+    artifacts = replace(
+        artifacts,
+        sysmon_records=_order_standalone_sysmon_records(artifacts.sysmon_records),
+    )
     normalized_artifacts = normalize_sysmon_and_extract_evidence(artifacts)
     fusion_output = run_s0_fusion_with_trace(prepared.inputs, artifacts, normalized_artifacts)
     fusion_result = fusion_output.fusion_result
@@ -431,11 +435,9 @@ def validate_standalone_sysmon_jsonl(path: Path) -> tuple[SysmonJsonlRecord, ...
     """Read one standalone JSONL and validate the current Normalizer boundary."""
     records = _read_records(path)
     target_host: str | None = None
-    previous_event_time: datetime | None = None
     for record in records:
         _validate_record_shape(record)
         host = _required_string(record.data, "Computer", record_no=record.record_no)
-        event_time = _event_time(record)
 
         if target_host is None:
             target_host = host
@@ -444,14 +446,29 @@ def validate_standalone_sysmon_jsonl(path: Path) -> tuple[SysmonJsonlRecord, ...
                 "standalone Sysmon JSONL must contain exactly one Computer value; "
                 f"record {record.record_no} is {host!r}, expected {target_host!r}"
             )
-
-        if previous_event_time is not None and event_time < previous_event_time:
-            raise ValueError(
-                "standalone Sysmon JSONL EventData.UtcTime must be in non-decreasing order; "
-                f"record {record.record_no} is earlier than record {record.record_no - 1}"
-            )
-        previous_event_time = event_time
     return records
+
+
+def _order_standalone_sysmon_records(
+    records: tuple[SysmonJsonlRecord, ...],
+) -> tuple[SysmonJsonlRecord, ...]:
+    """Order standalone processing by event time without rewriting raw JSONL provenance.
+
+    Scenario collectors preserve source ``RecordId`` order in the JSONL file.  That
+    physical order is not guaranteed to match ``EventData.UtcTime``, while temporal
+    Fusion needs a deterministic event-time sequence.  Keep the raw file unchanged
+    and use RecordId, then original line number, only as stable tie-breakers.
+    """
+    return tuple(
+        sorted(
+            records,
+            key=lambda record: (
+                _event_time(record),
+                _record_id(record),
+                record.record_no,
+            ),
+        )
+    )
 
 
 def _read_records(path: Path) -> tuple[SysmonJsonlRecord, ...]:
@@ -487,6 +504,13 @@ def _event_time(record: SysmonJsonlRecord) -> datetime:
     return parsed.astimezone(UTC).replace(microsecond=parsed.microsecond // 1000 * 1000)
 
 
+def _record_id(record: SysmonJsonlRecord) -> int:
+    value = record.data.get("RecordId")
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"Sysmon record {record.record_no} RecordId must be an integer")
+    return value
+
+
 def _validate_record_shape(record: SysmonJsonlRecord) -> None:
     event_id = record.data.get("EventId")
     if isinstance(event_id, bool) or not isinstance(event_id, int):
@@ -497,9 +521,7 @@ def _validate_record_shape(record: SysmonJsonlRecord) -> None:
             "only EventId 1 and 3 are supported"
         )
 
-    record_id = record.data.get("RecordId")
-    if isinstance(record_id, bool) or not isinstance(record_id, int):
-        raise TypeError(f"Sysmon record {record.record_no} RecordId must be an integer")
+    _record_id(record)
 
     _required_string(record.data, "Computer", record_no=record.record_no)
     _record_time(record)
