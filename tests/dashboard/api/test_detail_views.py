@@ -12,6 +12,8 @@ from incident_awareness.dashboard.api.dependencies import (
 
 RUN_ID = "RUN-20261005-001"
 DECISION_ID = "D-TEST-001"
+DECISION_ID_WITH_SLASH = "DEC 002/child"
+ENCODED_DECISION_ID_WITH_SLASH = "DEC%20002%2Fchild"
 JAVASCRIPT_MEDIA_TYPES = {"application/javascript", "text/javascript"}
 DETAIL_VIEW_PATHS = (
     f"/dashboard/runs/{RUN_ID}",
@@ -138,6 +140,30 @@ def test_historical_decision_view_serves_html_shell_without_database_access(
         "run-detail-back-navigation",
     ):
         assert f'id="{container_id}"' in html
+    assert database_connection_attempts == []
+
+
+def test_encoded_slash_decision_id_reaches_html_and_json_application_routes(
+    database_connection_attempts: list[str],
+) -> None:
+    # Given
+    reader = _MissingDecisionReader()
+    app = create_app()
+    app.dependency_overrides[get_dashboard_decision_reader] = lambda: reader
+    client = TestClient(app)
+
+    # When
+    html_response = client.get(f"/dashboard/decisions/{ENCODED_DECISION_ID_WITH_SLASH}")
+    api_response = client.get(f"/decisions/{ENCODED_DECISION_ID_WITH_SLASH}")
+
+    # Then
+    assert html_response.status_code == 200
+    assert html_response.headers["content-type"].startswith("text/html")
+    assert "Historical Decision" in html_response.text
+    assert api_response.status_code == 404
+    assert api_response.headers["content-type"].startswith("application/json")
+    assert api_response.json() == {"detail": "Decision not found"}
+    assert reader.historical_calls == [DECISION_ID_WITH_SLASH]
     assert database_connection_attempts == []
 
 

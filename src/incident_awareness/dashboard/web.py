@@ -29,7 +29,7 @@ def get_run_detail_view(run_id: str) -> FileResponse:
     return FileResponse(_UI_DIRECTORY / "run-detail.html", media_type="text/html")
 
 
-@operations_view_router.get("/dashboard/decisions/{decision_id}")
+@operations_view_router.get("/dashboard/decisions/{decision_id:path}")
 def get_decision_detail_view(decision_id: str) -> FileResponse:
     return FileResponse(_UI_DIRECTORY / "decision-detail.html", media_type="text/html")
 
