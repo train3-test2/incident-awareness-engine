@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -57,10 +58,20 @@ def test_render_replaces_all_worker_identifiers() -> None:
         "EXECUTION_ROLE_ARN",
         "TASK_ROLE_ARN",
         "DATABASE_URL_SECRET_ARN",
-        "SQS_QUEUE_URL",
-        "S3_INPUT_BUCKET",
     ):
         assert placeholder not in rendered
+
+    environment = json.loads(rendered)["containerDefinitions"][0]["environment"]
+    assert environment == [
+        {
+            "name": "INCIDENT_AWARENESS_SQS_QUEUE_URL",
+            "value": "https://sqs.region.amazonaws.com/123456789012/queue",
+        },
+        {
+            "name": "INCIDENT_AWARENESS_S3_INPUT_BUCKET",
+            "value": "first-cycle-inputs",
+        },
+    ]
 
 
 def test_render_requires_identifiers_used_by_a_template() -> None:

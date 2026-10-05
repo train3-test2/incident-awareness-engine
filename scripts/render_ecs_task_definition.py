@@ -21,20 +21,51 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def render(template: str, replacements: dict[str, str | None]) -> str:
-    for placeholder, value in replacements.items():
-        if placeholder in template:
-            if not value:
-                message = f"{placeholder} must be supplied for this task definition."
-                raise ValueError(message)
-            template = template.replace(placeholder, value)
+    definition = json.loads(template)
 
-    unresolved = [placeholder for placeholder in replacements if placeholder in template]
+    def replace_values(value: object) -> object:
+        if isinstance(value, str):
+            for placeholder, replacement in replacements.items():
+                if placeholder in value:
+                    if not replacement:
+                        message = f"{placeholder} must be supplied for this task definition."
+                        raise ValueError(message)
+                    value = value.replace(placeholder, replacement)
+            return value
+        if isinstance(value, list):
+            return [replace_values(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                key: item if key == "name" else replace_values(item) for key, item in value.items()
+            }
+        return value
+
+    rendered_definition = replace_values(definition)
+    rendered = json.dumps(rendered_definition, indent=2) + "\n"
+
+    def has_placeholder_value(value: object, placeholder: str) -> bool:
+        if isinstance(value, str):
+            return placeholder in value
+        if isinstance(value, list):
+            return any(has_placeholder_value(item, placeholder) for item in value)
+        if isinstance(value, dict):
+            return any(
+                has_placeholder_value(item, placeholder)
+                for key, item in value.items()
+                if key != "name"
+            )
+        return False
+
+    unresolved = [
+        placeholder
+        for placeholder in replacements
+        if has_placeholder_value(rendered_definition, placeholder)
+    ]
     if unresolved:
         message = f"Unresolved placeholders: {', '.join(unresolved)}"
         raise ValueError(message)
 
-    json.loads(template)
-    return template
+    return rendered
 
 
 def main() -> None:
