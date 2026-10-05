@@ -257,8 +257,14 @@ Worker는 long polling으로 한 번에 SQS 메시지 하나를 받고, 각 S3 r
 ## ECS Task Definition과 실행 override
 
 `infra/ecs/task-definition.first-cycle.json`은 Pipeline 실행용 Fargate Task Definition
-템플릿이다. `ecsFirstCycleTaskRole`을 Task Role로 사용해 `first-cycle/*` S3 객체만 읽고,
-DB URL은 Secrets Manager에서 `INCIDENT_AWARENESS_DATABASE_URL` 환경 변수로 주입한다.
+템플릿이다. `ecsFirstCycleTaskRole`을 Task Role로 사용해 수동 실행용 `first-cycle/*`와
+자동 Worker 입력용 `incoming/first-cycle/sysmon/*` S3 객체만 읽고, DB URL은 Secrets
+Manager에서 `INCIDENT_AWARENESS_DATABASE_URL` 환경 변수로 주입한다. 역할 정책은
+`infra/iam/ecs-first-cycle-task-role-policy.json`으로 관리한다. 이 역할에는 S3 쓰기·삭제,
+다른 bucket 접근 권한을 부여하지 않는다. 자동 Worker 실행 시에는 같은 역할이
+`incident-awareness-first-cycle-ingest` source Queue에만 `ReceiveMessage`와
+`DeleteMessage`를 수행한다. DLQ 읽기·삭제, 다른 Queue 접근, 임의 메시지 전송 권한은
+부여하지 않는다.
 
 `IMAGE_URI`는 저장소에 실제 배포 이미지를 기록하지 않기 위한 자리표시자다. 등록 전에
 ECR 이미지 URI로 교체한다. DB Secret은 확인된 전체 ARN으로 Task Definition에 고정하며,
