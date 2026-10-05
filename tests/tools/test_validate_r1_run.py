@@ -33,21 +33,22 @@ def _canned(monkeypatch: pytest.MonkeyPatch, *, errors: list[str]) -> R1PilotVal
     return report
 
 
-def _run(monkeypatch: pytest.MonkeyPatch, root: Path, *extra: str) -> int:
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "validate_r1_run.py",
-            "--artifact-root",
-            str(root),
-            "--run-id",
-            RUN_ID,
-            "--scenario",
-            str(root / "scenario.json"),
-            *extra,
-        ],
-    )
+def _run(
+    monkeypatch: pytest.MonkeyPatch, root: Path, *extra: str, tier: str | None = "pilot"
+) -> int:
+    # `tier` is the helper's default for the cases that are not about it; the CLI has none.
+    argv = [
+        "validate_r1_run.py",
+        "--artifact-root",
+        str(root),
+        "--run-id",
+        RUN_ID,
+        "--scenario",
+        str(root / "scenario.json"),
+    ]
+    if tier is not None:
+        argv += ["--dataset-tier", tier]
+    monkeypatch.setattr(sys, "argv", [*argv, *extra])
     return cli.main()
 
 
@@ -82,8 +83,54 @@ def test_arguments_reach_the_validator_unchanged(
         "artifact_root": tmp_path,
         "run_id": RUN_ID,
         "scenario_path": tmp_path / "scenario.json",
+        "dataset_tier": "pilot",
         "rehearsal": True,
     }
+
+
+@pytest.mark.parametrize("tier", ["pilot", "development", "holdout"])
+def test_expected_tier_reaches_the_validator_as_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tier: str
+) -> None:
+    received: dict[str, object] = {}
+
+    def fake_validate(**kwargs: object) -> R1PilotValidationReport:
+        received.update(kwargs)
+        return R1PilotValidationReport(run_id=RUN_ID, rehearsal=False)
+
+    monkeypatch.setattr(cli, "validate_r1_pilot_run", fake_validate)
+
+    assert _run(monkeypatch, tmp_path, tier=tier) == 0
+    assert received["dataset_tier"] == tier
+
+
+def test_missing_expected_tier_stops_before_the_validator_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    called: list[object] = []
+    monkeypatch.setattr(cli, "validate_r1_pilot_run", lambda **kwargs: called.append(kwargs))
+
+    with pytest.raises(SystemExit) as stopped:
+        _run(monkeypatch, tmp_path, tier=None)
+
+    # Then: no tier is assumed, and nothing was validated
+    assert stopped.value.code == 2
+    assert called == []
+    assert "--dataset-tier" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("tier", ["formal", "Pilot", "DEVELOPMENT", "dev", ""])
+def test_unknown_expected_tier_stops_before_the_validator_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tier: str
+) -> None:
+    called: list[object] = []
+    monkeypatch.setattr(cli, "validate_r1_pilot_run", lambda **kwargs: called.append(kwargs))
+
+    with pytest.raises(SystemExit) as stopped:
+        _run(monkeypatch, tmp_path, tier=tier)
+
+    assert stopped.value.code == 2
+    assert called == []
 
 
 def test_record_is_written_for_a_passing_run(

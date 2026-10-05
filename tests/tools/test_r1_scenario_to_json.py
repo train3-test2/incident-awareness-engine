@@ -194,14 +194,22 @@ def test_canonical_scenario_keeps_every_run_input_null() -> None:
     assert scenario["run_length"]["observation_sec"] is None
 
 
-def test_canonical_scenario_records_no_reference_and_no_frozen_comparator() -> None:
+def test_canonical_scenario_names_the_reference_of_the_attack_run_only() -> None:
     scenario = _load_canonical()
 
-    assert [scenario["runs"][run_type]["reference_action_id"] for run_type in RUN_TYPES] == [
-        None,
-        None,
-    ]
-    assert scenario["run_metadata"]["reference_policy_version"] is None
+    # The attack run takes its reference from the action that opens the session; the
+    # normal run records none (r1.md section 4-2).
+    assert scenario["runs"]["normal"]["reference_action_id"] is None
+    attack = scenario["runs"]["attack"]
+    assert attack["reference_action_id"] == attack["actions"][0]["action_id"] == "A01"
+    assert attack["actions"][0]["step"] == "session_begin"
+    assert scenario["run_metadata"]["reference_policy_version"] == "r1-ref-v0.1"
+    assert scenario["run_length"]["evaluation_horizon_sec"] == 600
+
+
+def test_canonical_scenario_records_no_frozen_comparator() -> None:
+    scenario = _load_canonical()
+
     assert scenario["run_metadata"]["detector_set_version"] is None
     assert scenario["decisive_comparator"] == {"required": True, "frozen_version": None}
 
@@ -315,6 +323,34 @@ def _no_lineage(scenario: dict) -> None:
     del scenario["planned_lineage"]
 
 
+def _attack_without_reference(scenario: dict) -> None:
+    scenario["runs"]["attack"]["reference_action_id"] = None
+
+
+def _attack_reference_on_another_action(scenario: dict) -> None:
+    scenario["runs"]["attack"]["reference_action_id"] = "A03"
+
+
+def _normal_with_reference(scenario: dict) -> None:
+    scenario["runs"]["normal"]["reference_action_id"] = "N01"
+
+
+def _no_horizon(scenario: dict) -> None:
+    del scenario["run_length"]["evaluation_horizon_sec"]
+
+
+def _zero_horizon(scenario: dict) -> None:
+    scenario["run_length"]["evaluation_horizon_sec"] = 0
+
+
+def _horizon_as_text(scenario: dict) -> None:
+    scenario["run_length"]["evaluation_horizon_sec"] = "600"
+
+
+def _no_run_length(scenario: dict) -> None:
+    del scenario["run_length"]
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -338,6 +374,13 @@ def _no_lineage(scenario: dict) -> None:
         _offsets_going_backwards,
         _other_scenario_id,
         _no_lineage,
+        _attack_without_reference,
+        _attack_reference_on_another_action,
+        _normal_with_reference,
+        _no_horizon,
+        _zero_horizon,
+        _horizon_as_text,
+        _no_run_length,
     ],
 )
 def test_scenario_breaking_a_pilot_rule_is_refused(

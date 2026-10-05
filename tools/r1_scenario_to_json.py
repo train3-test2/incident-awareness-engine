@@ -297,6 +297,22 @@ def _check_runs(scenario: dict) -> None:
                 f"found {list(steps)}"
             )
 
+        # The reference of an attack run is the Sysmon record of the session host
+        # its first action creates (r1.md section 4-2), so that action is the only
+        # one it can name. A normal run records no reference.
+        reference = runs[run_type].get("reference_action_id")
+        if run_type == "attack":
+            if reference != action_ids[0]:
+                raise ValueError(
+                    f"runs.attack.reference_action_id must be the {STEP_ORDER[0]} action "
+                    f"{action_ids[0]!r}, found {reference!r}"
+                )
+        elif reference is not None:
+            raise ValueError(
+                f"runs.{run_type}.reference_action_id must be null, found {reference!r}: "
+                "only an attack run records a reference"
+            )
+
         offsets = [action.get("offset_sec") for action in actions]
         if any(isinstance(offset, bool) or not isinstance(offset, int) for offset in offsets):
             raise ValueError(f"runs.{run_type} offset_sec values must be integers")
@@ -312,6 +328,16 @@ def _check_runs(scenario: dict) -> None:
     if shapes["normal"] != shapes["attack"]:
         raise ValueError(
             "runs.normal and runs.attack must share step, offset_sec and action_type per action"
+        )
+
+
+def _check_run_length(scenario: dict) -> None:
+    # The runner holds a collected attack run to this horizon from its reference_time.
+    run_length = scenario.get("run_length")
+    horizon = run_length.get("evaluation_horizon_sec") if isinstance(run_length, dict) else None
+    if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon < 1:
+        raise ValueError(
+            f"run_length.evaluation_horizon_sec must be an integer of 1 or more, found {horizon!r}"
         )
 
 
@@ -360,6 +386,7 @@ def load_r1_scenario(path: Path) -> dict:
 
     _check_planned_lineage(scenario[PLANNED_LINEAGE_KEY])
     _check_runs(scenario)
+    _check_run_length(scenario)
     _check_identity(scenario)
     return scenario
 

@@ -1,6 +1,6 @@
 <#
     .SYNOPSIS
-        Execute the R1-V02 Pilot normal run and write its four artifacts.
+        Execute the R1-V02 normal run and write its four artifacts.
 
     .DESCRIPTION
         Run on the Controller. The five actions are the ones listed in
@@ -48,6 +48,12 @@
         has to cover the last action; the evaluation horizon itself is not decided
         (docs/scenarios/r1.md section 11-4), so the value is a run input.
 
+    .PARAMETER DatasetTier
+        pilot, development or holdout, spelled exactly so. It is written to the
+        operator trace of the run and has no default: a run without it, or with
+        another value, is refused before anything is created. A rehearsal takes
+        pilot only. Both runs of a Pair are given the same value.
+
     .PARAMETER TargetAddress
         Name or address the Controller uses to reach Target-A over WinRM. It is
         not written to any artifact.
@@ -57,7 +63,7 @@
 
     .EXAMPLE
         .\run.ps1 -RunId RUN-YYYYMMDD-NNN -ScenarioJsonPath C:\Tools\R1\scenario.json `
-            -DataRoot C:\R1\data -WorkDir C:\R1\work -ObservationSec 660 -DryRun
+            -DataRoot C:\R1\data -WorkDir C:\R1\work -ObservationSec 660 -DatasetTier pilot -DryRun
 #>
 
 [CmdletBinding()]
@@ -67,6 +73,7 @@ param(
     [Parameter(Mandatory = $true)][string]$DataRoot,
     [Parameter(Mandatory = $true)][string]$WorkDir,
     [Parameter(Mandatory = $true)][int]$ObservationSec,
+    [string]$DatasetTier,
     [string]$VmSnapshot,
     [string]$TargetAddress,
     [int]$WinRmPort = 0,
@@ -103,7 +110,7 @@ if (-not $DryRun) {
 }
 
 Invoke-R1PilotRun -RunType "normal" -RunId $RunId -ScenarioJsonPath $ScenarioJsonPath `
-    -DataRoot $DataRoot -WorkDir $WorkDir -ObservationSec $ObservationSec `
+    -DataRoot $DataRoot -WorkDir $WorkDir -ObservationSec $ObservationSec -DatasetTier $DatasetTier `
     -VmSnapshot $VmSnapshot -TargetSysmonBinary $TargetSysmonBinary `
     -TargetSysmonConfigPath $TargetSysmonConfigPath `
     -ExpectedSysmonConfigSha256 $ExpectedSysmonConfigSha256 `

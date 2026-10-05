@@ -97,9 +97,22 @@ $R1_TRACE_FILE = "r1_run_trace.json"
 $R1_TRACE_SCENARIO_FILE = "scenario.json"
 $R1_TRACE_VERSION = "v1"
 
-# Every run of this runner is a Pilot run, a rehearsal included. A formal
-# evaluation selector has to leave out every run whose trace says so.
-$R1_DATASET_TIER = "pilot"
+# The dataset tier of a run is a run input. It is stated for every run, written
+# to the operator trace and never defaulted: a value that is missing or is not
+# one of these is refused before anything is created. "pilot" is every run that
+# is not formal data, and a rehearsal is always one. "development" and "holdout"
+# are the two splits of the formal data (README section 1-3). What a run may be
+# selected for is read from its trace.
+$R1_DATASET_TIERS = @("pilot", "development", "holdout")
+$R1_REHEARSAL_TIER = "pilot"
+
+# The reference of an attack run (r1.md section 4-2) is taken from the Sysmon
+# record of the session host that the session_begin action created, so that is
+# the only action a scenario can name as the reference action. The time of a
+# record is EventData.UtcTime in the form Sysmon writes it. TimeCreated is never
+# read in its place.
+$R1_REFERENCE_STEP = "session_begin"
+$R1_EVENT_UTC_FORMAT = "yyyy-MM-dd HH:mm:ss.fff"
 
 function Get-R1Value {
     <# A property of a parsed JSON object or a key of a dictionary, or $null when it is absent. #>
@@ -541,6 +554,30 @@ function Write-R1NewFile {
     }
 }
 
+function Assert-R1DatasetTier {
+    <#
+        Refuse a dataset tier that is missing or is not one this runner writes.
+
+        The comparison is exact: "Pilot" or " development" is not a tier. A
+        rehearsal is never formal data, so it takes "pilot" only.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DatasetTier,
+        [switch]$Rehearsal
+    )
+
+    if ([string]::IsNullOrEmpty($DatasetTier)) {
+        throw ("DatasetTier is required: one of " + ($R1_DATASET_TIERS -join ", ") + ". There is no default")
+    }
+    if (-not ($R1_DATASET_TIERS -ccontains $DatasetTier)) {
+        throw ("DatasetTier must be one of " + ($R1_DATASET_TIERS -join ", ") + ", found '" + $DatasetTier + "'")
+    }
+    if ($Rehearsal -and $DatasetTier -cne $R1_REHEARSAL_TIER) {
+        throw ("a rehearsal is not formal data: DatasetTier must be " + $R1_REHEARSAL_TIER +
+            " with -Rehearsal, found '" + $DatasetTier + "'")
+    }
+}
+
 function Write-R1RunTrace {
     <#
         Keep what ties this run to the scenario it executes.
@@ -563,10 +600,14 @@ function Write-R1RunTrace {
         [Parameter(Mandatory = $true)][string]$EffectiveRoot,
         [Parameter(Mandatory = $true)][string]$RunId,
         [Parameter(Mandatory = $true)][string]$Mode,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DatasetTier,
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][byte[]]$ScenarioBytes,
         [Parameter(Mandatory = $true)][string]$ScenarioSha256
     )
 
+    # Checked again where the value is written: a trace never carries a tier
+    # this runner does not know.
+    Assert-R1DatasetTier -DatasetTier $DatasetTier -Rehearsal:($Mode -eq "rehearsal")
     Assert-R1TraceAvailable -EffectiveRoot $EffectiveRoot -RunId $RunId
     $traceDir = Get-R1TraceDirectory -EffectiveRoot $EffectiveRoot -RunId $RunId
     New-Item -ItemType Directory -Path $traceDir -Force | Out-Null
@@ -576,7 +617,7 @@ function Write-R1RunTrace {
     $trace = [ordered]@{
         trace_version   = $R1_TRACE_VERSION
         run_id          = $RunId
-        dataset_tier    = $R1_DATASET_TIER
+        dataset_tier    = $DatasetTier
         mode            = $Mode
         scenario_sha256 = $ScenarioSha256
     }
@@ -604,6 +645,7 @@ function Assert-R1RunInputs {
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DataRoot,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$WorkDir,
         [Parameter(Mandatory = $true)][int]$ObservationSec,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DatasetTier,
         [switch]$Rehearsal,
         [switch]$DryRun
     )
@@ -611,6 +653,7 @@ function Assert-R1RunInputs {
     if (-not ($R1_RUN_TYPES -contains $RunType)) {
         throw ("RunType must be one of " + ($R1_RUN_TYPES -join ", ") + ", found '" + $RunType + "'")
     }
+    Assert-R1DatasetTier -DatasetTier $DatasetTier -Rehearsal:$Rehearsal
     if (-not (Test-RunId -RunId $RunId)) {
         throw "run_id must match RUN-YYYYMMDD-NNN with a real date: '$RunId'"
     }
@@ -645,18 +688,35 @@ function Assert-R1RunInputs {
         }
     }
 
-    # The Pilot records no reference action: r1.md section 11-5 has not decided
-    # one. A scenario that names one would get a RunMetadata without it, so stop.
-    if (-not [string]::IsNullOrEmpty([string](Get-R1Value $run "reference_action_id"))) {
-        throw ("runs." + $RunType + ".reference_action_id is set, but the Pilot runner records no " +
-            "reference action yet (docs/scenarios/r1.md section 11-5)")
-    }
-
     $actions = @(Get-R1Value $run "actions")
     $steps = @($actions | ForEach-Object { [string](Get-R1Value $_ "step") })
     if (($steps -join ",") -ne ($R1_STEP_ORDER -join ",")) {
         throw ("runs." + $RunType + ".actions must be the steps " + ($R1_STEP_ORDER -join ", ") +
             " in that order, found " + ($steps -join ", "))
+    }
+
+    # The reference action (r1.md section 4-2). A normal run has none. An attack
+    # run names the action that opens the session: its reference is the Sysmon
+    # record of the session host that action created, so no other action can be
+    # named, and an attack run that names none would get a RunMetadata without
+    # its reference.
+    $referenceActionId = [string](Get-R1Value $run "reference_action_id")
+    $beginAction = @($actions | Where-Object { [string](Get-R1Value $_ "step") -eq $R1_REFERENCE_STEP })[0]
+    $beginActionId = [string](Get-R1Value $beginAction "action_id")
+    if ($RunType -eq "attack") {
+        if ([string]::IsNullOrEmpty($referenceActionId)) {
+            throw ("runs.attack.reference_action_id is missing; an attack run records its reference " +
+                "(docs/scenarios/r1.md section 4-2)")
+        }
+        if ($referenceActionId -cne $beginActionId) {
+            throw ("runs.attack.reference_action_id must be the " + $R1_REFERENCE_STEP + " action " +
+                $beginActionId + ", found '" + $referenceActionId + "'")
+        }
+    } elseif (-not [string]::IsNullOrEmpty($referenceActionId)) {
+        throw ("runs." + $RunType + ".reference_action_id is set; only an attack run records a " +
+            "reference (docs/scenarios/r1.md section 4-2)")
+    } else {
+        $referenceActionId = $null
     }
 
     $lastOffset = 0
@@ -673,11 +733,23 @@ function Assert-R1RunInputs {
         $lastOffset = $offset
     }
 
-    # The window has to cover the last action; how much longer it runs is a run
-    # input, because the evaluation horizon is not decided (r1.md section 11-4).
+    # The window has to cover the last action. How long it runs is a run input.
     if ($ObservationSec -lt $lastOffset -or $ObservationSec -lt 1) {
         throw ("ObservationSec " + $ObservationSec + " does not cover the last action at " +
             $lastOffset + " s")
+    }
+
+    # The evaluation horizon is a scenario value (r1.md section 11-4). The window
+    # cannot be shorter than it, and after the collection an attack run is held
+    # to it from its reference_time.
+    $horizon = Get-R1Value (Get-R1Value $scenario "run_length") "evaluation_horizon_sec"
+    if (($horizon -isnot [int] -and $horizon -isnot [long]) -or $horizon -lt 1) {
+        throw ("run_length.evaluation_horizon_sec must be an integer of 1 or more, found '" +
+            [string]$horizon + "'")
+    }
+    if ($ObservationSec -lt $horizon) {
+        throw ("ObservationSec " + $ObservationSec + " is shorter than the evaluation horizon of " +
+            $horizon + " s")
     }
 
     $approval = Get-R1ConnectionApproval -Scenario $scenario
@@ -695,6 +767,9 @@ function Assert-R1RunInputs {
         actions         = $actions
         approval        = $approval
         last_offset     = $lastOffset
+        dataset_tier    = $DatasetTier
+        reference_action_id    = $referenceActionId
+        evaluation_horizon_sec = [int]$horizon
     }
 }
 
@@ -798,12 +873,14 @@ $R1_REMOTE_STEPS = @{
         }
     }
 
-    # t+0: the session exists. $PID here is the remote session host process.
+    # t+0: the session exists. $PID here is the remote session host process, and
+    # it reports its own image: no process is started to ask for it.
     begin = {
         param($Arguments)
         return @{
             utc           = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
             session_pid   = $PID
+            session_image = [string](Get-Process -Id $PID).Path
             computer_name = $env:COMPUTERNAME
         }
     }
@@ -1055,7 +1132,8 @@ function Test-R1RunLineage {
         with their own expected lineage.
 
         Returns status "matched", "lineage_only" (no connection was requested) or
-        "mismatched", with a reason and the final tool's ProcessGuid.
+        "mismatched", with a reason, the final tool's ProcessGuid and the
+        ProcessGuid of the session host of the chain that was found.
     #>
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Records,
@@ -1069,7 +1147,9 @@ function Test-R1RunLineage {
 
     $mismatch = {
         param($Reason)
-        return [ordered]@{ status = "mismatched"; reason = $Reason; final_process_guid = $null }
+        return [ordered]@{
+            status = "mismatched"; reason = $Reason; final_process_guid = $null; session_host_guid = $null
+        }
     }
 
     $creates = @{}
@@ -1134,11 +1214,13 @@ function Test-R1RunLineage {
     }
 
     $finalGuid = [string](Get-R1Value $chain[0] "ProcessGuid")
+    $sessionGuid = [string](Get-R1Value $chain[2] "ProcessGuid")
     if ($null -eq $Approval) {
         return [ordered]@{
             status             = "lineage_only"
             reason             = "the lineage matches; no connection was requested"
             final_process_guid = $finalGuid
+            session_host_guid  = $sessionGuid
         }
     }
 
@@ -1151,6 +1233,7 @@ function Test-R1RunLineage {
             status             = "mismatched"
             reason             = "the approval states no protocol, so no EID 3 can be the approved connection"
             final_process_guid = $finalGuid
+            session_host_guid  = $sessionGuid
         }
     }
 
@@ -1175,6 +1258,7 @@ function Test-R1RunLineage {
             status             = "matched"
             reason             = "the lineage matches and the final tool made the approved connection"
             final_process_guid = $finalGuid
+            session_host_guid  = $sessionGuid
         }
     }
 
@@ -1185,6 +1269,7 @@ function Test-R1RunLineage {
                 "destination, but none was recorded with the approved Protocol " + $approvedProtocol +
                 ": recorded Protocol " + ($otherProtocols -join ", "))
             final_process_guid = $finalGuid
+            session_host_guid  = $sessionGuid
         }
     }
 
@@ -1192,6 +1277,115 @@ function Test-R1RunLineage {
         status             = "mismatched"
         reason             = "no EID 3 with the final tool's ProcessGuid reaches the approved destination"
         final_process_guid = $finalGuid
+        session_host_guid  = $sessionGuid
+    }
+}
+
+function Get-R1ReferenceEvent {
+    <#
+        Find the Sysmon record an attack run takes its reference from: the EID 1
+        of the remote session host that the session_begin action created
+        (r1.md section 4-2).
+
+        The runner knows that process from its own steps: the process id and the
+        image the session reported about itself, and two bounds on when it was
+        created - the recorded start of the action and the stamp Target-A gave
+        once the session existed. A record is the reference only when it is the
+        one EID 1 on the target that fits all of that. The process id narrows
+        the search and decides nothing on its own: the record has to carry a
+        ProcessGuid, and when the lineage of the run was found, that ProcessGuid
+        has to be the session host of the lineage.
+
+        The time compared and returned is EventData.UtcTime, the time Sysmon
+        gives the event. TimeCreated is never read: a record whose UtcTime
+        cannot be read is not given another time, it leaves the run without a
+        reference.
+
+        Returns status "selected" with reference_time (a UTC stamp),
+        reference_source_event_id (the RecordId as a string) and process_guid,
+        or status "undetermined" with the reason.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Records,
+        [Parameter(Mandatory = $true)][string]$ComputerName,
+        [Parameter(Mandatory = $true)][int]$SessionPid,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SessionImage,
+        [Parameter(Mandatory = $true)][string]$ExpectedImage,
+        [Parameter(Mandatory = $true)][datetime]$NotBefore,
+        [Parameter(Mandatory = $true)][datetime]$NotAfter,
+        [AllowEmptyString()][string]$SessionHostGuid
+    )
+
+    $undetermined = {
+        param($Reason)
+        return [ordered]@{
+            status = "undetermined"; reason = $Reason; reference_time = $null
+            reference_source_event_id = $null; process_guid = $null
+        }
+    }
+
+    $reportedName = [System.IO.Path]::GetFileName($SessionImage)
+    if ($reportedName -ne $ExpectedImage) {
+        return (& $undetermined ("the session reported the image '" + $reportedName +
+            "', the scenario expects the session host '" + $ExpectedImage + "'"))
+    }
+
+    $styles = [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
+        [System.Globalization.DateTimeStyles]::AdjustToUniversal
+    $fitting = New-Object System.Collections.Generic.List[object]
+    foreach ($record in $Records) {
+        if ([string](Get-R1Value $record "Computer") -ne $ComputerName) { continue }
+        if ([string](Get-R1Value $record "EventId") -ne "1") { continue }
+        $data = Get-R1Value $record "EventData"
+        if ([System.IO.Path]::GetFileName([string](Get-R1Value $data "Image")) -ne $ExpectedImage) { continue }
+        if ([string](Get-R1Value $data "ProcessId") -ne [string]$SessionPid) { continue }
+
+        # A record that could be the reference and has no readable time is not
+        # skipped: skipping it could leave one other record looking unique.
+        $stated = [string](Get-R1Value $data "UtcTime")
+        $created = [datetime]::MinValue
+        if (-not [datetime]::TryParseExact($stated, $R1_EVENT_UTC_FORMAT,
+                [System.Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$created)) {
+            return (& $undetermined ("an EID 1 of " + $ExpectedImage + " with the session process id " +
+                $SessionPid + " has no readable EventData.UtcTime ('" + $stated +
+                "'); TimeCreated is not used in its place"))
+        }
+        if ($created -lt $NotBefore -or $created -gt $NotAfter) { continue }
+        $fitting.Add(@{ record = $record; data = $data; created = $created })
+    }
+
+    $window = (Get-UtcStamp $NotBefore) + " .. " + (Get-UtcStamp $NotAfter)
+    if ($fitting.Count -eq 0) {
+        return (& $undetermined ("no EID 1 of " + $ExpectedImage + " with the session process id " +
+            $SessionPid + " was recorded on " + $ComputerName + " in " + $window))
+    }
+    if ($fitting.Count -gt 1) {
+        return (& $undetermined ([string]$fitting.Count + " EID 1 records of " + $ExpectedImage +
+            " with the session process id " + $SessionPid + " were recorded on " + $ComputerName +
+            " in " + $window + "; exactly one is the session of this run"))
+    }
+
+    $chosen = $fitting[0]
+    $guid = [string](Get-R1Value $chosen.data "ProcessGuid")
+    if ([string]::IsNullOrWhiteSpace($guid)) {
+        return (& $undetermined "the EID 1 of the session host carries no ProcessGuid")
+    }
+    $recordId = [string](Get-R1Value $chosen.record "RecordId")
+    if ($recordId -notmatch "^[0-9]+$") {
+        return (& $undetermined ("the EID 1 of the session host carries no usable RecordId ('" +
+            $recordId + "')"))
+    }
+    if (-not [string]::IsNullOrEmpty($SessionHostGuid) -and $guid -ne $SessionHostGuid) {
+        return (& $undetermined ("the EID 1 that fits the session has ProcessGuid " + $guid +
+            ", but the session host of the lineage of this run is " + $SessionHostGuid))
+    }
+
+    return [ordered]@{
+        status                    = "selected"
+        reason                    = "one EID 1 of the session host fits the session of this run"
+        reference_time            = (Get-UtcStamp $chosen.created)
+        reference_source_event_id = $recordId
+        process_guid              = $guid
     }
 }
 
@@ -1211,7 +1405,7 @@ function Wait-R1Until {
 
 function Invoke-R1PilotRun {
     <#
-        Run one R1-V02 Pilot run and write its artifacts.
+        Run one R1-V02 run and write its artifacts.
 
         Order of side effects, so that a refusal leaves nothing behind:
 
@@ -1227,14 +1421,20 @@ function Invoke-R1PilotRun {
           5. the observation window is waited out,
           6. a collection session exports and fetches the Sysmon window,
           7. the collected records must show the lineage this run started,
-          8. only then execution_record, run_metadata and the manifest are written.
+          8. an attack run takes its reference from those records - the EID 1 of
+             the session host its first action created - and a collection run
+             has to have observed the evaluation horizon after it,
+          9. only then execution_record, run_metadata and the manifest are written.
 
-        A failure at any step throws before step 8, so a failed run never has the
+        A failure at any step throws before step 9, so a failed run never has the
         three files a valid run has. A rehearsal skips the waits, may skip the
-        connection, writes under _rehearsal and does not stop on step 7.
+        connection, writes under _rehearsal, does not stop on step 7 and is not
+        held to the horizon of step 8. Its attack run still needs its reference.
 
-        Every run is marked dataset_tier=pilot in its operator trace, a
-        rehearsal included. A dry run writes nothing, the trace included.
+        The dataset tier is an input with no default. It is checked with the
+        other inputs in step 1 and written to the operator trace of the run; a
+        rehearsal takes pilot only. A dry run checks it too and writes nothing,
+        the trace included.
 
         Transport, NowProvider and Sleeper are the seams the guard tests replace.
     #>
@@ -1245,6 +1445,7 @@ function Invoke-R1PilotRun {
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DataRoot,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$WorkDir,
         [Parameter(Mandatory = $true)][int]$ObservationSec,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DatasetTier,
         [AllowEmptyString()][string]$VmSnapshot,
         [AllowEmptyString()][string]$TargetSysmonBinary,
         [AllowEmptyString()][string]$TargetSysmonConfigPath,
@@ -1259,7 +1460,7 @@ function Invoke-R1PilotRun {
 
     $inputs = Assert-R1RunInputs -RunType $RunType -RunId $RunId -ScenarioJsonPath $ScenarioJsonPath `
         -DataRoot $DataRoot -WorkDir $WorkDir -ObservationSec $ObservationSec `
-        -Rehearsal:$Rehearsal -DryRun:$DryRun
+        -DatasetTier $DatasetTier -Rehearsal:$Rehearsal -DryRun:$DryRun
     $scenario = $inputs.scenario
     $identity = $inputs.identity
     $approval = $inputs.approval
@@ -1276,10 +1477,12 @@ function Invoke-R1PilotRun {
         Write-Ok ("dry run: the final tool command is " + $plan.final.command_line)
         Write-Ok ("dry run: " + $pairLine)
         Write-Ok ("dry run: scenario sha256=" + $inputs.scenario_sha256)
+        Write-Ok ("dry run: dataset_tier=" + $DatasetTier)
         return [ordered]@{
             mode            = "dry_run"
             run_id          = $RunId
             run_type        = $RunType
+            dataset_tier    = $DatasetTier
             identity        = $identity
             plan            = $plan
             connection      = $approval
@@ -1367,8 +1570,9 @@ function Invoke-R1PilotRun {
         # Kept before the first action: from here on the record of this run_id
         # names the bytes its plan was built from, whatever happens to the file.
         $traceDir = Write-R1RunTrace -EffectiveRoot $effectiveRoot -RunId $RunId -Mode $mode `
-            -ScenarioBytes $inputs.scenario_bytes -ScenarioSha256 $inputs.scenario_sha256
-        Write-Ok ("operator trace written: dataset_tier=" + $R1_DATASET_TIER + " mode=" + $mode +
+            -DatasetTier $DatasetTier -ScenarioBytes $inputs.scenario_bytes `
+            -ScenarioSha256 $inputs.scenario_sha256
+        Write-Ok ("operator trace written: dataset_tier=" + $DatasetTier + " mode=" + $mode +
             " scenario sha256=" + $inputs.scenario_sha256)
 
         $context = [ordered]@{
@@ -1390,6 +1594,9 @@ function Invoke-R1PilotRun {
 
         # --- 4. scenario session -----------------------------------------------
         $sessionPid = 0
+        $sessionImage = ""
+        $sessionBeginAt = $null
+        $sessionOpenedAt = $null
         $launched = $null
         foreach ($action in $inputs.actions) {
             $actionId = [string](Get-R1Value $action "action_id")
@@ -1411,6 +1618,7 @@ function Invoke-R1PilotRun {
                 $session = & $Transport.open $Connection
                 $begin = & $Transport.invoke $session "begin" @{}
                 $sessionPid = [int]$begin.session_pid
+                $sessionImage = [string](Get-R1Value $begin "session_image")
 
                 # The stamp Target-A takes once the session exists bounds it.
                 $openedAt = ConvertTo-R1Utc $begin.utc "begin utc"
@@ -1418,6 +1626,9 @@ function Invoke-R1PilotRun {
                     throw ("the session was open at " + (Get-UtcStamp $openedAt) + " on the target, before the " +
                         "recorded start of that action (" + (Get-UtcStamp $beginAt) + "): a clock moved during the run")
                 }
+                # The session host was created between these two stamps.
+                $sessionBeginAt = $beginAt
+                $sessionOpenedAt = $openedAt
                 Add-ExecutionRecord -Context $context -ActionId $actionId -Timestamp $beginAt
             } elseif ($step -eq "prepare") {
                 $files = @{}
@@ -1561,10 +1772,39 @@ function Invoke-R1PilotRun {
             throw ("lineage check failed: " + $lineage.status + " (" + $lineage.reason + ")")
         }
 
-        # --- 8. artifacts ---------------------------------------------------------
+        # --- 8. reference of an attack run ------------------------------------------
+        # No mode writes the Ground Truth of an attack run without its reference.
+        $referenceTime = $null
+        $referenceEventId = $null
+        if ($null -ne $inputs.reference_action_id) {
+            $reference = Get-R1ReferenceEvent -Records $records -ComputerName $targetHost `
+                -SessionPid $sessionPid -SessionImage $sessionImage `
+                -ExpectedImage ([string]$plan.expected_lineage[2]) `
+                -NotBefore $sessionBeginAt -NotAfter $sessionOpenedAt `
+                -SessionHostGuid ([string](Get-R1Value $lineage "session_host_guid"))
+            if ($reference.status -ne "selected") {
+                throw ("reference undetermined: " + $reference.reason)
+            }
+            $referenceTime = [string]$reference.reference_time
+            $referenceEventId = [string]$reference.reference_source_event_id
+            Write-Ok ("reference: action=" + $inputs.reference_action_id + " reference_time=" + $referenceTime +
+                " record_id=" + $referenceEventId + " process_guid=" + $reference.process_guid)
+
+            # The evaluation window of an attack run is its reference_time plus
+            # the horizon, and the collection has to reach its end. A rehearsal
+            # does not wait and is not held to it.
+            $horizonEnd = (ConvertTo-R1Utc $referenceTime "reference_time").AddSeconds($inputs.evaluation_horizon_sec)
+            if (-not $Rehearsal -and $endTime -lt $horizonEnd) {
+                throw ("the collection ended at " + (Get-UtcStamp $endTime) + ", before reference_time + " +
+                    $inputs.evaluation_horizon_sec + " s (" + (Get-UtcStamp $horizonEnd) + ")")
+            }
+        }
+
+        # --- 9. artifacts ---------------------------------------------------------
         Write-ExecutionRecord -Context $context | Out-Null
         Write-RunMetadata -Context $context -EndTime $endTime `
-            -ReferenceTime $null -ReferenceActionId $null -ReferenceSourceEventId $null | Out-Null
+            -ReferenceTime $referenceTime -ReferenceActionId $inputs.reference_action_id `
+            -ReferenceSourceEventId $referenceEventId | Out-Null
         Write-RunManifest -Context $context | Out-Null
 
         Write-Ok ($RunType + " run finished: " + $RunId + " events=" + $eventCount +
@@ -1581,8 +1821,13 @@ function Invoke-R1PilotRun {
             telemetry_dir    = $telemetryDir
             ground_truth_dir = $groundTruthDir
             trace_dir        = $traceDir
-            dataset_tier     = $R1_DATASET_TIER
+            dataset_tier     = $DatasetTier
             scenario_sha256  = $inputs.scenario_sha256
+            reference        = [ordered]@{
+                reference_action_id       = $inputs.reference_action_id
+                reference_time            = $referenceTime
+                reference_source_event_id = $referenceEventId
+            }
         }
     }
     finally {
