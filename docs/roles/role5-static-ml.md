@@ -73,3 +73,48 @@ training_sha256은 sample_id 순으로 정렬한 전체 TrainingRow JSON 해시�
 
 현재 테스트는 학습·추론 기능, 누수 입력 거부, JSON 재로드 및 sklearn 확률 일치를 확인한다.
 실제 R1 성능, test 평가 완료, 모든 데이터 누수 차단을 의미하지 않는다.
+
+## 확률 trajectory의 episode replay
+
+`baselines.static_ml_episodes.replay_static_model(model, rows, config)`은
+`TimedFeatureRow`의 명시적 UTC 밀리초 시각과 feature를 기존 추론기에 전달하고,
+`EpisodeConfig`의 threshold_on/off·persistence_k로 기존 ThresholdStoppingPolicy를 실행한다.
+별도 threshold 튜닝이나 Ground Truth 입력은 없다.
+
+- 하나의 Run/entity만 받는다. sample_id는 유일해야 하며 모델의 feature 순서·버전과 일치해야 한다.
+- 입력 순서를 바꾸거나 누락을 채우지 않는다. 빈 입력·중복/역순 시각·cadence 누락은 오류다.
+- `replay_start/end`는 제공된 점들의 범위이며 실제 Run 관측 시작/종료 또는 coverage 증명이 아니다.
+- 마지막 점에서 활성 episode는 `replay_end`로 종료한다. 최종 격자 이후 구간을 추정하지 않는다.
+- status=miss는 제공된 replay 구간에서 episode가 없다는 뜻이다. 전체 Run miss로 사용하려면
+  호출자가 별도로 전체 관측 coverage를 검증해야 한다.
+- 출력은 StaticML 전용 산출물이다. 내부 정책의 episode 형식을 재사용하지만
+  운영 FusionResult/DetectionResult를 생성하거나 기존 Fast/Fusion 평가에 섞지 않는다.
+- trajectory에는 sample_id·timestamp·확률을 함께 남긴다. episode 시작은 source_sample_id로 연결한다.
+  원본 Evidence/window 매핑은 기존 sample_id provenance artifact를 함께 보존한다.
+- model/input/config SHA-256을 기록한다. input 해시는 시각까지 포함한다.
+- 최종 모델·운영점 동결, validation 선택 및 Baseline 평가 입력 연결은 후속이다.
+
+## Static ML 평가 연결
+
+`baselines.static_ml_evaluation.evaluate_static_model`은 하나의 모델·episode 설정과
+전체 `RunMetadata` 목록, `rows_by_run`, `coverage_sha256_by_run`,
+`evaluation_horizon_sec`, `purpose`를 받는다. 모든 inventory Run 키가 필요하며
+`None`만 명시적 미평가로 제외한다. 빈 행·빠진 Run은 miss가 아닌 오류다.
+
+평가된 Run은 start_time부터 end_time 이하 마지막 cadence 격자까지 빠짐없이 제공해야 한다.
+coverage 해시는 호출자가 확인한 수집·추출 완전성 근거 artifact의 참조다.
+이 함수는 파일 해시의 실제 일치나 파일 내용의 완전성을 대신 검증하지 않는다.
+실제 수집이 불완전한 구간을 0 feature로 채워 이 함수에 넘기면 안 된다.
+
+Attack credit은 `[reference_time, min(reference_time+horizon, end_time)]` 안에
+새로 시작한 최초 episode만 인정한다. pre-reference episode가 계속 활성 상태여도
+reference_time에 새 탐지한 것으로 보지 않는다. Normal은 전체 관측 구간을 사용한다.
+기존 evaluate()로 Recall·TTSD·IQR·Run FPR을 계산하고, 정상 episode 수를
+정상 Run 총 관측시간으로 나눠 FA/BH를 계산한다. 0건 정상 Run도 시간 분모에 포함한다.
+정상 Run이 없으면 FA/BH는 null이며, 모든 Run 미평가이면 metrics도 null이다.
+
+출력은 StaticML 별도 report이며 전체 inventory·제외 목록·Run별 eligible 시각·
+replay·coverage 참조·모델 및 입력 해시를 보존한다. S0는 smoke만 허용한다.
+`comparison_ready`는 이 입력 집합에 미평가 Run이 없다는 뜻으로, 다른 방법과의
+동일 데이터·동일 오경보 조건이나 성능 검증 완료를 보증하지 않는다.
+분할 manifest 검증, train Run 재사용 차단, validation 운영점 선택은 호출 측 후속 단계다.
