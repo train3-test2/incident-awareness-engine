@@ -214,6 +214,20 @@ bucket + decoded object key + eTag
 처리한다. receipt가 성공 상태인 객체는 다시 실행하지 않고 메시지만 삭제하며, 실패한 객체는
 재시도·DLQ 정책에 따라 같은 identity로 다시 처리한다.
 
+### 재시도와 영구 실패 처리 정책
+
+Worker는 실패한 SQS 메시지를 임의로 삭제하지 않는다. source Queue의 `maxReceiveCount=3`을
+소진한 메시지는 DLQ로 이동하며, 운영자는 DLQ의 원본 S3 URI와 CloudWatch 로그를 함께 확인한다.
+
+| 구분 | 대표 원인 | Worker 처리 |
+| --- | --- | --- |
+| 영구 실패 | SQS/S3 Event 형식·bucket·key·ETag 계약 위반, 지원하지 않는 Sysmon 입력, S3 `AccessDenied`·`NoSuchKey`·`NoSuchBucket` | First Cycle을 실행하지 않고 메시지를 유지한다. 반복 수신 뒤 DLQ로 이동하며, 입력 또는 권한을 수정한 뒤 새 `ING-<uuidv4>` key로 재제출한다. |
+| 재시도 가능 실패 | S3 throttling·5xx·네트워크 오류, PostgreSQL 연결 오류, 컨테이너 또는 Pipeline의 예기치 않은 종료 | 메시지를 유지한다. visibility timeout 뒤 같은 object identity로 다시 실행하며, 3회 실패 시 DLQ로 이동한다. |
+
+Worker가 분류하지 못한 예외는 데이터 유실을 피하기 위해 재시도 가능 실패로 취급한다. DLQ의
+메시지는 자동 삭제·자동 재처리하지 않는다. 영구 실패 메시지를 수동으로 redrive하기 전에 원인을
+수정하고, 가능하면 새 ingest key로 객체를 다시 제출한다.
+
 ### Worker entrypoint
 
 Worker 컨테이너의 실행 명령은 아래와 같다.

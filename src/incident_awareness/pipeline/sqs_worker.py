@@ -15,6 +15,8 @@ from urllib.parse import unquote_plus
 
 import boto3
 from botocore.client import BaseClient
+from botocore.exceptions import BotoCoreError, ClientError
+from psycopg import OperationalError
 
 from incident_awareness.pipeline.standalone import main as standalone_main
 
@@ -30,6 +32,15 @@ _WORKER_VISIBILITY_TIMEOUT_SECONDS = 3600
 _WORKER_LONG_POLL_SECONDS = 20
 
 _LOGGER = logging.getLogger(__name__)
+_PERMANENT_S3_ERROR_CODES = frozenset({"AccessDenied", "NoSuchBucket", "NoSuchKey", "403", "404"})
+
+
+class PermanentWorkerError(Exception):
+    """An input error that cannot succeed without an external correction."""
+
+
+class RetryableWorkerError(Exception):
+    """An operational error that may succeed on a later SQS delivery."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,8 +134,20 @@ def run_worker(
                     s3_client=s3_client,
                     run_standalone=run_standalone,
                 )
+            except PermanentWorkerError:
+                _LOGGER.exception(
+                    "First Cycle Worker rejected permanent input error; retaining for DLQ"
+                )
+                continue
+            except RetryableWorkerError:
+                _LOGGER.exception(
+                    "First Cycle Worker failed transiently; retaining SQS message for retry"
+                )
+                continue
             except Exception:
-                _LOGGER.exception("First Cycle Worker failed; retaining SQS message for retry")
+                _LOGGER.exception(
+                    "First Cycle Worker failed unexpectedly; retaining SQS message for retry"
+                )
                 continue
 
             receipt_handle = _message_string(message, "ReceiptHandle")
@@ -144,9 +167,12 @@ def _process_message(
 ) -> None:
     if not isinstance(message, Mapping):
         raise ValueError("SQS message must be a JSON object")  # noqa: TRY004
-    inputs = parse_s3_sysmon_inputs(
-        _message_string(message, "Body"), expected_bucket=expected_bucket
-    )
+    try:
+        inputs = parse_s3_sysmon_inputs(
+            _message_string(message, "Body"), expected_bucket=expected_bucket
+        )
+    except ValueError as error:
+        raise PermanentWorkerError(str(error)) from error
 
     with tempfile.TemporaryDirectory(prefix="incident-awareness-sqs-worker-") as directory:
         work_root = Path(directory)
@@ -154,17 +180,22 @@ def _process_message(
             input_dir = work_root / input_object.ingest_id
             input_dir.mkdir()
             sysmon_jsonl_path = input_dir / "sysmon.jsonl"
-            s3_client.download_file(input_object.bucket, input_object.key, str(sysmon_jsonl_path))
-            exit_code = run_standalone(
-                [
-                    "--sysmon-jsonl",
-                    str(sysmon_jsonl_path),
-                    "--output-dir",
-                    str(input_dir / "output"),
-                ]
-            )
+            _download_sysmon_jsonl(s3_client, input_object, sysmon_jsonl_path)
+            try:
+                exit_code = run_standalone(
+                    [
+                        "--sysmon-jsonl",
+                        str(sysmon_jsonl_path),
+                        "--output-dir",
+                        str(input_dir / "output"),
+                    ]
+                )
+            except ValueError as error:
+                raise PermanentWorkerError(str(error)) from error
+            except (OperationalError, OSError) as error:
+                raise RetryableWorkerError(str(error)) from error
             if exit_code != 0:
-                raise RuntimeError(
+                raise RetryableWorkerError(
                     f"standalone First Cycle failed for S3 object {input_object.bucket}/{input_object.key}"
                 )
 
@@ -185,6 +216,28 @@ def _unique_inputs(inputs: Sequence[S3SysmonInput]) -> tuple[S3SysmonInput, ...]
             seen.add(identity)
             unique_inputs.append(input_object)
     return tuple(unique_inputs)
+
+
+def _download_sysmon_jsonl(
+    s3_client: BaseClient,
+    input_object: S3SysmonInput,
+    destination: Path,
+) -> None:
+    try:
+        s3_client.download_file(input_object.bucket, input_object.key, str(destination))
+    except ClientError as error:
+        error_code = str(error.response.get("Error", {}).get("Code", ""))
+        if error_code in _PERMANENT_S3_ERROR_CODES:
+            raise PermanentWorkerError(
+                f"S3 object cannot be read for {input_object.bucket}/{input_object.key}: {error_code}"
+            ) from error
+        raise RetryableWorkerError(
+            f"S3 download failed for {input_object.bucket}/{input_object.key}: {error_code}"
+        ) from error
+    except BotoCoreError as error:
+        raise RetryableWorkerError(
+            f"S3 download failed for {input_object.bucket}/{input_object.key}"
+        ) from error
 
 
 def _message_string(message: Mapping[str, object], name: str) -> str:
@@ -249,6 +302,8 @@ def _required_string(value: Mapping[str, object], name: str) -> str:
 
 
 __all__ = [
+    "PermanentWorkerError",
+    "RetryableWorkerError",
     "S3SysmonInput",
     "build_parser",
     "main",

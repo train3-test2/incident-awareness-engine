@@ -2,8 +2,15 @@ import json
 from pathlib import Path
 
 import pytest
+from botocore.exceptions import ClientError
 
-from incident_awareness.pipeline.sqs_worker import parse_s3_sysmon_inputs, run_worker
+from incident_awareness.pipeline.sqs_worker import (
+    PermanentWorkerError,
+    RetryableWorkerError,
+    _process_message,
+    parse_s3_sysmon_inputs,
+    run_worker,
+)
 
 _BUCKET = "incident-awareness-first-cycle-998301375101-ap-northeast-2-an"
 _INGEST_ID = "ING-550e8400-e29b-41d4-a716-446655440000"
@@ -153,6 +160,44 @@ def test_worker_processes_duplicate_object_versions_once_per_sqs_message() -> No
     assert sqs.deleted_receipts == ["receipt-1"]
 
 
+def test_classifies_invalid_s3_event_as_permanent_error() -> None:
+    with pytest.raises(PermanentWorkerError, match="ObjectCreated"):
+        _process_message(
+            {"Body": json.dumps(_s3_event(event_name="ObjectRemoved:Delete"))},
+            expected_bucket=_BUCKET,
+            s3_client=_FakeS3(),
+            run_standalone=lambda _: 0,
+        )
+
+
+def test_classifies_transient_s3_download_error_as_retryable() -> None:
+    error = ClientError(
+        {"Error": {"Code": "SlowDown", "Message": "try later"}},
+        "GetObject",
+    )
+    with pytest.raises(RetryableWorkerError, match="SlowDown"):
+        _process_message(
+            {"Body": json.dumps(_s3_event())},
+            expected_bucket=_BUCKET,
+            s3_client=_FailingS3(error),
+            run_standalone=lambda _: 0,
+        )
+
+
+def test_classifies_missing_s3_object_as_permanent_error() -> None:
+    error = ClientError(
+        {"Error": {"Code": "NoSuchKey", "Message": "missing"}},
+        "GetObject",
+    )
+    with pytest.raises(PermanentWorkerError, match="NoSuchKey"):
+        _process_message(
+            {"Body": json.dumps(_s3_event())},
+            expected_bucket=_BUCKET,
+            s3_client=_FailingS3(error),
+            run_standalone=lambda _: 0,
+        )
+
+
 class _FakeSqs:
     def __init__(self, messages: list[dict[str, str]]) -> None:
         self._messages = messages
@@ -173,3 +218,11 @@ class _FakeS3:
     def download_file(self, bucket: str, key: str, filename: str) -> None:
         self.downloads.append((bucket, key))
         Path(filename).write_text("{}\n", encoding="utf-8")
+
+
+class _FailingS3:
+    def __init__(self, error: ClientError) -> None:
+        self._error = error
+
+    def download_file(self, bucket: str, key: str, filename: str) -> None:
+        raise self._error
