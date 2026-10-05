@@ -5,6 +5,7 @@ import {
     resolveOverviewQueryState,
     resolveRunListQueryState,
 } from "./dashboard-contract.mjs";
+import { buildRunDetailViewPath } from "./run-detail-contract.mjs";
 
 const OVERVIEW_ENDPOINT = "/overview";
 const RUNS_ENDPOINT = "/runs";
@@ -39,7 +40,14 @@ function createRunCard(run) {
 
     const heading = document.createElement("h3");
     heading.classList.add("recent-run-card__title");
-    heading.textContent = displayValue(run.run_id);
+    if (typeof run.run_id === "string" && run.run_id.trim()) {
+        const link = document.createElement("a");
+        link.href = buildRunDetailViewPath(run.run_id);
+        link.textContent = run.run_id;
+        heading.append(link);
+    } else {
+        heading.textContent = displayValue(run.run_id);
+    }
 
     const fields = document.createElement("dl");
     fields.classList.add("recent-run-card__fields");
