@@ -194,6 +194,32 @@ envelope 또는 임의의 애플리케이션 메시지 형식은 허용하지 �
 `e_tag`, `sequencer`를 반환한다. 이 단계에서는 S3 object를 내려받거나 First Cycle을
 실행하지 않는다. 실제 SQS polling·다운로드·실행은 Worker entrypoint 단계의 책임이다.
 
+### Worker entrypoint
+
+Worker 컨테이너의 실행 명령은 아래와 같다.
+
+```text
+python -m incident_awareness.pipeline.sqs_worker
+```
+
+ECS Task Definition은 다음 환경 변수를 Worker에 전달한다.
+
+| 환경 변수 | 값 |
+| --- | --- |
+| `INCIDENT_AWARENESS_SQS_QUEUE_URL` | `incident-awareness-first-cycle-ingest` Queue URL |
+| `INCIDENT_AWARENESS_S3_INPUT_BUCKET` | 자동 처리 입력 bucket 이름 |
+| `INCIDENT_AWARENESS_DATABASE_URL` | Secrets Manager가 주입하는 PostgreSQL URL |
+
+Worker는 long polling으로 한 번에 SQS 메시지 하나를 받고, 각 S3 record의 JSONL을 컨테이너
+임시 디렉터리에 내려받는다. 이후 기존 standalone CLI를 호출해 RunMetadata·Manifest를
+생성하고 First Cycle Pipeline과 PostgreSQL 저장을 수행한다. 성공한 메시지만 `DeleteMessage`를
+호출한다. JSONL 검증, S3 다운로드, standalone 실행 중 하나라도 실패하면 Worker는 메시지를
+삭제하지 않는다. 해당 메시지는 visibility timeout 이후 재시도되며, 3회 처리 실패 뒤 DLQ로
+이동한다.
+
+`--once`는 테스트·진단용 옵션으로 한 번만 polling하고 종료한다. 운영 Worker는 옵션 없이
+지속 실행한다.
+
 ## ECS Task Definition과 실행 override
 
 `infra/ecs/task-definition.first-cycle.json`은 Pipeline 실행용 Fargate Task Definition

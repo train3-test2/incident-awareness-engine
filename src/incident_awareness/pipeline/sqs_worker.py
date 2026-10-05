@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import argparse
 import json
+import logging
+import os
 import re
-from collections.abc import Mapping, Sequence
+import tempfile
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import unquote_plus
+
+import boto3
+from botocore.client import BaseClient
+
+from incident_awareness.pipeline.standalone import main as standalone_main
 
 _AUTOMATED_INPUT_PREFIX = "incoming/first-cycle/sysmon/"
 _AUTOMATED_INPUT_KEY_PATTERN = re.compile(
@@ -14,6 +24,12 @@ _AUTOMATED_INPUT_KEY_PATTERN = re.compile(
     r"(?P<ingest_id>ING-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/"
     r"sysmon\.jsonl$"
 )
+_QUEUE_URL_ENV = "INCIDENT_AWARENESS_SQS_QUEUE_URL"
+_INPUT_BUCKET_ENV = "INCIDENT_AWARENESS_S3_INPUT_BUCKET"
+_WORKER_VISIBILITY_TIMEOUT_SECONDS = 3600
+_WORKER_LONG_POLL_SECONDS = 20
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +65,122 @@ def parse_s3_sysmon_inputs(message_body: str, *, expected_bucket: str) -> tuple[
         raise ValueError("S3 Event Notification must contain at least one Records entry")
 
     return tuple(_parse_s3_record(record, expected_bucket=expected_bucket) for record in records)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the SQS Worker command-line contract."""
+    parser = argparse.ArgumentParser(
+        prog="incident-awareness-sqs-worker",
+        description="Poll SQS and run standalone First Cycle for uploaded Sysmon JSONL files.",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Poll SQS once and exit after processing at most one message.",
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the SQS Worker using its ECS-provided environment configuration."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    namespace = build_parser().parse_args(argv)
+    return run_worker(
+        queue_url=_required_environment(_QUEUE_URL_ENV),
+        expected_bucket=_required_environment(_INPUT_BUCKET_ENV),
+        sqs_client=boto3.client("sqs"),
+        s3_client=boto3.client("s3"),
+        once=namespace.once,
+    )
+
+
+def run_worker(
+    *,
+    queue_url: str,
+    expected_bucket: str,
+    sqs_client: BaseClient,
+    s3_client: BaseClient,
+    run_standalone: Callable[[Sequence[str]], int] = standalone_main,
+    once: bool = False,
+) -> int:
+    """Poll one SQS message at a time and delete only successful messages."""
+    while True:
+        response = sqs_client.receive_message(
+            QueueUrl=queue_url,
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=_WORKER_LONG_POLL_SECONDS,
+            VisibilityTimeout=_WORKER_VISIBILITY_TIMEOUT_SECONDS,
+        )
+        messages = response.get("Messages", [])
+        if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
+            raise TypeError("SQS receive response Messages must be a sequence")
+
+        for message in messages:
+            try:
+                _process_message(
+                    message,
+                    expected_bucket=expected_bucket,
+                    s3_client=s3_client,
+                    run_standalone=run_standalone,
+                )
+            except Exception:
+                _LOGGER.exception("First Cycle Worker failed; retaining SQS message for retry")
+                continue
+
+            receipt_handle = _message_string(message, "ReceiptHandle")
+            sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            _LOGGER.info("Completed and deleted SQS message")
+
+        if once:
+            return 0
+
+
+def _process_message(
+    message: object,
+    *,
+    expected_bucket: str,
+    s3_client: BaseClient,
+    run_standalone: Callable[[Sequence[str]], int],
+) -> None:
+    if not isinstance(message, Mapping):
+        raise ValueError("SQS message must be a JSON object")  # noqa: TRY004
+    inputs = parse_s3_sysmon_inputs(
+        _message_string(message, "Body"), expected_bucket=expected_bucket
+    )
+
+    with tempfile.TemporaryDirectory(prefix="incident-awareness-sqs-worker-") as directory:
+        work_root = Path(directory)
+        for input_object in inputs:
+            input_dir = work_root / input_object.ingest_id
+            input_dir.mkdir()
+            sysmon_jsonl_path = input_dir / "sysmon.jsonl"
+            s3_client.download_file(input_object.bucket, input_object.key, str(sysmon_jsonl_path))
+            exit_code = run_standalone(
+                [
+                    "--sysmon-jsonl",
+                    str(sysmon_jsonl_path),
+                    "--output-dir",
+                    str(input_dir / "output"),
+                ]
+            )
+            if exit_code != 0:
+                raise RuntimeError(
+                    f"standalone First Cycle failed for S3 object {input_object.bucket}/{input_object.key}"
+                )
+
+
+def _message_string(message: Mapping[str, object], name: str) -> str:
+    value = message.get(name)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"SQS message {name} must be a non-blank string")
+    return value
+
+
+def _required_environment(name: str) -> str:
+    value = os.environ.get(name)
+    if not value or not value.strip():
+        raise ValueError(f"{name} must be configured")
+    return value
 
 
 def _parse_s3_record(record: object, *, expected_bucket: str) -> S3SysmonInput:
@@ -98,4 +230,14 @@ def _required_string(value: Mapping[str, object], name: str) -> str:
     return nested
 
 
-__all__ = ["S3SysmonInput", "parse_s3_sysmon_inputs"]
+__all__ = [
+    "S3SysmonInput",
+    "build_parser",
+    "main",
+    "parse_s3_sysmon_inputs",
+    "run_worker",
+]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,8 +1,9 @@
 import json
+from pathlib import Path
 
 import pytest
 
-from incident_awareness.pipeline.sqs_worker import parse_s3_sysmon_inputs
+from incident_awareness.pipeline.sqs_worker import parse_s3_sysmon_inputs, run_worker
 
 _BUCKET = "incident-awareness-first-cycle-998301375101-ap-northeast-2-an"
 _INGEST_ID = "ING-550e8400-e29b-41d4-a716-446655440000"
@@ -85,3 +86,63 @@ def test_rejects_non_json_or_empty_s3_event() -> None:
         parse_s3_sysmon_inputs("not-json", expected_bucket=_BUCKET)
     with pytest.raises(ValueError, match="at least one Records"):
         parse_s3_sysmon_inputs(json.dumps({"Records": []}), expected_bucket=_BUCKET)
+
+
+def test_worker_downloads_and_deletes_a_successful_message() -> None:
+    sqs = _FakeSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}])
+    s3 = _FakeS3()
+    calls: list[list[str]] = []
+
+    result = run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=sqs,
+        s3_client=s3,
+        run_standalone=lambda arguments: calls.append(list(arguments)) or 0,
+        once=True,
+    )
+
+    assert result == 0
+    assert s3.downloads == [(_BUCKET, _KEY)]
+    assert sqs.deleted_receipts == ["receipt-1"]
+    assert calls[0][0] == "--sysmon-jsonl"
+    assert Path(calls[0][1]).name == "sysmon.jsonl"
+    assert calls[0][2] == "--output-dir"
+    assert Path(calls[0][3]).name == "output"
+
+
+def test_worker_retains_message_when_standalone_execution_fails() -> None:
+    sqs = _FakeSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}])
+
+    run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=sqs,
+        s3_client=_FakeS3(),
+        run_standalone=lambda _: 1,
+        once=True,
+    )
+
+    assert sqs.deleted_receipts == []
+
+
+class _FakeSqs:
+    def __init__(self, messages: list[dict[str, str]]) -> None:
+        self._messages = messages
+        self.deleted_receipts: list[str] = []
+
+    def receive_message(self, **_: object) -> dict[str, list[dict[str, str]]]:
+        return {"Messages": self._messages}
+
+    def delete_message(self, *, QueueUrl: str, ReceiptHandle: str) -> None:
+        assert QueueUrl == "https://example.test/queue"
+        self.deleted_receipts.append(ReceiptHandle)
+
+
+class _FakeS3:
+    def __init__(self) -> None:
+        self.downloads: list[tuple[str, str]] = []
+
+    def download_file(self, bucket: str, key: str, filename: str) -> None:
+        self.downloads.append((bucket, key))
+        Path(filename).write_text("{}\n", encoding="utf-8")
