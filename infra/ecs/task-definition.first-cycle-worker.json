@@ -1,0 +1,45 @@
+{
+  "family": "incident-awareness-engine-first-cycle-worker",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::998301375101:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::998301375101:role/ecsFirstCycleTaskRole",
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "containerDefinitions": [
+    {
+      "name": "incident-awareness-engine-first-cycle-worker",
+      "image": "IMAGE_URI",
+      "essential": true,
+      "command": ["python", "-m", "incident_awareness.pipeline.sqs_worker"],
+      "environment": [
+        {
+          "name": "INCIDENT_AWARENESS_SQS_QUEUE_URL",
+          "value": "https://sqs.ap-northeast-2.amazonaws.com/998301375101/incident-awareness-first-cycle-ingest"
+        },
+        {
+          "name": "INCIDENT_AWARENESS_S3_INPUT_BUCKET",
+          "value": "incident-awareness-first-cycle-998301375101-ap-northeast-2-an"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "INCIDENT_AWARENESS_DATABASE_URL",
+          "valueFrom": "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:incident-awareness/first-cycle/database-url-9KGf2f:INCIDENT_AWARENESS_DATABASE_URL::"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/incident-awareness-engine-dev",
+          "awslogs-region": "ap-northeast-2",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

@@ -259,6 +259,24 @@ CloudWatch Logs에는 각 입력마다 JSON 로그를 남긴다. 시작 시 `inp
 `--once`는 테스트·진단용 옵션으로 한 번만 polling하고 종료한다. 운영 Worker는 옵션 없이
 지속 실행한다.
 
+### Worker Fargate 실행과 PostgreSQL 저장 확인
+
+`infra/ecs/task-definition.first-cycle-worker.json`은 SQS Worker 전용 Fargate Task Definition
+템플릿이다. `IMAGE_URI`를 ECR의 현재 이미지 URI로 교체해 등록한다. Worker는 source Queue와
+자동 입력 S3 prefix를 환경 변수로 고정하고, PostgreSQL URL은 기존 First Cycle Task와 같은
+Secrets Manager secret으로 주입한다.
+
+배포 전 검증은 컨테이너 명령을 아래 배열로 override해 한 메시지만 처리하도록 실행한다.
+
+```json
+["python", "-m", "incident_awareness.pipeline.sqs_worker", "--once"]
+```
+
+CloudWatch Logs에 `status=succeeded`와 `run_id`가 남은 뒤, 해당 `run_id`로 PostgreSQL의
+`runs`, `events`, `fusion_results`, `detection_results`, `decisions` 레코드를 조회해 저장 결과를
+확인한다. `--once` 실행은 메시지가 없을 때도 정상 종료하므로, 검증 전 자동 입력 prefix에
+유효한 Sysmon JSONL을 업로드해 source Queue에 메시지가 있는지 확인해야 한다.
+
 ## ECS Task Definition과 실행 override
 
 `infra/ecs/task-definition.first-cycle.json`은 Pipeline 실행용 Fargate Task Definition
