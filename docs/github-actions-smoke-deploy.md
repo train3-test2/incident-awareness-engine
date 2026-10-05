@@ -112,7 +112,8 @@ GitHub 저장소의 **Settings → Secrets and variables → Actions → Variabl
 | `ECS_FIRST_CYCLE_TASK_ROLE_ARN` | First Cycle Task Definition에 주입할 S3 읽기 Task Role ARN |
 | `ECS_FIRST_CYCLE_WORKER_SERVICE` | 지속 실행할 Worker ECS Service 이름 (`incident-awareness-engine-first-cycle-worker`) |
 | `FIRST_CYCLE_DATABASE_URL_SECRET_ARN` | First Cycle·migration DB URL Secret 전체 ARN |
-| `FIRST_CYCLE_S3_BUCKET` | First Cycle 입력 Artifact 버킷 이름 |
+| `FIRST_CYCLE_S3_BUCKET` | 수동 First Cycle 및 Worker 자동 입력 Artifact 버킷 이름 |
+| `FIRST_CYCLE_SQS_QUEUE_URL` | Worker가 polling할 SQS source Queue URL |
 
 워크플로는 필요한 변수 중 하나라도 비어 있으면 AWS 인증 전에 실패한다. 정책 파일을
 변경한 뒤에는 동일 내용을 GitHub OIDC 역할의 인라인 정책 또는 연결된 정책에도

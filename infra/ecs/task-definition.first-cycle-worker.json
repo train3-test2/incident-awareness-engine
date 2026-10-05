@@ -19,11 +19,11 @@
       "environment": [
         {
           "name": "INCIDENT_AWARENESS_SQS_QUEUE_URL",
-          "value": "https://sqs.ap-northeast-2.amazonaws.com/998301375101/incident-awareness-first-cycle-ingest"
+          "value": "SQS_QUEUE_URL"
         },
         {
           "name": "INCIDENT_AWARENESS_S3_INPUT_BUCKET",
-          "value": "incident-awareness-first-cycle-998301375101-ap-northeast-2-an"
+          "value": "S3_INPUT_BUCKET"
         }
       ],
       "secrets": [

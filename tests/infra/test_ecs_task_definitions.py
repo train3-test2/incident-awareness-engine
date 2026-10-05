@@ -73,6 +73,11 @@ def test_first_cycle_task_definition_contract(
         "awslogs-region": "ap-northeast-2",
         "awslogs-stream-prefix": "ecs",
     }
+    if filename == "task-definition.first-cycle-worker.json":
+        assert container["environment"] == [
+            {"name": "INCIDENT_AWARENESS_SQS_QUEUE_URL", "value": "SQS_QUEUE_URL"},
+            {"name": "INCIDENT_AWARENESS_S3_INPUT_BUCKET", "value": "S3_INPUT_BUCKET"},
+        ]
 
 
 def test_first_cycle_task_overrides_supply_only_run_specific_inputs() -> None:

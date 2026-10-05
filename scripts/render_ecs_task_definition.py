@@ -15,6 +15,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--execution-role-arn", required=True)
     parser.add_argument("--task-role-arn")
     parser.add_argument("--database-url-secret-arn")
+    parser.add_argument("--sqs-queue-url")
+    parser.add_argument("--s3-input-bucket")
     return parser.parse_args()
 
 
@@ -45,6 +47,8 @@ def main() -> None:
             "EXECUTION_ROLE_ARN": arguments.execution_role_arn,
             "TASK_ROLE_ARN": arguments.task_role_arn,
             "DATABASE_URL_SECRET_ARN": arguments.database_url_secret_arn,
+            "SQS_QUEUE_URL": arguments.sqs_queue_url,
+            "S3_INPUT_BUCKET": arguments.s3_input_bucket,
         },
     )
     arguments.output.write_text(rendered, encoding="utf-8")

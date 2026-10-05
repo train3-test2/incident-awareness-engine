@@ -94,6 +94,8 @@ jobs:
       ECS_FIRST_CYCLE_TASK_ROLE_ARN: ${{ vars.ECS_FIRST_CYCLE_TASK_ROLE_ARN }}
       ECS_FIRST_CYCLE_WORKER_SERVICE: ${{ vars.ECS_FIRST_CYCLE_WORKER_SERVICE }}
       FIRST_CYCLE_DATABASE_URL_SECRET_ARN: ${{ vars.FIRST_CYCLE_DATABASE_URL_SECRET_ARN }}
+      FIRST_CYCLE_S3_BUCKET: ${{ vars.FIRST_CYCLE_S3_BUCKET }}
+      FIRST_CYCLE_SQS_QUEUE_URL: ${{ vars.FIRST_CYCLE_SQS_QUEUE_URL }}
 
     steps:
       - uses: actions/checkout@v6
@@ -103,7 +105,7 @@ jobs:
           AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
         run: |
           set -euo pipefail
-          for value in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SUBNET_IDS ECS_SECURITY_GROUP_IDS ECS_EXECUTION_ROLE_ARN ECS_FIRST_CYCLE_TASK_ROLE_ARN ECS_FIRST_CYCLE_WORKER_SERVICE FIRST_CYCLE_DATABASE_URL_SECRET_ARN; do
+          for value in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SUBNET_IDS ECS_SECURITY_GROUP_IDS ECS_EXECUTION_ROLE_ARN ECS_FIRST_CYCLE_TASK_ROLE_ARN ECS_FIRST_CYCLE_WORKER_SERVICE FIRST_CYCLE_DATABASE_URL_SECRET_ARN FIRST_CYCLE_S3_BUCKET FIRST_CYCLE_SQS_QUEUE_URL; do
             if [ -z "${!value}" ]; then
               echo "GitHub Actions variable $value must be configured."
               exit 1
@@ -139,7 +141,9 @@ jobs:
             --image-uri "${{ steps.image.outputs.uri }}" \
             --execution-role-arn "$ECS_EXECUTION_ROLE_ARN" \
             --task-role-arn "$ECS_FIRST_CYCLE_TASK_ROLE_ARN" \
-            --database-url-secret-arn "$FIRST_CYCLE_DATABASE_URL_SECRET_ARN"
+            --database-url-secret-arn "$FIRST_CYCLE_DATABASE_URL_SECRET_ARN" \
+            --sqs-queue-url "$FIRST_CYCLE_SQS_QUEUE_URL" \
+            --s3-input-bucket "$FIRST_CYCLE_S3_BUCKET"
 
       - name: Register Worker task definition
         id: worker-task-definition

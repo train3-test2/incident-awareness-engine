@@ -47,6 +47,8 @@ def test_render_replaces_all_worker_identifiers() -> None:
             "EXECUTION_ROLE_ARN": "arn:aws:iam::123456789012:role/execution",
             "TASK_ROLE_ARN": "arn:aws:iam::123456789012:role/task",
             "DATABASE_URL_SECRET_ARN": "arn:aws:secretsmanager:region:123456789012:secret:db",
+            "SQS_QUEUE_URL": "https://sqs.region.amazonaws.com/123456789012/queue",
+            "S3_INPUT_BUCKET": "first-cycle-inputs",
         },
     )
 
@@ -55,6 +57,8 @@ def test_render_replaces_all_worker_identifiers() -> None:
         "EXECUTION_ROLE_ARN",
         "TASK_ROLE_ARN",
         "DATABASE_URL_SECRET_ARN",
+        "SQS_QUEUE_URL",
+        "S3_INPUT_BUCKET",
     ):
         assert placeholder not in rendered
 
