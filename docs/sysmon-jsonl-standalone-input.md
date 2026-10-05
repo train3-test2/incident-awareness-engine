@@ -109,7 +109,8 @@ JSONL의 모든 줄은 JSON object여야 하고, 빈 줄·손상 JSON·지원하
 수집기는 원본 Sysmon `RecordId` 순서를 JSONL의 물리적 줄 순서로 보존한다. 이 순서는
 `EventData.UtcTime` 순서와 다를 수 있으므로, standalone은 원본 JSONL·SHA-256·1-based
 `record_no`를 변경하지 않는다. 대신 정규화와 시간 기반 Fusion 처리 직전에 `EventData.UtcTime`,
-`RecordId`, 원본 `record_no` 순으로 안정 정렬한다.
+`RecordId`, 원본 `record_no` 순으로 안정 정렬한다. 이 비교에는 `UtcTime`의 전체 파싱 정밀도를
+사용하며, RunMetadata에 저장하는 시작·종료 시각만 기존 계약에 따라 밀리초 미만을 절사한다.
 
 ## Fast와 Decision 결과 경계
 

@@ -501,6 +501,27 @@ def test_orders_standalone_processing_by_event_time_then_record_id(tmp_path: Pat
     assert [record.data["RecordId"] for record in ordered] == [3, 1, 2]
 
 
+def test_orders_standalone_processing_with_sub_millisecond_event_times(tmp_path: Path) -> None:
+    jsonl_path = tmp_path / "sysmon.jsonl"
+    _write_jsonl(
+        jsonl_path,
+        [
+            _record("2026-10-03 00:00:00.000900", time_created="2026-10-03T00:00:00Z"),
+            {
+                **_record(
+                    "2026-10-03 00:00:00.000100",
+                    time_created="2026-10-03T00:00:00Z",
+                ),
+                "RecordId": 2,
+            },
+        ],
+    )
+
+    ordered = _order_standalone_sysmon_records(validate_standalone_sysmon_jsonl(jsonl_path))
+
+    assert [record.data["RecordId"] for record in ordered] == [2, 1]
+
+
 def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
     path.write_text(
         "\n".join(json.dumps(record) for record in records) + "\n",

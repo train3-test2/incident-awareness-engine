@@ -368,7 +368,7 @@ def build_run_metadata_from_sysmon_jsonl(
     Normalizer boundary before deriving any runnable artifacts from the input.
     """
     records = validate_standalone_sysmon_jsonl(path)
-    event_times = tuple(_event_time(record) for record in records)
+    event_times = tuple(_run_metadata_event_time(record) for record in records)
 
     return RunMetadata(
         run_id=run_id,
@@ -501,7 +501,13 @@ def _event_time(record: SysmonJsonlRecord) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         parsed = parsed.replace(tzinfo=UTC)
 
-    return parsed.astimezone(UTC).replace(microsecond=parsed.microsecond // 1000 * 1000)
+    return parsed.astimezone(UTC)
+
+
+def _run_metadata_event_time(record: SysmonJsonlRecord) -> datetime:
+    """Convert one source event time to the RunMetadata millisecond contract."""
+    event_time = _event_time(record)
+    return event_time.replace(microsecond=event_time.microsecond // 1000 * 1000)
 
 
 def _record_id(record: SysmonJsonlRecord) -> int:
