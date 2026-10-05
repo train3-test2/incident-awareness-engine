@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Event Timeline | Incident Awareness Dashboard</title>
     <link rel="stylesheet" href="/dashboard-assets/detail.css">
+    <script type="module" src="/dashboard-assets/event-timeline.js"></script>
 </head>
 <body>
     <main id="event-timeline-view" class="detail-page">
@@ -24,7 +25,7 @@
             </section>
             <section class="detail-section" aria-labelledby="event-timeline-list-heading">
                 <h2 id="event-timeline-list-heading">Events</h2>
-                <div id="event-timeline-list"></div>
+                <div id="event-timeline-list" class="event-timeline-list"></div>
                 <nav
                     id="event-timeline-pagination"
                     class="detail-back-navigation"

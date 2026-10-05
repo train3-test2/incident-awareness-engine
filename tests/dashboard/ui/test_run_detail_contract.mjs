@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildDecisionDetailViewPath } from "../../../src/incident_awareness/dashboard/ui/assets/decision-detail-contract.mjs";
+import { buildEventTimelineViewPath } from "../../../src/incident_awareness/dashboard/ui/assets/event-timeline-contract.mjs";
 import {
     buildRunDetailApiPath,
     buildRunDetailViewPath,
@@ -41,6 +42,17 @@ test("Run Detail view and API paths URL-encode the Run ID", () => {
     // Then
     assert.equal(viewPath, "/dashboard/runs/RUN%2020261005%2F001");
     assert.equal(apiPath, "/runs/RUN%2020261005%2F001");
+});
+
+test("Run Detail Event Timeline navigation uses the product path helper", () => {
+    // Given
+    const runId = "RUN 20261005/001";
+
+    // When
+    const timelinePath = buildEventTimelineViewPath(runId);
+
+    // Then
+    assert.equal(timelinePath, "/dashboard/runs/RUN%2020261005%2F001/timeline");
 });
 
 test("Run Detail path builders reject missing and blank identifiers", () => {

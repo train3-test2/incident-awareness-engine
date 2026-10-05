@@ -10,6 +10,7 @@ import {
     resolveRunDetailQueryState,
 } from "./run-detail-contract.mjs";
 import { buildDecisionDetailViewPath } from "./decision-detail-contract.mjs";
+import { buildEventTimelineViewPath } from "./event-timeline-contract.mjs";
 
 const runDetailView = document.getElementById("run-detail-view");
 const runDetailStatus = document.getElementById("run-detail-status");
@@ -22,6 +23,7 @@ const fusionRuntimeStatus = document.getElementById("fusion-runtime-status");
 const fusionRuntime = document.getElementById("fusion-runtime");
 const decisionHistoryStatus = document.getElementById("decision-history-status");
 const decisionHistoryList = document.getElementById("decision-history-list");
+const eventTimelineNavigation = document.getElementById("event-timeline-navigation");
 
 function createDetailField(label, value) {
     const field = document.createElement("div");
@@ -174,6 +176,13 @@ function clearDetailContent() {
     decisionHistoryStatus.textContent = "";
 }
 
+function renderEventTimelineNavigation(runId) {
+    const link = document.createElement("a");
+    link.href = buildEventTimelineViewPath(runId);
+    link.textContent = "Event Timeline 보기";
+    eventTimelineNavigation.replaceChildren(link);
+}
+
 function renderSuccess(payload) {
     renderRunMetadata(payload.run);
     renderDecisionHistory(payload.decision_history);
@@ -246,6 +255,7 @@ async function loadRunDetail() {
         renderRunDetailState(state);
         return;
     }
+    renderEventTimelineNavigation(runId);
 
     try {
         state = resolveRunDetailQueryState(state, await fetchRunDetail(runId));
@@ -267,6 +277,7 @@ if (
     && fusionRuntime !== null
     && decisionHistoryStatus !== null
     && decisionHistoryList !== null
+    && eventTimelineNavigation !== null
 ) {
     void loadRunDetail();
 }
