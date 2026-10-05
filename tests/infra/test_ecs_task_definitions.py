@@ -41,12 +41,15 @@ def test_first_cycle_task_definition_contract(
     assert task_definition["family"] == family
     assert task_definition["requiresCompatibilities"] == ["FARGATE"]
     assert task_definition["networkMode"] == "awsvpc"
-    assert task_definition["executionRoleArn"].endswith(":role/ecsTaskExecutionRole")
+    assert task_definition["executionRoleArn"] == "EXECUTION_ROLE_ARN"
     assert task_definition["runtimePlatform"] == {
         "cpuArchitecture": "X86_64",
         "operatingSystemFamily": "LINUX",
     }
-    assert ("taskRoleArn" in task_definition) is requires_task_role
+    if requires_task_role:
+        assert task_definition["taskRoleArn"] == "TASK_ROLE_ARN"
+    else:
+        assert "taskRoleArn" not in task_definition
 
     container = task_definition["containerDefinitions"][0]
     assert container["name"] == container_name
@@ -55,11 +58,7 @@ def test_first_cycle_task_definition_contract(
     assert container["secrets"] == [
         {
             "name": "INCIDENT_AWARENESS_DATABASE_URL",
-            "valueFrom": (
-                "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:"
-                "incident-awareness/first-cycle/database-url-9KGf2f:"
-                "INCIDENT_AWARENESS_DATABASE_URL::"
-            ),
+            "valueFrom": ("DATABASE_URL_SECRET_ARN:INCIDENT_AWARENESS_DATABASE_URL::"),
         }
     ]
     assert container["logConfiguration"]["options"] == {
@@ -94,7 +93,7 @@ def test_dashboard_task_definition_contract() -> None:
     assert task_definition["networkMode"] == "awsvpc"
     assert task_definition["cpu"] == "256"
     assert task_definition["memory"] == "512"
-    assert task_definition["executionRoleArn"].endswith(":role/ecsDashboardTaskExecutionRole")
+    assert task_definition["executionRoleArn"] == "EXECUTION_ROLE_ARN"
     assert task_definition["runtimePlatform"] == {
         "cpuArchitecture": "X86_64",
         "operatingSystemFamily": "LINUX",
@@ -118,11 +117,7 @@ def test_dashboard_task_definition_contract() -> None:
     assert container["secrets"] == [
         {
             "name": "INCIDENT_AWARENESS_DATABASE_URL",
-            "valueFrom": (
-                "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:"
-                "incident-awareness/dashboard/database-url-sB3qor:"
-                "INCIDENT_AWARENESS_DATABASE_URL::"
-            ),
+            "valueFrom": ("DATABASE_URL_SECRET_ARN:INCIDENT_AWARENESS_DATABASE_URL::"),
         }
     ]
     assert container["logConfiguration"]["options"] == {
@@ -162,10 +157,7 @@ def test_execution_role_secret_policy_is_scoped_to_first_cycle_database_url() ->
                 "Sid": "ReadFirstCycleDatabaseUrl",
                 "Effect": "Allow",
                 "Action": "secretsmanager:GetSecretValue",
-                "Resource": (
-                    "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:"
-                    "incident-awareness/first-cycle/database-url-9KGf2f"
-                ),
+                "Resource": ("DATABASE_URL_SECRET_ARN"),
             }
         ],
     }
@@ -185,10 +177,7 @@ def test_dashboard_execution_role_secret_policy_is_scoped_to_dashboard_database_
                 "Sid": "ReadDashboardDatabaseUrl",
                 "Effect": "Allow",
                 "Action": "secretsmanager:GetSecretValue",
-                "Resource": (
-                    "arn:aws:secretsmanager:ap-northeast-2:998301375101:secret:"
-                    "incident-awareness/dashboard/database-url-sB3qor"
-                ),
+                "Resource": ("DATABASE_URL_SECRET_ARN"),
             }
         ],
     }
