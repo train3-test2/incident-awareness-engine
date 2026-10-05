@@ -14,5 +14,9 @@ def test_develop_deploy_creates_or_updates_the_worker_service() -> None:
     assert "aws ecs create-service" in workflow
     assert "--desired-count 1" in workflow
     assert "aws ecs update-service" in workflow
+    update_service = workflow.split("aws ecs update-service", maxsplit=1)[1]
+    assert (
+        "--desired-count 1" in update_service.split("aws ecs wait services-stable", maxsplit=1)[0]
+    )
     assert "--force-new-deployment" in workflow
     assert "aws ecs wait services-stable" in workflow

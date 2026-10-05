@@ -179,6 +179,7 @@ jobs:
               --cluster "$ECS_CLUSTER" \
               --service "$ECS_FIRST_CYCLE_WORKER_SERVICE" \
               --task-definition "$WORKER_TASK_DEFINITION_ARN" \
+              --desired-count 1 \
               --force-new-deployment
           fi
 
