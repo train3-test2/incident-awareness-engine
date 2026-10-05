@@ -167,7 +167,7 @@ def get_event(
     return EventDetailResponse.from_normalized_event(result.event)
 
 
-@router.get("/decisions/{decision_id}", response_model=HistoricalDecisionResponse)
+@router.get("/decisions/{decision_id:path}", response_model=HistoricalDecisionResponse)
 def get_historical_decision(
     decision_id: str,
     reader: Annotated[DashboardDecisionReader, Depends(get_dashboard_decision_reader)],

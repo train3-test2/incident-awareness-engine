@@ -174,6 +174,46 @@ def test_decision_result_allows_nullable_optional_fields() -> None:
 
 
 @pytest.mark.parametrize(
+    "decision_id",
+    ["D-001", "DEC-001", "DEC-RUN-20260901-001", "D-LOCAL-001", "DEC 002/child"],
+)
+def test_decision_result_allows_existing_and_slash_decision_ids(decision_id: str) -> None:
+    # Given
+    payload = {**_valid_decision_payload(), "decision_id": decision_id}
+
+    # When
+    result = DecisionResult(**payload)
+
+    # Then
+    assert result.decision_id == decision_id
+
+
+@pytest.mark.parametrize("field", ["decision_id", "supersedes_decision_id"])
+@pytest.mark.parametrize("dot_segment", [".", ".."])
+def test_decision_result_rejects_dot_segment_decision_ids(
+    field: str,
+    dot_segment: str,
+) -> None:
+    # Given
+    payload = {**_valid_decision_payload(), field: dot_segment}
+
+    # When / Then
+    with pytest.raises(ValidationError, match="Decision ID cannot be a dot segment"):
+        DecisionResult(**payload)
+
+
+def test_decision_result_allows_normal_supersedes_decision_id() -> None:
+    # Given
+    payload = {**_valid_decision_payload(), "supersedes_decision_id": "DEC-000"}
+
+    # When
+    result = DecisionResult(**payload)
+
+    # Then
+    assert result.supersedes_decision_id == "DEC-000"
+
+
+@pytest.mark.parametrize(
     "payload_updates",
     [
         {},

@@ -125,6 +125,25 @@ def test_dashboard_assets_serve_stylesheet_script_and_contract_module() -> None:
         assert f"export function {contract_function}(" in contract.text
 
 
+def test_dashboard_run_cards_link_to_encoded_run_detail_view_paths() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/dashboard.js").text
+    contract = client.get("/dashboard-assets/run-detail-contract.mjs").text
+
+    # Then
+    assert 'import { buildRunDetailViewPath } from "./run-detail-contract.mjs";' in script
+    assert 'const link = document.createElement("a");' in script
+    assert "link.href = buildRunDetailViewPath(run.run_id);" in script
+    assert "link.textContent = run.run_id;" in script
+    assert "state.recentRuns.map((run) => createRunCard(run))" in script
+    assert "state.items.map((run) => createRunCard(run))" in script
+    assert 'encodeURIComponent(requireIdentifier(runId, "runId"))' in contract
+    assert "`/dashboard/runs/${run.run_id}`" not in script
+
+
 def test_dashboard_script_fetches_overview_and_runs_once_without_polling() -> None:
     # Given
     client = TestClient(create_app())
@@ -181,7 +200,7 @@ def test_dashboard_script_uses_contract_and_safe_dom_rendering() -> None:
     assert 'createRunField("Target"' in script
     assert 'createRunField("Start"' in script
     assert 'createRunField("End"' in script
-    assert 'document.createElement("a")' not in script
+    assert 'document.createElement("a")' in script
 
 
 def test_dashboard_script_keeps_overview_and_runs_state_independent() -> None:

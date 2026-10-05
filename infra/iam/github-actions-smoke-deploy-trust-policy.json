@@ -4,7 +4,7 @@
     {
       "Effect": "Allow",
       "Principal": {
-        "Federated": "arn:aws:iam::998301375101:oidc-provider/token.actions.githubusercontent.com"
+        "Federated": "GITHUB_OIDC_PROVIDER_ARN"
       },
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {

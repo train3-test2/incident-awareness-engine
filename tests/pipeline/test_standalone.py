@@ -7,12 +7,16 @@ from types import SimpleNamespace
 import pytest
 
 import incident_awareness.pipeline.standalone as standalone_module
+from incident_awareness.collection.collector.sysmon_jsonl import SysmonJsonlRecord
 from incident_awareness.common.models.run import RunType
+from incident_awareness.normalization.sysmon import SysmonNormalizationContext
+from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
 from incident_awareness.pipeline.standalone import (
     DEFAULT_STANDALONE_DECISION_CONFIG_VERSION,
     DEFAULT_STANDALONE_FAST_MODE,
     DEFAULT_STANDALONE_FUSION_CONFIG_PATH,
     _allocate_identifiers,
+    _order_standalone_sysmon_records,
     build_default_standalone_fast_detection,
     build_run_metadata_from_sysmon_jsonl,
     build_sysmon_artifacts_from_jsonl,
@@ -194,7 +198,28 @@ def test_standalone_run_persists_fusion_trace_and_runtime_config(
 ) -> None:
     inputs = SimpleNamespace(entity_id="WIN-01")
     prepared = SimpleNamespace(inputs=inputs)
-    artifacts = SimpleNamespace(run_metadata=SimpleNamespace(run_id="RUN-20261003-001"))
+    source_records = (
+        SysmonJsonlRecord(
+            record_no=1,
+            data=_record("2026-10-03 00:00:10.000", time_created="2026-10-03T00:00:10Z"),
+        ),
+        SysmonJsonlRecord(
+            record_no=2,
+            data={
+                **_record("2026-10-03 00:00:00.000", time_created="2026-10-03T00:00:00Z"),
+                "RecordId": 2,
+            },
+        ),
+    )
+    artifacts = S0PipelineArtifacts(
+        run_metadata=SimpleNamespace(run_id="RUN-20261003-001"),
+        sysmon_records=source_records,
+        normalization_context=SysmonNormalizationContext(
+            run_id="RUN-20261003-001",
+            raw_log_id="RAW-RUN-20261003-001-SYSMON-001",
+            segment_no=1,
+        ),
+    )
     normalized_artifacts = object()
     fusion_result = object()
     stopping_trace = object()
@@ -203,13 +228,17 @@ def test_standalone_run_persists_fusion_trace_and_runtime_config(
     decision_result = object()
     summary = object()
     persisted: dict[str, object] = {}
+    normalized_record_ids: list[int] = []
 
     monkeypatch.setattr(standalone_module, "load_s0_pipeline_artifacts", lambda _: artifacts)
-    monkeypatch.setattr(
-        standalone_module,
-        "normalize_sysmon_and_extract_evidence",
-        lambda _: normalized_artifacts,
-    )
+
+    def normalize(ordered_artifacts: S0PipelineArtifacts) -> object:
+        normalized_record_ids.extend(
+            record.data["RecordId"] for record in ordered_artifacts.sysmon_records
+        )
+        return normalized_artifacts
+
+    monkeypatch.setattr(standalone_module, "normalize_sysmon_and_extract_evidence", normalize)
     monkeypatch.setattr(
         standalone_module,
         "run_s0_fusion_with_trace",
@@ -242,19 +271,18 @@ def test_standalone_run_persists_fusion_trace_and_runtime_config(
 
     connection = object()
     assert run_prepared_standalone_run(prepared, connection=connection) is summary
-    assert persisted == {
-        "args": (
-            artifacts,
-            normalized_artifacts,
-            fusion_result,
-            stopping_trace,
-            runtime_config_snapshot,
-            fast_result,
-            decision_result,
-        ),
-        "connection": connection,
-        "commit": True,
-    }
+    assert normalized_record_ids == [2, 1]
+    assert [record.data["RecordId"] for record in persisted["args"][0].sysmon_records] == [2, 1]
+    assert persisted["args"][1:] == (
+        normalized_artifacts,
+        fusion_result,
+        stopping_trace,
+        runtime_config_snapshot,
+        fast_result,
+        decision_result,
+    )
+    assert persisted["connection"] is connection
+    assert persisted["commit"] is True
 
 
 class _UnusedIdentifierConnection:
@@ -429,7 +457,7 @@ def test_rejects_multiple_hosts(tmp_path: Path) -> None:
         validate_standalone_sysmon_jsonl(jsonl_path)
 
 
-def test_rejects_event_time_reversal_in_jsonl_order(tmp_path: Path) -> None:
+def test_accepts_record_id_order_when_event_time_reverses(tmp_path: Path) -> None:
     jsonl_path = tmp_path / "sysmon.jsonl"
     _write_jsonl(
         jsonl_path,
@@ -445,8 +473,58 @@ def test_rejects_event_time_reversal_in_jsonl_order(tmp_path: Path) -> None:
         ],
     )
 
-    with pytest.raises(ValueError, match="must be in non-decreasing order"):
-        validate_standalone_sysmon_jsonl(jsonl_path)
+    records = validate_standalone_sysmon_jsonl(jsonl_path)
+
+    assert [record.data["RecordId"] for record in records] == [1, 2]
+
+
+def test_orders_standalone_processing_by_event_time_then_record_id(tmp_path: Path) -> None:
+    jsonl_path = tmp_path / "sysmon.jsonl"
+    _write_jsonl(
+        jsonl_path,
+        [
+            _record("2026-10-03 00:00:10.000", time_created="2026-10-03T00:00:10Z"),
+            {
+                **_record(
+                    "2026-10-03 00:00:00.000",
+                    time_created="2026-10-03T00:00:00Z",
+                ),
+                "RecordId": 3,
+            },
+            {
+                **_record(
+                    "2026-10-03 00:00:10.000",
+                    time_created="2026-10-03T00:00:10Z",
+                ),
+                "RecordId": 2,
+            },
+        ],
+    )
+
+    ordered = _order_standalone_sysmon_records(validate_standalone_sysmon_jsonl(jsonl_path))
+
+    assert [record.data["RecordId"] for record in ordered] == [3, 1, 2]
+
+
+def test_orders_standalone_processing_with_sub_millisecond_event_times(tmp_path: Path) -> None:
+    jsonl_path = tmp_path / "sysmon.jsonl"
+    _write_jsonl(
+        jsonl_path,
+        [
+            _record("2026-10-03 00:00:00.000900", time_created="2026-10-03T00:00:00Z"),
+            {
+                **_record(
+                    "2026-10-03 00:00:00.000100",
+                    time_created="2026-10-03T00:00:00Z",
+                ),
+                "RecordId": 2,
+            },
+        ],
+    )
+
+    ordered = _order_standalone_sysmon_records(validate_standalone_sysmon_jsonl(jsonl_path))
+
+    assert [record.data["RecordId"] for record in ordered] == [2, 1]
 
 
 def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
