@@ -116,8 +116,10 @@ reference_time에 새 탐지한 것으로 보지 않는다. Normal은 전체 관
 정상 Run 총 관측시간으로 나눠 FA/BH를 계산한다. 0건 정상 Run도 시간 분모에 포함한다.
 정상 Run이 없으면 FA/BH는 null이며, 모든 Run 미평가이면 metrics도 null이다.
 
-출력은 StaticML 별도 report이며 전체 inventory·제외 목록·Run별 eligible 시각·
-replay·coverage 참조·모델 및 입력 해시를 보존한다. S0는 smoke만 허용한다.
+출력은 StaticML 별도 report이며 inventory의 Run ID 목록과 SHA-256, 제외 목록,
+평가된 Run별 scenario_id·family_id·variation_id·repetition 및 eligible 시각,
+replay·coverage 참조·모델 및 입력 해시를 보존한다. 전체 RunMetadata는 embed하지 않으므로
+원본 inventory는 별도 artifact로 보관해야 한다. 선택 metadata의 null은 그대로 보존한다. S0는 smoke만 허용한다.
 `comparison_ready`는 이 입력 집합에 미평가 Run이 없다는 뜻으로, 다른 방법과의
 동일 데이터·동일 오경보 조건이나 성능 검증 완료를 보증하지 않는다.
 Family 수준의 분할 manifest 교차 검증과 validation 운영점 선택은 호출 측 후속 단계다.

@@ -122,6 +122,10 @@ def evaluate_static_model(
             {
                 "run_id": run.run_id,
                 "entity_id": run.target_host,
+                "scenario_id": run.scenario_id,
+                "family_id": run.family_id,
+                "variation_id": run.variation_id,
+                "repetition": run.repetition,
                 "eligible_status": "detected" if eligible else "miss",
                 "eligible_time": _serialize_utc_datetime(eligible),
                 "episode_count": count,

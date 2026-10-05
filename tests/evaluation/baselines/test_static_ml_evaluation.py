@@ -358,3 +358,28 @@ def test_pre_reference_counts_use_half_open_start_interval(reference_seconds, ex
     # Then
     assert report["per_run"][0]["pre_reference_false_alerts"] == expected
     assert report["alert_burden"]["pre_reference_false_alerts"] == expected
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {
+            "scenario_id": "R1",
+            "family_id": "family-a",
+            "variation_id": "variation-2",
+            "repetition": 3,
+        },
+        {"scenario_id": "S0", "family_id": None, "variation_id": None, "repetition": None},
+    ],
+)
+def test_per_run_preserves_analysis_metadata_in_json(metadata):
+    # Given
+    attack, points = run(2, [0, 1, 1])
+    attack = attack.model_copy(update=metadata)
+
+    # When
+    report = evaluate([attack], {attack.run_id: points})
+    persisted = json.loads(json.dumps(report))
+
+    # Then
+    assert {key: persisted["per_run"][0][key] for key in metadata} == metadata
