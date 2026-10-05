@@ -20,7 +20,7 @@ from botocore.client import BaseClient
 from botocore.exceptions import BotoCoreError, ClientError
 from psycopg import OperationalError
 
-from incident_awareness.pipeline.standalone import main as standalone_main
+from incident_awareness.pipeline.standalone import run_standalone_sysmon_jsonl
 from incident_awareness.storage.config import DatabaseConfig
 from incident_awareness.storage.repositories.s3_object_receipt_repository import (
     S3ObjectReceiptRepository,
@@ -74,7 +74,7 @@ class S3SysmonInput:
 
 
 class _PostgresSuccessfulReceiptStore:
-    """Commit successful Worker receipts separately from standalone persistence."""
+    """Commit successful Worker receipts with the active Pipeline transaction."""
 
     def __init__(self, connection: psycopg.Connection[tuple[object, ...]]) -> None:
         self._connection = connection
@@ -151,11 +151,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     namespace = build_parser().parse_args(argv)
     database_config = DatabaseConfig.from_environment()
     with psycopg.connect(database_config.url, autocommit=False) as connection:
+
+        def run_standalone(sysmon_jsonl_path: Path, output_root: Path) -> str:
+            execution = run_standalone_sysmon_jsonl(
+                sysmon_jsonl_path=sysmon_jsonl_path,
+                output_root=output_root,
+                connection=connection,
+            )
+            return execution.summary.run_id
+
         return run_worker(
             queue_url=_required_environment(_QUEUE_URL_ENV),
             expected_bucket=_required_environment(_INPUT_BUCKET_ENV),
             sqs_client=boto3.client("sqs"),
             s3_client=boto3.client("s3"),
+            run_standalone=run_standalone,
             receipt_store=_PostgresSuccessfulReceiptStore(connection),
             once=namespace.once,
         )
@@ -167,7 +177,7 @@ def run_worker(
     expected_bucket: str,
     sqs_client: BaseClient,
     s3_client: BaseClient,
-    run_standalone: Callable[[Sequence[str]], int] = standalone_main,
+    run_standalone: Callable[[Path, Path], str],
     receipt_store: SuccessfulReceiptStore | None = None,
     once: bool = False,
 ) -> int:
@@ -224,7 +234,7 @@ def _process_message(
     *,
     expected_bucket: str,
     s3_client: BaseClient,
-    run_standalone: Callable[[Sequence[str]], int],
+    run_standalone: Callable[[Path, Path], str],
     receipt_store: SuccessfulReceiptStore | None = None,
 ) -> None:
     if not isinstance(message, Mapping):
@@ -254,24 +264,13 @@ def _process_message(
             try:
                 _download_sysmon_jsonl(s3_client, input_object, sysmon_jsonl_path)
                 try:
-                    exit_code = run_standalone(
-                        [
-                            "--sysmon-jsonl",
-                            str(sysmon_jsonl_path),
-                            "--output-dir",
-                            str(input_dir / "output"),
-                        ]
-                    )
+                    run_id = run_standalone(sysmon_jsonl_path, input_dir / "output")
                 except ValueError as error:
                     raise PermanentWorkerError(str(error)) from error
                 except (OperationalError, OSError) as error:
                     raise RetryableWorkerError(str(error)) from error
-                if exit_code != 0:
-                    raise RetryableWorkerError(
-                        "standalone First Cycle failed for S3 object "
-                        f"{input_object.bucket}/{input_object.key}"
-                    )
-                run_id = _read_generated_run_id(input_dir / "output")
+                if not run_id.strip():
+                    raise RetryableWorkerError("standalone First Cycle returned a blank run_id")
             except Exception:
                 _log_input_status("failed", input_uri=input_uri)
                 raise
@@ -327,21 +326,6 @@ def _s3_uri(input_object: S3SysmonInput) -> str:
 
 def _receipt_lock_key(input_object: S3SysmonInput) -> str:
     return f"{input_object.bucket}\x00{input_object.key}\x00{input_object.e_tag}"
-
-
-def _read_generated_run_id(output_dir: Path) -> str:
-    try:
-        payload = json.loads((output_dir / "run_metadata.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise RetryableWorkerError(
-            "standalone output is missing readable run_metadata.json"
-        ) from error
-    if not isinstance(payload, Mapping):
-        raise RetryableWorkerError("standalone run_metadata.json must be a JSON object")
-    run_id = payload.get("run_id")
-    if not isinstance(run_id, str) or not run_id.strip():
-        raise RetryableWorkerError("standalone run_metadata.json must contain a non-blank run_id")
-    return run_id
 
 
 def _log_input_status(status: str, *, input_uri: str, run_id: str | None = None) -> None:

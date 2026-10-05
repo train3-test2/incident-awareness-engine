@@ -188,6 +188,26 @@ def test_persists_first_cycle_contracts_in_dependency_order() -> None:
     ] == _runtime_config_snapshot().model_dump(mode="json")
 
 
+def test_leaves_first_cycle_results_uncommitted_when_requested() -> None:
+    connection = _Connection()
+    fusion_result, fast_result, decision_result = _results()
+
+    persist_s0_results(
+        _artifacts(),
+        NormalizedEvidenceArtifacts(events=(_event(),), evidences=()),
+        fusion_result,
+        _stopping_trace(),
+        _runtime_config_snapshot(),
+        fast_result,
+        decision_result,
+        connection=connection,
+        commit=False,
+    )
+
+    assert connection.commits == 0
+    assert connection.rollbacks == 0
+
+
 def test_resolves_no_expected_supersedes_when_scope_has_no_decision() -> None:
     # Given
     connection = _Connection()

@@ -1,6 +1,6 @@
 import json
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -105,7 +105,7 @@ def test_worker_downloads_and_deletes_a_successful_message(
     caplog.set_level(logging.INFO, logger="incident_awareness.pipeline.sqs_worker")
     sqs = _FakeSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}])
     s3 = _FakeS3()
-    calls: list[list[str]] = []
+    calls: list[tuple[Path, Path]] = []
 
     result = run_worker(
         queue_url="https://example.test/queue",
@@ -119,10 +119,8 @@ def test_worker_downloads_and_deletes_a_successful_message(
     assert result == 0
     assert s3.downloads == [(_BUCKET, _KEY)]
     assert sqs.deleted_receipts == ["receipt-1"]
-    assert calls[0][0] == "--sysmon-jsonl"
-    assert Path(calls[0][1]).name == "sysmon.jsonl"
-    assert calls[0][2] == "--output-dir"
-    assert Path(calls[0][3]).name == "output"
+    assert calls[0][0].name == "sysmon.jsonl"
+    assert calls[0][1].name == "output"
     statuses = [
         json.loads(record.getMessage())
         for record in caplog.records
@@ -154,7 +152,7 @@ def test_worker_logs_failed_status_and_retains_message_when_standalone_execution
         expected_bucket=_BUCKET,
         sqs_client=sqs,
         s3_client=_FakeS3(),
-        run_standalone=lambda _: 1,
+        run_standalone=_failing_standalone,
         once=True,
     )
 
@@ -197,7 +195,7 @@ def test_worker_processes_duplicate_object_versions_once_per_sqs_message() -> No
         ]
     )
     s3 = _FakeS3()
-    calls: list[list[str]] = []
+    calls: list[tuple[Path, Path]] = []
 
     run_worker(
         queue_url="https://example.test/queue",
@@ -218,7 +216,7 @@ def test_worker_skips_a_successfully_receipted_s3_object_version(
 ) -> None:
     caplog.set_level(logging.INFO, logger="incident_awareness.pipeline.sqs_worker")
     receipts = _FakeReceiptStore()
-    calls: list[list[str]] = []
+    calls: list[tuple[Path, Path]] = []
 
     run_worker(
         queue_url="https://example.test/queue",
@@ -273,7 +271,7 @@ def test_classifies_invalid_s3_event_as_permanent_error() -> None:
             {"Body": json.dumps(_s3_event(event_name="ObjectRemoved:Delete"))},
             expected_bucket=_BUCKET,
             s3_client=_FakeS3(),
-            run_standalone=lambda _: 0,
+            run_standalone=_successful_run_id,
         )
 
 
@@ -287,7 +285,7 @@ def test_classifies_transient_s3_download_error_as_retryable() -> None:
             {"Body": json.dumps(_s3_event())},
             expected_bucket=_BUCKET,
             s3_client=_FailingS3(error),
-            run_standalone=lambda _: 0,
+            run_standalone=_successful_run_id,
         )
 
 
@@ -301,7 +299,7 @@ def test_classifies_missing_s3_object_as_permanent_error() -> None:
             {"Body": json.dumps(_s3_event())},
             expected_bucket=_BUCKET,
             s3_client=_FailingS3(error),
-            run_standalone=lambda _: 0,
+            run_standalone=_successful_run_id,
         )
 
 
@@ -384,19 +382,21 @@ class _FakeReceiptStore:
         self.rollbacks += 1
 
 
-def _successful_standalone(calls: list[list[str]]) -> Callable[[Sequence[str]], int]:
-    def run(arguments: Sequence[str]) -> int:
-        calls.append(list(arguments))
-        output_dir = Path(arguments[3])
-        output_dir.mkdir()
-        (output_dir / "run_metadata.json").write_text(
-            '{"run_id": "RUN-20261005-001"}',
-            encoding="utf-8",
-        )
-        return 0
+def _successful_standalone(calls: list[tuple[Path, Path]]) -> Callable[[Path, Path], str]:
+    def run(sysmon_jsonl_path: Path, output_root: Path) -> str:
+        calls.append((sysmon_jsonl_path, output_root))
+        return _successful_run_id(sysmon_jsonl_path, output_root)
 
     return run
 
 
-def _reject_invalid_sysmon_jsonl(_: Sequence[str]) -> int:
+def _successful_run_id(_: Path, __: Path) -> str:
+    return "RUN-20261005-001"
+
+
+def _failing_standalone(_: Path, __: Path) -> str:
+    raise OSError("standalone First Cycle failed")
+
+
+def _reject_invalid_sysmon_jsonl(_: Path, __: Path) -> str:
     raise ValueError("standalone Sysmon JSONL EventData.UtcTime must be in non-decreasing order")

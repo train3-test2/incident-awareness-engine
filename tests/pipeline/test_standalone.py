@@ -232,7 +232,11 @@ def test_standalone_run_persists_fusion_trace_and_runtime_config(
     monkeypatch.setattr(
         standalone_module,
         "persist_s0_results",
-        lambda *args, **kwargs: persisted.update(args=args, connection=kwargs["connection"]),
+        lambda *args, **kwargs: persisted.update(
+            args=args,
+            connection=kwargs["connection"],
+            commit=kwargs["commit"],
+        ),
     )
     monkeypatch.setattr(standalone_module, "build_execution_summary", lambda *_: summary)
 
@@ -249,6 +253,7 @@ def test_standalone_run_persists_fusion_trace_and_runtime_config(
             decision_result,
         ),
         "connection": connection,
+        "commit": True,
     }
 
 
