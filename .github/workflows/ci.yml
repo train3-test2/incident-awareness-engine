@@ -83,6 +83,8 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
     needs: quality
     runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.image.outputs.uri }}
     permissions:
       contents: read
       id-token: write
@@ -167,8 +169,23 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      IMAGE_URI: ${{ needs.aws-smoke-deploy.outputs.image_uri }}
     steps:
       - uses: actions/checkout@v6
 
-      - name: Prepare Dashboard deployment
-        run: echo "Dashboard deployment configuration will run in subsequent steps."
+      - name: Validate Dashboard image URI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${IMAGE_URI//[[:space:]]/}" ]]; then
+            echo "The smoke deployment did not publish an image URI."
+            exit 1
+          fi
+
+          expected_suffix=":${GITHUB_SHA}"
+          if [[ "$IMAGE_URI" != *"$expected_suffix" ]]; then
+            echo "Dashboard image URI must use the current commit SHA tag."
+            exit 1
+          fi
