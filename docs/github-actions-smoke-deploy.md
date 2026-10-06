@@ -85,7 +85,7 @@ AWS IAM에 GitHub OIDC provider `https://token.actions.githubusercontent.com`를
 ```
 
 `GITHUB_OIDC_PROVIDER_ARN`은 실제 계정의 GitHub OIDC provider ARN으로 치환한다. 역할에는 ECR 이미지 업로드·조회, First Cycle S3 Artifact 메타데이터 조회, ECS Task
-Definition 등록·실행·상태 조회, 그리고 `ecsTaskExecutionRole`·
+Definition 등록·실행·상태 조회와 Dashboard Service 갱신, 그리고 `ecsTaskExecutionRole`·
 `ecsFirstCycleTaskRole`·`ecsDashboardTaskExecutionRole` 전달에 필요한 최소 권한만
 부여한다. 신뢰 정책과 권한 정책은
 각각 `infra/iam/github-actions-smoke-deploy-trust-policy.json`,
@@ -105,6 +105,7 @@ GitHub 저장소의 **Settings → Secrets and variables → Actions → Variabl
 | `AWS_REGION` | `ap-northeast-2` |
 | `ECR_REPOSITORY` | `incident-awareness-engine` |
 | `ECS_CLUSTER` | `incident-awareness-engine-dev` |
+| `ECS_DASHBOARD_SERVICE` | Dashboard ECS Service 이름 |
 | `ECS_SUBNET_IDS` | Fargate 실행에 사용하는 subnet ID를 쉼표로 구분한 값 |
 | `ECS_SECURITY_GROUP_IDS` | Fargate 실행에 사용하는 security group ID를 쉼표로 구분한 값 |
 | `ECS_EXECUTION_ROLE_ARN` | smoke 및 First Cycle migration Task Definition에 주입할 Execution Role ARN |

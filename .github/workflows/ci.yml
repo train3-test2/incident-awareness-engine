@@ -171,6 +171,8 @@ jobs:
       id-token: write
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_DASHBOARD_SERVICE: ${{ vars.ECS_DASHBOARD_SERVICE }}
       IMAGE_URI: ${{ needs.aws-smoke-deploy.outputs.image_uri }}
       DASHBOARD_EXECUTION_ROLE_ARN: ${{ vars.DASHBOARD_EXECUTION_ROLE_ARN }}
       DASHBOARD_DATABASE_URL_SECRET_ARN: ${{ vars.DASHBOARD_DATABASE_URL_SECRET_ARN }}
@@ -200,7 +202,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          for value in AWS_ROLE_ARN AWS_REGION DASHBOARD_EXECUTION_ROLE_ARN DASHBOARD_DATABASE_URL_SECRET_ARN; do
+          for value in AWS_ROLE_ARN AWS_REGION ECS_CLUSTER ECS_DASHBOARD_SERVICE DASHBOARD_EXECUTION_ROLE_ARN DASHBOARD_DATABASE_URL_SECRET_ARN; do
             if [[ -z "${!value//[[:space:]]/}" ]]; then
               echo "GitHub Actions variable $value must be configured."
               exit 1
@@ -236,3 +238,17 @@ jobs:
               --output text
           )"
           echo "task_definition_arn=$task_definition_arn" >> "$GITHUB_OUTPUT"
+
+      - name: Update Dashboard ECS service
+        shell: bash
+        env:
+          TASK_DEFINITION_ARN: ${{ steps.register-dashboard-task-definition.outputs.task_definition_arn }}
+        run: |
+          set -euo pipefail
+
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_DASHBOARD_SERVICE" \
+            --task-definition "$TASK_DEFINITION_ARN" \
+            --force-new-deployment \
+            --no-cli-pager

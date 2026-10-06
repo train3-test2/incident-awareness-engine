@@ -45,6 +45,12 @@
       "Resource": "*"
     },
     {
+      "Sid": "UpdateDashboardService",
+      "Effect": "Allow",
+      "Action": "ecs:UpdateService",
+      "Resource": "ECS_DASHBOARD_SERVICE_ARN"
+    },
+    {
       "Sid": "RunSmokeTask",
       "Effect": "Allow",
       "Action": "ecs:RunTask",

@@ -202,3 +202,19 @@ def test_github_actions_policy_passes_only_the_dashboard_execution_role() -> Non
             }
         },
     }
+
+
+def test_github_actions_policy_updates_only_the_dashboard_service() -> None:
+    policy = json.loads(
+        (IAM_DIRECTORY / "github-actions-smoke-deploy-policy.json").read_text(encoding="utf-8")
+    )
+    statement = next(
+        item for item in policy["Statement"] if item["Sid"] == "UpdateDashboardService"
+    )
+
+    assert statement == {
+        "Sid": "UpdateDashboardService",
+        "Effect": "Allow",
+        "Action": "ecs:UpdateService",
+        "Resource": "ECS_DASHBOARD_SERVICE_ARN",
+    }
