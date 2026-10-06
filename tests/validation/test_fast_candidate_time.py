@@ -36,7 +36,7 @@ def test_join_preserves_policy_clock(inputs):
     result = audit.resolve_hits([hit], [raw])[0]
     assert result["hayabusa_minus_event_time_us"] == 7315
     assert result["final_detector_time"] is None
-    assert result["event_data_utc_time"] == "2026-10-05T19:38:26.253000Z"
+    assert result["event_data_utc_time"] == "2026-10-05T19:38:26.253Z"
 
 
 @pytest.mark.parametrize(

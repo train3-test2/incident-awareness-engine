@@ -9,6 +9,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from incident_awareness.collection.collector.sysmon_jsonl import read_sysmon_jsonl
+from incident_awareness.collection.r1_destination import (
+    validate_internal_port,
+    validate_internal_target,
+    validate_lab_cidr,
+)
 from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
 from incident_awareness.normalization.sysmon import (
     SysmonNormalizationContext,
@@ -43,6 +48,21 @@ def sha(path):
 
 def check_run(pair, run_id, prefix, output, policy):
     base = pair / run_id / "data"
+    scenario_path = base / "operator_trace" / run_id / "scenario.json"
+    scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
+    target_host = scenario["run_metadata"]["target_host"]
+    require(
+        isinstance(target_host, str)
+        and bool(target_host.strip())
+        and target_host == target_host.strip(),
+        "scenario target_host is required",
+    )
+    connection = scenario["internal_connection"]
+    destination = validate_internal_target(
+        connection["target"], validate_lab_cidr(connection["lab_cidr"])
+    )
+    port = validate_internal_port(connection["port"])
+    require(connection["protocol"] == "TCP", "scenario protocol must be TCP")
     raw = base / "raw" / run_id
     source = raw / "telemetry/sysmon-0001.jsonl"
     manifest_path = raw / "manifest.json"
@@ -66,7 +86,7 @@ def check_run(pair, run_id, prefix, output, policy):
     for record in records:
         data = record.data["EventData"]
         require(record.data["Channel"] == "Microsoft-Windows-Sysmon/Operational", "channel")
-        require(record.data["Computer"] == "R1-TGTA", "host")
+        require(record.data["Computer"] == target_host, "host")
         normalizer = {
             1: normalize_sysmon_process_create,
             3: normalize_sysmon_network_connection,
@@ -113,8 +133,8 @@ def check_run(pair, run_id, prefix, output, policy):
             if e.event_type == "network_connection"
             and e.process.process_guid == terminal.process.process_guid
             and abs((e.timestamp - times["04"]).total_seconds()) <= 2
-            and e.network.dst_ip == "192.168.34.30"
-            and e.network.dst_port == 8443
+            and e.network.dst_ip == destination
+            and e.network.dst_port == port
             and e.network.protocol.casefold() == "tcp"
         ],
         "t+8 approved connection",
@@ -166,6 +186,7 @@ def check_run(pair, run_id, prefix, output, policy):
         "source_sha256": sha(source),
         "execution_record_sha256": sha(execution_path),
         "manifest_sha256": sha(manifest_path),
+        "rendered_scenario_sha256": sha(scenario_path),
         "normalized_count": len(events),
         "event_types": dict(Counter(e.event_type for e in events)),
         "lineage": [

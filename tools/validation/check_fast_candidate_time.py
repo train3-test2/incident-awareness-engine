@@ -69,7 +69,9 @@ def resolve_hits(hits, records):
                 "event_id": record["EventId"],
                 "rule_id": hit.get("RuleID"),
                 "hayabusa_timestamp": hit["Timestamp"],
-                "event_data_utc_time": raw_time.isoformat().replace("+00:00", "Z"),
+                "event_data_utc_time": raw_time.isoformat(timespec="milliseconds").replace(
+                    "+00:00", "Z"
+                ),
                 "hayabusa_minus_event_time_us": (csv_time - raw_time) // timedelta(microseconds=1),
                 "timestamp_source": "EventData.UtcTime",
                 "final_detector_time": None,

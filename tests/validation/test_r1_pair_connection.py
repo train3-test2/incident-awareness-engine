@@ -16,6 +16,21 @@ spec.loader.exec_module(audit)
 def sample(tmp_path):
     run_id = "RUN-20261005-912"
     base = tmp_path / run_id / "data"
+    operator = base / "operator_trace" / run_id
+    operator.mkdir(parents=True)
+    (operator / "scenario.json").write_text(
+        json.dumps(
+            {
+                "run_metadata": {"target_host": "HOST"},
+                "internal_connection": {
+                    "target": "10.20.30.40",
+                    "port": 23456,
+                    "protocol": "TCP",
+                    "lab_cidr": "10.20.30.0/24",
+                },
+            }
+        )
+    )
     raw = base / "raw" / run_id
     (raw / "telemetry").mkdir(parents=True)
     ground = base / "ground_truth" / run_id
@@ -45,13 +60,13 @@ def sample(tmp_path):
             "ParentProcessGuid": parent,
         }
         if eid == 3:
-            data.update(Protocol="tcp", DestinationIp="192.168.34.30", DestinationPort="8443")
+            data.update(Protocol="tcp", DestinationIp="10.20.30.40", DestinationPort="23456")
         rows.append(
             {
                 "RecordId": number,
                 "EventId": eid,
                 "TimeCreated": f"2026-10-05T{time}.007Z",
-                "Computer": "R1-TGTA",
+                "Computer": "HOST",
                 "Channel": "Microsoft-Windows-Sysmon/Operational",
                 "EventData": data,
             }
@@ -142,3 +157,31 @@ def test_extractor_reports_truncated_lineage_instead_of_empty_success(sample):
     assert all(
         e.evidence_type != "remote_session_process_lineage_deviation" for e in result.evidences
     )
+
+
+@pytest.mark.parametrize("field,value", [("target", "10.20.30.41"), ("port", 23457)])
+def test_external_destination_mismatch_rejected(sample, field, value):
+    pair, rid, output, policy, _rows, _write, _source = sample
+    path = pair / rid / "data/operator_trace" / rid / "scenario.json"
+    scenario = json.loads(path.read_text())
+    scenario["internal_connection"][field] = value
+    path.write_text(json.dumps(scenario))
+    with pytest.raises(ValueError, match="t\\+8 approved connection"):
+        audit.check_run(pair, rid, "A", output, policy)
+
+
+def test_external_host_mismatch_rejected(sample):
+    pair, rid, output, policy, _rows, _write, _source = sample
+    path = pair / rid / "data/operator_trace" / rid / "scenario.json"
+    scenario = json.loads(path.read_text())
+    scenario["run_metadata"]["target_host"] = "OTHER-HOST"
+    path.write_text(json.dumps(scenario))
+    with pytest.raises(ValueError, match="host"):
+        audit.check_run(pair, rid, "A", output, policy)
+
+
+def test_missing_external_scenario_rejected(sample):
+    pair, rid, output, policy, _rows, _write, _source = sample
+    (pair / rid / "data/operator_trace" / rid / "scenario.json").unlink()
+    with pytest.raises(FileNotFoundError):
+        audit.check_run(pair, rid, "A", output, policy)
