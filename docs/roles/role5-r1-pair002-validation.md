@@ -167,3 +167,87 @@ warm-up 사용 여부를 명시해야 하며, 범위 밖 이벤트를 무조건 
 
 로컬 재현 산출물: input-inventory.json, comparison-timeline.json, build.py.
 검증 시각과 해시는 고정된 Pair-002 입력에 대한 것이며 운영 모델 설정 동결은 아니다.
+
+## R1 입력 수용 체크리스트
+
+아래 상태는 2026-10-06 현재 Pair-002 로컬 점검 기준이다. 체크 완료는 이 Pair의
+해당 입력 검사를 통과했다는 의미이며 공식 Pilot 승인이나 최종 평가 승인이 아니다.
+새 산출물·수정본은 해시와 버전을 다시 확인한다. 팀원 답변은 관련 문서/PR/설정 경로와
+함께 기록하며, 원본 metadata 대신 별도 사용 기록을 갱신한다.
+
+### 1. 데이터 신원·용도·관측 범위 — 역할4 입력, 역할5 확인
+
+- [x] 외부 Pair index로 Attack 912 / Normal 913을 식별했다. family/variation/repetition만으로 Pair를 추정하지 않는다.
+- [x] 입력 파일 경로·SHA-256, Run metadata, execution_record, manifest를 확보했다.
+- [x] Pair-002는 development tuning 전용이며 학습/validation/test/holdout/공식 development 수량에서 제외했다.
+- [x] Attack A01 reference가 원본 RecordID 1275의 EventData.UtcTime과 일치한다. Normal reference 세 필드는 null이다.
+- [x] metadata 관측 범위와 Attack의 reference + 600초를 대조했다.
+- [x] 시작 전 이벤트 6건씩을 식별했다. 현재 Evidence에는 이 이벤트가 참조되지 않는다.
+- [ ] 역할4 답변으로 수집 범위·완전성 근거와 시작 전 이벤트의 수집 의도를 확인하고 출처를 기록한다.
+- [ ] 역할5 실행 설정에 분석 범위와 warm-up 사용 여부를 명시한다. 계보 복원을 위한 과거 이벤트 사용과 점수 입력 포함 여부도 구분한다.
+
+**중단 기준:** 신원/해시 불일치는 해당 묶음을 거부한다. 관측 범위·warm-up 정책이
+미정이면 replay 입력 확정을 보류한다. 수집 완전성 미확인을 정상적인 증거 부재로
+바꾸지 않는다. 불완전 자료의 개발 진단을 수행할 경우에도 별도로 표시하고 성능 계산은 하지 않는다.
+
+### 2. Evidence 계약 — 역할2 입력, 역할5 확인
+
+- [x] 기존 artifact loader로 Evidence JSONL·summary 해시와 추출 완료 상태를 확인했다.
+- [x] run_id/entity_id, extractor r1-v0.1, 원본 Event 참조 및 ProcessGuid 계보를 대조했다.
+- [x] diagnostics는 양쪽 빈 목록, telemetry_completeness는 not_provided로 보존했다.
+- [ ] 역할2의 R1 두 candidate 종류에 대한 공식 vocabulary 등록/소비 기준을 문서 또는 PR로 확인한다.
+- [ ] 등록 이후 실제 공통 vocabulary 버전/해시와 extractor·정규화 버전을 실행 목록에 고정한다.
+- [ ] 감사용 계보 policy와 실제 소비할 policy의 ID/version/hash를 대조한다. 다르면 별도 버전으로 재추출한다.
+
+**중단 기준:** 미등록 종류를 S0 종류로 치환하거나 검증을 우회하지 않는다.
+failed summary·깨진 provenance는 거부한다. diagnostics가 발생한 입력은 원인과 영향을
+검토하기 전 모델 입력으로 채택하지 않으며, 빈 Evidence를 자동으로 정상/miss로 해석하지 않는다.
+
+### 3. Baseline 실행 설정 — 역할5 작성
+
+- [ ] 공통 snapshot의 window·cadence·격자 시작점·경계 포함 규칙·replay 종료를 명시한다.
+- [ ] 같은 시점의 입력만 사용하고 미래 Evidence가 섞이지 않는지 확인한다.
+- [ ] Weighted Rule의 종류/가중치 및 설정 버전을 명시한다.
+- [ ] Static ML의 feature_names 순서·전처리 버전과 추론할 학습 모델의 ID/hash/학습 데이터 출처를 확보한다.
+- [ ] CUSUM/EWMA의 upstream score provenance, baseline_mean 출처와 방법별 파라미터를 확보한다.
+- [ ] method별 threshold_on/off·persistence·episode 정책을 명시하고 차이가 있으면 비교 목적과 함께 기록한다.
+
+**중단 기준:** vocabulary 수용만으로 실행 준비 완료를 선언하지 않는다. 필수 설정이나
+학습 모델이 없는 method는 실행하지 않고 준비 상태로 남긴다. Pair-002로 모델을 학습하거나
+정상 기준선을 추정해 최종 성능을 보고하지 않는다. 입력이 없는 구간을 0 벡터/0점으로
+표현하기 전 coverage와 window 선택이 유효한지 확인한다.
+
+### 4. 동일 Run Fusion 결과 — 역할1 입력, 역할5 대조
+
+- [ ] RUN-20261005-912/913의 FusionResult·전체 episode·score trajectory를 확보한다.
+- [ ] 결과 ID와 파일 hash를 명시적으로 선택한다. 최신 생성 시각만으로 결과를 고르지 않는다.
+- [ ] run_id/entity_id, 입력 Evidence 목록/hash, extractor·policy·scorer/config 버전을 대조한다.
+- [ ] 관측 범위·window/cadence·시간 정밀도·threshold/persistence 설정을 확인한다.
+- [ ] fusion_time·episode·trajectory가 동일 실행 묶음인지 확인한다. 차이가 있으면 재실행 또는 차이 설명이 필요하다.
+
+**중단 기준:** 동일 Run 결과가 없으면 S0 결과로 대체하지 않는다. 동일 입력/설정 여부가
+불분명하면 탐지 시각 우열을 계산하지 않는다. 설정이 의도적으로 다른 비교는 차이를 명시한다.
+
+### 5. Fast 비교 경계 — 역할5 검증, 필요 시 역할3 결과 연결
+
+- [x] 후보를 host + channel + RecordID로 유일하게 연결하고 UtcTime을 확인했다.
+- [x] CSV와 UtcTime의 7.315ms 차이를 보존했다. TimeCreated fallback은 하지 않았다.
+- [ ] 최종 비교 전 qualifying detector set과 선택 규칙·버전을 명시한다.
+- [ ] 역할3 DetectionResult를 사용할 때 selected source hit와 정책 시각·설정 버전의 일치를 확인한다.
+
+**중단 기준:** 현 단계에서는 후보 시각과 Evidence 시각만 개발 분석으로 비교한다.
+Evidence.timestamp를 fusion_time으로 취급하지 않고, 후보 0건을 전체 Fast miss로 승격하지 않는다.
+최종 detector_time이 없으면 TTSD/최초 판단 경로를 계산하지 않는다.
+
+## 답변 수신 후 실행 순서
+
+1. **답변과 입력 버전 고정:** 역할2/4의 근거 경로, 파일 hash, 데이터 용도, 범위 정책을 기존 입력 목록에 기록한다.
+2. **Evidence 소비 가능 여부 재검사:** 공통 vocabulary로 실제 loader/특징 생성 경계를 다시 검사한다. policy나 입력이 바뀌면 새 출력 경로로 재추출한다.
+3. **공통 입력 생성:** 확정한 분석 범위·warm-up·window/cadence로 snapshot/score 입력을 만들고 입력 ID·시각·설정 hash를 보존한다.
+4. **준비된 Baseline만 개발 실행:** method별 필수 설정을 충족한 경우에만 실행한다. Static ML 모델 등 미확보 method는 보류 상태로 기록한다.
+5. **동일 Run Fusion 대조:** 역할1 결과가 준비되면 위 수용 검사를 통과한 실행 묶음과 비교한다. Fast 후보·Evidence·score·episode·fusion_time을 서로 구분한다.
+6. **개발 분석 기록:** 누락/미평가/실패를 miss와 분리하고 비교 가능 범위·설정 차이·미해결 조건을 남긴다. 최종 평가/동결 완료로 확대하지 않는다.
+
+역할1 결과 대기와 Baseline 입력 준비는 독립적으로 진행할 수 있다. 단계 5가 막혀도
+단계 1~4의 조건이 갖춰진 작업은 진행한다. 새 Issue/PR을 단계마다 추가하지 않고
+기존 Pair-002 검증 범위에서 결과를 정리한다.
