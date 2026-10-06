@@ -181,3 +181,24 @@ def test_dashboard_execution_role_secret_policy_is_scoped_to_dashboard_database_
             }
         ],
     }
+
+
+def test_github_actions_policy_passes_only_the_dashboard_execution_role() -> None:
+    policy = json.loads(
+        (IAM_DIRECTORY / "github-actions-smoke-deploy-policy.json").read_text(encoding="utf-8")
+    )
+    statement = next(
+        item for item in policy["Statement"] if item["Sid"] == "PassDashboardTaskExecutionRole"
+    )
+
+    assert statement == {
+        "Sid": "PassDashboardTaskExecutionRole",
+        "Effect": "Allow",
+        "Action": "iam:PassRole",
+        "Resource": "DASHBOARD_EXECUTION_ROLE_ARN",
+        "Condition": {
+            "StringEquals": {
+                "iam:PassedToService": "ecs-tasks.amazonaws.com",
+            }
+        },
+    }
