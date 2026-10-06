@@ -282,3 +282,20 @@ derived `event_data_utc_time`은 외부 JSON 공통 형식인 `.mmmZ`로 기록�
 Hayabusa 원문의 microsecond 정밀도가 timestamp source를 결정하지 않는다.
 기존 Fast adapter도 CSV 시각을 canonical millisecond로 변환할 수 있으므로 최종 source 선택은
 qualifying/detector-time 정책에서 별도로 동결한다. 이번 감사의 UtcTime 연결은 그 결정을 대신하지 않는다.
+
+## 리뷰 후속: inventory 비식별화와 split 제외 강제
+
+저장소 inventory의 두 Run `entity_id`는 `<target-host>`로 치환했다.
+실제 값은 저장소 밖 로컬 input-inventory.json에만 유지한다. 저장소 사본은
+설명·provenance 확인용이며 placeholder를 실제 모델 입력으로 사용하지 않는다.
+파일 SHA-256은 해당 원본 파일의 식별값으로 유지한다.
+
+`eligible_for_train/validation/test=false` 및 `eligible_splits=[]`는 현재
+**declarative provenance이며 자동 enforcement가 아니다.** 현재 SplitManifest가
+usage sidecar를 읽지 않으므로 이 문서만으로 제외가 강제됐다고 주장하지 않는다.
+
+후속 [Issue #208](https://github.com/train3-test2/incident-awareness-engine/issues/208)에서
+정식 dataset/split 구성 경계가 usage/exclusion sidecar를 필수로 소비하고, 제외 Run이
+입력되면 오류로 거부하도록 연결한다. 최소한 Pair-002의 912/913은 train/validation/test
+입력에서 명시적으로 거부되어야 한다. 누락·충돌 처리와 sidecar 버전/hash 보존도 검증한다.
+**정식 train/validation/test 구성 전 #208 해결이 필수다.** 원본 Pair index는 수정하지 않는다.
