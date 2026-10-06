@@ -3,16 +3,19 @@
 ## 범위
 
 `.github/workflows/ci.yml`은 모든 Pull Request에서 품질 검사를 실행하고, `develop`
-브랜치 push에서만 이미지를 ECR에 업로드한 뒤 ECS Fargate 일회성 smoke 태스크를 실행한다.
-smoke 태스크가 성공하면 같은 commit SHA 이미지로 Dashboard ECS Service의 Task Definition을
-등록하고 Service를 갱신한다.
+브랜치 push에서만 이미지를 ECR에 업로드한다. 이후 일회성 ECS Fargate smoke 태스크를
+실행하고, S3·SQS 자동 입력 Worker ECS Service와 Dashboard ECS Service를 각각 새 Task
+Definition revision으로 갱신한다.
 
 `.github/workflows/first-cycle-manual.yml`은 이미 S3에 준비된 First Cycle 입력
 Artifact와 이미 ECR에 업로드된 이미지를 선택해, GitHub Actions 화면에서 수동으로
 First Cycle Fargate 태스크를 실행한다.
 
-Dashboard 자동 배포는 GitHub Actions Variables와 OIDC 역할 권한이 모두 설정된 개발
-환경에서만 실행한다. First Cycle은 지속 실행 Service가 아니라 단발성 태스크로 유지한다.
+Worker Service는 `desiredCount=1`로 유지된다. Worker 컨테이너가 종료되면 ECS Service
+scheduler가 replacement task를 시작하며, 실행 중인 Worker는 SQS long polling으로 자동
+입력을 소비한다. Dashboard 자동 배포는 GitHub Actions Variables와 OIDC 역할 권한이 모두
+설정된 개발 환경에서만 실행한다. First Cycle은 지속 실행 Service가 아니라 단발성
+태스크로 유지한다.
 
 ## 워크플로 동작
 
@@ -24,6 +27,8 @@ develop push
   -> Ruff / pytest / gitleaks
   -> Docker linux/amd64 build
   -> ECR push (git commit SHA tag)
+  -> Worker Task Definition revision 등록
+  -> Worker ECS Service 생성 또는 새 revision 배포
   -> ECS Task Definition revision 등록
   -> Fargate smoke task 실행 및 종료 대기
   -> Dashboard Task Definition revision 등록
@@ -92,9 +97,10 @@ AWS IAM에 GitHub OIDC provider `https://token.actions.githubusercontent.com`를
 ```
 
 `GITHUB_OIDC_PROVIDER_ARN`은 실제 계정의 GitHub OIDC provider ARN으로 치환한다. 역할에는 ECR 이미지 업로드·조회, First Cycle S3 Artifact 메타데이터 조회, ECS Task
-Definition 등록·실행·상태 조회와 Dashboard Service 갱신, 그리고 `ecsTaskExecutionRole`·
-`ecsFirstCycleTaskRole`·`ecsDashboardTaskExecutionRole` 전달에 필요한 최소 권한만
-부여한다. 신뢰 정책과 권한 정책은
+Definition 등록·실행·상태 조회, First Cycle migration 실행, Worker ECS Service 생성·갱신,
+Dashboard Service 갱신, 그리고 `ecsTaskExecutionRole`·`ecsFirstCycleTaskRole`·
+`ecsDashboardTaskExecutionRole` 전달에 필요한 최소 권한만 부여한다. 신뢰 정책과 권한
+정책은
 각각 `infra/iam/github-actions-smoke-deploy-trust-policy.json`,
 `infra/iam/github-actions-smoke-deploy-policy.json`으로 관리한다. Access Key, Secret
 Access Key, Session Token을 GitHub Secrets 또는 저장소에 등록하지 않는다.
@@ -117,16 +123,24 @@ GitHub 저장소의 **Settings → Secrets and variables → Actions → Variabl
 | `ECS_SECURITY_GROUP_IDS` | Fargate 실행에 사용하는 security group ID를 쉼표로 구분한 값 |
 | `ECS_EXECUTION_ROLE_ARN` | smoke 및 First Cycle migration Task Definition에 주입할 Execution Role ARN |
 | `ECS_FIRST_CYCLE_TASK_ROLE_ARN` | First Cycle Task Definition에 주입할 S3 읽기 Task Role ARN |
+| `ECS_FIRST_CYCLE_WORKER_SERVICE` | 지속 실행할 Worker ECS Service 이름 (`incident-awareness-engine-first-cycle-worker`) |
 | `FIRST_CYCLE_DATABASE_URL_SECRET_ARN` | First Cycle·migration DB URL Secret 전체 ARN |
 | `DASHBOARD_EXECUTION_ROLE_ARN` | Dashboard Task Definition에 주입할 Dashboard Execution Role ARN |
 | `DASHBOARD_DATABASE_URL_SECRET_ARN` | Dashboard 전용 읽기 DB URL Secret 전체 ARN |
-| `FIRST_CYCLE_S3_BUCKET` | First Cycle 입력 Artifact 버킷 이름 |
+| `FIRST_CYCLE_S3_BUCKET` | 수동 First Cycle 및 Worker 자동 입력 Artifact 버킷 이름 |
+| `FIRST_CYCLE_SQS_QUEUE_URL` | Worker가 polling할 SQS source Queue URL |
 
 워크플로는 필요한 변수 중 하나라도 비어 있으면 AWS 인증 전에 실패한다. 정책 파일을
 변경한 뒤에는 동일 내용을 GitHub OIDC 역할의 인라인 정책 또는 연결된 정책에도
 반영해야 한다. `infra/iam/`의 IAM 정책 템플릿도 실제 적용 전에 각 ARN placeholder를
 해당 환경의 정확한 ARN으로 치환한다. 저장소의 정책 파일 변경만으로 AWS IAM 권한이
 자동 변경되지는 않는다.
+
+Worker Service 배포 권한의 `ECS_CLUSTER_ARN`,
+`ECS_FIRST_CYCLE_WORKER_SERVICE_ARN`은 GitHub Actions Variable이 아니라 IAM 정책
+placeholder다. 현재 개발 환경의 cluster ARN과
+`incident-awareness-engine-first-cycle-worker` Service ARN으로 치환해 GitHub OIDC
+역할 정책에 적용한다.
 
 ## 실패 확인과 재실행
 

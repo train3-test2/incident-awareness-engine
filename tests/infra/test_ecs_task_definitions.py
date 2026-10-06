@@ -27,6 +27,13 @@ IAM_DIRECTORY = ROOT / "infra" / "iam"
             ["python", "-m", "incident_awareness.storage.migrate"],
             False,
         ),
+        (
+            "task-definition.first-cycle-worker.json",
+            "incident-awareness-engine-first-cycle-worker",
+            "incident-awareness-engine-first-cycle-worker",
+            ["python", "-m", "incident_awareness.pipeline.sqs_worker"],
+            True,
+        ),
     ],
 )
 def test_first_cycle_task_definition_contract(
@@ -66,6 +73,11 @@ def test_first_cycle_task_definition_contract(
         "awslogs-region": "ap-northeast-2",
         "awslogs-stream-prefix": "ecs",
     }
+    if filename == "task-definition.first-cycle-worker.json":
+        assert container["environment"] == [
+            {"name": "INCIDENT_AWARENESS_SQS_QUEUE_URL", "value": "SQS_QUEUE_URL"},
+            {"name": "INCIDENT_AWARENESS_S3_INPUT_BUCKET", "value": "S3_INPUT_BUCKET"},
+        ]
 
 
 def test_first_cycle_task_overrides_supply_only_run_specific_inputs() -> None:
@@ -160,6 +172,39 @@ def test_execution_role_secret_policy_is_scoped_to_first_cycle_database_url() ->
                 "Resource": ("DATABASE_URL_SECRET_ARN"),
             }
         ],
+    }
+
+
+def test_github_actions_policy_can_manage_only_the_worker_service() -> None:
+    policy = json.loads(
+        (IAM_DIRECTORY / "github-actions-smoke-deploy-policy.json").read_text(encoding="utf-8")
+    )
+    statement = next(
+        item for item in policy["Statement"] if item["Sid"] == "ManageFirstCycleWorkerService"
+    )
+
+    assert statement == {
+        "Sid": "ManageFirstCycleWorkerService",
+        "Effect": "Allow",
+        "Action": ["ecs:CreateService", "ecs:UpdateService", "ecs:DescribeServices"],
+        "Resource": "ECS_FIRST_CYCLE_WORKER_SERVICE_ARN",
+        "Condition": {"ArnEquals": {"ecs:cluster": "ECS_CLUSTER_ARN"}},
+    }
+
+
+def test_github_actions_policy_can_run_the_first_cycle_migration_task() -> None:
+    policy = json.loads(
+        (IAM_DIRECTORY / "github-actions-smoke-deploy-policy.json").read_text(encoding="utf-8")
+    )
+    statement = next(
+        item for item in policy["Statement"] if item["Sid"] == "RunFirstCycleMigrationTask"
+    )
+
+    assert statement == {
+        "Sid": "RunFirstCycleMigrationTask",
+        "Effect": "Allow",
+        "Action": "ecs:RunTask",
+        "Resource": "ECS_FIRST_CYCLE_MIGRATION_TASK_DEFINITION_ARN",
     }
 
 

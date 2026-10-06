@@ -1,0 +1,52 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListFirstCycleInputPrefix",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::incident-awareness-first-cycle-998301375101-ap-northeast-2-an",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "first-cycle/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ReadFirstCycleInputObjects",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::incident-awareness-first-cycle-998301375101-ap-northeast-2-an/first-cycle/*"
+    },
+    {
+      "Sid": "ListAutomatedSysmonInputPrefix",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::incident-awareness-first-cycle-998301375101-ap-northeast-2-an",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "incoming/first-cycle/sysmon/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ReadAutomatedSysmonInputObjects",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::incident-awareness-first-cycle-998301375101-ap-northeast-2-an/incoming/first-cycle/sysmon/*"
+    },
+    {
+      "Sid": "ConsumeAutomatedSysmonInputMessages",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage"
+      ],
+      "Resource": "arn:aws:sqs:ap-northeast-2:998301375101:incident-awareness-first-cycle-ingest"
+    }
+  ]
+}
