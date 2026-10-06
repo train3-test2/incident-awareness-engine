@@ -192,6 +192,22 @@ def test_github_actions_policy_can_manage_only_the_worker_service() -> None:
     }
 
 
+def test_github_actions_policy_can_run_the_first_cycle_migration_task() -> None:
+    policy = json.loads(
+        (IAM_DIRECTORY / "github-actions-smoke-deploy-policy.json").read_text(encoding="utf-8")
+    )
+    statement = next(
+        item for item in policy["Statement"] if item["Sid"] == "RunFirstCycleMigrationTask"
+    )
+
+    assert statement == {
+        "Sid": "RunFirstCycleMigrationTask",
+        "Effect": "Allow",
+        "Action": "ecs:RunTask",
+        "Resource": "ECS_FIRST_CYCLE_MIGRATION_TASK_DEFINITION_ARN",
+    }
+
+
 def test_dashboard_execution_role_secret_policy_is_scoped_to_dashboard_database_url() -> None:
     policy = json.loads(
         (IAM_DIRECTORY / "ecs-dashboard-task-execution-secrets-policy.json").read_text(

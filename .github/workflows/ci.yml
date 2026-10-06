@@ -155,6 +155,59 @@ jobs:
             --output text)"
           echo "arn=$task_definition_arn" >> "$GITHUB_OUTPUT"
 
+      - name: Render First Cycle migration task definition
+        run: |
+          python scripts/render_ecs_task_definition.py \
+            --template infra/ecs/task-definition.first-cycle-migrate.json \
+            --output "$RUNNER_TEMP/task-definition.first-cycle-migrate.json" \
+            --image-uri "${{ steps.image.outputs.uri }}" \
+            --execution-role-arn "$ECS_EXECUTION_ROLE_ARN" \
+            --database-url-secret-arn "$FIRST_CYCLE_DATABASE_URL_SECRET_ARN"
+
+      - name: Register First Cycle migration task definition
+        id: migration-task-definition
+        run: |
+          set -euo pipefail
+          task_definition_arn="$(aws ecs register-task-definition \
+            --cli-input-json "file://$RUNNER_TEMP/task-definition.first-cycle-migrate.json" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)"
+          echo "arn=$task_definition_arn" >> "$GITHUB_OUTPUT"
+
+      - name: Run First Cycle migrations
+        env:
+          MIGRATION_TASK_DEFINITION_ARN: ${{ steps.migration-task-definition.outputs.arn }}
+        run: |
+          set -euo pipefail
+          task_arn="$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --task-definition "$MIGRATION_TASK_DEFINITION_ARN" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$ECS_SUBNET_IDS],securityGroups=[$ECS_SECURITY_GROUP_IDS],assignPublicIp=ENABLED}" \
+            --count 1 \
+            --query 'tasks[0].taskArn' \
+            --output text)"
+          if [[ -z "$task_arn" || "$task_arn" == "None" ]]; then
+            echo "Failed to start the First Cycle migration task."
+            exit 1
+          fi
+
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$task_arn"
+          exit_code="$(aws ecs describe-tasks \
+            --cluster "$ECS_CLUSTER" \
+            --tasks "$task_arn" \
+            --query 'tasks[0].containers[0].exitCode' \
+            --output text)"
+          if [[ "$exit_code" != "0" ]]; then
+            stopped_reason="$(aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks "$task_arn" \
+              --query 'tasks[0].stoppedReason' \
+              --output text)"
+            echo "First Cycle migration task failed: exit_code=$exit_code stopped_reason=$stopped_reason"
+            exit 1
+          fi
+
       - name: Create or update Worker service
         env:
           WORKER_TASK_DEFINITION_ARN: ${{ steps.worker-task-definition.outputs.arn }}

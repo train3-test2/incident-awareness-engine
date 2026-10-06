@@ -87,7 +87,7 @@ AWS IAM에 GitHub OIDC provider `https://token.actions.githubusercontent.com`를
 ```
 
 `GITHUB_OIDC_PROVIDER_ARN`은 실제 계정의 GitHub OIDC provider ARN으로 치환한다. 역할에는 ECR 이미지 업로드·조회, First Cycle S3 Artifact 메타데이터 조회, ECS Task
-Definition 등록·실행·상태 조회, Worker ECS Service 생성·갱신, 그리고 `ecsTaskExecutionRole`·
+Definition 등록·실행·상태 조회, First Cycle migration 실행, Worker ECS Service 생성·갱신, 그리고 `ecsTaskExecutionRole`·
 `ecsFirstCycleTaskRole` 전달에 필요한 최소 권한만 부여한다. 신뢰 정책과 권한 정책은
 각각 `infra/iam/github-actions-smoke-deploy-trust-policy.json`,
 `infra/iam/github-actions-smoke-deploy-policy.json`으로 관리한다. Access Key, Secret
