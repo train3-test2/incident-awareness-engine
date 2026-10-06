@@ -109,6 +109,8 @@ GitHub 저장소의 **Settings → Secrets and variables → Actions → Variabl
 | `ECS_EXECUTION_ROLE_ARN` | smoke 및 First Cycle migration Task Definition에 주입할 Execution Role ARN |
 | `ECS_FIRST_CYCLE_TASK_ROLE_ARN` | First Cycle Task Definition에 주입할 S3 읽기 Task Role ARN |
 | `FIRST_CYCLE_DATABASE_URL_SECRET_ARN` | First Cycle·migration DB URL Secret 전체 ARN |
+| `DASHBOARD_EXECUTION_ROLE_ARN` | Dashboard Task Definition에 주입할 Dashboard Execution Role ARN |
+| `DASHBOARD_DATABASE_URL_SECRET_ARN` | Dashboard 전용 읽기 DB URL Secret 전체 ARN |
 | `FIRST_CYCLE_S3_BUCKET` | First Cycle 입력 Artifact 버킷 이름 |
 
 워크플로는 필요한 변수 중 하나라도 비어 있으면 AWS 인증 전에 실패한다. 정책 파일을

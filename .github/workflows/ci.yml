@@ -193,6 +193,20 @@ jobs:
             exit 1
           fi
 
+      - name: Validate Dashboard deployment configuration
+        shell: bash
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+
+          for value in AWS_ROLE_ARN AWS_REGION DASHBOARD_EXECUTION_ROLE_ARN DASHBOARD_DATABASE_URL_SECRET_ARN; do
+            if [[ -z "${!value//[[:space:]]/}" ]]; then
+              echo "GitHub Actions variable $value must be configured."
+              exit 1
+            fi
+          done
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
