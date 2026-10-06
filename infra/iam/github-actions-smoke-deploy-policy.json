@@ -82,6 +82,12 @@
       "Resource": "*"
     },
     {
+      "Sid": "ReadDashboardNetworkInterface",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeNetworkInterfaces",
+      "Resource": "*"
+    },
+    {
       "Sid": "PassTaskExecutionRole",
       "Effect": "Allow",
       "Action": "iam:PassRole",

@@ -301,3 +301,46 @@ jobs:
             --query 'tasks[0].lastStatus' \
             --output text | grep -Fx 'RUNNING'
           echo "task_arn=$task_arn" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize Dashboard endpoint
+        shell: bash
+        env:
+          TASK_ARN: ${{ steps.dashboard-task.outputs.task_arn }}
+          TASK_DEFINITION_ARN: ${{ steps.register-dashboard-task-definition.outputs.task_definition_arn }}
+        run: |
+          set -euo pipefail
+
+          network_interface_id="$(
+            aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks "$TASK_ARN" \
+              --query "tasks[0].attachments[?type=='ElasticNetworkInterface'].details[?name=='networkInterfaceId'].value | [0]" \
+              --output text
+          )"
+          if [[ -z "$network_interface_id" || "$network_interface_id" == "None" ]]; then
+            echo "Dashboard task has no network interface."
+            exit 1
+          fi
+
+          public_ip="$(
+            aws ec2 describe-network-interfaces \
+              --network-interface-ids "$network_interface_id" \
+              --query 'NetworkInterfaces[0].Association.PublicIp' \
+              --output text
+          )"
+          if [[ -z "$public_ip" || "$public_ip" == "None" ]]; then
+            echo "Dashboard task has no public IP address."
+            exit 1
+          fi
+
+          {
+            echo "## Dashboard deployment"
+            echo
+            echo "- Service: \`$ECS_DASHBOARD_SERVICE\`"
+            echo "- Task definition: \`$TASK_DEFINITION_ARN\`"
+            echo "- Running task: \`$TASK_ARN\`"
+            echo "- Dashboard: [http://$public_ip:8080/dashboard](http://$public_ip:8080/dashboard)"
+            echo "- Health check: \`curl --fail http://$public_ip:8080/healthz\`"
+            echo
+            echo "> Run the health check from a client IP allowed by the Dashboard task security group. The Fargate public IP changes when the task is replaced."
+          } >> "$GITHUB_STEP_SUMMARY"

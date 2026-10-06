@@ -234,3 +234,19 @@ def test_github_actions_policy_reads_dashboard_service_status() -> None:
         "Action": ["ecs:DescribeServices", "ecs:ListTasks"],
         "Resource": "*",
     }
+
+
+def test_github_actions_policy_reads_dashboard_network_interface() -> None:
+    policy = json.loads(
+        (IAM_DIRECTORY / "github-actions-smoke-deploy-policy.json").read_text(encoding="utf-8")
+    )
+    statement = next(
+        item for item in policy["Statement"] if item["Sid"] == "ReadDashboardNetworkInterface"
+    )
+
+    assert statement == {
+        "Sid": "ReadDashboardNetworkInterface",
+        "Effect": "Allow",
+        "Action": "ec2:DescribeNetworkInterfaces",
+        "Resource": "*",
+    }
