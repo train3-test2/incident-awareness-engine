@@ -159,6 +159,7 @@ def test_fusion_engine_view_serves_html_shell_without_database_access(
         "Fusion Runtime Summary",
         "Runtime Configuration",
         "Stopping Trace Summary",
+        "Score Trajectory",
         "Decision Timing",
         "Fusion Episodes",
     ):
@@ -172,6 +173,8 @@ def test_fusion_engine_view_serves_html_shell_without_database_access(
         "runtime-config-summary",
         "stopping-trace-status",
         "stopping-trace-summary",
+        "fusion-score-trajectory-status",
+        "fusion-score-trajectory",
         "decision-timing-status",
         "decision-timing-summary",
         "fusion-episodes-status",
@@ -811,6 +814,18 @@ def test_fusion_engine_assets_use_authoritative_runtime_data_and_safe_dom() -> N
         assert episode_field in script
     assert "trace.scoring_config_version" in script
     assert "trace.points.length" in script
+    for trace_point_field in (
+        "point.timestamp",
+        "point.score",
+        "point.policy_state",
+        "point.persistence_count",
+    ):
+        assert trace_point_field in script
+    assert "buildScoreTrajectoryModel(" in script
+    assert "document.createElementNS(SVG_NAMESPACE" in script
+    assert 'const SVG_NAMESPACE = "http://www.w3.org/2000/svg"' in script
+    assert "config.stopping.threshold_on" in script
+    assert "config.stopping.threshold_off" in script
     assert "payload.current_decision" in script
     assert "payload.fusion_result" in script
     assert "payload.stopping_trace" in script
@@ -839,6 +854,46 @@ def test_fusion_engine_assets_use_authoritative_runtime_data_and_safe_dom() -> N
             ".toReversed(",
         ):
             assert forbidden_api not in source
+    for forbidden_business_rule in (
+        "score >= threshold",
+        "score < threshold",
+        "persistence_count >=",
+        "Math.min(decision",
+        "Date.parse(decision.t_e",
+    ):
+        assert forbidden_business_rule not in script
+
+
+def test_fusion_engine_score_trajectory_is_accessible() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    html = client.get(f"/dashboard/runs/{RUN_ID}/fusion-engine").text
+    script = client.get("/dashboard-assets/fusion-engine.js").text
+    contract = client.get("/dashboard-assets/fusion-engine-contract.mjs").text
+
+    # Then
+    assert 'id="fusion-score-trajectory-heading"' in html
+    assert 'aria-labelledby="fusion-score-trajectory-heading"' in html
+    assert 'id="fusion-score-trajectory-status"' in html
+    assert 'role="status"' in html
+    assert 'aria-live="polite"' in html
+    assert 'svg.setAttribute("role", "img")' in script
+    assert 'svg.setAttribute(\n        "aria-labelledby"' in script
+    assert 'createSvgElement("title")' in script
+    assert 'createSvgElement("desc")' in script
+    for label in (
+        "Score",
+        "T_on",
+        "T_off",
+        "Policy ON",
+        "Policy OFF",
+        "Timestamp",
+        "Policy State",
+        "Persistence Count",
+    ):
+        assert label in script or label in contract
 
 
 def test_historical_decision_script_fetches_snapshot_json_once_without_fallback() -> None:
@@ -1025,7 +1080,11 @@ def test_detail_view_files_reference_no_external_resources_or_secrets(path: str)
     # Then
     assert response.status_code == 200
     for forbidden_marker in ("://", "@import", "DATABASE_URL", "password", "Traceback"):
-        assert forbidden_marker not in response.text
+        if path == "/dashboard-assets/fusion-engine.js" and forbidden_marker == "://":
+            assert response.text.count("://") == 1
+            assert '"http://www.w3.org/2000/svg"' in response.text
+        else:
+            assert forbidden_marker not in response.text
 
 
 def test_run_detail_view_uses_only_its_external_module_script() -> None:

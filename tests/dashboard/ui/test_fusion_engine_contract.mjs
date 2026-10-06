@@ -7,9 +7,67 @@ import test from "node:test";
 import {
     buildFusionEngineApiPath,
     buildFusionEngineViewPath,
+    buildScoreTrajectoryModel,
     extractFusionEngineRunIdFromPathname,
     resolveFusionEngineQueryState,
 } from "../../../src/incident_awareness/dashboard/ui/assets/fusion-engine-contract.mjs";
+
+const CHART_DIMENSIONS = {
+    width: 100,
+    height: 100,
+    padding: { top: 10, right: 10, bottom: 10, left: 10 },
+};
+
+function makeTrace(points = [
+    {
+        timestamp: "2026-10-05T01:00:00.000Z",
+        score: 0,
+        persistence_count: null,
+        policy_state: "off",
+    },
+    {
+        timestamp: "2026-10-05T01:00:10.000Z",
+        score: 0.5,
+        persistence_count: 1,
+        policy_state: "off",
+    },
+    {
+        timestamp: "2026-10-05T01:00:20.000Z",
+        score: 1,
+        persistence_count: 2,
+        policy_state: "on",
+    },
+]) {
+    return { points };
+}
+
+function makeRuntimeConfig() {
+    return {
+        stopping: {
+            threshold_on: 0.8,
+            threshold_off: 0.4,
+            persistence_k: 2,
+        },
+    };
+}
+
+function assertFiniteGeometry(value) {
+    if (typeof value === "number") {
+        assert.equal(Number.isFinite(value), true);
+        return;
+    }
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            assertFiniteGeometry(item);
+        }
+        return;
+    }
+    if (value !== null && typeof value === "object") {
+        for (const item of Object.values(value)) {
+            assertFiniteGeometry(item);
+        }
+    }
+}
 
 function makePayload() {
     return {
@@ -207,6 +265,166 @@ test("Fusion Engine query state rejects malformed results and payloads", () => {
     );
 });
 
+test("Score trajectory preserves point order and maps score zero and one", () => {
+    // Given
+    const trace = makeTrace();
+
+    // When
+    const model = buildScoreTrajectoryModel(trace, makeRuntimeConfig(), CHART_DIMENSIONS);
+
+    // Then
+    assert.deepEqual(
+        model.points.map((point) => point.timestamp),
+        trace.points.map((point) => point.timestamp),
+    );
+    assert.equal(model.points[0].y, 90);
+    assert.equal(model.points[1].y, 50);
+    assert.equal(model.points[2].y, 10);
+});
+
+test("Score trajectory maps intermediate scores without changing them", () => {
+    // Given
+    const trace = makeTrace([
+        {
+            timestamp: "2026-10-05T01:00:00.000Z",
+            score: 0.25,
+            persistence_count: null,
+            policy_state: "off",
+        },
+    ]);
+
+    // When
+    const model = buildScoreTrajectoryModel(trace, null, CHART_DIMENSIONS);
+
+    // Then
+    assert.equal(model.points[0].score, 0.25);
+    assert.equal(model.points[0].y, 70);
+});
+
+test("Single score point uses a finite centered x-coordinate", () => {
+    // Given
+    const trace = makeTrace([makeTrace().points[0]]);
+
+    // When
+    const model = buildScoreTrajectoryModel(trace, makeRuntimeConfig(), CHART_DIMENSIONS);
+
+    // Then
+    assert.equal(model.points[0].x, 50);
+    assert.equal(Number.isFinite(model.points[0].x), true);
+});
+
+test("Multiple timestamps map monotonically without reordering", () => {
+    // Given
+    const trace = makeTrace();
+
+    // When
+    const model = buildScoreTrajectoryModel(trace, null, CHART_DIMENSIONS);
+
+    // Then
+    assert.deepEqual(model.points.map((point) => point.x), [10, 50, 90]);
+    assert.strictEqual(model.points[0].timestamp, trace.points[0].timestamp);
+    assert.strictEqual(model.points[2].timestamp, trace.points[2].timestamp);
+});
+
+test("Score trajectory maps stored threshold geometry without classifying points", () => {
+    // Given
+    const config = makeRuntimeConfig();
+
+    // When
+    const model = buildScoreTrajectoryModel(makeTrace(), config, CHART_DIMENSIONS);
+
+    // Then
+    assert.deepEqual(
+        model.thresholds.map(({ kind, label, value }) => ({ kind, label, value })),
+        [
+            { kind: "on", label: "T_on", value: 0.8 },
+            { kind: "off", label: "T_off", value: 0.4 },
+        ],
+    );
+    assert.ok(Math.abs(model.thresholds[0].y - 26) < Number.EPSILON * 100);
+    assert.ok(Math.abs(model.thresholds[1].y - 58) < Number.EPSILON * 100);
+});
+
+test("Score trajectory omits thresholds when Runtime Config is absent", () => {
+    // Given
+    const trace = makeTrace();
+
+    // When
+    const model = buildScoreTrajectoryModel(trace, null, CHART_DIMENSIONS);
+
+    // Then
+    assert.deepEqual(model.thresholds, []);
+    assert.equal(model.points.length, trace.points.length);
+});
+
+test("Score trajectory handles empty points without invalid geometry", () => {
+    // Given
+    const trace = makeTrace([]);
+
+    // When
+    const model = buildScoreTrajectoryModel(trace, null, CHART_DIMENSIONS);
+
+    // Then
+    assert.deepEqual(model.points, []);
+    assertFiniteGeometry(model);
+});
+
+test("Score trajectory preserves policy state and nullable persistence count", () => {
+    // Given
+    const trace = makeTrace();
+
+    // When
+    const model = buildScoreTrajectoryModel(trace, makeRuntimeConfig(), CHART_DIMENSIONS);
+
+    // Then
+    assert.deepEqual(
+        model.points.map((point) => point.policy_state),
+        ["off", "off", "on"],
+    );
+    assert.deepEqual(
+        model.points.map((point) => point.persistence_count),
+        [null, 1, 2],
+    );
+});
+
+test("Score trajectory does not mutate inputs or emit NaN and Infinity", () => {
+    // Given
+    const trace = makeTrace();
+    const config = makeRuntimeConfig();
+    const dimensions = structuredClone(CHART_DIMENSIONS);
+    const inputsBefore = structuredClone({ trace, config, dimensions });
+
+    // When
+    const model = buildScoreTrajectoryModel(trace, config, dimensions);
+
+    // Then
+    assert.deepEqual({ trace, config, dimensions }, inputsBefore);
+    assertFiniteGeometry(model);
+});
+
+test("Score trajectory rejects malformed trace and dimensions", () => {
+    // Given
+    const invalidDimensions = {
+        width: 20,
+        height: 20,
+        padding: { top: 10, right: 10, bottom: 10, left: 10 },
+    };
+
+    // When / Then
+    assert.throws(
+        () => buildScoreTrajectoryModel(null, null, CHART_DIMENSIONS),
+        TypeError,
+    );
+    assert.throws(
+        () => buildScoreTrajectoryModel({ points: null }, null, CHART_DIMENSIONS),
+        TypeError,
+    );
+    assert.throws(
+        () => buildScoreTrajectoryModel(makeTrace(), null, invalidDimensions),
+        RangeError,
+    );
+});
+
 test("Fusion Engine contract remains independent of browser and network APIs", async () => {
     // Given
     const contractUrl = new URL(
@@ -226,6 +444,10 @@ test("Fusion Engine contract remains independent of browser and network APIs", a
         "setTimeout(",
         "setInterval(",
         "AbortController",
+        ".sort(",
+        ".toSorted(",
+        ".reverse(",
+        ".toReversed(",
     ]) {
         assert.equal(source.includes(forbiddenApi), false);
     }
