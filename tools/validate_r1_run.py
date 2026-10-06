@@ -4,13 +4,14 @@ Thin CLI over `incident_awareness.collection.r1_pilot_validation`. The rules liv
 in that module so they can be tested without going through a subprocess.
 
     uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run_id> \
-        --scenario <scenario.json rendered for the run> --dataset-tier <tier>
+        --scenario <scenario.json rendered for the run>
     uv run python tools/validate_r1_run.py --artifact-root <rehearsal-root> --run-id <run_id> \
-        --scenario <scenario.json rendered for the run> --dataset-tier pilot --rehearsal
+        --scenario <scenario.json rendered for the run> --rehearsal
 
-`--dataset-tier` is the tier the run is expected to be: `pilot`, `development` or
-`holdout`. It is required and has no default. The run passes only when its
-operator trace states exactly that tier, and a rehearsal is always `pilot`.
+There is no option for the dataset tier. The rendered scenario states the tier
+of its Pair (`tools/r1_scenario_to_json.py --dataset-tier`), and the run passes
+only when its operator trace states exactly that tier. A scenario that states no
+tier is refused, and the scenario of a rehearsal has to say `pilot`.
 
 `--scenario` is the JSON `tools/r1_scenario_to_json.py` rendered for the Pair this
 run belongs to. It carries the planned lineage, the family, variation and
@@ -21,8 +22,8 @@ not judged here: no approved lineage policy is part of the scenario.
 It has to be the file the run executed. The runner keeps the bytes it read and
 their SHA-256 under `operator_trace/<run_id>/` of the artifact root, and the
 validator refuses a scenario with another digest, a run without that trace and
-a trace whose `dataset_tier` is not the one given with `--dataset-tier`. A copy
-of the same bytes at another path is the same scenario.
+a trace whose `dataset_tier` is not the one the scenario states. A copy of the
+same bytes at another path is the same scenario.
 
 `--record-out` also stores the printed report as the lineage record of the run
 (`docs/scenarios/r1.md` section 6). It is operator evidence: keep it next to the
@@ -42,7 +43,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from incident_awareness.collection.r1_pilot_validation import (
-    DATASET_TIERS,
     R1ReportError,
     format_report,
     validate_r1_pilot_run,
@@ -66,12 +66,6 @@ def main() -> int:
         help="scenario JSON rendered for this run by tools/r1_scenario_to_json.py",
     )
     parser.add_argument(
-        "--dataset-tier",
-        required=True,
-        choices=DATASET_TIERS,
-        help="the tier the operator trace of the run has to state; there is no default",
-    )
-    parser.add_argument(
         "--rehearsal",
         action="store_true",
         help="accept rehearsal artifacts; they are not a valid R1 collection",
@@ -88,7 +82,6 @@ def main() -> int:
         artifact_root=args.artifact_root,
         run_id=args.run_id,
         scenario_path=args.scenario,
-        dataset_tier=args.dataset_tier,
         rehearsal=args.rehearsal,
     )
     print(format_report(report))

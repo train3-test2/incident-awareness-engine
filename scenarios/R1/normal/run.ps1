@@ -21,8 +21,12 @@
         file name or an argument.
 
         The family, the variation and the repetition of the Pair are read from
-        scenario.json and written to RunMetadata. This script takes no parameter
-        for them: both runs of a Pair use one rendered scenario.json.
+        scenario.json and written to RunMetadata. The dataset tier of the Pair
+        (pilot, development or holdout) is read from scenario.json too and
+        written to the operator trace of the run. This script takes no parameter
+        for any of them: both runs of a Pair use one rendered scenario.json, and
+        the tier is given once, when that file is rendered
+        (tools/r1_scenario_to_json.py --dataset-tier).
 
         -DryRun validates every input, builds the launch plan and prints it. It
         opens no session and starts nothing, so it can be run anywhere.
@@ -45,14 +49,8 @@
 
     .PARAMETER ObservationSec
         Length of the observation window in seconds from the start of the run. It
-        has to cover the last action; the evaluation horizon itself is not decided
-        (docs/scenarios/r1.md section 11-4), so the value is a run input.
-
-    .PARAMETER DatasetTier
-        pilot, development or holdout, spelled exactly so. It is written to the
-        operator trace of the run and has no default: a run without it, or with
-        another value, is refused before anything is created. A rehearsal takes
-        pilot only. Both runs of a Pair are given the same value.
+        has to cover the last action and the evaluation horizon the scenario
+        states (docs/scenarios/r1.md section 11-4).
 
     .PARAMETER TargetAddress
         Name or address the Controller uses to reach Target-A over WinRM. It is
@@ -63,7 +61,7 @@
 
     .EXAMPLE
         .\run.ps1 -RunId RUN-YYYYMMDD-NNN -ScenarioJsonPath C:\Tools\R1\scenario.json `
-            -DataRoot C:\R1\data -WorkDir C:\R1\work -ObservationSec 660 -DatasetTier pilot -DryRun
+            -DataRoot C:\R1\data -WorkDir C:\R1\work -ObservationSec 660 -DryRun
 #>
 
 [CmdletBinding()]
@@ -73,7 +71,6 @@ param(
     [Parameter(Mandatory = $true)][string]$DataRoot,
     [Parameter(Mandatory = $true)][string]$WorkDir,
     [Parameter(Mandatory = $true)][int]$ObservationSec,
-    [string]$DatasetTier,
     [string]$VmSnapshot,
     [string]$TargetAddress,
     [int]$WinRmPort = 0,
@@ -110,7 +107,7 @@ if (-not $DryRun) {
 }
 
 Invoke-R1PilotRun -RunType "normal" -RunId $RunId -ScenarioJsonPath $ScenarioJsonPath `
-    -DataRoot $DataRoot -WorkDir $WorkDir -ObservationSec $ObservationSec -DatasetTier $DatasetTier `
+    -DataRoot $DataRoot -WorkDir $WorkDir -ObservationSec $ObservationSec `
     -VmSnapshot $VmSnapshot -TargetSysmonBinary $TargetSysmonBinary `
     -TargetSysmonConfigPath $TargetSysmonConfigPath `
     -ExpectedSysmonConfigSha256 $ExpectedSysmonConfigSha256 `

@@ -97,12 +97,13 @@ $R1_TRACE_FILE = "r1_run_trace.json"
 $R1_TRACE_SCENARIO_FILE = "scenario.json"
 $R1_TRACE_VERSION = "v1"
 
-# The dataset tier of a run is a run input. It is stated for every run, written
-# to the operator trace and never defaulted: a value that is missing or is not
-# one of these is refused before anything is created. "pilot" is every run that
-# is not formal data, and a rehearsal is always one. "development" and "holdout"
-# are the two splits of the formal data (README section 1-3). What a run may be
-# selected for is read from its trace.
+# The dataset tier belongs to the Pair. The rendered scenario states it once for
+# both runs (tools/r1_scenario_to_json.py --dataset-tier) and the runner has no
+# parameter for it: it reads the value, refuses one that is missing or is not one
+# of these before anything is created, and writes it to the operator trace
+# unchanged. "pilot" is every run outside the formal pools, and a rehearsal is
+# always one. "development" and "holdout" are the two formal pools (README
+# section 1-3).
 $R1_DATASET_TIERS = @("pilot", "development", "holdout")
 $R1_REHEARSAL_TIER = "pilot"
 
@@ -554,28 +555,36 @@ function Write-R1NewFile {
     }
 }
 
-function Assert-R1DatasetTier {
+function Get-R1DatasetTier {
     <#
-        Refuse a dataset tier that is missing or is not one this runner writes.
+        The dataset tier a rendered scenario states for its Pair.
 
-        The comparison is exact: "Pilot" or " development" is not a tier. A
-        rehearsal is never formal data, so it takes "pilot" only.
+        The scenario is the only source, as it is for the identity of the Pair:
+        both runs read one rendered file and therefore record one tier. Nothing
+        stands in for a value that is missing, null or empty. The comparison is
+        exact: "Pilot" or " development" is not a tier, and a value that is not
+        a string is none. A rehearsal is never formal data, so its scenario has
+        to state "pilot".
     #>
     param(
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DatasetTier,
+        [Parameter(Mandatory = $true)]$Scenario,
         [switch]$Rehearsal
     )
 
-    if ([string]::IsNullOrEmpty($DatasetTier)) {
-        throw ("DatasetTier is required: one of " + ($R1_DATASET_TIERS -join ", ") + ". There is no default")
+    $value = Get-R1Value $Scenario "dataset_tier"
+    if ($null -eq $value -or ($value -is [string] -and $value.Length -eq 0)) {
+        throw ("dataset_tier is missing from the scenario: one of " + ($R1_DATASET_TIERS -join ", ") +
+            ". There is no default; state it when rendering scenario.json (--dataset-tier)")
     }
-    if (-not ($R1_DATASET_TIERS -ccontains $DatasetTier)) {
-        throw ("DatasetTier must be one of " + ($R1_DATASET_TIERS -join ", ") + ", found '" + $DatasetTier + "'")
+    if ($value -isnot [string] -or -not ($R1_DATASET_TIERS -ccontains $value)) {
+        throw ("dataset_tier must be one of " + ($R1_DATASET_TIERS -join ", ") + ", found '" +
+            [string]$value + "'")
     }
-    if ($Rehearsal -and $DatasetTier -cne $R1_REHEARSAL_TIER) {
-        throw ("a rehearsal is not formal data: DatasetTier must be " + $R1_REHEARSAL_TIER +
-            " with -Rehearsal, found '" + $DatasetTier + "'")
+    if ($Rehearsal -and $value -cne $R1_REHEARSAL_TIER) {
+        throw ("a rehearsal is not formal data: its scenario has to state dataset_tier " +
+            $R1_REHEARSAL_TIER + ", found '" + $value + "'")
     }
+    return $value
 }
 
 function Write-R1RunTrace {
@@ -586,8 +595,8 @@ function Write-R1RunTrace {
         <root>\operator_trace\<run_id>\:
 
             scenario.json        the bytes the plan of this run was built from
-            r1_run_trace.json    run_id, mode, dataset tier and the SHA-256 of
-                                 those bytes
+            r1_run_trace.json    run_id, mode, the dataset tier the scenario
+                                 states and the SHA-256 of those bytes
 
         The host validator refuses a run whose trace is missing or whose
         scenario is not the one given to it, so a scenario edited after the run
@@ -600,14 +609,14 @@ function Write-R1RunTrace {
         [Parameter(Mandatory = $true)][string]$EffectiveRoot,
         [Parameter(Mandatory = $true)][string]$RunId,
         [Parameter(Mandatory = $true)][string]$Mode,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DatasetTier,
+        [Parameter(Mandatory = $true)]$Scenario,
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][byte[]]$ScenarioBytes,
         [Parameter(Mandatory = $true)][string]$ScenarioSha256
     )
 
-    # Checked again where the value is written: a trace never carries a tier
-    # this runner does not know.
-    Assert-R1DatasetTier -DatasetTier $DatasetTier -Rehearsal:($Mode -eq "rehearsal")
+    # Read again where the value is written, from the scenario and from nowhere
+    # else: a trace never carries a tier its scenario does not state.
+    $datasetTier = Get-R1DatasetTier -Scenario $Scenario -Rehearsal:($Mode -eq "rehearsal")
     Assert-R1TraceAvailable -EffectiveRoot $EffectiveRoot -RunId $RunId
     $traceDir = Get-R1TraceDirectory -EffectiveRoot $EffectiveRoot -RunId $RunId
     New-Item -ItemType Directory -Path $traceDir -Force | Out-Null
@@ -617,7 +626,7 @@ function Write-R1RunTrace {
     $trace = [ordered]@{
         trace_version   = $R1_TRACE_VERSION
         run_id          = $RunId
-        dataset_tier    = $DatasetTier
+        dataset_tier    = $datasetTier
         mode            = $Mode
         scenario_sha256 = $ScenarioSha256
     }
@@ -634,9 +643,9 @@ function Assert-R1RunInputs {
 
         A value that is missing or malformed throws here, so a refused run leaves
         no directory, no session and no process behind. Returns the parsed
-        scenario, the bytes it was parsed from and their SHA-256, the identity of
-        the Pair, the action list of this run type and the connection approval
-        ($null when the connection is skipped).
+        scenario, the bytes it was parsed from and their SHA-256, the identity
+        and the dataset tier of the Pair, the action list of this run type and
+        the connection approval ($null when the connection is skipped).
     #>
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$RunType,
@@ -645,7 +654,6 @@ function Assert-R1RunInputs {
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DataRoot,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$WorkDir,
         [Parameter(Mandatory = $true)][int]$ObservationSec,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DatasetTier,
         [switch]$Rehearsal,
         [switch]$DryRun
     )
@@ -653,7 +661,6 @@ function Assert-R1RunInputs {
     if (-not ($R1_RUN_TYPES -contains $RunType)) {
         throw ("RunType must be one of " + ($R1_RUN_TYPES -join ", ") + ", found '" + $RunType + "'")
     }
-    Assert-R1DatasetTier -DatasetTier $DatasetTier -Rehearsal:$Rehearsal
     if (-not (Test-RunId -RunId $RunId)) {
         throw "run_id must match RUN-YYYYMMDD-NNN with a real date: '$RunId'"
     }
@@ -676,13 +683,14 @@ function Assert-R1RunInputs {
     }
 
     $identity = Get-R1PairIdentity -Scenario $scenario
+    $datasetTier = Get-R1DatasetTier -Scenario $scenario -Rehearsal:$Rehearsal
 
     $run = Get-R1Value (Get-R1Value $scenario "runs") $RunType
     if ($null -eq $run) { throw ("runs." + $RunType + " is missing from the scenario") }
 
-    # The identity of a Pair is stated once for both runs. A run that stated its
-    # own could disagree with the other run of the Pair.
-    foreach ($name in @("family_id", "variation_id", "repetition")) {
+    # The identity and the tier of a Pair are stated once for both runs. A run
+    # that stated its own could disagree with the other run of the Pair.
+    foreach ($name in @("family_id", "variation_id", "repetition", "dataset_tier")) {
         if ($null -ne $run.PSObject.Properties[$name]) {
             throw ("runs." + $RunType + " states " + $name + "; a Pair states it once at the top level")
         }
@@ -717,6 +725,19 @@ function Assert-R1RunInputs {
             "reference (docs/scenarios/r1.md section 4-2)")
     } else {
         $referenceActionId = $null
+    }
+
+    # A reference is only readable together with the policy it was taken under,
+    # and both runs of the Pair record that version. A scenario whose attack run
+    # names a reference action therefore has to state it, whichever run this is.
+    # No particular version is expected: the value is the scenario's.
+    $attackRun = Get-R1Value (Get-R1Value $scenario "runs") "attack"
+    if (-not [string]::IsNullOrEmpty([string](Get-R1Value $attackRun "reference_action_id"))) {
+        $policyVersion = Get-R1Value (Get-R1Value $scenario "run_metadata") "reference_policy_version"
+        if ($policyVersion -isnot [string] -or [string]::IsNullOrWhiteSpace($policyVersion)) {
+            throw ("run_metadata.reference_policy_version must be a non-blank string when " +
+                "runs.attack.reference_action_id is set, found '" + [string]$policyVersion + "'")
+        }
     }
 
     $lastOffset = 0
@@ -767,7 +788,7 @@ function Assert-R1RunInputs {
         actions         = $actions
         approval        = $approval
         last_offset     = $lastOffset
-        dataset_tier    = $DatasetTier
+        dataset_tier    = $datasetTier
         reference_action_id    = $referenceActionId
         evaluation_horizon_sec = [int]$horizon
     }
@@ -1431,10 +1452,11 @@ function Invoke-R1PilotRun {
         connection, writes under _rehearsal, does not stop on step 7 and is not
         held to the horizon of step 8. Its attack run still needs its reference.
 
-        The dataset tier is an input with no default. It is checked with the
-        other inputs in step 1 and written to the operator trace of the run; a
-        rehearsal takes pilot only. A dry run checks it too and writes nothing,
-        the trace included.
+        The dataset tier is not an input of a run. It is read from the scenario
+        in step 1, where the identity of the Pair is read, and written to the
+        operator trace of the run; the scenario of a rehearsal has to state
+        pilot. A dry run reads and reports it too and writes nothing, the trace
+        included.
 
         Transport, NowProvider and Sleeper are the seams the guard tests replace.
     #>
@@ -1445,7 +1467,6 @@ function Invoke-R1PilotRun {
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DataRoot,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$WorkDir,
         [Parameter(Mandatory = $true)][int]$ObservationSec,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DatasetTier,
         [AllowEmptyString()][string]$VmSnapshot,
         [AllowEmptyString()][string]$TargetSysmonBinary,
         [AllowEmptyString()][string]$TargetSysmonConfigPath,
@@ -1460,7 +1481,7 @@ function Invoke-R1PilotRun {
 
     $inputs = Assert-R1RunInputs -RunType $RunType -RunId $RunId -ScenarioJsonPath $ScenarioJsonPath `
         -DataRoot $DataRoot -WorkDir $WorkDir -ObservationSec $ObservationSec `
-        -DatasetTier $DatasetTier -Rehearsal:$Rehearsal -DryRun:$DryRun
+        -Rehearsal:$Rehearsal -DryRun:$DryRun
     $scenario = $inputs.scenario
     $identity = $inputs.identity
     $approval = $inputs.approval
@@ -1477,12 +1498,12 @@ function Invoke-R1PilotRun {
         Write-Ok ("dry run: the final tool command is " + $plan.final.command_line)
         Write-Ok ("dry run: " + $pairLine)
         Write-Ok ("dry run: scenario sha256=" + $inputs.scenario_sha256)
-        Write-Ok ("dry run: dataset_tier=" + $DatasetTier)
+        Write-Ok ("dry run: dataset_tier=" + $inputs.dataset_tier + " (stated by the scenario)")
         return [ordered]@{
             mode            = "dry_run"
             run_id          = $RunId
             run_type        = $RunType
-            dataset_tier    = $DatasetTier
+            dataset_tier    = $inputs.dataset_tier
             identity        = $identity
             plan            = $plan
             connection      = $approval
@@ -1570,9 +1591,9 @@ function Invoke-R1PilotRun {
         # Kept before the first action: from here on the record of this run_id
         # names the bytes its plan was built from, whatever happens to the file.
         $traceDir = Write-R1RunTrace -EffectiveRoot $effectiveRoot -RunId $RunId -Mode $mode `
-            -DatasetTier $DatasetTier -ScenarioBytes $inputs.scenario_bytes `
+            -Scenario $scenario -ScenarioBytes $inputs.scenario_bytes `
             -ScenarioSha256 $inputs.scenario_sha256
-        Write-Ok ("operator trace written: dataset_tier=" + $DatasetTier + " mode=" + $mode +
+        Write-Ok ("operator trace written: dataset_tier=" + $inputs.dataset_tier + " mode=" + $mode +
             " scenario sha256=" + $inputs.scenario_sha256)
 
         $context = [ordered]@{
@@ -1821,7 +1842,7 @@ function Invoke-R1PilotRun {
             telemetry_dir    = $telemetryDir
             ground_truth_dir = $groundTruthDir
             trace_dir        = $traceDir
-            dataset_tier     = $DatasetTier
+            dataset_tier     = $inputs.dataset_tier
             scenario_sha256  = $inputs.scenario_sha256
             reference        = [ordered]@{
                 reference_action_id       = $inputs.reference_action_id

@@ -12,6 +12,7 @@ the design of the run type Ground Truth names, never by a process name alone.
 
 import ast
 import hashlib
+import inspect
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -119,20 +120,24 @@ def scenario(
     attack_reference: object = "A01",
     normal_reference: object = None,
     horizon: object = HORIZON_SEC,
+    dataset_tier: object = "pilot",
+    policy_version: object = POLICY_VERSION,
 ) -> dict:
     """The part of a rendered R1 scenario the validator reads.
 
     `planned_lineage` is what each run is planned to leave. The attack run names
-    its reference action; the normal run names none.
+    its reference action; the normal run names none. `dataset_tier` is the tier
+    the scenario states for its Pair; `OMITTED` leaves the field out.
     """
     references = {"normal": normal_reference, "attack": attack_reference}
-    return {
+    rendered = {
         "scenario_version": "v1",
         "scenario_id": "R1",
         "family_id": family_id,
         "variation_id": variation_id,
         "repetition": repetition,
-        "run_metadata": {"target_host": target_host, "reference_policy_version": POLICY_VERSION},
+        "dataset_tier": dataset_tier,
+        "run_metadata": {"target_host": target_host, "reference_policy_version": policy_version},
         "run_length": {"observation_sec": None, "evaluation_horizon_sec": horizon},
         "internal_connection": {
             "required": True,
@@ -168,6 +173,9 @@ def scenario(
             for run_type in ("normal", "attack")
         },
     }
+    if dataset_tier is OMITTED:
+        del rendered["dataset_tier"]
+    return rendered
 
 
 def process_event(
@@ -411,13 +419,26 @@ def trace_dir(root: Path) -> Path:
     return root / "operator_trace" / RUN_ID
 
 
+def stated_tier(scenario_bytes: bytes) -> object:
+    """The tier the runner copies to the trace: the one the scenario states.
+
+    A scenario that cannot be read or states none gets `pilot`, so that the tests
+    about such a scenario do not depend on what the trace says.
+    """
+    try:
+        return json.loads(scenario_bytes).get("dataset_tier", "pilot")
+    except (ValueError, AttributeError):
+        return "pilot"
+
+
 def write_trace(
     root: Path, scenario_bytes: bytes, *, rehearsal: bool = False, **stated: object
 ) -> None:
     """Write the operator trace the runner leaves for a run that executed these bytes.
 
-    The scenario copy and the record are written the way the runner writes them.
-    `stated` replaces values of the record, for the tests that break it.
+    The scenario copy and the record are written the way the runner writes them:
+    the tier of the record is the one the scenario states. `stated` replaces
+    values of the record, for the tests that break it.
     """
     directory = trace_dir(root)
     directory.mkdir(parents=True, exist_ok=True)
@@ -425,7 +446,7 @@ def write_trace(
     record = {
         "trace_version": "v1",
         "run_id": RUN_ID,
-        "dataset_tier": "pilot",
+        "dataset_tier": stated_tier(scenario_bytes),
         "mode": "rehearsal" if rehearsal else "collection",
         "scenario_sha256": hashlib.sha256(scenario_bytes).hexdigest(),
     }
@@ -433,17 +454,13 @@ def write_trace(
     (directory / "r1_run_trace.json").write_text(json.dumps(record, indent=4), encoding="utf-8")
 
 
-def validate(
-    run: tuple[Path, Path], *, rehearsal: bool = False, dataset_tier: str = "pilot"
-) -> R1PilotValidationReport:
-    # The cases that are not about the tier expect pilot, the tier write_trace
-    # records unless told otherwise. This default is the helper's; the validator has none.
+def validate(run: tuple[Path, Path], *, rehearsal: bool = False) -> R1PilotValidationReport:
+    # The validator is given no tier: it reads the one the scenario states.
     root, scenario_path = run
     return validate_r1_pilot_run(
         artifact_root=root,
         run_id=RUN_ID,
         scenario_path=scenario_path,
-        dataset_tier=dataset_tier,
         rehearsal=rehearsal,
     )
 
@@ -657,9 +674,7 @@ def test_missing_artifact_stops_the_validation(tmp_path: Path) -> None:
 def test_rejected_run_id_touches_nothing(tmp_path: Path, run_id: str) -> None:
     root, scenario_path = build_run(tmp_path)
 
-    report = validate_r1_pilot_run(
-        artifact_root=root, run_id=run_id, scenario_path=scenario_path, dataset_tier="pilot"
-    )
+    report = validate_r1_pilot_run(artifact_root=root, run_id=run_id, scenario_path=scenario_path)
 
     assert not report.ok
     assert len(report.errors) == 1
@@ -1151,6 +1166,49 @@ def test_normal_run_is_not_held_to_a_horizon_from_a_reference(tmp_path: Path) ->
     assert "evaluation horizon" not in "\n".join(report.checks)
 
 
+@pytest.mark.parametrize("version", [None, "", "   ", 7], ids=["null", "empty", "blank", "number"])
+@pytest.mark.parametrize("run_type", ["attack", "normal"])
+def test_scenario_naming_an_attack_reference_without_a_policy_version_is_refused(
+    tmp_path: Path, run_type: str, version: object
+) -> None:
+    # Given: a scenario that names the attack reference action and states no usable policy
+    # version, and a run_metadata that records none either - two missing values that an
+    # equality check alone would accept
+    run = build_run(
+        tmp_path,
+        run_type=run_type,
+        scenario_body=scenario(policy_version=version),
+        metadata={"reference_policy_version": None},
+    )
+
+    report = validate(run)
+
+    # Then: both runs of the Pair are refused on the scenario, before anything is compared
+    assert not report.ok
+    assert (
+        "run_metadata.reference_policy_version must be a non-blank string when "
+        f"runs.attack.reference_action_id is set, found {version!r}"
+    ) in errors_of(report)
+    assert report.lineage is None
+    assert "PASS" not in format_report(report)
+
+
+def test_any_stated_policy_version_is_accepted_when_the_run_records_the_same(
+    tmp_path: Path,
+) -> None:
+    # No version is fixed in the validator: the scenario states it and the run records it.
+    run = build_run(
+        tmp_path,
+        run_type="attack",
+        scenario_body=scenario(policy_version="synthetic-ref-v9"),
+        metadata={"reference_policy_version": "synthetic-ref-v9"},
+    )
+
+    report = validate(run)
+
+    assert report.ok, report.errors
+
+
 def test_reference_policy_version_has_to_be_the_one_of_the_scenario(tmp_path: Path) -> None:
     run = build_run(tmp_path, run_type="attack", metadata={"reference_policy_version": "other"})
 
@@ -1561,12 +1619,15 @@ def test_run_bound_to_its_scenario_passes_and_reports_the_binding(tmp_path: Path
         "the operator trace, the scenario the run kept and the scenario given to the validator "
         f"are the same bytes: sha256={digest}"
     ) in report.checks
-    assert "the operator trace names this run: dataset_tier=pilot mode=collection" in report.checks
+    assert (
+        "the operator trace names this run and carries the tier its scenario states: "
+        "dataset_tier=pilot mode=collection"
+    ) in report.checks
 
     text = format_report(report)
     assert "tier        : pilot" in text
     assert f"scenario    : sha256={digest}" in text
-    assert "a formal evaluation selector has to leave such a run out" in text
+    assert "a formal selector has to leave such a run out" in text
     assert "operator trace" in text.splitlines()[-1]
 
 
@@ -1618,11 +1679,20 @@ def test_operator_trace_that_is_not_a_json_object_is_refused(
     [
         ({"run_id": OTHER_RUN_ID}, f"run_id is '{OTHER_RUN_ID}', expected '{RUN_ID}'"),
         ({"run_id": None}, f"run_id is None, expected '{RUN_ID}'"),
-        ({"dataset_tier": "formal"}, "dataset_tier is 'formal', expected 'pilot'"),
-        ({"dataset_tier": "Pilot"}, "dataset_tier is 'Pilot', expected 'pilot'"),
-        ({"dataset_tier": ""}, "dataset_tier is '', expected 'pilot'"),
-        ({"dataset_tier": None}, "dataset_tier is None, expected 'pilot'"),
-        ({"dataset_tier": ["pilot"]}, "dataset_tier is ['pilot'], expected 'pilot'"),
+        (
+            {"dataset_tier": "formal"},
+            "dataset_tier is 'formal', the rendered scenario states 'pilot'",
+        ),
+        (
+            {"dataset_tier": "Pilot"},
+            "dataset_tier is 'Pilot', the rendered scenario states 'pilot'",
+        ),
+        ({"dataset_tier": ""}, "dataset_tier is '', the rendered scenario states 'pilot'"),
+        ({"dataset_tier": None}, "dataset_tier is None, the rendered scenario states 'pilot'"),
+        (
+            {"dataset_tier": ["pilot"]},
+            "dataset_tier is ['pilot'], the rendered scenario states 'pilot'",
+        ),
         ({"trace_version": "v2"}, "trace_version is 'v2', expected 'v1'"),
         ({"trace_version": 1}, "trace_version is 1, expected 'v1'"),
         ({"mode": "rehearsal"}, "mode is 'rehearsal', expected 'collection'"),
@@ -1766,9 +1836,7 @@ def test_copy_of_the_scenario_at_another_path_is_accepted(tmp_path: Path) -> Non
     elsewhere.parent.mkdir()
     elsewhere.write_bytes(scenario_path.read_bytes())
 
-    report = validate_r1_pilot_run(
-        artifact_root=root, run_id=RUN_ID, scenario_path=elsewhere, dataset_tier="pilot"
-    )
+    report = validate_r1_pilot_run(artifact_root=root, run_id=RUN_ID, scenario_path=elsewhere)
 
     assert report.ok, report.errors
 
@@ -1777,7 +1845,6 @@ def test_copy_of_the_scenario_at_another_path_is_accepted(tmp_path: Path) -> Non
         artifact_root=root,
         run_id=RUN_ID,
         scenario_path=trace_dir(root) / "scenario.json",
-        dataset_tier="pilot",
     )
     assert kept.ok, kept.errors
 
@@ -1838,108 +1905,171 @@ def test_every_problem_of_a_trace_is_reported(tmp_path: Path) -> None:
 
     assert report.errors == [
         f"operator trace run_id is '{OTHER_RUN_ID}', expected '{RUN_ID}' ({TRACE_LABEL})",
-        f"operator trace dataset_tier is 'formal', expected 'pilot' ({TRACE_LABEL})",
+        (
+            "operator trace dataset_tier is 'formal', the rendered scenario states 'pilot' "
+            f"({TRACE_LABEL})"
+        ),
     ]
 
 
 @pytest.mark.parametrize("tier", ["development", "holdout"])
-def test_run_of_a_formal_tier_passes_when_that_tier_is_expected(tmp_path: Path, tier: str) -> None:
-    # Given: a run whose trace states a tier of the formal data
-    root, scenario_path = build_run(tmp_path, run_type="attack")
-    write_trace(root, scenario_path.read_bytes(), dataset_tier=tier)
+def test_run_of_a_formal_tier_passes_when_its_scenario_states_that_tier(
+    tmp_path: Path, tier: str
+) -> None:
+    # Given: a Pair rendered as a formal tier and a run whose trace carries that tier
+    run = build_run(tmp_path, run_type="attack", scenario_body=scenario(dataset_tier=tier))
 
-    # When: that tier is what the caller expects
-    report = validate((root, scenario_path), dataset_tier=tier)
+    # When: the validator is given the scenario and nothing about the tier
+    report = validate(run)
 
-    # Then: the run passes and the report carries the tier of the trace, not pilot
+    # Then: the run passes and the report carries the tier of the scenario and the trace
     assert report.ok, report.errors
     assert report.trace is not None
     assert (report.trace.dataset_tier, report.trace.mode) == (tier, "collection")
-    assert report.expected_dataset_tier == tier
+    assert report.scenario_dataset_tier == tier
     assert (
-        f"the operator trace names this run: dataset_tier={tier} mode=collection" in report.checks
-    )
+        "the operator trace names this run and carries the tier its scenario states: "
+        f"dataset_tier={tier} mode=collection"
+    ) in report.checks
 
     text = format_report(report)
     assert f"tier        : {tier}" in text
-    assert f"dataset tier: the operator trace says dataset_tier={tier}" in text
+    assert f"the operator trace both say dataset_tier={tier}" in text
     assert "not a formal run" not in text
     assert "dataset_tier=pilot" not in text
 
 
 @pytest.mark.parametrize(
-    ("stated", "expected"),
+    ("in_scenario", "in_trace"),
     [
-        ("pilot", "development"),
-        ("pilot", "holdout"),
         ("development", "pilot"),
-        ("development", "holdout"),
-        ("holdout", "development"),
         ("holdout", "pilot"),
+        ("pilot", "development"),
+        ("holdout", "development"),
+        ("development", "holdout"),
+        ("pilot", "holdout"),
     ],
 )
-def test_run_whose_trace_states_another_tier_than_expected_is_refused(
-    tmp_path: Path, stated: str, expected: str
+def test_run_whose_trace_states_another_tier_than_its_scenario_is_refused(
+    tmp_path: Path, in_scenario: str, in_trace: str
 ) -> None:
-    # Given: a run that is in every other respect a valid run of the tier its trace states
-    root, scenario_path = build_run(tmp_path)
-    write_trace(root, scenario_path.read_bytes(), dataset_tier=stated)
+    # Given: a run that is valid in every other respect, whose trace disagrees with the
+    # scenario of its Pair
+    root, scenario_path = build_run(tmp_path, scenario_body=scenario(dataset_tier=in_scenario))
+    write_trace(root, scenario_path.read_bytes(), dataset_tier=in_trace)
 
-    report = validate((root, scenario_path), dataset_tier=expected)
+    report = validate((root, scenario_path))
 
-    # Then: nothing is taken from the expectation to make the run fit, and nothing after the
-    # trace is judged
+    # Then: neither value is taken to make the run fit, and nothing after the trace is judged
     assert report.errors == [
-        f"operator trace dataset_tier is {stated!r}, expected {expected!r} ({TRACE_LABEL})"
+        (
+            f"operator trace dataset_tier is {in_trace!r}, the rendered scenario states "
+            f"{in_scenario!r} ({TRACE_LABEL})"
+        )
     ]
     assert report.trace is None
     assert report.lineage is None
-    assert f"expected {expected!r}" in format_report(report)
+    assert report.scenario_dataset_tier == in_scenario
+    assert f"the scenario states {in_scenario!r}" in format_report(report)
 
 
-@pytest.mark.parametrize("tier", ["", "formal", "Pilot", "DEVELOPMENT", "pilot ", "dev", None, 1])
-def test_unknown_expected_tier_validates_nothing(tmp_path: Path, tier: object) -> None:
-    root, scenario_path = build_run(tmp_path)
+@pytest.mark.parametrize(
+    "tier",
+    ["", "formal", "Pilot", "DEVELOPMENT", "pilot ", " pilot", "dev", None, 1, ["pilot"], OMITTED],
+    ids=[
+        "empty",
+        "unknown",
+        "capital",
+        "upper",
+        "trailing-space",
+        "leading-space",
+        "abbreviated",
+        "null",
+        "number",
+        "list",
+        "omitted",
+    ],
+)
+def test_scenario_without_a_usable_tier_validates_nothing(tmp_path: Path, tier: object) -> None:
+    # Given: a run whose trace says pilot, and a scenario that states no tier this project has
+    run = build_run(tmp_path, scenario_body=scenario(dataset_tier=tier))
 
-    report = validate_r1_pilot_run(
-        artifact_root=root,
-        run_id=RUN_ID,
-        scenario_path=scenario_path,
-        dataset_tier=tier,  # type: ignore[arg-type]
-    )
+    report = validate(run)
 
-    # Then: the value is refused before a file is read; pilot does not stand in for it
-    assert report.errors == [
-        (
-            f"expected dataset tier is {tier!r}; it has to be one of "
-            "['pilot', 'development', 'holdout']"
-        )
-    ]
-    assert report.checks == []
+    # Then: the scenario is refused before the trace is read; the tier of the trace does not
+    # stand in for the one the scenario leaves out
+    assert len(report.errors) == 1
+    assert "scenario definition is not usable" in report.errors[0]
+    assert "dataset_tier must be one of ['pilot', 'development', 'holdout']" in report.errors[0]
+    assert "--dataset-tier" in report.errors[0]
+    assert report.scenario_dataset_tier is None
     assert report.trace is None
+    assert report.lineage is None
+    assert "PASS" not in format_report(report)
 
 
-def test_expected_tier_has_no_default(tmp_path: Path) -> None:
+def test_validator_takes_no_expected_tier_from_its_caller(tmp_path: Path) -> None:
+    # The tier of the earlier interface is gone: a caller cannot choose what a run is held to.
     root, scenario_path = build_run(tmp_path)
 
+    assert "dataset_tier" not in inspect.signature(validate_r1_pilot_run).parameters
     with pytest.raises(TypeError, match="dataset_tier"):
         validate_r1_pilot_run(  # type: ignore[call-arg]
-            artifact_root=root, run_id=RUN_ID, scenario_path=scenario_path
+            artifact_root=root, run_id=RUN_ID, scenario_path=scenario_path, dataset_tier="pilot"
         )
+
+
+@pytest.mark.parametrize("run_type", ["normal", "attack"])
+def test_both_runs_of_a_pair_are_held_to_the_tier_of_their_one_scenario(
+    tmp_path: Path, run_type: str
+) -> None:
+    # Given: the two runs of a Pair, validated against the same rendered scenario
+    run = build_run(tmp_path, run_type=run_type, scenario_body=scenario(dataset_tier="holdout"))
+
+    report = validate(run)
+
+    assert report.ok, report.errors
+    assert report.trace is not None
+    assert report.trace.dataset_tier == report.scenario_dataset_tier == "holdout"
 
 
 @pytest.mark.parametrize("tier", ["development", "holdout"])
-def test_rehearsal_cannot_be_expected_to_be_formal_data(tmp_path: Path, tier: str) -> None:
-    # Given: rehearsal artifacts whose trace claims a tier of the formal data
+def test_rehearsal_of_a_scenario_of_a_formal_tier_is_refused(tmp_path: Path, tier: str) -> None:
+    # Given: rehearsal artifacts whose scenario and trace both claim a formal tier
+    run = build_run(
+        tmp_path,
+        rehearsal=True,
+        connect=False,
+        scenario_body=scenario(destination=False, dataset_tier=tier),
+    )
+
+    report = validate(run, rehearsal=True)
+
+    assert report.errors == [
+        (
+            "a rehearsal is not formal data: its scenario has to state dataset_tier 'pilot', "
+            f"this one states {tier!r}"
+        )
+    ]
+    assert report.trace is None
+    assert report.lineage is None
+
+
+@pytest.mark.parametrize("tier", ["development", "holdout"])
+def test_rehearsal_whose_trace_claims_a_formal_tier_is_refused(tmp_path: Path, tier: str) -> None:
+    # Given: a rehearsal of a pilot scenario whose trace was written with a formal tier
     root, scenario_path = build_run(tmp_path, rehearsal=True, connect=False)
     write_trace(root, scenario_path.read_bytes(), rehearsal=True, dataset_tier=tier)
 
-    report = validate((root, scenario_path), rehearsal=True, dataset_tier=tier)
+    report = validate((root, scenario_path), rehearsal=True)
 
     assert report.errors == [
-        f"a rehearsal is not formal data: its tier is 'pilot', so {tier!r} cannot be expected of one"
+        (
+            f"operator trace dataset_tier is {tier!r}, the rendered scenario states 'pilot' "
+            f"({TRACE_LABEL})"
+        )
     ]
-    assert report.checks == []
+    assert report.trace is None
 
 
 def test_rehearsal_is_a_pilot_rehearsal_in_its_trace(tmp_path: Path) -> None:

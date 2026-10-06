@@ -19,8 +19,9 @@ scenarios/R1/
 `run_metadata` · Manifest 작성은 새로 만들지 않고 `scenarios/S0/run-common.ps1` 의 함수를 그대로
 쓴다. R1 의 `run-common.ps1` 이 그 파일을 불러오며, 불러오는 것만으로는 아무것도 실행되지 않는다.
 
-**로컬 VM 에서 diagnostic Pair 와 development Pair 하나를 수집 모드로 끝까지 실행했다(§8).** 기준 환경
-검증과 역할 5 의 reference · evaluation criteria 승인은 아직이다.
+**로컬 VM 에서 diagnostic Pair 하나와, 이전 tier 계약으로 수집한 tuning 전용 Pair 하나를 수집 모드로
+끝까지 실행했다(§8).** 지금의 Pair 소유 tier 계약으로 수집한 Pair 는 아직 없다. 기준 환경(Python
+3.13) 검증은 아직이다. 역할 5 의 기준 승인 답변은 받았으나 공식 approval record 는 아직 완결되지 않았다(§8).
 
 ## 1. 무엇을 실행하는가
 
@@ -123,27 +124,49 @@ Attack 실행 계보    wsmprovhost.exe -> cscript.exe -> powershell.exe
 **승인 계보 정책, Evidence 조건, 평가 구간이 동결되기 전에 만든 Run 은 정식 38 Run 에 포함하지
 않는다.** rehearsal 과 Pilot Run 이 여기에 해당한다.
 
-이 구분은 문서로만 두지 않고 Run 에 남긴다. **Run 의 dataset tier 는 실행 입력(`-DatasetTier`)이며
-기본값이 없다.** 실행기는 그 값을 Run 마다 operator trace 에 적고(§6), 검증기는 기대하는 tier 를
-`--dataset-tier` 로 받아 trace 의 값과 정확히 같을 때만 통과시킨다(§7).
+이 구분은 문서로만 두지 않고 Pair 에 남긴다. **dataset tier 는 Pair 의 값이며, 렌더링한 `scenario.json`
+최상위에 한 번만 있다.** 렌더링할 때 `--dataset-tier` 로 주고(§2) 기본값이 없다. 두 Run 이 같은 JSON 을
+읽으므로 한 Pair 의 Normal 과 Attack 은 tier 가 다를 수 없다. 실행기에는 tier 를 주는 입력이 없다.
+scenario 의 값을 읽어 Run 마다 operator trace 에 그대로 적고(§6), 검증기는 scenario 의 tier 와 trace 의
+tier 가 정확히 같을 때만 통과시킨다(§7).
 
-| tier | 쓰는 곳 |
+| tier | 뜻 |
 | --- | --- |
-| `pilot` | rehearsal, diagnostic Run, telemetry Pilot. 정식 데이터가 아니다 |
-| `development` | 정식 개발 데이터(위 표의 개발 family) |
-| `holdout` | 정식 hold-out 데이터(위 표의 hold-out family) |
+| `pilot` | rehearsal, diagnostic Run, 기준 동결 전의 calibration, 공식 수량에서 제외하는 tuning 전용 Run. 정식 pool 이 아니다 |
+| `development` | 기준 동결 이후에 수집한 공식 development pool(위 표의 개발 family). 공식 development 수량에 넣을 수 있고, 이후 학습과 threshold tuning 에 쓸 수 있다 |
+| `holdout` | development · Pilot 에 쓰지 않은 family 의 최종 평가 pool(위 표의 hold-out family) |
 
-- 값이 없거나 위 셋이 아니면 실행기는 아무것도 만들기 전에 중단한다. 철자가 정확히 같아야 한다.
-  검증기도 기대 tier 가 없거나 위 셋이 아니면 아무것도 검증하지 않는다. 어느 쪽도 `pilot` 으로
-  대신하지 않는다.
-- **rehearsal 은 항상 `pilot` 이다.** 다른 tier 로 rehearsal 을 실행하거나 검증하면 거부한다.
-- **`development` · `holdout` 은 위의 동결 조건을 만족하는 Run 에만 쓴다.** 실행기와 검증기는 그 조건을
+- 값이 없거나(`null` · 빈 문자열 포함) 위 셋이 아니면 렌더러는 JSON 을 만들지 않고, 실행기는 아무것도
+  만들기 전에 중단하며(dry-run 포함), 검증기는 아무것도 검증하지 않는다. 철자가 정확히 같아야 하고,
+  어느 쪽도 `pilot` 으로 대신하지 않는다.
+- **rehearsal 은 항상 `pilot` 이다.** scenario 가 다른 tier 를 적고 있으면 rehearsal 을 실행하지도
+  검증하지도 않는다.
+- **`development` · `holdout` 은 위의 동결 조건을 만족하는 Pair 에만 쓴다.** 실행기와 검증기는 그 조건을
   확인하지 못한다. tier 를 정하는 것은 데이터 계획(역할 1)과 수집 담당(역할 4)의 책임이다.
+- **tuning 에 썼다는 것(`used_for_tuning=true`) 자체는 `development` 에서 빼는 이유가 아니다.**
+  `development` pool 은 학습과 threshold tuning 에 쓰는 데이터다. 빼는 이유는 수집 시점이다. 기준이
+  동결되기 전이나 이 Pair 소유 tier 계약 전에 만든 Pair 는 공식 수량에 넣지 않는다.
 - Pilot · diagnostic · 기준 조정에 쓴 family 는 `holdout` 으로 쓰지 않는다.
-- **정식 평가 데이터를 고르는 선택기는 `dataset_tier` 가 `pilot` 인 Run 을 제외해야 한다.** trace 가
-  없는 Run 도 정식 데이터로 쓰지 않는다. tier 는 trace 에서 읽으며, 폴더 이름이나 Run 밖의 목록으로
-  바꿔 적지 않는다.
-- `run_metadata.json` 에는 tier 필드가 없다(`RunMetadata` 계약). tier 의 정본은 operator trace 다.
+- `run_metadata.json` 에는 tier 필드가 없다(`RunMetadata` 계약). tier 는 scenario 가 정하고 operator
+  trace 가 Run 마다 기록한다. 폴더 이름이나 Run 밖의 목록으로 바꿔 적지 않는다.
+
+**정식 selector 규칙.** 정식 데이터를 고르는 선택기는 아래를 모두 확인하고, 하나라도 어긋나면 그 Pair 를
+고르지 않는다(fail-closed).
+
+- trace 의 tier 만 보고 고르지 않는다.
+- 렌더링한 scenario 에 `dataset_tier` 가 반드시 있어야 한다.
+- scenario 의 tier 와 trace 의 tier 가 같아야 한다.
+- Normal 과 Attack 의 `family_id` · `variation_id` · `repetition` · scenario SHA-256 · tier 가 같아야 한다.
+- 같은 family 가 `development` 와 `holdout` 양쪽에 있으면 고르지 않는다.
+- tier 가 없는 artifact 와, scenario 에 `dataset_tier` 가 없던 이전 계약의 artifact 는 제외한다. trace 에
+  `development` 라고 적혀 있어도 마찬가지다.
+
+**이 변경이 보장하는 것은 한 Pair 안의 일치까지다.** 같은 렌더링 scenario 를 쓰는 Normal 과 Attack 은
+tier 가 같다. 서로 다른 Pair 사이에서 같은 family 가 `development` 와 `holdout` 에 함께 들어가는지는
+실행기도 검증기도 확인하지 않는다. 그 검사는 정식 selector 의 일이다.
+
+**이 선택기는 아직 구현하지 않았다(§9). 구현되기 전에는 hold-out 을 수집하지 않고, 평가 데이터로
+편입하지도 않는다.** 이것은 운영 규칙이며 코드로 강제하지는 않는다. 렌더러는 `holdout` 을 값으로 받는다.
 
 `performance_claim_allowed: true` 는 R1 gate 가 이후 성능 주장을 허용한다는 뜻이다. 첫 Pilot 자체는
 성능을 입증하지 않는다(`r1.md` §1).
@@ -155,18 +178,20 @@ Windows PowerShell 5.1 에는 YAML 리더가 없으므로 **호스트 저장소 
 커밋하지 않는다).
 
 ```bash
-uv run python tools/r1_scenario_to_json.py scenarios/R1/scenario.yaml --out build/R1/scenario.json --repetition 1
+uv run python tools/r1_scenario_to_json.py scenarios/R1/scenario.yaml --out build/R1/scenario.json --repetition 1 --dataset-tier pilot
 ```
 
 **JSON 은 Pair 마다 한 번 렌더링하고, 그 Pair 의 두 Run 이 같은 파일을 쓴다.** 렌더링한
 `scenario.json` 이 실행의 단일 정본이다. 실행기에는 그 값을 덮어쓰는 입력이 없다.
 
 Pair 식별자 가운데 렌더링할 때 적는 것은 `repetition` 뿐이다. `family_id` 와 `variation_id` 는
-`scenario.yaml` 의 값이 그대로 들어가며, 바꾸는 옵션이 없다(§1-2).
+`scenario.yaml` 의 값이 그대로 들어가며, 바꾸는 옵션이 없다(§1-2). Pair 의 dataset tier 도 렌더링할 때
+적는다. `scenario.yaml` 은 `dataset_tier: null` 로 두며, 값을 적어 두면 렌더러가 거부한다(§1-3).
 
 | 옵션 | 뜻 | 없으면 |
 | --- | --- | --- |
 | `--repetition` | 그 family 의 몇 번째 Pair 인지. 1 이상의 정수 | **렌더링하지 않는다** |
+| `--dataset-tier` | 그 Pair 의 tier. `pilot` · `development` · `holdout` 중 하나를 철자 그대로. JSON 최상위에 한 번 기록된다 | **렌더링하지 않는다.** 기본값이 없다 |
 
 정본 YAML 은 Target-A 이름, 내부 목적지, 포트, 실험망을 모두 `null` 로 둔다. **실제 값은 저장소에
 두지 않고** 렌더링할 때만 주입한다. 값은 역할 4 가 정한다(§10).
@@ -224,7 +249,6 @@ Target-A 에는 아무것도 미리 복사하지 않는다. 작업 파일과 lau
 | `-DataRoot` | Controller 에서 산출물을 쓸 루트 |
 | `-WorkDir` | **Target-A 의** 작업 디렉터리. 드라이브로 시작하고 영숫자 · `_` · `-` · `.` 만 쓴다(공백 불가) |
 | `-ObservationSec` | Run 시작부터의 관측 길이(초). 마지막 행위(t+10)를 덮고 평가 horizon 이상이어야 한다 |
-| `-DatasetTier` | `pilot` · `development` · `holdout` 중 하나. 기본값이 없고 dry-run 에서도 필요하다. rehearsal 은 `pilot` 만 받는다(§1-3) |
 | `-VmSnapshot` | 두 Run 이 시작한 스냅샷 이름. `RunMetadata.vm_snapshot` 에 기록된다 |
 | `-TargetAddress` · `-WinRmPort` · `-UseSsl` | Controller 가 Target-A 에 접속하는 WinRM 주소. 산출물에 기록되지 않는다 |
 | `-Credential` | 두 Run 이 함께 쓰는 계정. 실행자가 입력하며 저장하지 않는다 |
@@ -236,8 +260,9 @@ Target-A 에는 아무것도 미리 복사하지 않는다. 작업 파일과 lau
 600 초 — `r1.md` §11-4), 실행기는 관측 창이 마지막 행위를 덮고 horizon 이상인지 확인한다. Attack Run 은
 수집 뒤에 `end_time >= reference_time + evaluation_horizon_sec` 도 확인한다(§5-1).
 
-`family_id` · `variation_id` · `repetition` 은 실행 입력이 아니다. 렌더링한 `scenario.json` 에서만
-읽으며(§1-2), 두 Run 이 같은 JSON 을 쓰므로 같은 값이 기록된다.
+`family_id` · `variation_id` · `repetition` 과 dataset tier 는 실행 입력이 아니다. 렌더링한
+`scenario.json` 에서만 읽으며(§1-2, §1-3), 두 Run 이 같은 JSON 을 쓰므로 같은 값이 기록된다. `run.ps1` 에는
+tier 를 주거나 덮어쓰는 인자가 없다.
 
 ## 4. 실행 모드
 
@@ -248,23 +273,24 @@ Target-A 에는 아무것도 미리 복사하지 않는다. 작업 파일과 lau
 | 수집 모드 (옵션 없음) | 엶 | offset · 관측 창 준수 | 반드시 1 회 | `<DataRoot>\raw\` · `<DataRoot>\ground_truth\` · `<DataRoot>\operator_trace\` |
 
 dry-run 은 어디서나 실행할 수 있다. Target-A 이름이나 목적지 없이도 된다. launch plan 과 함께 Pair
-식별자(`pair: family_id=... variation_id=... repetition=...`), 읽은 scenario 의 SHA-256, 받은
-dataset tier 를 출력하므로, 실제 Run 전에 어느 Pair 로, 어느 scenario 파일로, 어느 tier 로 기록될지
-확인할 수 있다.
+식별자(`pair: family_id=... variation_id=... repetition=...`), 읽은 scenario 의 SHA-256, scenario 가
+적은 dataset tier 를 출력하므로, 실제 Run 전에 어느 Pair 로, 어느 scenario 파일로, 어느 tier 로 기록될지
+확인할 수 있다. dry-run 도 scenario 의 tier 를 수집 모드와 똑같이 검사한다.
 
 ```powershell
 Set-Location C:\Tools\scenarios\R1\normal
-.\run.ps1 -RunId RUN-YYYYMMDD-NNN -ScenarioJsonPath C:\Tools\scenarios\R1\scenario.json -DataRoot C:\R1\data -WorkDir C:\R1\work -ObservationSec 660 -DatasetTier <tier> -DryRun
+.\run.ps1 -RunId RUN-YYYYMMDD-NNN -ScenarioJsonPath C:\Tools\scenarios\R1\scenario.json -DataRoot C:\R1\data -WorkDir C:\R1\work -ObservationSec 660 -DryRun
 ```
 
 rehearsal 과 수집 모드 Run 은 세션을 여는 입력이 더 필요하다. 값은 예시 자리표시자다.
 
 ```powershell
 $credential = Get-Credential
-.\run.ps1 -RunId RUN-YYYYMMDD-NNN -ScenarioJsonPath C:\Tools\scenarios\R1\scenario.json -DataRoot C:\R1\data -WorkDir C:\R1\work -ObservationSec 660 -DatasetTier pilot -VmSnapshot <snapshot> -TargetAddress <Target-A 주소> -WinRmPort <port> -Credential $credential -TargetSysmonBinary <Sysmon64.exe 경로> -TargetSysmonConfigPath <설정 파일 경로> -Rehearsal
+.\run.ps1 -RunId RUN-YYYYMMDD-NNN -ScenarioJsonPath C:\Tools\scenarios\R1\scenario.json -DataRoot C:\R1\data -WorkDir C:\R1\work -ObservationSec 660 -VmSnapshot <snapshot> -TargetAddress <Target-A 주소> -WinRmPort <port> -Credential $credential -TargetSysmonBinary <Sysmon64.exe 경로> -TargetSysmonConfigPath <설정 파일 경로> -Rehearsal
 ```
 
-수집 모드 Run 은 `-Rehearsal` 을 빼고 그 Run 의 tier 를 준다. Pair 의 두 Run 에는 같은 tier 를 준다.
+수집 모드 Run 은 `-Rehearsal` 을 뺀다. tier 는 그 Pair 의 `scenario.json` 을 렌더링할 때 이미 정해져
+있다. rehearsal 은 `--dataset-tier pilot` 으로 렌더링한 scenario 만 받는다.
 
 **rehearsal 산출물은 R1 수집물이 아니다.** offset 과 관측 창을 건너뛰고, 계보가 설계와 달라도
 산출물을 쓴다(무엇이 달랐는지 검증기로 확인하기 위해서다).
@@ -293,7 +319,8 @@ $credential = Get-Credential
 | 조건 | 비고 |
 | --- | --- |
 | `run_id` 형식 오류, 시나리오 JSON 없음 또는 UTF-8 이 아님, `scenario_id` 가 `R1` 이 아님 | |
-| `DatasetTier` 가 없거나 `pilot` · `development` · `holdout` 이 아님, rehearsal 인데 `pilot` 이 아님 | 기본값이 없다. dry-run 에서도 거부(§1-3) |
+| `scenario.json` 의 `dataset_tier` 가 없거나 `null` · 빈 값이거나 `pilot` · `development` · `holdout` 이 아님, rehearsal 인데 `pilot` 이 아님, `runs.<run_type>` 가 tier 를 따로 적음 | 기본값이 없고 실행 입력으로 줄 수 없다. dry-run 에서도 거부(§1-3) |
+| Attack Run 이 reference action 을 적는 scenario 에 `run_metadata.reference_policy_version` 이 없거나 `null` · 공백임 | 두 Run 모두 거부한다. dry-run 에서도 거부(§5-1) |
 | `family_id` · `variation_id` 가 비었거나 라벨 문자열을 담음, `repetition` 이 1 이상의 정수가 아님 | dry-run · rehearsal 에서도 거부(§1-2) |
 | `runs.<run_type>` 가 식별자를 따로 적음 | Pair 는 식별자를 한 번만 적는다 |
 | `WorkDir` 가 안전한 경로가 아님 | 공백·따옴표가 명령줄에 들어가지 않게 한다 |
@@ -358,6 +385,13 @@ reference 는 **Attack Run 에만** 기록한다(`r1.md` §4-2). Normal Run 의 
 
 - 후보가 없거나 둘 이상이거나, `UtcTime` · `ProcessGuid` · `RecordId` 를 읽지 못하면 reference 를 정하지
   않는다. 그 Run 은 실패하며 Ground Truth 를 쓰지 않는다. rehearsal 도 같다.
+- 그 실패의 구체적인 사유는 실행 출력에 남는다. 사유를 담는 별도 파일(machine-readable failure
+  artifact)은 만들지 않는다. 필요한지는 후속 계약 작업에서 정한다(§9).
+- reference 는 그것을 정한 정책 버전과 함께 읽는다. Attack Run 이 reference action 을 적는 scenario 는
+  `run_metadata.reference_policy_version` 을 비어 있지 않은 문자열로 적어야 한다. `null` · 빈 문자열 ·
+  공백뿐인 값이면 렌더러는 JSON 을 만들지 않고, 실행기는 두 Run 모두 세션을 열기 전에 중단하며, 검증기는
+  그 scenario 로 검증하지 않는다. 어떤 버전이어야 하는지는 코드에 고정하지 않는다. 값은 scenario 가
+  정하고, `run_metadata.json` 의 값이 scenario 와 다르면 검증에 실패한다.
 - **`TimeCreated` 로 대신하지 않는다.** `UtcTime` 을 읽지 못한 레코드에 다른 시각을 주지 않는다.
 - 수집 모드 Attack Run 은 `end_time >= reference_time + evaluation_horizon_sec` 여야 한다. rehearsal 은
   관측 대기를 건너뛰므로 이 조건만 면제한다.
@@ -390,7 +424,7 @@ reference 는 **Attack Run 에만** 기록한다(`r1.md` §4-2). Normal Run 의 
 | --- | --- |
 | `trace_version` | `v1` |
 | `run_id` | 이 Run |
-| `dataset_tier` | 실행 입력 `-DatasetTier` 의 값. `pilot` · `development` · `holdout` 중 하나이고 rehearsal 은 항상 `pilot` 이다(§1-3) |
+| `dataset_tier` | 렌더링한 scenario 의 `dataset_tier` 를 그대로 옮긴 값. `pilot` · `development` · `holdout` 중 하나이고 rehearsal 은 항상 `pilot` 이다(§1-3) |
 | `mode` | `collection` 또는 `rehearsal` |
 | `scenario_sha256` | 위 `scenario.json` 의 SHA-256 (소문자 hex) |
 
@@ -456,27 +490,28 @@ reference 는 **Attack Run 에만** 기록한다(`r1.md` §4-2). Normal Run 의 
 아래에는 `raw\` · `ground_truth\` 와 함께 `operator_trace\` 가 있어야 한다.
 
 ```bash
-uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run_id> --scenario <scenario.json> --dataset-tier <tier>
-uv run python tools/validate_r1_run.py --artifact-root <rehearsal-root> --run-id <run_id> --scenario <scenario.json> --dataset-tier pilot --rehearsal
+uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run_id> --scenario <scenario.json>
+uv run python tools/validate_r1_run.py --artifact-root <rehearsal-root> --run-id <run_id> --scenario <scenario.json> --rehearsal
 ```
 
-`--dataset-tier` 는 그 Run 이 어느 tier 여야 하는지를 적는 필수 인자다(`pilot` · `development` ·
-`holdout`). 기본값이 없으며, 없거나 다른 값이면 검증을 시작하지 않는다.
+tier 를 주는 인자는 없다. 검증기는 `--scenario` 로 준 scenario 가 적은 `dataset_tier` 를 기대값으로 쓰고,
+trace 의 tier 가 그 값과 정확히 같을 때만 통과시킨다. scenario 에 tier 가 없거나 `pilot` · `development` ·
+`holdout` 이 아니면 검증하지 않으며, `--rehearsal` 은 scenario 와 trace 가 모두 `pilot` 일 때만 통과한다.
 
 | 구분 | 검사 |
 | --- | --- |
 | 계약 파일 | S0 검증기의 검사를 그대로 쓴다 — 산출물 다섯 개, `RunMetadata` · `ExecutionRecordRow`, CSV 헤더와 BOM, Manifest 구조와 SHA-256 재계산, `run_id` 경계 |
 | `run_id` 일치 | CLI 인자 · `run_metadata.json` · CSV 모든 행 · `manifest.json` 과 그 항목 경로 |
 | Ground Truth | `scenario_id` 가 `R1`, `target_host` 가 렌더링 값과 같음, Normal 은 reference 세 필드가 모두 `null` 이고 Attack 은 세 필드가 있으며 `reference_action_id` 가 scenario 의 값과 같음, `reference_policy_version` 이 scenario 의 값과 같음, `vm_snapshot` · `end_time` 기록, action 순서와 `action_type` 이 시나리오와 같음, 시각이 순서대로이고 Run 구간 안 |
-| 실행 scenario 결속 | `operator_trace\<run_id>\r1_run_trace.json` 이 이 `run_id` · 실행 모드 · `--dataset-tier` 로 준 tier 를 적고 있는지, 그리고 trace 의 `scenario_sha256` · Run 이 남긴 `scenario.json` 사본 · `--scenario` 로 준 파일이 **모두 같은 바이트**인지 |
+| 실행 scenario 결속 | `operator_trace\<run_id>\r1_run_trace.json` 이 이 `run_id` · 실행 모드 · scenario 가 적은 tier 를 적고 있는지, 그리고 trace 의 `scenario_sha256` · Run 이 남긴 `scenario.json` 사본 · `--scenario` 로 준 파일이 **모두 같은 바이트**인지 |
 | Pair 식별자 | `run_metadata.json` 의 `family_id` · `variation_id` · `repetition` 이 scenario 가 적은 값과 같은지. 하나라도 다르거나 비어 있으면 실패다 |
-| 시나리오 | 목적지가 내부 주소 규칙을 지키는지, 식별자 세 값이 유효한지 다시 검사한다. 어긴 시나리오로는 통과할 수 없다 |
+| 시나리오 | 목적지가 내부 주소 규칙을 지키는지, 식별자 세 값이 유효한지, `dataset_tier` 가 있는지, Attack Run 이 reference action 을 적으면 `reference_policy_version` 이 비어 있지 않은지 다시 검사한다. 어긴 시나리오로는 통과할 수 없다 |
 | 계보 | Target-A 에서 최종 관리 도구 Image 의 EID 1 중 **그 Run 이 계획한 3 단계 계보(`planned_lineage`)를 가진 인스턴스가 정확히 하나**인지 찾고, 그 host · ProcessGuid 를 `r1_lineage.verify_r1_lineage` 에 넘긴다 |
 | 연결 | 같은 host · ProcessGuid 의 EID 3 이 승인 목적지 · 포트로 향하는지 (`verify_r1_lineage`) |
 | reference (Attack) | `reference_source_event_id` 와 `reference_time` 이 원본 JSONL 에서 **위 계보의 세션 host EID 1** 의 `RecordId` · `EventData.UtcTime` 과 같은지, 그 시각이 reference action 의 기록 시각 이후이고 다음 행위보다 앞인지, 수집 모드면 `end_time >= reference_time + evaluation_horizon_sec` 인지. `TimeCreated` 는 쓰지 않는다 |
 
-- **trace 가 없거나, JSON 이 아니거나, 다른 `run_id` · tier · 모드를 적고 있거나, SHA-256 이 형식에
-  맞지 않거나, 사본이나 `--scenario` 파일이 Run 뒤에 바뀌었으면 실패다.** 그때는 계획과의 대조
+- **trace 가 없거나, JSON 이 아니거나, 다른 `run_id` · 모드를 적고 있거나, scenario 와 다른 tier 를 적고
+  있거나, SHA-256 이 형식에 맞지 않거나, 사본이나 `--scenario` 파일이 Run 뒤에 바뀌었으면 실패다.** 그때는 계획과의 대조
   (Ground Truth · 식별자 · 계보)를 하지 않는다. Run 이 실행한 것이 증명되지 않은 scenario 로는 Run 을
   판정하지 않기 때문이다. 결속은 내용으로 하므로 같은 바이트의 사본을 다른 경로에 두고 줘도 된다.
 - 중복 ProcessGuid, 부모 순환, 필수 부모 누락, 다른 프로세스의 연결, 목적지 불일치는 모두 실패다.
@@ -487,8 +522,8 @@ uv run python tools/validate_r1_run.py --artifact-root <rehearsal-root> --run-id
 - **계보가 승인된 것인지는 판정하지 않는다.** 검증기는 승인 계보 정책을 읽지 않는다(§1-1). 출력에는
   `pair` 줄과, 승인 여부를 판단하지 않았다는 `not judged here` 를 적는다.
 - 출력의 `tier` 줄은 trace 의 `dataset_tier`, `scenario` 줄은 결속된 SHA-256 이다. tier 가 `pilot` 이면
-  마지막에 `not a formal run` 을 적는다. `development` · `holdout` 이면 trace 의 tier 가 기대한 값과
-  같다는 것만 적으며, 그 Run 이 정식 데이터의 조건(§1-3)을 만족하는지는 판단하지 않는다.
+  마지막에 `not a formal run` 을 적는다. `development` · `holdout` 이면 scenario 와 trace 의 tier 가
+  같다는 것만 적으며, 그 Pair 가 정식 selector 의 조건(§1-3)을 만족하는지는 판단하지 않는다.
 - 레코드 사이의 시각은 비교하지 않는다. 계획 시각과 기록 시각은 판정 없이 나란히 출력한다.
 - lineage-only rehearsal(목적지 없이 렌더링)은 연결 action 과 EID 1 → EID 3 연결을 검사하지
   않고, 결과에 그렇게 적는다.
@@ -504,7 +539,7 @@ ProcessGuid · 목적지 · 시각 · host 를 "원천 telemetry 에서 추출�
 계약 파일에는 자리가 없으므로, 검증기 출력이 그 기록이다. `--record-out` 으로 파일에 남긴다.
 
 ```bash
-uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run_id> --scenario <scenario.json> --dataset-tier <tier> --record-out <증빙 폴더>/<run_id>/r1_lineage_record.txt
+uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run_id> --scenario <scenario.json> --record-out <증빙 폴더>/<run_id>/r1_lineage_record.txt
 ```
 
 - **`raw/` · `ground_truth/` 아래에는 쓰지 않는다.** 그 폴더는 Manifest 와 계약이 설명하는 파일만
@@ -515,7 +550,8 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
 
 ## 8. 검증 상태
 
-**로컬 VM 에서 diagnostic Pair 와 development Pair 하나를 수집 모드로 끝까지 실행했다.** 첫 VM rehearsal 은
+**로컬 VM 에서 diagnostic Pair 하나와 이전 tier 계약의 Pair 하나를 수집 모드로 끝까지 실행했다. Pair 소유
+tier 계약(§1-3)의 실행기는 VM 에서 아직 실행하지 않았고, 그 계약으로 수집한 Pair 도 없다.** 첫 VM rehearsal 은
 사전 세션의 Sysmon 조회에서 멈췄고(§8-1), 그 결함을 고친 뒤 수집 모드(`-Rehearsal` 없음, offset
 0/120/300/480/600 초, 관측 창 660 초)로 Normal · Attack 한 Pair 를 diagnostic 으로 실행했다.
 
@@ -525,16 +561,24 @@ uv run python tools/validate_r1_run.py --artifact-root <data-root> --run-id <run
   구간이 정해지지 않아(`r1.md` §11-11) 판정하지 않았다.
 - 이 Pair 는 diagnostic 이다. 데이터셋 · 평가 · Pilot 판정에 넣지 않으며, 산출물과 기록은 저장소 밖에 둔다.
 
-그 뒤 dataset tier 와 Attack reference(§1-3, §5-1)를 넣은 실행기로 development Pair
-`R1-PAIR-20261005-002` 를 같은 수집 모드로 수집했다.
+그 뒤 Attack reference(§5-1)를 넣은 실행기로 Pair `R1-PAIR-20261005-002` 를 같은 수집 모드로 수집했다.
+**이 Pair 는 tier 가 Run 별 실행 입력이던 이전 계약의 artifact 다.**
 
 - 수집에 쓴 실행기 · 검증기는 commit `28900924ed03049e0d44ae058158040eec7d690c` 의 것이다. 수집 당시 이
-  commit 은 push 와 리뷰를 거치지 않은 로컬 commit 이었다.
-- 두 Run 모두 호스트의 Python 3.11 에서 §7 의 검증기를 `--dataset-tier development` 로 통과했다. 기준
-  환경(Python 3.13) 검증은 아직 하지 않았다.
-- 역할 5 의 reference · evaluation criteria 승인은 아직 받지 않았다.
-- 이 Pair 는 development 데이터다. holdout 이 아니고 최종 성능 평가 결과도 아니다. 산출물과 기록은
-  저장소 밖에 둔다.
+  commit 은 push 와 리뷰를 거치지 않은 로컬 commit 이었다. 그 실행기는 tier 를 Run 마다 `-DatasetTier` 로
+  받았다.
+- 공식 development 입력에서 제외한다. 근거는 수집 시점과 계약이다. 기준 승인 · 동결 전에 수집했고,
+  scenario 소유 `dataset_tier` 계약 전에 수집했으며, 그 scenario 에 최상위 `dataset_tier` 가 없다. 그래서
+  정식 selector(§1-3)와 지금의 검증기가 요구하는 입력 자격을 충족하지 않는다. `used_for_tuning=true` 라서
+  제외하는 것이 아니다.
+- 두 Run 의 trace 에는 `dataset_tier: development` 가 적혀 있다. trace 를 고치거나 `pilot` 으로 바꿔 적지
+  않는다. 원본은 수정하지 않으며, 다시 검증할 때는 수집에 쓴 commit `28900924` 의 검증기만 쓴다.
+- 두 Run 모두 호스트의 Python 3.11 에서 그 commit 의 검증기를 `--dataset-tier development` 로 통과했다.
+  기준 환경(Python 3.13) 검증은 아직 하지 않았다.
+- 역할 5 의 기술적 기준 승인 답변은 수신했다. 다만 답변자 · 답변 시각 · 채널 식별자가 pending 이어서
+  공식 approval record 는 아직 완결되지 않았다. PR Approve 는 이 기준 승인을 대신하지 않는다.
+- 이 Pair 는 tuning 전용 원본으로만 보존한다. 공식 development 수량 · holdout · 최종 성능 평가에 넣지
+  않는다. 산출물과 기록은 저장소 밖에 둔다.
 
 호스트에서 도는 검사(VM · WinRM · Sysmon 불필요):
 
@@ -603,8 +647,12 @@ rehearsal 은 관측 창을 건너뛰어 마지막 행위 직후에 Sysmon 을 e
 - **다른 family · variation matrix** — 지금 scenario 는 첫 Pilot family 하나다. 다른 family 를
   실행하려면 그 family 의 실행 계보를 담은 scenario 가 필요하다. 전체 variation matrix 는 구현하지
   않았다.
-- **정식 평가 선택기** — Run 의 tier 는 실행 입력으로 trace 에 남는다(§1-3). trace 의 tier 를 읽어
-  `pilot` 을 제외하고 `development` · `holdout` 을 나누는 선택기는 아직 없다.
+- **정식 selector** — Pair 의 tier 는 scenario 가 정하고 trace 에 남는다(§1-3). §1-3 의 selector 규칙을
+  확인해 `development` · `holdout` 을 고르는 선택기는 아직 없다. 서로 다른 Pair 사이의 family 중복
+  (같은 family 가 `development` 와 `holdout` 양쪽에 있는 경우)을 찾는 것도 이 선택기의 일이며 지금은
+  아무것도 그것을 막지 않는다. 구현되기 전에는 hold-out 을 수집하지 않고 편입하지도 않는다.
+- **reference 실패 사유의 artifact** — reference 를 정하지 못한 Run 의 사유는 실행 출력에만 남는다(§5-1).
+  machine-readable failure artifact 가 필요한지는 후속 계약 작업에서 정한다.
 - **reference 의 attribution 증빙** — 실행기가 reference 를 고를 때 쓴 세션 PID 와 두 시각 경계는
   실행기 출력에만 남는다. 별도 attribution 파일은 만들지 않았다(§5-1).
 - **승인 계보 정책 연결** — 정책은 이 폴더에 없다(§1-1). 역할 2 의 config 형식이 정해지면 scenario 의

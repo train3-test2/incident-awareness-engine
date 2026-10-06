@@ -28,9 +28,9 @@ Controller. It does three things.
 2. It checks the operator trace. The scenario given to this validator, the
    scenario copy the run kept and the SHA-256 the trace records have to be the
    same bytes, and the trace has to name this run and state the dataset tier
-   this validation was told to expect. A scenario edited after the run can therefore not be
-   the plan the run is judged against, and a run without a usable trace is not
-   validated at all.
+   that scenario states for its Pair. A scenario edited after the run can
+   therefore not be the plan the run is judged against, and a run without a
+   usable trace is not validated at all.
 3. It finds the final management tool instance of the run in the raw Sysmon
    JSONL and hands it to `r1_lineage.verify_r1_lineage`, which checks the parent
    chain by host and ProcessGuid and the EID 3 carrying the same host and
@@ -42,12 +42,13 @@ of its Pair - is read from the scenario JSON that was rendered for the run
 (`tools/r1_scenario_to_json.py`), never from this code. The bytes are read once:
 what is compared with the operator trace is what the plan is parsed from.
 
-The dataset tier of a run is an input of the runner: `pilot`, `development` or
-`holdout`, and always `pilot` for a rehearsal. The trace of the run records it.
-This validator is given the tier the caller expects and accepts a run only when
-its trace states exactly that tier. The expectation has no default and is never
-replaced by `pilot`. A formal evaluation selector has to leave out every run
-whose trace says `dataset_tier=pilot`.
+The dataset tier belongs to the Pair. The rendered scenario states it once -
+`pilot`, `development` or `holdout`, and always `pilot` for a rehearsal - and
+the runner copies it to the operator trace of each run. This validator reads
+the expected tier from the scenario and accepts a run only when its trace states
+exactly that tier. The caller cannot choose the expectation, and a scenario that
+states no tier validates nothing. What a formal selector has to check on top of
+this is in `scenarios/R1/README.md` section 1-3.
 
 This is a conformance check of one collected run against its own plan. It
 detects nothing, builds no Evidence and produces no Fusion input. `run_type` is
@@ -102,8 +103,11 @@ from incident_awareness.collection.r1_lineage import (
     verify_r1_lineage,
 )
 from incident_awareness.collection.r1_pair_identity import (
+    DATASET_TIERS,
+    REHEARSAL_DATASET_TIER,
     R1PairIdentity,
     R1PairIdentityError,
+    read_dataset_tier,
     read_pair_identity,
 )
 
@@ -147,10 +151,10 @@ TRACE_DIRNAME = "operator_trace"
 TRACE_FILENAME = "r1_run_trace.json"
 TRACE_SCENARIO_FILENAME = "scenario.json"
 TRACE_VERSION = "v1"
-# The tiers the runner writes (scenarios/R1/run-common.ps1, $R1_DATASET_TIERS).
-# A rehearsal is never formal data and always carries the first one.
-DATASET_TIERS = ("pilot", "development", "holdout")
-REHEARSAL_TIER = "pilot"
+# The tier of a Pair is a value of its rendered scenario (`DATASET_TIERS` of
+# incident_awareness.collection.r1_pair_identity); the runner copies it to the
+# trace. A rehearsal is never part of a formal pool and always carries this one.
+REHEARSAL_TIER = REHEARSAL_DATASET_TIER
 TRACE_MODES = {False: "collection", True: "rehearsal"}
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
@@ -188,6 +192,7 @@ class R1PilotExpectation:
     destination_ip: str | None
     destination_port: str | None
     identity: R1PairIdentity
+    dataset_tier: str
     reference_action_id: str | None
     evaluation_horizon_sec: int
     reference_policy_version: str | None
@@ -247,7 +252,7 @@ class R1PilotValidationReport:
     lineage: R1ObservedLineage | None = None
     identity: R1PairIdentity | None = None
     trace: R1RunTrace | None = None
-    expected_dataset_tier: str | None = None
+    scenario_dataset_tier: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -329,6 +334,52 @@ def _load_destination(internal: dict) -> tuple[str | None, str | None]:
         ) from error
 
 
+def _parse_scenario(scenario_bytes: bytes) -> dict:
+    """The rendered scenario the bytes hold, once it is known to be an R1 scenario."""
+    try:
+        scenario = json.loads(scenario_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise R1ScenarioError(f"scenario is not readable JSON: {error}") from error
+
+    scenario = _mapping(scenario, "scenario")
+    if scenario.get("scenario_id") != SCENARIO_ID:
+        raise R1ScenarioError(
+            f"scenario_id must be {SCENARIO_ID!r}, found {scenario.get('scenario_id')!r}"
+        )
+    return scenario
+
+
+def _load_dataset_tier(scenario: dict) -> str:
+    """The dataset tier a scenario states for its Pair. It has to be stated."""
+    try:
+        return read_dataset_tier(scenario)
+    except R1PairIdentityError as error:
+        raise R1ScenarioError(
+            f"{error}. The rendered scenario states the tier of its Pair "
+            "(tools/r1_scenario_to_json.py --dataset-tier); nothing given to the validator "
+            "replaces it"
+        ) from error
+
+
+def _load_reference_policy_version(scenario: dict, run_metadata: dict) -> str | None:
+    """The reference policy version both runs of the Pair record.
+
+    A scenario whose attack run names a reference action has to state it as a
+    non-blank string. A reference recorded next to a missing version could not be
+    read later, and two missing values would compare as equal. Which version is
+    current is a value of the scenario: none is expected here.
+    """
+    version = run_metadata.get("reference_policy_version")
+    attack = _mapping(scenario.get("runs"), "runs").get("attack")
+    names_reference = isinstance(attack, dict) and attack.get("reference_action_id") is not None
+    if names_reference and (not isinstance(version, str) or not version.strip()):
+        raise R1ScenarioError(
+            "run_metadata.reference_policy_version must be a non-blank string when "
+            f"runs.attack.reference_action_id is set, found {version!r}"
+        )
+    return version
+
+
 def _load_identity(scenario: dict) -> R1PairIdentity:
     """The Pair a scenario was rendered for: its family, variation and repetition."""
     try:
@@ -359,16 +410,7 @@ def _read_expectation(scenario_bytes: bytes, run_type: str) -> R1PilotExpectatio
     if run_type not in RUN_TYPES:
         raise R1ScenarioError(f"run_type must be one of {RUN_TYPES}, found {run_type!r}")
 
-    try:
-        scenario = json.loads(scenario_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise R1ScenarioError(f"scenario is not readable JSON: {error}") from error
-
-    scenario = _mapping(scenario, "scenario")
-    if scenario.get("scenario_id") != SCENARIO_ID:
-        raise R1ScenarioError(
-            f"scenario_id must be {SCENARIO_ID!r}, found {scenario.get('scenario_id')!r}"
-        )
+    scenario = _parse_scenario(scenario_bytes)
 
     # The lineage a run is checked against is the planned one of its run type.
     key = PLANNED_LINEAGE_KEY
@@ -400,9 +442,10 @@ def _read_expectation(scenario_bytes: bytes, run_type: str) -> R1PilotExpectatio
         destination_ip=destination_ip,
         destination_port=destination_port,
         identity=identity,
+        dataset_tier=_load_dataset_tier(scenario),
         reference_action_id=_load_reference_action(run, run_type, actions),
         evaluation_horizon_sec=_load_horizon(scenario),
-        reference_policy_version=run_metadata.get("reference_policy_version"),
+        reference_policy_version=_load_reference_policy_version(scenario, run_metadata),
     )
 
 
@@ -453,7 +496,7 @@ def _check_run_trace(
     SHA-256, under `operator_trace/<run_id>/`. Three digests have to agree: the
     one the trace records, the one of the kept copy and the one of the scenario
     this validator was given. The trace also has to name this run, its mode and
-    `dataset_tier`, the tier the caller expects of the run.
+    `dataset_tier`, the tier that scenario states for its Pair.
 
     Returns the trace when everything held and None after reporting what did
     not. Nothing is repaired or guessed: a run without a usable trace is not
@@ -489,7 +532,8 @@ def _check_run_trace(
     for name, wanted in expected.items():
         stated = trace.get(name)
         if not isinstance(stated, str) or stated != wanted:
-            report.fail(f"operator trace {name} is {stated!r}, expected {wanted!r} ({trace_label})")
+            source = "the rendered scenario states" if name == "dataset_tier" else "expected"
+            report.fail(f"operator trace {name} is {stated!r}, {source} {wanted!r} ({trace_label})")
 
     recorded = trace.get("scenario_sha256")
     if not isinstance(recorded, str) or _SHA256_HEX.fullmatch(recorded) is None:
@@ -527,7 +571,8 @@ def _check_run_trace(
         f"are the same bytes: sha256={recorded}"
     )
     report.passed(
-        f"the operator trace names this run: dataset_tier={dataset_tier} mode={expected['mode']}"
+        "the operator trace names this run and carries the tier its scenario states: "
+        f"dataset_tier={dataset_tier} mode={expected['mode']}"
     )
     return R1RunTrace(dataset_tier=dataset_tier, mode=expected["mode"], scenario_sha256=recorded)
 
@@ -991,7 +1036,6 @@ def validate_r1_pilot_run(
     artifact_root: Path,
     run_id: str,
     scenario_path: Path,
-    dataset_tier: str,
     rehearsal: bool = False,
 ) -> R1PilotValidationReport:
     """Validate one R1 run under `artifact_root` and report everything found.
@@ -1001,34 +1045,18 @@ def validate_r1_pilot_run(
     the scenario the operator trace of the run records: the run is judged
     against no other.
 
-    `dataset_tier` is the tier the caller expects the run to be: one of
-    `DATASET_TIERS`. It has no default. The run passes only when its operator
-    trace states exactly this tier; a rehearsal can only be expected to be
-    `pilot`.
+    The dataset tier is not an input. The scenario states the tier of its Pair,
+    and the run passes only when its operator trace states exactly that tier. A
+    scenario that states no tier validates nothing, and the scenario and the
+    trace of a rehearsal both have to say `pilot`.
     """
-    report = R1PilotValidationReport(
-        run_id=run_id, rehearsal=rehearsal, expected_dataset_tier=dataset_tier
-    )
+    report = R1PilotValidationReport(run_id=run_id, rehearsal=rehearsal)
 
     # run_id becomes a path segment, so it is checked before anything touches the
     # file system. Nothing below this point runs for a rejected value.
     run_id_problem = check_run_id(run_id)
     if run_id_problem is not None:
         report.fail(run_id_problem)
-        return report
-
-    # The expected tier is checked before any file is read: an unknown value
-    # validates nothing, and no value stands in for it.
-    if not isinstance(dataset_tier, str) or dataset_tier not in DATASET_TIERS:
-        report.fail(
-            f"expected dataset tier is {dataset_tier!r}; it has to be one of {list(DATASET_TIERS)}"
-        )
-        return report
-    if rehearsal and dataset_tier != REHEARSAL_TIER:
-        report.fail(
-            f"a rehearsal is not formal data: its tier is {REHEARSAL_TIER!r}, so "
-            f"{dataset_tier!r} cannot be expected of one"
-        )
         return report
 
     _check_rehearsal_isolation(artifact_root, rehearsal, report)
@@ -1092,7 +1120,24 @@ def validate_r1_pilot_run(
         )
         return report
 
-    trace = _check_run_trace(artifact_root, run_id, scenario_bytes, rehearsal, dataset_tier, report)
+    # The tier a run is held to is the one its scenario states for the Pair. The
+    # caller gives none, and a scenario without one validates nothing.
+    try:
+        scenario_tier = _load_dataset_tier(_parse_scenario(scenario_bytes))
+    except R1ScenarioError as error:
+        report.fail(f"scenario definition is not usable ({scenario_path}): {error}")
+        return report
+    report.scenario_dataset_tier = scenario_tier
+    if rehearsal and scenario_tier != REHEARSAL_TIER:
+        report.fail(
+            f"a rehearsal is not formal data: its scenario has to state dataset_tier "
+            f"{REHEARSAL_TIER!r}, this one states {scenario_tier!r}"
+        )
+        return report
+
+    trace = _check_run_trace(
+        artifact_root, run_id, scenario_bytes, rehearsal, scenario_tier, report
+    )
     if trace is None:
         return report
     report.trace = trace
@@ -1178,18 +1223,18 @@ def format_report(report: R1PilotValidationReport) -> str:
     if report.trace is None:
         lines.append(
             "dataset tier: not established for this run, the operator trace was not accepted "
-            f"(expected {report.expected_dataset_tier!r})"
+            f"(the scenario states {report.scenario_dataset_tier!r})"
         )
     elif report.trace.dataset_tier == REHEARSAL_TIER:
         lines.append(
-            "not a formal run: its operator trace says dataset_tier=pilot, and a formal "
-            "evaluation selector has to leave such a run out"
+            "not a formal run: the scenario of its Pair and its operator trace say "
+            "dataset_tier=pilot, and a formal selector has to leave such a run out"
         )
     else:
         lines.append(
-            f"dataset tier: the operator trace says dataset_tier={report.trace.dataset_tier}, the "
-            "tier this validation was told to expect. Whether the run meets the conditions of "
-            "formal data is not decided here (scenarios/R1/README.md section 1-3)"
+            "dataset tier: the scenario of the Pair and the operator trace both say "
+            f"dataset_tier={report.trace.dataset_tier}. Whether the Pair is selected as formal "
+            "data is not decided here (scenarios/R1/README.md section 1-3)"
         )
     lines.append("")
     if report.ok:

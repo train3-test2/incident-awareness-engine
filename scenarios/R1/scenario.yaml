@@ -19,6 +19,13 @@ family_id: remote_management          # PoC start guide v1.1 section 5-1 (kept o
 variation_id: V02
 repetition: null
 
+# Dataset tier of the Pair: pilot, development or holdout (scenarios/R1/README.md
+# section 1-3). Like the identity above it is stated once for both runs of the
+# Pair, and a run cannot state or replace it. This file states none and there is
+# no default: the tier is given for every rendered scenario (--dataset-tier). The
+# runner writes the rendered value to the operator trace of each run unchanged.
+dataset_tier: null
+
 # Gate character - issue #73, integrated standard 3.0 section 7-2. The Pilot
 # itself claims no performance (docs/scenarios/r1.md section 1).
 gate_type: feasibility
@@ -36,7 +43,10 @@ run_metadata:
   target_host: null
   sysmon_config_version: sysmonconfig-sample-v0.1
   detector_set_version: null
-  reference_policy_version: r1-ref-v0.1   # how reference_time is taken for an attack run (r1.md section 4-2)
+  # How reference_time is taken for an attack run (r1.md section 4-2). A scenario
+  # whose attack run names a reference action has to state it: the renderer, the
+  # runner and the validator refuse a null or blank value. No code fixes the value.
+  reference_policy_version: r1-ref-v0.1
   schema_versions:
     run_metadata: v0.2
     event: v0.3
