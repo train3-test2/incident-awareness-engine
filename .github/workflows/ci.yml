@@ -170,7 +170,10 @@ jobs:
       contents: read
       id-token: write
     env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
       IMAGE_URI: ${{ needs.aws-smoke-deploy.outputs.image_uri }}
+      DASHBOARD_EXECUTION_ROLE_ARN: ${{ vars.DASHBOARD_EXECUTION_ROLE_ARN }}
+      DASHBOARD_DATABASE_URL_SECRET_ARN: ${{ vars.DASHBOARD_DATABASE_URL_SECRET_ARN }}
     steps:
       - uses: actions/checkout@v6
 
@@ -189,3 +192,33 @@ jobs:
             echo "Dashboard image URI must use the current commit SHA tag."
             exit 1
           fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Render Dashboard task definition
+        shell: bash
+        run: |
+          python scripts/render_ecs_task_definition.py \
+            --template infra/ecs/task-definition.dashboard.json \
+            --output "$RUNNER_TEMP/task-definition.dashboard.json" \
+            --image-uri "$IMAGE_URI" \
+            --execution-role-arn "$DASHBOARD_EXECUTION_ROLE_ARN" \
+            --database-url-secret-arn "$DASHBOARD_DATABASE_URL_SECRET_ARN"
+
+      - name: Register Dashboard task definition revision
+        id: register-dashboard-task-definition
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          task_definition_arn="$(
+            aws ecs register-task-definition \
+              --cli-input-json "file://$RUNNER_TEMP/task-definition.dashboard.json" \
+              --query 'taskDefinition.taskDefinitionArn' \
+              --output text
+          )"
+          echo "task_definition_arn=$task_definition_arn" >> "$GITHUB_OUTPUT"
