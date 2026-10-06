@@ -123,3 +123,47 @@ uv run python tools/validation/check_fast_candidate_time.py \
 출력 run_id가 원본에서 검증됐다고 주장하지 않는다.
 
 신규 시각 연결 테스트 10개 및 기존 연결 테스트 5개, 합계 15개 통과.
+
+## Baseline 입력 준비 및 동일 Run 시간 대조
+
+[입력 목록](validation/r1-pair002-input-inventory.json)은 Run별 Evidence·추출 summary·정규화 Event·metadata·Fast 시각 연결 파일의 SHA-256,
+extractor 버전, 관측 범위와 tuning 용도를 기록한다. 정확한 로컬 경로는 별도 로컬 산출물의
+input-inventory.json에 보존하며 저장소에는 경로 placeholder를 사용한다.
+기존 artifact reader 검증과 Fast 원본 JSONL 해시 일치 검사를 다시 통과했다.
+
+| Run | 관측 범위 (UTC) | 관측 길이 | Evidence / extractor |
+|---|---|---:|---|
+| Attack 912 | 19:33:25.834 ~ 19:44:28.494 | 662.660초 | 2 / r1-v0.1 |
+| Normal 913 | 19:56:52.355 ~ 20:07:54.631 | 662.276초 | 1 / r1-v0.1 |
+
+모두 2026-10-05이며 development tuning 전용이다. 모델 학습·validation·test 입력으로 사용하지 않는다.
+공통 vocabulary와 window/cadence/feature 설정이 아직 준비되지 않았으므로 입력 목록 작성이
+Baseline 실행 가능 또는 성능 평가 준비 완료를 의미하지 않는다.
+
+### Attack 912 타임라인
+
+| 항목 | UTC | reference 이후 | 관측/600초 horizon 내 |
+|---|---|---:|---|
+| A01 reference | 19:33:26.037 | 0초 | 예 |
+| Fast 후보 및 계보 이탈 Evidence | 19:38:26.253 | 300.216초 | 예 |
+| 후속 연결 Evidence | 19:41:26.617 | 480.580초 | 예 |
+| horizon 종료 | 19:43:26.037 | 600초 | 예 |
+| 실제 관측 종료 | 19:44:28.494 | 662.457초 | 관측 내, horizon 밖 |
+
+Fast 후보와 계보 이탈 Evidence가 동일 원본 RecordID 1327의 이벤트 시각에 도달한다.
+Evidence 생성 시각은 Fusion 판단 시각이 아니다. 위 상대 시간은 후보/증거 시점의 위치이며 TTSD가 아니다.
+동일 Run FusionResult가 없으므로 Fusion 선행/지연 시간은 계산하지 않았다.
+
+### Normal 913 및 범위 밖 입력
+
+Normal의 후속 연결 Evidence는 20:04:52.808Z이고 관측 범위 안이다.
+reference 세 필드는 null을 유지하며 attack용 600초 horizon이나 상대 reference 시각을 만들지 않는다.
+
+두 Run 모두 정규화 이벤트 6건씩이 metadata.start_time 이전에 존재한다.
+Attack RecordID: 1269~1274, Normal: 1287~1289 및 1291~1293.
+이번에 생성한 Evidence의 event_ids에는 이 레코드가 참조되지 않는다.
+관측 종료 이후 이벤트는 없다. 원본은 삭제하지 않는다. 후속 replay에서 선언한 분석 범위와
+warm-up 사용 여부를 명시해야 하며, 범위 밖 이벤트를 무조건 입력하거나 조용히 제거하지 않는다.
+
+로컬 재현 산출물: input-inventory.json, comparison-timeline.json, build.py.
+검증 시각과 해시는 고정된 Pair-002 입력에 대한 것이며 운영 모델 설정 동결은 아니다.

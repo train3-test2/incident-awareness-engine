@@ -1,0 +1,112 @@
+{
+  "pair_id": "R1-PAIR-20261005-002",
+  "purpose": "development_tuning_input_inventory",
+  "baseline_ready": false,
+  "runs": [
+    {
+      "run_id": "RUN-20261005-912",
+      "run_type": "attack",
+      "entity_id": "R1-TGTA",
+      "usage": "development_tuning_only",
+      "used_for_tuning": true,
+      "eligible_splits": [],
+      "pair_must_remain_together": true,
+      "observation_start": "2026-10-05T19:33:25.834Z",
+      "observation_end": "2026-10-05T19:44:28.494Z",
+      "observation_seconds": 662.66,
+      "reference_time": "2026-10-05T19:33:26.037Z",
+      "evaluation_horizon_sec": 600,
+      "attack_evaluation_end": "2026-10-05T19:43:26.037Z",
+      "extractor_version": "r1-v0.1",
+      "extraction_status": "completed",
+      "diagnostics": [],
+      "telemetry_completeness": "not_provided",
+      "evidence_count": 2,
+      "files": {
+        "evidence": {
+          "path": "<local-artifacts>/RUN-20261005-912/r1_evidence.jsonl",
+          "sha256": "48daef65704b5c0b513550cc4a2fe766f1a418869f66383b5e54e89c08e4ffce"
+        },
+        "summary": {
+          "path": "<local-artifacts>/RUN-20261005-912/r1_extraction_summary.json",
+          "sha256": "545d4c6f08c9d2c092a26709ab58f6ea3d15fa49632bb71f98e26d074a0e6671"
+        },
+        "normalized_events": {
+          "path": "<local-artifacts>/RUN-20261005-912/normalized_events.jsonl",
+          "sha256": "d62050b01c8bf8edbdd9c7431a448665a6c622220a3739567dbe325cd7776097"
+        },
+        "metadata": {
+          "path": "<pair-root>/RUN-20261005-912/data/ground_truth/RUN-20261005-912/run_metadata.json",
+          "sha256": "bbc6d7e97fdbcf23edd6c115f0c7c8e63cff5f2eb23d266b26db85edcb6e0b2a"
+        },
+        "fast_time_link": {
+          "path": "<local-artifacts>/RUN-20261005-912/time-link-validation.json",
+          "sha256": "ede06e37f5089cd0540b2e38e7450171b3700b6f99e4a9d5f9459a3d186d9e39"
+        },
+        "raw_jsonl": {
+          "path": "<pair-root>/RUN-20261005-912/data/raw/RUN-20261005-912/telemetry/sysmon-0001.jsonl",
+          "sha256": "dddf1d7cb78d4958a7b84fecc8e9ff14de56a63bd631758e6e7638ed6f3a9197"
+        }
+      },
+      "blockers": [
+        "R1 candidate vocabulary not registered",
+        "window/cadence/features/scoring config not fixed",
+        "same-run Fusion artifacts not available locally"
+      ],
+      "normalized_events_outside_observation": 6
+    },
+    {
+      "run_id": "RUN-20261005-913",
+      "run_type": "normal",
+      "entity_id": "R1-TGTA",
+      "usage": "development_tuning_only",
+      "used_for_tuning": true,
+      "eligible_splits": [],
+      "pair_must_remain_together": true,
+      "observation_start": "2026-10-05T19:56:52.355Z",
+      "observation_end": "2026-10-05T20:07:54.631Z",
+      "observation_seconds": 662.276,
+      "reference_time": null,
+      "evaluation_horizon_sec": 600,
+      "attack_evaluation_end": null,
+      "extractor_version": "r1-v0.1",
+      "extraction_status": "completed",
+      "diagnostics": [],
+      "telemetry_completeness": "not_provided",
+      "evidence_count": 1,
+      "files": {
+        "evidence": {
+          "path": "<local-artifacts>/RUN-20261005-913/r1_evidence.jsonl",
+          "sha256": "b0fa9a2d2789da1f3dd0257789a4d143988c035eb225aef136be8e5b5455e8b4"
+        },
+        "summary": {
+          "path": "<local-artifacts>/RUN-20261005-913/r1_extraction_summary.json",
+          "sha256": "1b882055456c96cf16f26c3163d0d38de9504733d108a951144ef5ce5c15958a"
+        },
+        "normalized_events": {
+          "path": "<local-artifacts>/RUN-20261005-913/normalized_events.jsonl",
+          "sha256": "f5f6b1e81d928be1eb8329c13b13081930d3d363320ee4784e67abe51b241839"
+        },
+        "metadata": {
+          "path": "<pair-root>/RUN-20261005-913/data/ground_truth/RUN-20261005-913/run_metadata.json",
+          "sha256": "ad16c80ddbc44cadc4ff6cd5dc896fc562f2461b52c406d52e7655706ad143f3"
+        },
+        "fast_time_link": {
+          "path": "<local-artifacts>/RUN-20261005-913/time-link-validation.json",
+          "sha256": "fcf03f0a17ccbae738e97fd97ff96391fca84f2ec22d4a83e17fe30744418827"
+        },
+        "raw_jsonl": {
+          "path": "<pair-root>/RUN-20261005-913/data/raw/RUN-20261005-913/telemetry/sysmon-0001.jsonl",
+          "sha256": "f3b9157f2a4ec56710a555194a701b9b43dea52de1883319c4b94e89616bf95d"
+        }
+      },
+      "blockers": [
+        "R1 candidate vocabulary not registered",
+        "window/cadence/features/scoring config not fixed",
+        "same-run Fusion artifacts not available locally"
+      ],
+      "normalized_events_outside_observation": 6
+    }
+  ],
+  "path_note": "placeholder paths describe file roles; exact local paths are retained in the local input-inventory.json"
+}
