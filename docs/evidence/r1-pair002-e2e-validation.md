@@ -323,4 +323,8 @@ Run별 artifact 생성, loader와 provenance 경로는 확인됐다. 그러나 P
 
 최신 `origin/develop`의 현재 코드로 Pair-002 실제 development telemetry를 처리한 결과, 예상한 NormalizedEvent, lineage correlation, 두 R1 candidate Evidence, immutable artifact, loader와 provenance resolver 계약이 모두 통과했다. 코드 결함이나 예상과 다른 detector 동작은 발견되지 않았다.
 
-따라서 Issue #184의 핵심 목적인 실제 telemetry 기반 Evidence E2E 검증과 후속 요구사항 도출은 완료된 것으로 판단한다. Issue는 이 validation record를 근거로 close 가능한 상태다. managed vocabulary, 반복 평가 selector, production policy/runner, Fusion tuning과 dataset 승인은 별도 독립 작업이며 #184 close 조건으로 묶지 않는다.
+따라서 Pair-002 development telemetry를 이용한 Evidence E2E 검증과 후속 요구사항 도출은 완료된 것으로 판단한다.
+
+다만 Issue #184에 포함된 Role1 Fusion 입력용 Evidence 전달과 Role5 평가 입력용 artifact 전달은 별도로 완료 여부를 확인해야 한다. 이 validation record만으로 Issue #184 전체가 완료됐다고 판단하거나 close하지 않는다.
+
+managed vocabulary, 반복 평가 selector, production policy/runner, Fusion tuning과 dataset 승인은 별도 후속 작업으로 분리한다.
