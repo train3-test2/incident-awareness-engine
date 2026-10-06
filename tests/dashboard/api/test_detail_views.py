@@ -872,6 +872,7 @@ def test_fusion_engine_score_trajectory_is_accessible() -> None:
     html = client.get(f"/dashboard/runs/{RUN_ID}/fusion-engine").text
     script = client.get("/dashboard-assets/fusion-engine.js").text
     contract = client.get("/dashboard-assets/fusion-engine-contract.mjs").text
+    normalized_script = script.replace("\r\n", "\n")
 
     # Then
     assert 'id="fusion-score-trajectory-heading"' in html
@@ -880,7 +881,7 @@ def test_fusion_engine_score_trajectory_is_accessible() -> None:
     assert 'role="status"' in html
     assert 'aria-live="polite"' in html
     assert 'svg.setAttribute("role", "img")' in script
-    assert 'svg.setAttribute(\n        "aria-labelledby"' in script
+    assert 'svg.setAttribute(\n        "aria-labelledby"' in normalized_script
     assert 'createSvgElement("title")' in script
     assert 'createSvgElement("desc")' in script
     for label in (
