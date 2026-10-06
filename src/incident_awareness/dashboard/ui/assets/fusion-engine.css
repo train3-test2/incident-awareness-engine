@@ -1,0 +1,22 @@
+.fusion-engine-grid {
+    min-width: 0;
+}
+
+.fusion-engine-episodes {
+    display: grid;
+    gap: var(--shell-space-3);
+}
+
+.fusion-engine-episode {
+    min-width: 0;
+    padding: var(--shell-space-4);
+    background-color: var(--shell-color-surface-subtle);
+    border: 1px solid var(--shell-color-border);
+    border-radius: var(--shell-radius-medium);
+}
+
+.fusion-engine-episode__title {
+    margin: 0 0 var(--shell-space-3);
+    font-size: 1rem;
+    overflow-wrap: anywhere;
+}

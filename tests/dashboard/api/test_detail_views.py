@@ -20,6 +20,7 @@ ENCODED_EVENT_ID_WITH_SLASH = "evt%20group%2Fchild"
 JAVASCRIPT_MEDIA_TYPES = {"application/javascript", "text/javascript"}
 DETAIL_VIEW_PATHS = (
     f"/dashboard/runs/{RUN_ID}",
+    f"/dashboard/runs/{RUN_ID}/fusion-engine",
     f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/timeline",
     f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/events/{EVENT_ID}",
     f"/dashboard/decisions/{DECISION_ID}",
@@ -27,6 +28,9 @@ DETAIL_VIEW_PATHS = (
     "/dashboard-assets/detail.css",
     "/dashboard-assets/run-detail.js",
     "/dashboard-assets/run-detail-contract.mjs",
+    "/dashboard-assets/fusion-engine.css",
+    "/dashboard-assets/fusion-engine.js",
+    "/dashboard-assets/fusion-engine-contract.mjs",
     "/dashboard-assets/decision-detail.js",
     "/dashboard-assets/decision-detail-contract.mjs",
     "/dashboard-assets/event-timeline.js",
@@ -129,6 +133,50 @@ def test_run_detail_view_serves_html_shell_without_database_access(
         "decision-history-status",
         "decision-history-list",
         "event-timeline-navigation",
+        "fusion-engine-navigation",
+    ):
+        assert f'id="{container_id}"' in html
+    assert database_connection_attempts == []
+
+
+def test_fusion_engine_view_serves_html_shell_without_database_access(
+    database_connection_attempts: list[str],
+) -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    response = client.get(f"/dashboard/runs/{RUN_ID}/fusion-engine")
+
+    # Then
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    html = response.text
+    _assert_common_detail_shell(html, "/dashboard-assets/fusion-engine.js")
+    assert "Fusion Engine" in html
+    assert 'href="/dashboard-assets/fusion-engine.css"' in html
+    for section in (
+        "Fusion Runtime Summary",
+        "Runtime Configuration",
+        "Stopping Trace Summary",
+        "Decision Timing",
+        "Fusion Episodes",
+    ):
+        assert section in html
+    for container_id in (
+        "fusion-engine-view",
+        "fusion-engine-status",
+        "fusion-runtime-status",
+        "fusion-runtime-summary",
+        "runtime-config-status",
+        "runtime-config-summary",
+        "stopping-trace-status",
+        "stopping-trace-summary",
+        "decision-timing-status",
+        "decision-timing-summary",
+        "fusion-episodes-status",
+        "fusion-episodes-list",
+        "run-detail-back-navigation",
     ):
         assert f'id="{container_id}"' in html
     assert database_connection_attempts == []
@@ -305,6 +353,19 @@ def test_detail_stylesheet_is_served_with_css_media_type() -> None:
     assert ".detail-page" in response.text
 
 
+def test_fusion_engine_stylesheet_is_served_with_css_media_type() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    response = client.get("/dashboard-assets/fusion-engine.css")
+
+    # Then
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/css")
+    assert ".fusion-engine-episodes" in response.text
+
+
 def test_dashboard_shell_stylesheet_is_served_with_css_media_type() -> None:
     # Given
     client = TestClient(create_app())
@@ -326,6 +387,8 @@ def test_detail_scripts_and_contracts_are_served_with_javascript_media_type() ->
     responses = [
         client.get("/dashboard-assets/run-detail.js"),
         client.get("/dashboard-assets/run-detail-contract.mjs"),
+        client.get("/dashboard-assets/fusion-engine.js"),
+        client.get("/dashboard-assets/fusion-engine-contract.mjs"),
         client.get("/dashboard-assets/decision-detail.js"),
         client.get("/dashboard-assets/decision-detail-contract.mjs"),
         client.get("/dashboard-assets/event-timeline.js"),
@@ -359,9 +422,47 @@ def test_run_detail_script_fetches_json_once_without_polling() -> None:
     assert script.count("void loadRunDetail();") == 1
     assert 'document.getElementById("event-timeline-navigation")' in script
     assert "buildEventTimelineViewPath(runId)" in script
+    assert 'document.getElementById("fusion-engine-navigation")' in script
+    assert "buildFusionEngineViewPath(runId)" in script
     for polling_api in ("setInterval(", "setTimeout(", "AbortController", "WebSocket"):
         assert polling_api not in script
     assert 'fetch("/decisions/' not in script
+
+
+def test_fusion_engine_script_fetches_engine_json_once_without_polling() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/fusion-engine.js").text
+
+    # Then
+    assert 'document.getElementById("fusion-engine-view")' in script
+    assert "extractFusionEngineRunIdFromPathname(window.location.pathname)" in script
+    assert "fetch(buildFusionEngineApiPath(runId)" in script
+    assert 'Accept: "application/json"' in script
+    assert 'cache: "no-store"' in script
+    assert "response.status === 404" in script
+    assert script.count("fetch(") == 1
+    assert script.count("void loadFusionEngine();") == 1
+    assert "buildRunDetailViewPath(runId)" in script
+    for polling_api in (
+        "setInterval(",
+        "setTimeout(",
+        "AbortController",
+        "WebSocket",
+        "EventSource",
+    ):
+        assert polling_api not in script
+    for forbidden_source in (
+        "buildRunDetailApiPath",
+        "buildDecisionDetailApiPath",
+        'fetch("/runs/',
+        'fetch("/decisions/',
+        'fetch("/overview',
+        'fetch("/operations/runtime',
+    ):
+        assert forbidden_source not in script
 
 
 def test_event_timeline_script_fetches_only_timeline_pages_without_polling() -> None:
@@ -648,6 +749,98 @@ def test_run_detail_assets_use_authoritative_current_data_and_safe_dom_rendering
             assert reordering_api not in source
 
 
+def test_fusion_engine_assets_use_authoritative_runtime_data_and_safe_dom() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/fusion-engine.js").text
+    contract = client.get("/dashboard-assets/fusion-engine-contract.mjs").text
+
+    # Then
+    for fusion_field in (
+        "fusion.fusion_status",
+        "fusion.fusion_time",
+        "fusion.score_at_decision",
+        "fusion.scoring_config_version",
+        "fusion.scoring_profile_id",
+        "fusion.scoring_method",
+        "fusion.scorer_version",
+        "fusion.model_version",
+        "fusion.contributing_evidence_ids",
+        "fusion.fusion_episodes",
+    ):
+        assert fusion_field in script
+    for config_field in (
+        "config.run_id",
+        "config.entity_id",
+        "config.config_version",
+        "config.model_version",
+        "config.window.window_size_sec",
+        "config.replay.step_size_sec",
+        "config.scoring.method",
+        "config.scoring.scorer_version",
+        "config.scoring.profile_id",
+        "config.scoring.evidence_types",
+        "config.stopping.threshold_on",
+        "config.stopping.threshold_off",
+        "config.stopping.persistence_k",
+    ):
+        assert config_field in script
+    for decision_field in (
+        "decision.decision_id",
+        "decision.entity_id",
+        "decision.fast_status",
+        "decision.fusion_status",
+        "decision.detector_time",
+        "decision.fusion_time",
+        "decision.t_e",
+        "decision.decision_path",
+        "decision.winning_path",
+    ):
+        assert decision_field in script
+    for episode_field in (
+        "episode.episode_id",
+        "episode.start_time",
+        "episode.end_time",
+        "episode.end_reason",
+        "episode.score_at_start",
+        "episode.peak_score",
+        "episode.contributing_evidence_ids",
+    ):
+        assert episode_field in script
+    assert "trace.scoring_config_version" in script
+    assert "trace.points.length" in script
+    assert "payload.current_decision" in script
+    assert "payload.fusion_result" in script
+    assert "payload.stopping_trace" in script
+    assert "payload.runtime_config_snapshot" in script
+    for safe_api in (
+        "document.createElement(",
+        ".textContent =",
+        ".append(",
+        ".replaceChildren(",
+        ".classList.add(",
+    ):
+        assert safe_api in script
+    for source in (script, contract):
+        for forbidden_api in (
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+            "eval(",
+            "new Function",
+            "Math.min(",
+            "Date.parse(decision.t_e",
+            ".sort(",
+            ".toSorted(",
+            ".reverse(",
+            ".toReversed(",
+        ):
+            assert forbidden_api not in source
+
+
 def test_historical_decision_script_fetches_snapshot_json_once_without_fallback() -> None:
     # Given
     client = TestClient(create_app())
@@ -793,10 +986,12 @@ def test_detail_view_routes_are_hidden_from_openapi() -> None:
     paths = set(response.json()["paths"])
     assert "/dashboard/runs/{run_id}" not in paths
     assert "/dashboard/runs/{run_id}/timeline" not in paths
+    assert "/dashboard/runs/{run_id}/fusion-engine" not in paths
     assert "/dashboard/runs/{run_id}/events/{event_id}" not in paths
     assert "/dashboard/decisions/{decision_id}" not in paths
     assert "/runs/{run_id}" in paths
     assert "/runs/{run_id}/timeline" in paths
+    assert "/runs/{run_id}/fusion-engine" in paths
     assert "/runs/{run_id}/events/{event_id}" in paths
     assert "/decisions/{decision_id}" in paths
     assert not any(path.startswith("/dashboard-assets") for path in paths)
@@ -843,6 +1038,20 @@ def test_run_detail_view_uses_only_its_external_module_script() -> None:
     # Then
     assert html.count("<script") == 1
     assert html.count('<script type="module" src="/dashboard-assets/run-detail.js">') == 1
+    assert "<style" not in html
+    assert " style=" not in html
+
+
+def test_fusion_engine_view_uses_only_its_external_module_script() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    html = client.get(f"/dashboard/runs/{RUN_ID}/fusion-engine").text
+
+    # Then
+    assert html.count("<script") == 1
+    assert html.count('<script type="module" src="/dashboard-assets/fusion-engine.js">') == 1
     assert "<style" not in html
     assert " style=" not in html
 
