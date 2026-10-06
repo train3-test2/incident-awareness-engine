@@ -251,3 +251,34 @@ Evidence.timestamp를 fusion_time으로 취급하지 않고, 후보 0건을 전�
 역할1 결과 대기와 Baseline 입력 준비는 독립적으로 진행할 수 있다. 단계 5가 막혀도
 단계 1~4의 조건이 갖춰진 작업은 진행한다. 새 Issue/PR을 단계마다 추가하지 않고
 기존 Pair-002 검증 범위에서 결과를 정리한다.
+
+## 리뷰 보완: 외부 실행 설정 및 측정으로 드러난 설계 제약
+
+감사 도구는 각 Run의 저장소 밖 `data/operator_trace/<run_id>/scenario.json`에서
+`run_metadata.target_host`, `internal_connection.target/port/protocol/lab_cidr`를 읽는다.
+기존 R1 목적지 validator로 검증하고 실제 로그와 대조하며 rendered scenario SHA-256을
+출력에 기록한다. 파일·필수값이 없으면 기본 환경값으로 대체하지 않는다.
+테스트는 HOST 및 합성 RFC1918 목적지/테스트 port를 사용한다.
+
+아래는 Pair-002 측정 사실과 조건부 해석이며 운영 설정 동결이 아니다.
+
+- 생성된 R1 두 Evidence 종류는 점검 시점의 managed vocabulary에 없다. 따라서 canonical
+  FusionConfig로 해당 종류를 포함한 R1 profile을 아직 구성할 수 없다. 기존 S0 profile을
+  그대로 적용하면 R1 두 종류는 profile 밖이어서 scoring contribution이 0이다.
+- Attack 두 Evidence의 발생 간격은 **180.364초**다. 향후 두 종류의 동시 활성화를 요구하는
+  R1 profile이라면 window와 replay cadence가 이 간격을 함께 수용해야 한다.
+  실제 필요한 최소 window는 grid 시작점·cadence·window 경계에 따라 달라진다.
+  **181초를 운영값으로 확정하지 않는다.**
+- 이번 Normal에는 후속 연결 1종만 관측됐다. 향후 “R1 2종 동일가중치 simple score,
+  threshold_on > 0.5”를 채택하면 이 입력의 최대 점수는 0.5이므로 임계값에 **도달할 수 없다**.
+  이 조건에서 FP=0이라는 결과는 입력·설정 구조에 따른 것이므로 일반 benign 성능으로 확대하지 않는다.
+- Fast 후보는 reference+300.216초, 두 번째 Evidence는 +480.580초에 관측됐다.
+  이는 후보/Event 도착 시각이며 Fusion decision 시각이 아니다. earliest Fusion decision은
+  replay grid·window·threshold·persistence를 고정하고 동일 Run FusionResult를 확보한 뒤 비교한다.
+
+derived `event_data_utc_time`은 외부 JSON 공통 형식인 `.mmmZ`로 기록한다.
+`hayabusa_timestamp`는 CSV 원문을 보존하고 시각 차이는 원래 정밀도로 계산한다.
+**7,315µs는 candidate record 한 건의 관측값이며 일반 보정 offset이 아니다.**
+Hayabusa 원문의 microsecond 정밀도가 timestamp source를 결정하지 않는다.
+기존 Fast adapter도 CSV 시각을 canonical millisecond로 변환할 수 있으므로 최종 source 선택은
+qualifying/detector-time 정책에서 별도로 동결한다. 이번 감사의 UtcTime 연결은 그 결정을 대신하지 않는다.
