@@ -1,6 +1,7 @@
 import json
 import logging
 from collections.abc import Callable
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -300,7 +301,10 @@ def test_postgres_receipt_store_acquires_an_object_lock_before_lookup() -> None:
 
     assert run_id == "RUN-20261005-001"
     assert "pg_advisory_xact_lock" in connection.queries[0][0]
-    assert connection.queries[0][1] == (f"{_BUCKET}\x00{_KEY}\x00opaque-etag",)
+    expected_identity = f"{_BUCKET}\x00{_KEY}\x00opaque-etag"
+    expected_lock_key = f"first-cycle:s3-object:{sha256(expected_identity.encode()).hexdigest()}"
+    assert connection.queries[0][1] == (expected_lock_key,)
+    assert "\x00" not in expected_lock_key
     assert "FROM s3_object_receipts" in connection.queries[1][0]
     assert connection.commits == 1
 

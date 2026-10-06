@@ -53,6 +53,11 @@ from incident_awareness.pipeline.runtime_telemetry import (
     PostgresPipelineRuntimeObserver,
 )
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
+from incident_awareness.pipeline.sqs_worker import (
+    S3SysmonInput,
+    _PostgresSuccessfulReceiptStore,
+    _receipt_lock_key,
+)
 from incident_awareness.storage.config import DATABASE_URL_ENV, DatabaseConfig
 from incident_awareness.storage.migrate import apply_migrations
 from incident_awareness.storage.repositories.event_repository import EventRepository
@@ -101,6 +106,35 @@ def database_url() -> str:
         )
 
     return url
+
+
+def test_postgres_receipt_lock_accepts_safe_object_identity(database_url: str) -> None:
+    schema = sql.Identifier(f"sqs_worker_receipt_lock_{uuid4().hex}")
+    input_object = S3SysmonInput(
+        bucket="worker-inputs",
+        key="incoming/first-cycle/sysmon/ING-550e8400-e29b-41d4-a716-446655440000/sysmon.jsonl",
+        ingest_id="ING-550e8400-e29b-41d4-a716-446655440000",
+        e_tag="worker-object-version",
+        sequencer="001",
+    )
+
+    with psycopg.connect(database_url) as connection:
+        connection.execute(sql.SQL("CREATE SCHEMA {}").format(schema))
+        connection.commit()
+        try:
+            connection.execute(sql.SQL("SET search_path TO {}").format(schema))
+            apply_migrations(connection)
+            connection.commit()
+
+            lock_key = _receipt_lock_key(input_object)
+            assert "\x00" not in lock_key
+            assert (
+                _PostgresSuccessfulReceiptStore(connection).acquire_execution(input_object) is None
+            )
+        finally:
+            connection.rollback()
+            connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(schema))
+            connection.commit()
 
 
 def test_postgres_repositories_store_and_restore_first_cycle_contracts(database_url: str) -> None:

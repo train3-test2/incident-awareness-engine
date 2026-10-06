@@ -332,7 +332,9 @@ def _s3_uri(input_object: S3SysmonInput) -> str:
 
 
 def _receipt_lock_key(input_object: S3SysmonInput) -> str:
-    return f"{input_object.bucket}\x00{input_object.key}\x00{input_object.e_tag}"
+    identity = f"{input_object.bucket}\x00{input_object.key}\x00{input_object.e_tag}"
+    identity_digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return f"first-cycle:s3-object:{identity_digest}"
 
 
 def _log_input_status(status: str, *, input_uri: str, run_id: str | None = None) -> None:
