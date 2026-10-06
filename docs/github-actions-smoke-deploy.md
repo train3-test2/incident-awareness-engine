@@ -61,6 +61,9 @@ s3://<FIRST_CYCLE_S3_BUCKET>/first-cycle/<run_id>/
 코드, 중지 사유, 해당 CloudWatch Logs stream 링크를 확인한다. 종료 코드 `0`과
 `First Cycle pipeline completed` 로그가 성공 기준이다.
 
+ECR은 커밋 SHA를 immutable image tag로 사용한다. 같은 커밋의 배포 workflow를 다시
+실행하면 이미 존재하는 이미지를 재사용하며, 해당 tag를 다시 push하지 않는다.
+
 ## GitHub OIDC 역할
 
 AWS IAM에 GitHub OIDC provider `https://token.actions.githubusercontent.com`를 등록하고, 아래 조건으로 `github-actions-incident-awareness-smoke-deploy` 역할의 신뢰 정책을 제한한다.

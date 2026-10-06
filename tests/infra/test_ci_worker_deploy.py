@@ -9,6 +9,10 @@ def test_develop_deploy_creates_or_updates_the_worker_service() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
     assert "ECS_FIRST_CYCLE_WORKER_SERVICE" in workflow
+    assert "aws ecr describe-images" in workflow
+    assert workflow.index("aws ecr describe-images") < workflow.index("docker build")
+    assert "ImageNotFoundException" in workflow
+    assert 'exit "$lookup_status"' in workflow
     assert "task-definition.first-cycle-worker.json" in workflow
     assert "task-definition.first-cycle-migrate.json" in workflow
     assert "aws ecs register-task-definition" in workflow
