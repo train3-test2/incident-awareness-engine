@@ -4,19 +4,35 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Pipeline Runtime Operations</title>
+    <link rel="stylesheet" href="/dashboard-assets/dashboard-shell.css">
     <link rel="stylesheet" href="/dashboard-assets/operations.css">
     <script type="module" src="/dashboard-assets/operations.js"></script>
 </head>
 <body>
-    <main class="operations-page">
-        <nav class="dashboard-navigation" aria-label="Dashboard navigation">
-            <a href="/dashboard">Dashboard</a>
-            <a href="/operations" aria-current="page">Operations</a>
-        </nav>
-        <h1 class="page-title">Pipeline Runtime Operations</h1>
-        <section class="runtime-section" aria-labelledby="runtime-heading">
-            <h2 id="runtime-heading">Pipeline Runtime</h2>
-            <div id="runtime-status" class="runtime-status" role="status" aria-live="polite"></div>
+    <header class="app-header">
+        <div class="app-header__inner">
+            <div class="app-brand">
+                <a class="app-brand__name" href="/dashboard">Detection Hub</a>
+                <span class="app-brand__context">Incident Awareness Dashboard</span>
+            </div>
+            <nav class="app-navigation" aria-label="주요 화면">
+                <a href="/dashboard">운영 View</a>
+                <a href="/operations" aria-current="page">Operations</a>
+            </nav>
+        </div>
+    </header>
+    <main class="app-page operations-page">
+        <header class="page-header">
+            <p class="page-eyebrow">Pipeline telemetry</p>
+            <h1 class="page-title">Operations</h1>
+            <p class="page-description">First Cycle 실행 단계와 마지막 보고 상태를 조회합니다.</p>
+        </header>
+        <section class="section-card runtime-section" aria-labelledby="runtime-heading">
+            <div class="section-header">
+                <h2 id="runtime-heading" class="section-heading">Pipeline Runtime</h2>
+                <p class="section-description">최근 Runtime snapshot을 API 순서대로 표시합니다.</p>
+            </div>
+            <div id="runtime-status" class="status-message runtime-status" role="status" aria-live="polite"></div>
             <div id="runtime-list" class="runtime-list"></div>
         </section>
     </main>

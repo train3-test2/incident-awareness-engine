@@ -4,35 +4,59 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Incident Awareness Dashboard</title>
+    <link rel="stylesheet" href="/dashboard-assets/dashboard-shell.css">
     <link rel="stylesheet" href="/dashboard-assets/dashboard.css">
     <script type="module" src="/dashboard-assets/dashboard.js"></script>
 </head>
 <body>
-    <main id="dashboard-view" class="dashboard-page">
-        <nav class="dashboard-navigation" aria-label="Dashboard navigation">
-            <a href="/dashboard" aria-current="page">Dashboard</a>
-            <a href="/operations">Operations</a>
-        </nav>
-        <h1 class="page-title">Incident Awareness Dashboard</h1>
+    <header class="app-header">
+        <div class="app-header__inner">
+            <div class="app-brand">
+                <a class="app-brand__name" href="/dashboard">Detection Hub</a>
+                <span class="app-brand__context">Incident Awareness Dashboard</span>
+            </div>
+            <nav class="app-navigation" aria-label="주요 화면">
+                <a href="/dashboard" aria-current="page">운영 View</a>
+                <a href="/operations">Operations</a>
+            </nav>
+        </div>
+    </header>
+    <main id="dashboard-view" class="app-page dashboard-page">
+        <header class="page-header">
+            <p class="page-eyebrow">Operations overview</p>
+            <h1 class="page-title">운영 View</h1>
+            <p class="page-description">침해사고 인지 시스템 실행 및 사건 조회</p>
+        </header>
         <div class="dashboard-grid">
-            <section class="dashboard-section" aria-labelledby="overview-heading">
-                <h2 id="overview-heading">Overview</h2>
-                <p class="dashboard-metric-label">Total Runs</p>
-                <p id="total-runs-value" class="dashboard-metric-value">-</p>
-                <div id="overview-status" class="dashboard-status" role="status" aria-live="polite">
+            <section class="section-card dashboard-section dashboard-section--summary" aria-labelledby="overview-heading">
+                <div class="section-header">
+                    <h2 id="overview-heading" class="section-heading">Overview</h2>
+                    <p class="section-description">저장된 First Cycle 실행 현황입니다.</p>
+                </div>
+                <div class="dashboard-metric">
+                    <p class="dashboard-metric-label">Total Runs</p>
+                    <p id="total-runs-value" class="dashboard-metric-value">-</p>
+                </div>
+                <div id="overview-status" class="status-message dashboard-status" role="status" aria-live="polite">
                     Total Runs를 불러오는 중입니다.
                 </div>
             </section>
-            <section class="dashboard-section" aria-labelledby="recent-runs-heading">
-                <h2 id="recent-runs-heading">Recent Runs</h2>
-                <div id="recent-runs-status" class="dashboard-status" role="status" aria-live="polite">
+            <section class="section-card dashboard-section" aria-labelledby="recent-runs-heading">
+                <div class="section-header">
+                    <h2 id="recent-runs-heading" class="section-heading">Recent Runs</h2>
+                    <p class="section-description">최근 실행 순서를 그대로 표시합니다.</p>
+                </div>
+                <div id="recent-runs-status" class="status-message dashboard-status" role="status" aria-live="polite">
                     Recent Runs를 불러오는 중입니다.
                 </div>
                 <div id="recent-runs-list" class="run-card-list"></div>
             </section>
-            <section class="dashboard-section dashboard-section--wide" aria-labelledby="runs-heading">
-                <h2 id="runs-heading">Runs</h2>
-                <div id="runs-status" class="dashboard-status" role="status" aria-live="polite">
+            <section class="section-card dashboard-section dashboard-section--wide" aria-labelledby="runs-heading">
+                <div class="section-header">
+                    <h2 id="runs-heading" class="section-heading">Runs</h2>
+                    <p class="section-description">조회 가능한 실행과 상세 화면 연결입니다.</p>
+                </div>
+                <div id="runs-status" class="status-message dashboard-status" role="status" aria-live="polite">
                     Run 목록을 불러오는 중입니다.
                 </div>
                 <div id="runs-list" class="run-card-list"></div>
