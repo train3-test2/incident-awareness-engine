@@ -100,3 +100,26 @@ Python 3.13 전체 pytest: **2,547 passed / 91 skipped**.
 신규 5개 검사는 실제 pipeline 연결, ±2초 포함 경계, 중복 terminal 거부,
 입력 해시 불일치 거부, 끊긴 계보 거부 및 extractor의 truncated 진단을 확인한다.
 Ruff check/format과 git diff --check 통과.
+
+## 후속: Fast 후보 시각의 유일한 원본 연결
+
+`tools/validation/check_fast_candidate_time.py`는 `Computer + Channel + RecordID` 전체 키로
+CSV 후보를 원본 JSONL 한 건에 연결한다. Hayabusa의 `Sysmon` 표기만
+`Microsoft-Windows-Sysmon/Operational`로 명시적으로 변환한다.
+키가 누락되거나 대응 레코드가 0건/복수이면 오류이며 EventID도 교차 검증한다.
+`EventData.UtcTime`이 없거나 잘못되면 TimeCreated로 대체하지 않는다.
+
+```bash
+uv run python tools/validation/check_fast_candidate_time.py \
+  --run-id RUN-20261005-912 --csv '<candidate-hits.csv>' \
+  --raw-jsonl '<동일 Run의 sysmon-0001.jsonl>' --output '<새 time-link-validation.json>'
+```
+
+실제 Pair 실행: Attack의 RecordID 1327이 유일하게 연결되며 CSV와 UtcTime 차이는
+정수 **7,315µs**다. Normal CSV는 후보 0건으로 빈 연결 목록을 생성한다.
+0건을 Fast miss로 변환하지 않으며 `final_detector_time=null`을 유지한다.
+입력 파일의 SHA-256과 원본 JSONL 줄 번호를 결과에 기록한다.
+원본에 run_id 필드가 없으므로 같은 Run의 두 파일을 제공할 책임은 호출자에게 있으며,
+출력 run_id가 원본에서 검증됐다고 주장하지 않는다.
+
+신규 시각 연결 테스트 10개 및 기존 연결 테스트 5개, 합계 15개 통과.
