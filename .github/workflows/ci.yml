@@ -131,8 +131,15 @@ jobs:
         run: |
           set -euo pipefail
           image="$ECR_REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA}"
-          docker build --platform linux/amd64 --tag "$image" .
-          docker push "$image"
+          if aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids "imageTag=$GITHUB_SHA" \
+            > /dev/null 2>&1; then
+            echo "Reusing existing immutable image tag: $image"
+          else
+            docker build --platform linux/amd64 --tag "$image" .
+            docker push "$image"
+          fi
           echo "uri=$image" >> "$GITHUB_OUTPUT"
 
       - name: Render Worker task definition
