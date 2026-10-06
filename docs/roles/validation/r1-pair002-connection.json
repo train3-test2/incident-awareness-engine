@@ -9,6 +9,7 @@
       "source_sha256": "dddf1d7cb78d4958a7b84fecc8e9ff14de56a63bd631758e6e7638ed6f3a9197",
       "execution_record_sha256": "5e033a998c79444044a47142269988a7880743b85b72d67254ec3c96970e6574",
       "manifest_sha256": "419b0eb18d46720b8339ec47e4ce2695b3356463ec7ae7e9675f1056d5925806",
+      "rendered_scenario_sha256": "ec02a9cdf4ac5da97b04d1db75e3c35d96b7f11cc4701e4843f97d3cc40c1aeb",
       "normalized_count": 98,
       "event_types": {
         "network_connection": 24,
@@ -61,6 +62,7 @@
       "source_sha256": "f3b9157f2a4ec56710a555194a701b9b43dea52de1883319c4b94e89616bf95d",
       "execution_record_sha256": "b74a147d20df9c55b06d2518f218c42612f69f581dba9c9f42ab3bd1224e2822",
       "manifest_sha256": "669a40cea71143d217344bd53d82c8b54db3aed1d9b45421e0a9f855155ee9e7",
+      "rendered_scenario_sha256": "ec02a9cdf4ac5da97b04d1db75e3c35d96b7f11cc4701e4843f97d3cc40c1aeb",
       "normalized_count": 97,
       "event_types": {
         "network_connection": 24,

@@ -299,3 +299,13 @@ usage sidecar를 읽지 않으므로 이 문서만으로 제외가 강제됐다�
 입력되면 오류로 거부하도록 연결한다. 최소한 Pair-002의 912/913은 train/validation/test
 입력에서 명시적으로 거부되어야 한다. 누락·충돌 처리와 sidecar 버전/hash 보존도 검증한다.
 **정식 train/validation/test 구성 전 #208 해결이 필수다.** 원본 Pair index는 수정하지 않는다.
+
+
+## 리뷰 후속: 최신 validator로 연결 보고서 재생성
+
+2026-10-06, validator commit `4c748c2`로 동일한 원본 Pair-002를 위 재현 명령에 따라
+새 출력 디렉터리에서 재실행했다. committed connection JSON은 이 실행의
+`connection-report.json`으로 교체했다. 각 Run에서 실제 읽은 외부 rendered scenario의
+`rendered_scenario_sha256`이 추가됐으며, 기존 source/execution/manifest 해시와
+정규화 건수·Evidence·계보·provenance·diagnostics는 이전 보고서와 동일하다.
+원본 입력과 생성 Event/Evidence는 계속 저장소 밖에 보관한다.
