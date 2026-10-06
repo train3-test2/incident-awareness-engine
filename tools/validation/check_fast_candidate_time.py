@@ -99,7 +99,7 @@ def main():
         } <= set(reader.fieldnames or ()):
             raise ValueError("CSV header is missing required fields")
         hits = list(reader)
-    records = [json.loads(line) for line in args.raw_jsonl.read_text().splitlines()]
+    records = [json.loads(line) for line in args.raw_jsonl.read_text(encoding="utf-8").splitlines()]
     result = {
         "run_id": args.run_id,
         "run_id_source": "caller_supplied_single_run_files",
@@ -109,7 +109,7 @@ def main():
         "raw_sha256": hashlib.sha256(args.raw_jsonl.read_bytes()).hexdigest(),
         "matches": resolve_hits(hits, records),
     }
-    with args.output.open("x") as f:
+    with args.output.open("x", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
         f.write("\n")
     print(json.dumps(result, ensure_ascii=False, indent=2))
