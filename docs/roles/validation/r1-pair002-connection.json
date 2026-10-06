@@ -1,0 +1,105 @@
+{
+  "pair_id": "R1-PAIR-20261005-002",
+  "purpose": "development_tuning_connection_check",
+  "production_selector": false,
+  "policy_hash_basis": "canonical JSON without trailing newline",
+  "runs": [
+    {
+      "run_id": "RUN-20261005-912",
+      "source_sha256": "dddf1d7cb78d4958a7b84fecc8e9ff14de56a63bd631758e6e7638ed6f3a9197",
+      "execution_record_sha256": "5e033a998c79444044a47142269988a7880743b85b72d67254ec3c96970e6574",
+      "manifest_sha256": "419b0eb18d46720b8339ec47e4ce2695b3356463ec7ae7e9675f1056d5925806",
+      "rendered_scenario_sha256": "ec02a9cdf4ac5da97b04d1db75e3c35d96b7f11cc4701e4843f97d3cc40c1aeb",
+      "normalized_count": 98,
+      "event_types": {
+        "network_connection": 24,
+        "process_create": 74
+      },
+      "lineage": [
+        {
+          "record_id": "1275",
+          "name": "wsmprovhost.exe",
+          "process_guid": "{2bf90845-fb86-6ac3-ed00-000000000800}"
+        },
+        {
+          "record_id": "1325",
+          "name": "cscript.exe",
+          "process_guid": "{2bf90845-fcb1-6ac3-1801-000000000800}"
+        },
+        {
+          "record_id": "1327",
+          "name": "powershell.exe",
+          "process_guid": "{2bf90845-fcb2-6ac3-1a01-000000000800}"
+        }
+      ],
+      "network_record_id": "1350",
+      "evidence_types": {
+        "remote_session_process_lineage_deviation": 1,
+        "remote_process_network_follow_on": 1
+      },
+      "diagnostics": [],
+      "telemetry_completeness": "not_provided",
+      "provenance": [
+        {
+          "evidence_id": "E-71225400-91e7-598d-8b62-69600484a820",
+          "source_record_ids": [
+            "1275",
+            "1325",
+            "1327"
+          ]
+        },
+        {
+          "evidence_id": "E-198f0a21-dbe6-5a26-9079-dd35dc516613",
+          "source_record_ids": [
+            "1327",
+            "1350"
+          ]
+        }
+      ]
+    },
+    {
+      "run_id": "RUN-20261005-913",
+      "source_sha256": "f3b9157f2a4ec56710a555194a701b9b43dea52de1883319c4b94e89616bf95d",
+      "execution_record_sha256": "b74a147d20df9c55b06d2518f218c42612f69f581dba9c9f42ab3bd1224e2822",
+      "manifest_sha256": "669a40cea71143d217344bd53d82c8b54db3aed1d9b45421e0a9f855155ee9e7",
+      "rendered_scenario_sha256": "ec02a9cdf4ac5da97b04d1db75e3c35d96b7f11cc4701e4843f97d3cc40c1aeb",
+      "normalized_count": 97,
+      "event_types": {
+        "network_connection": 24,
+        "process_create": 73
+      },
+      "lineage": [
+        {
+          "record_id": "1290",
+          "name": "wsmprovhost.exe",
+          "process_guid": "{2bf90845-0104-6ac4-fd00-000000000800}"
+        },
+        {
+          "record_id": "1335",
+          "name": "cmd.exe",
+          "process_guid": "{2bf90845-0231-6ac4-2001-000000000800}"
+        },
+        {
+          "record_id": "1337",
+          "name": "powershell.exe",
+          "process_guid": "{2bf90845-0231-6ac4-2201-000000000800}"
+        }
+      ],
+      "network_record_id": "1373",
+      "evidence_types": {
+        "remote_process_network_follow_on": 1
+      },
+      "diagnostics": [],
+      "telemetry_completeness": "not_provided",
+      "provenance": [
+        {
+          "evidence_id": "E-da1fa18e-8320-5f36-8ac5-97488b4e6eae",
+          "source_record_ids": [
+            "1337",
+            "1373"
+          ]
+        }
+      ]
+    }
+  ]
+}
