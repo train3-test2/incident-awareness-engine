@@ -101,10 +101,12 @@ def test_dashboard_read_api_against_postgres(
                 runs_response = client.get("/runs")
                 overview_response = client.get("/overview")
                 detail_response = client.get(f"/runs/{run_id}")
+                fusion_engine_response = client.get(f"/runs/{run_id}/fusion-engine")
                 historical_d1_response = client.get(f"/decisions/{d1_id}")
                 historical_d2_response = client.get(f"/decisions/{d2_id}")
                 historical_d3_response = client.get(f"/decisions/{d3_id}")
                 unknown_run_response = client.get(f"/runs/{unknown_run_id}")
+                unknown_fusion_engine_response = client.get(f"/runs/{unknown_run_id}/fusion-engine")
                 unknown_decision_response = client.get(f"/decisions/{unknown_decision_id}")
 
                 embedded_legacy_decision = d3_case[6].model_copy(
@@ -198,6 +200,21 @@ def test_dashboard_read_api_against_postgres(
             )
             assert current_runtime["latest_fusion_stopping_trace"]["points"][0]["score"] == 0.9
 
+            assert fusion_engine_response.status_code == 200
+            fusion_engine = fusion_engine_response.json()
+            assert set(fusion_engine) == {
+                "run",
+                "current_decision",
+                "fusion_result",
+                "stopping_trace",
+                "runtime_config_snapshot",
+            }
+            assert fusion_engine["run"]["run_id"] == run_id
+            assert fusion_engine["current_decision"] == d3_case[6].model_dump(mode="json")
+            assert fusion_engine["fusion_result"] == d3_case[2].model_dump(mode="json")
+            assert fusion_engine["stopping_trace"] == d3_case[3].model_dump(mode="json")
+            assert fusion_engine["runtime_config_snapshot"] == d3_case[4].model_dump(mode="json")
+
             assert historical_d1_response.status_code == 200
             historical_d1 = historical_d1_response.json()
             assert historical_d1["decision"]["decision_id"] == d1_id
@@ -256,6 +273,8 @@ def test_dashboard_read_api_against_postgres(
 
             assert unknown_run_response.status_code == 404
             assert unknown_run_response.json() == {"detail": "Run not found"}
+            assert unknown_fusion_engine_response.status_code == 404
+            assert unknown_fusion_engine_response.json() == {"detail": "Run not found"}
             assert unknown_decision_response.status_code == 404
             assert unknown_decision_response.json() == {"detail": "Decision not found"}
 
@@ -263,12 +282,14 @@ def test_dashboard_read_api_against_postgres(
                 runs_response,
                 overview_response,
                 detail_response,
+                fusion_engine_response,
                 historical_d1_response,
                 historical_d2_response,
                 historical_d3_response,
                 embedded_legacy_response,
                 row_absent_legacy_response,
                 unknown_run_response,
+                unknown_fusion_engine_response,
                 unknown_decision_response,
             )
             parsed_url = urlparse(database_url)

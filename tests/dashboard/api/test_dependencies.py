@@ -109,3 +109,67 @@ def test_pipeline_runtime_repository_dependency_reuses_request_connection(
     # Then
     assert isinstance(repository, FakePipelineRuntimeStatusRepository)
     assert repository_connections == [connection]
+
+
+def test_fusion_engine_reader_dependency_reuses_request_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    connection = FakeConnection()
+    repository_connections: list[tuple[str, FakeConnection]] = []
+    reader_repositories: dict[str, object] = {}
+
+    def repository_type(name: str) -> type:
+        class FakeRepository:
+            def __init__(self, provided_connection: FakeConnection) -> None:
+                repository_connections.append((name, provided_connection))
+
+        return FakeRepository
+
+    class FakeDashboardFusionEngineReader:
+        def __init__(self, **repositories: object) -> None:
+            reader_repositories.update(repositories)
+
+    monkeypatch.setattr(
+        dependencies,
+        "DecisionRepository",
+        repository_type("decision"),
+    )
+    monkeypatch.setattr(
+        dependencies,
+        "FusionResultRepository",
+        repository_type("fusion"),
+    )
+    monkeypatch.setattr(
+        dependencies,
+        "FusionStoppingTraceRepository",
+        repository_type("trace"),
+    )
+    monkeypatch.setattr(
+        dependencies,
+        "FusionRuntimeConfigSnapshotRepository",
+        repository_type("config"),
+    )
+    monkeypatch.setattr(
+        dependencies,
+        "DashboardFusionEngineReader",
+        FakeDashboardFusionEngineReader,
+    )
+
+    # When
+    reader = dependencies.get_dashboard_fusion_engine_reader(connection)
+
+    # Then
+    assert isinstance(reader, FakeDashboardFusionEngineReader)
+    assert repository_connections == [
+        ("decision", connection),
+        ("fusion", connection),
+        ("trace", connection),
+        ("config", connection),
+    ]
+    assert set(reader_repositories) == {
+        "decision_repository",
+        "fusion_repository",
+        "stopping_trace_repository",
+        "runtime_config_repository",
+    }
