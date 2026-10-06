@@ -6,7 +6,7 @@
     {
       "run_id": "RUN-20261005-912",
       "run_type": "attack",
-      "entity_id": "R1-TGTA",
+      "entity_id": "<target-host>",
       "usage": "development_tuning_only",
       "used_for_tuning": true,
       "eligible_splits": [],
@@ -58,7 +58,7 @@
     {
       "run_id": "RUN-20261005-913",
       "run_type": "normal",
-      "entity_id": "R1-TGTA",
+      "entity_id": "<target-host>",
       "usage": "development_tuning_only",
       "used_for_tuning": true,
       "eligible_splits": [],
@@ -108,5 +108,6 @@
       "normalized_events_outside_observation": 6
     }
   ],
-  "path_note": "placeholder paths describe file roles; exact local paths are retained in the local input-inventory.json"
+  "path_note": "placeholder paths describe file roles; exact local paths are retained in the local input-inventory.json",
+  "entity_id_note": "Repository copy is sanitized. Exact entity_id is retained only in the external local input-inventory.json; this copy is not an executable input manifest."
 }
