@@ -2033,6 +2033,112 @@ def test_both_runs_of_a_pair_are_held_to_the_tier_of_their_one_scenario(
     assert report.trace.dataset_tier == report.scenario_dataset_tier == "holdout"
 
 
+@pytest.mark.parametrize("run_type", ["normal", "attack"])
+@pytest.mark.parametrize("stating", ["normal", "attack"])
+def test_run_block_stating_another_tier_than_its_pair_validates_nothing(
+    tmp_path: Path, run_type: str, stating: str
+) -> None:
+    # Given: a Pair rendered as development whose trace says development as well, and one run
+    # block that was given a tier of its own
+    body = scenario(dataset_tier="development")
+    body["runs"][stating]["dataset_tier"] = "holdout"
+    root, scenario_path = build_run(tmp_path, run_type=run_type, scenario_body=body)
+    trace = json.loads((trace_dir(root) / "r1_run_trace.json").read_text(encoding="utf-8"))
+    assert trace["dataset_tier"] == "development"
+
+    report = validate((root, scenario_path))
+
+    # Then: the scenario is refused whichever run of the Pair is validated. The trace agrees
+    # with the top-level tier, and that agreement does not make the run pass
+    assert report.errors == [
+        (
+            f"scenario definition is not usable ({scenario_path}): runs.{stating} states "
+            "['dataset_tier']; a Pair states them once at the top level"
+        )
+    ]
+    assert report.scenario_dataset_tier is None
+    assert report.trace is None
+    assert report.lineage is None
+    assert report.identity is None
+    assert "PASS" not in format_report(report)
+
+
+@pytest.mark.parametrize("run_type", ["normal", "attack"])
+@pytest.mark.parametrize("stating", ["normal", "attack"])
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("family_id", FAMILY_ID),
+        ("family_id", "family_x7"),
+        ("variation_id", VARIATION_ID),
+        ("variation_id", "V09"),
+        ("repetition", REPETITION),
+        ("repetition", 4),
+        ("dataset_tier", "pilot"),
+        ("dataset_tier", "development"),
+        ("dataset_tier", None),
+    ],
+    ids=[
+        "family-same",
+        "family-other",
+        "variation-same",
+        "variation-other",
+        "repetition-same",
+        "repetition-other",
+        "tier-same",
+        "tier-other",
+        "tier-null",
+    ],
+)
+def test_run_block_stating_a_value_of_its_pair_validates_nothing(
+    tmp_path: Path, run_type: str, stating: str, name: str, value: object
+) -> None:
+    # Given: a run that is valid in every other respect, and a scenario in which one run block
+    # carries a field the Pair states once at the top level
+    body = scenario()
+    body["runs"][stating][name] = value
+
+    report = validate(build_run(tmp_path, run_type=run_type, scenario_body=body))
+
+    # Then: the field is refused for being there. A value equal to the top-level one and a null
+    # are refused like a different one, and nothing of the run is judged
+    assert len(report.errors) == 1
+    assert "scenario definition is not usable" in report.errors[0]
+    assert (
+        f"runs.{stating} states [{name!r}]; a Pair states them once at the top level"
+    ) in report.errors[0]
+    assert report.trace is None
+    assert report.lineage is None
+    assert report.identity is None
+
+
+def test_every_pair_field_of_a_run_block_is_named(tmp_path: Path) -> None:
+    body = scenario()
+    body["runs"]["attack"].update({"repetition": 2, "dataset_tier": "holdout", "family_id": "x"})
+
+    report = validate(build_run(tmp_path, run_type="normal", scenario_body=body))
+
+    assert (
+        "runs.attack states ['dataset_tier', 'family_id', 'repetition']; a Pair states them "
+        "once at the top level"
+    ) in errors_of(report)
+
+
+@pytest.mark.parametrize("run_type", ["normal", "attack"])
+@pytest.mark.parametrize("stating", ["normal", "attack"])
+@pytest.mark.parametrize("name", ["family_id", "variation_id", "repetition", "dataset_tier"])
+def test_plan_of_a_scenario_whose_run_block_states_a_pair_field_is_not_read(
+    tmp_path: Path, run_type: str, stating: str, name: str
+) -> None:
+    body = scenario()
+    body["runs"][stating][name] = body[name]
+    scenario_path = tmp_path / "scenario.json"
+    scenario_path.write_text(json.dumps(body), encoding="utf-8")
+
+    with pytest.raises(R1ScenarioError, match=rf"runs\.{stating} states \['{name}'\]"):
+        load_r1_pilot_expectation(scenario_path, run_type)
+
+
 @pytest.mark.parametrize("tier", ["development", "holdout"])
 def test_rehearsal_of_a_scenario_of_a_formal_tier_is_refused(tmp_path: Path, tier: str) -> None:
     # Given: rehearsal artifacts whose scenario and trace both claim a formal tier

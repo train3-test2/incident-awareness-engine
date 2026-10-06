@@ -47,8 +47,10 @@ The dataset tier belongs to the Pair. The rendered scenario states it once -
 the runner copies it to the operator trace of each run. This validator reads
 the expected tier from the scenario and accepts a run only when its trace states
 exactly that tier. The caller cannot choose the expectation, and a scenario that
-states no tier validates nothing. What a formal selector has to check on top of
-this is in `scenarios/R1/README.md` section 1-3.
+states no tier validates nothing. Neither does a scenario in which a run block
+states a tier, a family, a variation or a repetition of its own: both blocks
+are read, whichever run is validated. What a formal selector has to check on
+top of this is in `scenarios/R1/README.md` section 1-3.
 
 This is a conformance check of one collected run against its own plan. It
 detects nothing, builds no Evidence and produces no Fusion input. `run_type` is
@@ -144,6 +146,11 @@ PLANNED_LINEAGE_KEY = "planned_lineage"
 LINEAGE_ROLES = ("final tool", "intermediate", "session host")
 REFERENCE_FIELDS = ("reference_time", "reference_action_id", "reference_source_event_id")
 IDENTITY_FIELDS = ("family_id", "variation_id", "repetition")
+# What a Pair states once, at the top level of its rendered scenario, for both
+# of its runs. The renderer and the runner refuse a run block that states one of
+# them. The validator refuses it too: the artifacts it is handed need not have
+# come from either.
+PAIR_FIELDS = (*IDENTITY_FIELDS, "dataset_tier")
 
 # The operator trace the runner writes next to raw/ and ground_truth/
 # (scenarios/R1/run-common.ps1, Write-R1RunTrace).
@@ -334,8 +341,37 @@ def _load_destination(internal: dict) -> tuple[str | None, str | None]:
         ) from error
 
 
+def _check_run_blocks(scenario: dict) -> None:
+    """Refuse a scenario whose run block states a value that belongs to its Pair.
+
+    Both run blocks are read, whichever run is being validated: a value in the
+    other block lets the two runs of the Pair disagree just the same. A field
+    counts for being there, so one that is null or repeats the top-level value
+    is refused like one that differs. A `runs` or a run block that is not an
+    object states nothing, and is reported where the plan is read.
+    """
+    runs = scenario.get("runs")
+    if not isinstance(runs, dict):
+        return
+
+    for run_type in RUN_TYPES:
+        block = runs.get(run_type)
+        if not isinstance(block, dict):
+            continue
+        stated = sorted(name for name in PAIR_FIELDS if name in block)
+        if stated:
+            raise R1ScenarioError(
+                f"runs.{run_type} states {stated}; a Pair states them once at the top level"
+            )
+
+
 def _parse_scenario(scenario_bytes: bytes) -> dict:
-    """The rendered scenario the bytes hold, once it is known to be an R1 scenario."""
+    """The rendered scenario the bytes hold, once it is known to be an R1 scenario.
+
+    Everything the validator reads of a scenario comes through here, so a run
+    block that states a value of the Pair is refused before the tier or the plan
+    is taken from it.
+    """
     try:
         scenario = json.loads(scenario_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -346,6 +382,7 @@ def _parse_scenario(scenario_bytes: bytes) -> dict:
         raise R1ScenarioError(
             f"scenario_id must be {SCENARIO_ID!r}, found {scenario.get('scenario_id')!r}"
         )
+    _check_run_blocks(scenario)
     return scenario
 
 
@@ -1121,7 +1158,8 @@ def validate_r1_pilot_run(
         return report
 
     # The tier a run is held to is the one its scenario states for the Pair. The
-    # caller gives none, and a scenario without one validates nothing.
+    # caller gives none, and a scenario without one validates nothing. Neither
+    # does one whose run block states a tier or an identity of its own.
     try:
         scenario_tier = _load_dataset_tier(_parse_scenario(scenario_bytes))
     except R1ScenarioError as error:

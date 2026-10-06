@@ -139,6 +139,9 @@ tier 가 정확히 같을 때만 통과시킨다(§7).
 - 값이 없거나(`null` · 빈 문자열 포함) 위 셋이 아니면 렌더러는 JSON 을 만들지 않고, 실행기는 아무것도
   만들기 전에 중단하며(dry-run 포함), 검증기는 아무것도 검증하지 않는다. 철자가 정확히 같아야 하고,
   어느 쪽도 `pilot` 으로 대신하지 않는다.
+- `runs.normal` 이나 `runs.attack` 이 tier 를 따로 적고 있으면 최상위 값과 같아도, `null` 이어도
+  거부한다. 렌더러와 검증기는 두 블록을 모두 보고, 실행기는 실행하는 Run 의 블록을 본다. 식별자 세
+  값(§1-2)도 같다.
 - **rehearsal 은 항상 `pilot` 이다.** scenario 가 다른 tier 를 적고 있으면 rehearsal 을 실행하지도
   검증하지도 않는다.
 - **`development` · `holdout` 은 위의 동결 조건을 만족하는 Pair 에만 쓴다.** 실행기와 검증기는 그 조건을
@@ -505,7 +508,7 @@ trace 의 tier 가 그 값과 정확히 같을 때만 통과시킨다. scenario 
 | Ground Truth | `scenario_id` 가 `R1`, `target_host` 가 렌더링 값과 같음, Normal 은 reference 세 필드가 모두 `null` 이고 Attack 은 세 필드가 있으며 `reference_action_id` 가 scenario 의 값과 같음, `reference_policy_version` 이 scenario 의 값과 같음, `vm_snapshot` · `end_time` 기록, action 순서와 `action_type` 이 시나리오와 같음, 시각이 순서대로이고 Run 구간 안 |
 | 실행 scenario 결속 | `operator_trace\<run_id>\r1_run_trace.json` 이 이 `run_id` · 실행 모드 · scenario 가 적은 tier 를 적고 있는지, 그리고 trace 의 `scenario_sha256` · Run 이 남긴 `scenario.json` 사본 · `--scenario` 로 준 파일이 **모두 같은 바이트**인지 |
 | Pair 식별자 | `run_metadata.json` 의 `family_id` · `variation_id` · `repetition` 이 scenario 가 적은 값과 같은지. 하나라도 다르거나 비어 있으면 실패다 |
-| 시나리오 | 목적지가 내부 주소 규칙을 지키는지, 식별자 세 값이 유효한지, `dataset_tier` 가 있는지, Attack Run 이 reference action 을 적으면 `reference_policy_version` 이 비어 있지 않은지 다시 검사한다. 어긴 시나리오로는 통과할 수 없다 |
+| 시나리오 | 목적지가 내부 주소 규칙을 지키는지, 식별자 세 값이 유효한지, `dataset_tier` 가 있는지, 두 Run 블록(`runs.normal` · `runs.attack`)이 식별자 세 값이나 `dataset_tier` 를 따로 적지 않았는지(어느 Run 을 검증하든 둘 다 본다), Attack Run 이 reference action 을 적으면 `reference_policy_version` 이 비어 있지 않은지 다시 검사한다. 어긴 시나리오로는 통과할 수 없다 |
 | 계보 | Target-A 에서 최종 관리 도구 Image 의 EID 1 중 **그 Run 이 계획한 3 단계 계보(`planned_lineage`)를 가진 인스턴스가 정확히 하나**인지 찾고, 그 host · ProcessGuid 를 `r1_lineage.verify_r1_lineage` 에 넘긴다 |
 | 연결 | 같은 host · ProcessGuid 의 EID 3 이 승인 목적지 · 포트로 향하는지 (`verify_r1_lineage`) |
 | reference (Attack) | `reference_source_event_id` 와 `reference_time` 이 원본 JSONL 에서 **위 계보의 세션 host EID 1** 의 `RecordId` · `EventData.UtcTime` 과 같은지, 그 시각이 reference action 의 기록 시각 이후이고 다음 행위보다 앞인지, 수집 모드면 `end_time >= reference_time + evaluation_horizon_sec` 인지. `TimeCreated` 는 쓰지 않는다 |
