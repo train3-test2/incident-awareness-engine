@@ -1,123 +1,82 @@
-:root {
-    color-scheme: light;
-    --text-color: #1f2328;
-    --muted-text-color: #59636e;
-    --border-color: #d1d9e0;
-    --surface-color: #ffffff;
-    --page-background-color: #f6f8fa;
-    --accent-color: #0969da;
-}
-
-*,
-*::before,
-*::after {
-    box-sizing: border-box;
-}
-
-body {
-    margin: 0;
-    font-family: system-ui, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
-    line-height: 1.5;
-    color: var(--text-color);
-    background-color: var(--page-background-color);
-}
-
-.dashboard-page {
-    max-width: 72rem;
-    margin: 0 auto;
-    padding: 1.5rem 1rem;
-}
-
-.dashboard-navigation {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    margin-bottom: 1rem;
-}
-
-.dashboard-navigation a {
-    padding: 0.375rem 0.625rem;
-    color: var(--accent-color);
-    text-decoration: none;
-    border-radius: 0.375rem;
-}
-
-.dashboard-navigation a:hover,
-.dashboard-navigation a:focus-visible {
-    text-decoration: underline;
-}
-
-.dashboard-navigation a[aria-current="page"] {
-    color: var(--surface-color);
-    background-color: var(--accent-color);
-}
-
-.page-title {
-    margin: 0 0 1.5rem;
-    font-size: 1.5rem;
-}
-
 .dashboard-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 1rem;
+    align-items: start;
+    gap: var(--shell-space-4);
 }
 
-.dashboard-section {
-    padding: 1rem;
-    background-color: var(--surface-color);
-    border: 1px solid var(--border-color);
-    border-radius: 0.5rem;
+.dashboard-section--summary {
+    background:
+        linear-gradient(135deg, var(--shell-color-primary-soft), transparent 65%),
+        var(--shell-color-surface);
 }
 
 .dashboard-section--wide {
     grid-column: 1 / -1;
 }
 
-.dashboard-section h2 {
-    margin: 0 0 0.75rem;
-    font-size: 1.125rem;
+.dashboard-metric {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: var(--shell-space-4);
+    gap: var(--shell-space-4);
+    background-color: var(--shell-color-surface);
+    border: 1px solid var(--shell-color-border);
+    border-radius: var(--shell-radius-medium);
 }
 
 .dashboard-metric-label {
-    margin: 0 0 0.375rem;
-    font-weight: 600;
-}
-
-.dashboard-metric-value {
-    margin: 0 0 0.75rem;
-    font-size: 2rem;
+    margin: 0;
+    color: var(--shell-color-muted);
+    font-size: 0.875rem;
     font-weight: 700;
 }
 
+.dashboard-metric-value {
+    margin: 0;
+    color: var(--shell-color-primary-strong);
+    font-size: clamp(2rem, 7vw, 3rem);
+    font-weight: 800;
+    line-height: 1;
+}
+
 .dashboard-status {
-    min-height: 1.5rem;
-    color: var(--muted-text-color);
+    margin-top: var(--shell-space-3);
 }
 
 .run-card-list {
     display: grid;
-    gap: 0.75rem;
-    margin-top: 0.75rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+    gap: var(--shell-space-3);
+    margin-top: var(--shell-space-3);
 }
 
 .recent-run-card {
-    padding: 0.75rem;
-    border: 1px solid var(--border-color);
-    border-radius: 0.375rem;
+    min-width: 0;
+    padding: var(--shell-space-4);
+    background-color: var(--shell-color-surface-subtle);
+    border: 1px solid var(--shell-color-border);
+    border-radius: var(--shell-radius-medium);
 }
 
 .recent-run-card__title {
-    margin: 0 0 0.5rem;
+    margin: 0 0 var(--shell-space-3);
     font-size: 1rem;
     overflow-wrap: anywhere;
+}
+
+.recent-run-card__title a {
+    color: var(--shell-color-primary);
+    text-underline-offset: 0.18em;
 }
 
 .recent-run-card__fields {
     display: grid;
     grid-template-columns: max-content minmax(0, 1fr);
-    gap: 0.25rem 0.75rem;
+    gap: var(--shell-space-1) var(--shell-space-3);
     margin: 0;
+    font-size: 0.875rem;
 }
 
 .recent-run-field {
@@ -125,7 +84,7 @@ body {
 }
 
 .recent-run-field__label {
-    color: var(--muted-text-color);
+    color: var(--shell-color-muted);
 }
 
 .recent-run-field__value {
@@ -148,6 +107,6 @@ body {
     }
 
     .recent-run-field__value {
-        margin-bottom: 0.375rem;
+        margin-bottom: var(--shell-space-2);
     }
 }

@@ -10,6 +10,7 @@ from incident_awareness.dashboard.api.dependencies import get_run_repository
 JAVASCRIPT_MEDIA_TYPES = {"application/javascript", "text/javascript"}
 DASHBOARD_VIEW_PATHS = (
     "/dashboard",
+    "/dashboard-assets/dashboard-shell.css",
     "/dashboard-assets/dashboard.css",
     "/dashboard-assets/dashboard.js",
     "/dashboard-assets/dashboard-contract.mjs",
@@ -71,10 +72,14 @@ def test_dashboard_view_serves_html_shell_without_database_access(
     assert response.headers["content-type"].startswith("text/html")
     html = response.text
     assert "Incident Awareness Dashboard" in html
+    assert 'href="/dashboard-assets/dashboard-shell.css"' in html
     assert 'href="/dashboard-assets/dashboard.css"' in html
     assert '<script type="module" src="/dashboard-assets/dashboard.js"></script>' in html
     assert 'href="/dashboard" aria-current="page"' in html
     assert 'href="/operations"' in html
+    assert "Detection Hub" in html
+    assert "운영 View" in html
+    assert "침해사고 인지 시스템 실행 및 사건 조회" in html
     for section in ("Overview", "Total Runs", "Recent Runs", "Runs"):
         assert section in html
     for status_id in (
@@ -107,14 +112,18 @@ def test_dashboard_assets_serve_stylesheet_script_and_contract_module() -> None:
     client = TestClient(create_app())
 
     # When
+    shell_stylesheet = client.get("/dashboard-assets/dashboard-shell.css")
     stylesheet = client.get("/dashboard-assets/dashboard.css")
     script = client.get("/dashboard-assets/dashboard.js")
     contract = client.get("/dashboard-assets/dashboard-contract.mjs")
 
     # Then
-    assert stylesheet.status_code == 200
-    assert stylesheet.headers["content-type"].startswith("text/css")
-    assert ".dashboard-navigation" in stylesheet.text
+    for response in (shell_stylesheet, stylesheet):
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/css")
+    assert ".app-navigation" in shell_stylesheet.text
+    assert "--shell-color-primary" in shell_stylesheet.text
+    assert ".run-card-list" in stylesheet.text
     assert script.status_code == 200
     assert contract.status_code == 200
     for response in (script, contract):
@@ -165,6 +174,31 @@ def test_dashboard_script_fetches_overview_and_runs_once_without_polling() -> No
     assert 'document.getElementById("runs-list")' in script
     for polling_api in ("setInterval(", "setTimeout(", "AbortController"):
         assert polling_api not in script
+
+
+def test_dashboard_view_uses_shared_shell_and_responsive_layout() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    html = client.get("/dashboard").text
+    shell = client.get("/dashboard-assets/dashboard-shell.css").text
+    stylesheet = client.get("/dashboard-assets/dashboard.css").text
+
+    # Then
+    assert html.index("/dashboard-assets/dashboard-shell.css") < html.index(
+        "/dashboard-assets/dashboard.css"
+    )
+    for semantic_element in ("<header", "<nav", "<main", "<section", "<h1", "<h2"):
+        assert semantic_element in html
+    assert 'class="app-header"' in html
+    assert 'class="app-navigation"' in html
+    assert 'class="app-page dashboard-page"' in html
+    assert "@media (max-width: 48rem)" in shell
+    assert "@media (max-width: 30rem)" in shell
+    assert "@media (max-width: 40rem)" in stylesheet
+    assert "overflow-wrap: anywhere" in stylesheet
+    assert "width: min(100%, var(--shell-page-width))" in shell
 
 
 def test_dashboard_script_uses_contract_and_safe_dom_rendering() -> None:

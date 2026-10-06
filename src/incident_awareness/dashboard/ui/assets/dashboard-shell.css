@@ -1,0 +1,272 @@
+:root {
+    color-scheme: light;
+    --shell-color-canvas: #f4f7fb;
+    --shell-color-surface: #ffffff;
+    --shell-color-surface-subtle: #f8fafc;
+    --shell-color-text: #172033;
+    --shell-color-muted: #5c687a;
+    --shell-color-border: #d8e0ea;
+    --shell-color-border-strong: #b8c4d4;
+    --shell-color-primary: #1456a0;
+    --shell-color-primary-strong: #0e3e77;
+    --shell-color-primary-soft: #e7f0fb;
+    --shell-color-success: #18794e;
+    --shell-color-success-soft: #e8f6ef;
+    --shell-color-warning: #946200;
+    --shell-color-warning-soft: #fff5d6;
+    --shell-color-danger: #b4232f;
+    --shell-color-danger-soft: #fdecef;
+    --shell-shadow-card: 0 0.125rem 0.375rem rgb(23 32 51 / 0.06);
+    --shell-radius-small: 0.375rem;
+    --shell-radius-medium: 0.625rem;
+    --shell-radius-large: 0.875rem;
+    --shell-space-1: 0.25rem;
+    --shell-space-2: 0.5rem;
+    --shell-space-3: 0.75rem;
+    --shell-space-4: 1rem;
+    --shell-space-5: 1.5rem;
+    --shell-space-6: 2rem;
+    --shell-page-width: 76rem;
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+body {
+    min-width: 0;
+    margin: 0;
+    font-family: system-ui, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    line-height: 1.5;
+    color: var(--shell-color-text);
+    background-color: var(--shell-color-canvas);
+}
+
+a {
+    color: var(--shell-color-primary);
+}
+
+a:hover {
+    color: var(--shell-color-primary-strong);
+}
+
+a:focus-visible,
+button:focus-visible {
+    outline: 0.1875rem solid var(--shell-color-primary);
+    outline-offset: 0.125rem;
+}
+
+.app-header a:focus-visible {
+    outline-color: var(--shell-color-surface);
+}
+
+.app-header {
+    color: var(--shell-color-surface);
+    background: linear-gradient(120deg, #102847, #173f70);
+    border-bottom: 1px solid #0c2747;
+}
+
+.app-header__inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: min(100%, var(--shell-page-width));
+    min-width: 0;
+    min-height: 4.5rem;
+    margin: 0 auto;
+    padding: var(--shell-space-3) var(--shell-space-5);
+    gap: var(--shell-space-5);
+}
+
+.app-brand {
+    display: grid;
+    gap: var(--shell-space-1);
+}
+
+.app-brand__name {
+    color: inherit;
+    font-size: 1.125rem;
+    font-weight: 750;
+    letter-spacing: 0.01em;
+    text-decoration: none;
+}
+
+.app-brand__context {
+    color: #c8d8ec;
+    font-size: 0.8125rem;
+}
+
+.app-navigation {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--shell-space-2);
+}
+
+.app-navigation a {
+    min-width: 0;
+    padding: 0.5rem 0.75rem;
+    color: #dce8f7;
+    font-size: 0.9375rem;
+    font-weight: 650;
+    text-decoration: none;
+    border: 1px solid transparent;
+    border-radius: var(--shell-radius-small);
+    overflow-wrap: anywhere;
+}
+
+.app-navigation a:hover,
+.app-navigation a:focus-visible {
+    color: var(--shell-color-surface);
+    background-color: rgb(255 255 255 / 0.1);
+}
+
+.app-navigation a[aria-current="page"] {
+    color: #102847;
+    background-color: var(--shell-color-surface);
+    border-color: var(--shell-color-surface);
+}
+
+.app-page {
+    width: min(100%, var(--shell-page-width));
+    margin: 0 auto;
+    padding: var(--shell-space-6) var(--shell-space-5) 3rem;
+}
+
+.page-header {
+    margin-bottom: var(--shell-space-5);
+}
+
+.page-eyebrow {
+    margin: 0 0 var(--shell-space-1);
+    color: var(--shell-color-primary);
+    font-size: 0.75rem;
+    font-weight: 750;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.page-title {
+    margin: 0;
+    font-size: clamp(1.75rem, 4vw, 2.375rem);
+    line-height: 1.2;
+    letter-spacing: -0.025em;
+}
+
+.page-description {
+    max-width: 48rem;
+    margin: var(--shell-space-2) 0 0;
+    color: var(--shell-color-muted);
+    overflow-wrap: anywhere;
+}
+
+.section-card {
+    min-width: 0;
+    padding: var(--shell-space-5);
+    background-color: var(--shell-color-surface);
+    border: 1px solid var(--shell-color-border);
+    border-radius: var(--shell-radius-large);
+    box-shadow: var(--shell-shadow-card);
+}
+
+.section-heading {
+    margin: 0;
+    font-size: 1.125rem;
+    line-height: 1.35;
+}
+
+.section-description {
+    margin: var(--shell-space-1) 0 0;
+    color: var(--shell-color-muted);
+    font-size: 0.875rem;
+}
+
+.section-header {
+    margin-bottom: var(--shell-space-4);
+}
+
+.status-message {
+    min-height: 1.5rem;
+    color: var(--shell-color-muted);
+    font-size: 0.875rem;
+}
+
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    padding: 0.25rem 0.625rem;
+    color: var(--shell-color-muted);
+    font-size: 0.75rem;
+    font-weight: 750;
+    line-height: 1.35;
+    background-color: var(--shell-color-surface-subtle);
+    border: 1px solid var(--shell-color-border-strong);
+    border-radius: 999px;
+    overflow-wrap: anywhere;
+}
+
+.status-badge--running {
+    color: var(--shell-color-primary-strong);
+    background-color: var(--shell-color-primary-soft);
+    border-color: #9ebfe4;
+}
+
+.status-badge--completed {
+    color: var(--shell-color-success);
+    background-color: var(--shell-color-success-soft);
+    border-color: #9fd3b8;
+}
+
+.status-badge--failed {
+    color: var(--shell-color-danger);
+    background-color: var(--shell-color-danger-soft);
+    border-color: #e8abb2;
+}
+
+.status-badge--stale,
+.status-badge--telemetry-unavailable {
+    color: var(--shell-color-warning);
+    background-color: var(--shell-color-warning-soft);
+    border-color: #dfc26b;
+}
+
+.identifier {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+@media (max-width: 48rem) {
+    .app-header__inner {
+        align-items: flex-start;
+        flex-direction: column;
+        padding: var(--shell-space-3) var(--shell-space-4);
+        gap: var(--shell-space-3);
+    }
+
+    .app-navigation {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        width: 100%;
+    }
+
+    .app-navigation a {
+        text-align: center;
+    }
+
+    .app-page {
+        padding: var(--shell-space-5) var(--shell-space-4) var(--shell-space-6);
+    }
+}
+
+@media (max-width: 30rem) {
+    .app-page {
+        padding-inline: var(--shell-space-3);
+    }
+
+    .section-card {
+        padding: var(--shell-space-4);
+        border-radius: var(--shell-radius-medium);
+    }
+}
