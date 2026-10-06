@@ -158,3 +158,17 @@ jobs:
           run-task-assign-public-IP: ENABLED
           wait-for-task-stopped: true
           wait-max-delay-seconds: 15
+
+  dashboard-deploy:
+    name: Deploy Dashboard ECS service
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    needs: aws-smoke-deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Prepare Dashboard deployment
+        run: echo "Dashboard deployment configuration will run in subsequent steps."
