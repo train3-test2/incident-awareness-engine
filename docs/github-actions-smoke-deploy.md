@@ -2,13 +2,17 @@
 
 ## 범위
 
-`.github/workflows/ci.yml`은 모든 Pull Request에서 품질 검사를 실행하고, `develop` 브랜치 push에서만 이미지를 ECR에 업로드한 뒤 ECS Fargate 일회성 smoke 태스크를 실행한다.
+`.github/workflows/ci.yml`은 모든 Pull Request에서 품질 검사를 실행하고, `develop`
+브랜치 push에서만 이미지를 ECR에 업로드한 뒤 ECS Fargate 일회성 smoke 태스크를 실행한다.
+smoke 태스크가 성공하면 같은 commit SHA 이미지로 Dashboard ECS Service의 Task Definition을
+등록하고 Service를 갱신한다.
 
 `.github/workflows/first-cycle-manual.yml`은 이미 S3에 준비된 First Cycle 입력
 Artifact와 이미 ECR에 업로드된 이미지를 선택해, GitHub Actions 화면에서 수동으로
 First Cycle Fargate 태스크를 실행한다.
 
-현재는 지속 실행 ECS Service를 배포하지 않는다. 이 워크플로는 컨테이너 전달과 AWS 실행 경로를 검증하기 위한 것이다.
+Dashboard 자동 배포는 GitHub Actions Variables와 OIDC 역할 권한이 모두 설정된 개발
+환경에서만 실행한다. First Cycle은 지속 실행 Service가 아니라 단발성 태스크로 유지한다.
 
 ## 워크플로 동작
 
@@ -22,6 +26,9 @@ develop push
   -> ECR push (git commit SHA tag)
   -> ECS Task Definition revision 등록
   -> Fargate smoke task 실행 및 종료 대기
+  -> Dashboard Task Definition revision 등록
+  -> Dashboard ECS Service 갱신 및 안정 상태 확인
+  -> Dashboard public IP·health check 명령 Summary 출력
 
 workflow_dispatch (First Cycle)
   -> 수동 입력값 형식 검증
@@ -129,3 +136,54 @@ GitHub 저장소의 **Settings → Secrets and variables → Actions → Variabl
 - ECS 실행 실패는 GitHub Actions Summary의 stopped reason과 CloudWatch Logs의 `/ecs/incident-awareness-engine-dev` 로그 그룹을 함께 확인한다.
 - 일시적인 AWS 오류만 확인된 경우 GitHub Actions 화면의 **Re-run jobs**로 동일 run을 다시 실행한다.
 - Task Definition, 네트워크, IAM 권한을 변경한 경우에는 수정 사항을 확인한 뒤 수동 Run workflow를 새로 시작한다.
+
+## Dashboard 자동 배포 실패 확인
+
+Dashboard job이 실패하면 GitHub Actions 로그에서 먼저 실패한 step을 확인한다. `Validate
+Dashboard deployment configuration` 실패는 Dashboard 관련 GitHub Actions Variable이 비어
+있음을 뜻한다. `Register Dashboard task definition revision` 또는 `Update Dashboard ECS
+service` 실패는 GitHub OIDC 역할의 `ecs:RegisterTaskDefinition`, `iam:PassRole`,
+`ecs:UpdateService` 권한과 각 대상 ARN을 확인한다.
+
+Service 갱신 뒤 안정 상태 대기에서 실패한 경우에는 아래처럼 ECS Service event를 먼저
+확인한다. `<cluster>`와 `<service>`에는 GitHub Actions Variables의 `ECS_CLUSTER`,
+`ECS_DASHBOARD_SERVICE` 값을 넣는다.
+
+```text
+aws ecs describe-services \
+  --cluster "<cluster>" \
+  --services "<service>" \
+  --query 'services[0].events[0:10].[createdAt,message]' \
+  --output table
+```
+
+event에서 실패한 Task ARN을 확인한 뒤, 중지 사유와 컨테이너 종료 코드를 조회한다.
+
+```text
+aws ecs describe-tasks \
+  --cluster "<cluster>" \
+  --tasks "<failed-task-arn>" \
+  --query 'tasks[0].{StoppedReason:stoppedReason,TaskStatus:lastStatus,ExitCode:containers[0].exitCode,ContainerReason:containers[0].reason}' \
+  --output table
+```
+
+Task ARN의 마지막 요소를 `<task-id>`로 사용해 CloudWatch Logs를 확인한다. Dashboard의
+현재 container name과 `awslogs-stream-prefix`는 각각
+`incident-awareness-engine-dashboard`, `ecs`이므로 로그 스트림 경로는 다음과 같다.
+
+```text
+/ecs/incident-awareness-engine-dev
+  └── ecs/incident-awareness-engine-dashboard/<task-id>
+```
+
+로그에서 Secret 주입 오류, RDS 연결 오류, Uvicorn 기동 오류를 우선 확인한다. Service가
+안정 상태가 된 뒤에는 GitHub Actions Summary의 최신 public IP를 사용해, Dashboard task
+security group에서 허용한 클라이언트 IP로만 아래 health check를 실행한다.
+
+```text
+curl --fail http://<dashboard-public-ip>:8080/healthz
+```
+
+`desired=1`, `running=1`, `pending=0`과 `/healthz` 성공을 확인한 뒤에만 배포가 정상으로
+완료된 것으로 판단한다. public IP는 Fargate 태스크 교체마다 달라질 수 있으므로 이전
+Summary의 주소를 재사용하지 않는다.
