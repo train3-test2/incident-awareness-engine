@@ -53,6 +53,11 @@ from incident_awareness.pipeline.runtime_telemetry import (
     PostgresPipelineRuntimeObserver,
 )
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
+from incident_awareness.pipeline.sqs_worker import (
+    S3SysmonInput,
+    _PostgresSuccessfulReceiptStore,
+    _receipt_lock_key,
+)
 from incident_awareness.storage.config import DATABASE_URL_ENV, DatabaseConfig
 from incident_awareness.storage.migrate import apply_migrations
 from incident_awareness.storage.repositories.event_repository import EventRepository
@@ -101,6 +106,95 @@ def database_url() -> str:
         )
 
     return url
+
+
+def test_postgres_receipt_lock_accepts_safe_object_identity(database_url: str) -> None:
+    schema = sql.Identifier(f"sqs_worker_receipt_lock_{uuid4().hex}")
+    input_object = S3SysmonInput(
+        bucket="worker-inputs",
+        key="incoming/first-cycle/sysmon/ING-550e8400-e29b-41d4-a716-446655440000/sysmon.jsonl",
+        ingest_id="ING-550e8400-e29b-41d4-a716-446655440000",
+        e_tag="worker-object-version",
+        sequencer="001",
+    )
+
+    with psycopg.connect(database_url) as connection:
+        connection.execute(sql.SQL("CREATE SCHEMA {}").format(schema))
+        connection.commit()
+        try:
+            connection.execute(sql.SQL("SET search_path TO {}").format(schema))
+            apply_migrations(connection)
+            connection.commit()
+
+            lock_key = _receipt_lock_key(input_object)
+            assert "\x00" not in lock_key
+            assert (
+                _PostgresSuccessfulReceiptStore(connection).acquire_execution(input_object) is None
+            )
+        finally:
+            connection.rollback()
+            connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(schema))
+            connection.commit()
+
+
+def test_postgres_receipt_store_returns_existing_run_id_across_connections(
+    database_url: str,
+) -> None:
+    schema = sql.Identifier(f"sqs_worker_receipt_deduplication_{uuid4().hex}")
+    run_id = "RUN-20261006-901"
+    input_object = S3SysmonInput(
+        bucket="worker-inputs",
+        key="incoming/first-cycle/sysmon/ING-550e8400-e29b-41d4-a716-446655440000/sysmon.jsonl",
+        ingest_id="ING-550e8400-e29b-41d4-a716-446655440000",
+        e_tag="worker-object-version",
+        sequencer="001",
+    )
+    run = RunMetadata(
+        run_id=run_id,
+        scenario_id="worker-receipt-integration",
+        run_type=RunType.NORMAL,
+        target_host="WIN-01",
+        start_time=datetime(2026, 10, 6, tzinfo=UTC),
+        schema_versions=SchemaVersions(
+            run_metadata="v0.2",
+            event="v0.3",
+            evidence="v0.2",
+            fast_hit="v0.2",
+            detection_result="v0.2",
+            fusion_result="v0.3",
+            decision_result="v0.2",
+            execution_record="v0.1",
+            evaluation_input="v0.1",
+        ),
+    )
+
+    with psycopg.connect(database_url) as setup_connection:
+        setup_connection.execute(sql.SQL("CREATE SCHEMA {}").format(schema))
+        setup_connection.execute(sql.SQL("SET search_path TO {}").format(schema))
+        apply_migrations(setup_connection)
+        setup_connection.commit()
+
+    try:
+        with (
+            psycopg.connect(database_url) as first_connection,
+            psycopg.connect(database_url) as second_connection,
+        ):
+            first_connection.execute(sql.SQL("SET search_path TO {}").format(schema))
+            second_connection.execute(sql.SQL("SET search_path TO {}").format(schema))
+            RunRepository(first_connection).save(run)
+            first_connection.commit()
+
+            first_store = _PostgresSuccessfulReceiptStore(first_connection)
+            assert first_store.acquire_execution(input_object) is None
+            first_store.save_success(input_object, run_id=run_id)
+
+            second_store = _PostgresSuccessfulReceiptStore(second_connection)
+            assert second_store.acquire_execution(input_object) == run_id
+            second_store.release_execution()
+    finally:
+        with psycopg.connect(database_url) as cleanup_connection:
+            cleanup_connection.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(schema))
+            cleanup_connection.commit()
 
 
 def test_postgres_repositories_store_and_restore_first_cycle_contracts(database_url: str) -> None:

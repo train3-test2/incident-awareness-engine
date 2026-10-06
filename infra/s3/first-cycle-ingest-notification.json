@@ -1,0 +1,25 @@
+{
+  "QueueConfigurations": [
+    {
+      "Id": "first-cycle-sysmon-ingest-v1",
+      "QueueArn": "arn:aws:sqs:ap-northeast-2:998301375101:incident-awareness-first-cycle-ingest",
+      "Events": [
+        "s3:ObjectCreated:*"
+      ],
+      "Filter": {
+        "Key": {
+          "FilterRules": [
+            {
+              "Name": "prefix",
+              "Value": "incoming/first-cycle/sysmon/"
+            },
+            {
+              "Name": "suffix",
+              "Value": "sysmon.jsonl"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

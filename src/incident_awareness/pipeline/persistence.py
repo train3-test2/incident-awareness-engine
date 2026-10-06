@@ -70,8 +70,14 @@ def persist_s0_results(
     decision_result: DecisionResult,
     *,
     connection: DatabaseConnection | None = None,
+    commit: bool = True,
 ) -> None:
-    """Atomically save First Cycle Runtime, Decision, and snapshot contracts."""
+    """Atomically save First Cycle Runtime, Decision, and snapshot contracts.
+
+    ``commit=False`` leaves a caller-provided transaction open so the saved
+    contracts can be committed with another durable record, such as an S3
+    worker receipt.
+    """
     try:
         _validate_result_scope(
             artifacts,
@@ -102,6 +108,7 @@ def persist_s0_results(
             runtime_config_snapshot,
             fast_result,
             decision_result,
+            commit=commit,
         )
         return
 
@@ -117,6 +124,7 @@ def persist_s0_results(
             runtime_config_snapshot,
             fast_result,
             decision_result,
+            commit=True,
         )
 
 
@@ -185,6 +193,8 @@ def _persist(
     runtime_config_snapshot: FusionRuntimeConfigSnapshot,
     fast_result: FastDetectionAdapterResult,
     decision_result: DecisionResult,
+    *,
+    commit: bool,
 ) -> None:
     try:
         connection.execute(
@@ -204,7 +214,8 @@ def _persist(
                 entity_id=decision_result.entity_id,
             )
             if existing == decision_result:
-                connection.commit()
+                if commit:
+                    connection.commit()
                 return
             raise DecisionIntegrityError(
                 "decision_id already exists with different content: "
@@ -241,7 +252,8 @@ def _persist(
         DetectionResultRepository(connection).save(fast_result.detection_result)
         decision_repository.save(decision_result)
         DecisionRuntimeSnapshotRepository(connection).save(runtime_snapshot)
-        connection.commit()
+        if commit:
+            connection.commit()
     except Exception:
         try:
             connection.rollback()

@@ -93,6 +93,11 @@ jobs:
       ECS_SECURITY_GROUP_IDS: ${{ vars.ECS_SECURITY_GROUP_IDS }}
       ECS_SUBNET_IDS: ${{ vars.ECS_SUBNET_IDS }}
       ECS_EXECUTION_ROLE_ARN: ${{ vars.ECS_EXECUTION_ROLE_ARN }}
+      ECS_FIRST_CYCLE_TASK_ROLE_ARN: ${{ vars.ECS_FIRST_CYCLE_TASK_ROLE_ARN }}
+      ECS_FIRST_CYCLE_WORKER_SERVICE: ${{ vars.ECS_FIRST_CYCLE_WORKER_SERVICE }}
+      FIRST_CYCLE_DATABASE_URL_SECRET_ARN: ${{ vars.FIRST_CYCLE_DATABASE_URL_SECRET_ARN }}
+      FIRST_CYCLE_S3_BUCKET: ${{ vars.FIRST_CYCLE_S3_BUCKET }}
+      FIRST_CYCLE_SQS_QUEUE_URL: ${{ vars.FIRST_CYCLE_SQS_QUEUE_URL }}
 
     steps:
       - uses: actions/checkout@v6
@@ -102,7 +107,7 @@ jobs:
           AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
         run: |
           set -euo pipefail
-          for value in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SUBNET_IDS ECS_SECURITY_GROUP_IDS ECS_EXECUTION_ROLE_ARN; do
+          for value in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SUBNET_IDS ECS_SECURITY_GROUP_IDS ECS_EXECUTION_ROLE_ARN ECS_FIRST_CYCLE_TASK_ROLE_ARN ECS_FIRST_CYCLE_WORKER_SERVICE FIRST_CYCLE_DATABASE_URL_SECRET_ARN FIRST_CYCLE_S3_BUCKET FIRST_CYCLE_SQS_QUEUE_URL; do
             if [ -z "${!value}" ]; then
               echo "GitHub Actions variable $value must be configured."
               exit 1
@@ -129,6 +134,113 @@ jobs:
           docker build --platform linux/amd64 --tag "$image" .
           docker push "$image"
           echo "uri=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Render Worker task definition
+        run: |
+          python scripts/render_ecs_task_definition.py \
+            --template infra/ecs/task-definition.first-cycle-worker.json \
+            --output "$RUNNER_TEMP/task-definition.first-cycle-worker.json" \
+            --image-uri "${{ steps.image.outputs.uri }}" \
+            --execution-role-arn "$ECS_EXECUTION_ROLE_ARN" \
+            --task-role-arn "$ECS_FIRST_CYCLE_TASK_ROLE_ARN" \
+            --database-url-secret-arn "$FIRST_CYCLE_DATABASE_URL_SECRET_ARN" \
+            --sqs-queue-url "$FIRST_CYCLE_SQS_QUEUE_URL" \
+            --s3-input-bucket "$FIRST_CYCLE_S3_BUCKET"
+
+      - name: Register Worker task definition
+        id: worker-task-definition
+        run: |
+          set -euo pipefail
+          task_definition_arn="$(aws ecs register-task-definition \
+            --cli-input-json "file://$RUNNER_TEMP/task-definition.first-cycle-worker.json" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)"
+          echo "arn=$task_definition_arn" >> "$GITHUB_OUTPUT"
+
+      - name: Render First Cycle migration task definition
+        run: |
+          python scripts/render_ecs_task_definition.py \
+            --template infra/ecs/task-definition.first-cycle-migrate.json \
+            --output "$RUNNER_TEMP/task-definition.first-cycle-migrate.json" \
+            --image-uri "${{ steps.image.outputs.uri }}" \
+            --execution-role-arn "$ECS_EXECUTION_ROLE_ARN" \
+            --database-url-secret-arn "$FIRST_CYCLE_DATABASE_URL_SECRET_ARN"
+
+      - name: Register First Cycle migration task definition
+        id: migration-task-definition
+        run: |
+          set -euo pipefail
+          task_definition_arn="$(aws ecs register-task-definition \
+            --cli-input-json "file://$RUNNER_TEMP/task-definition.first-cycle-migrate.json" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)"
+          echo "arn=$task_definition_arn" >> "$GITHUB_OUTPUT"
+
+      - name: Run First Cycle migrations
+        env:
+          MIGRATION_TASK_DEFINITION_ARN: ${{ steps.migration-task-definition.outputs.arn }}
+        run: |
+          set -euo pipefail
+          task_arn="$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --task-definition "$MIGRATION_TASK_DEFINITION_ARN" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$ECS_SUBNET_IDS],securityGroups=[$ECS_SECURITY_GROUP_IDS],assignPublicIp=ENABLED}" \
+            --count 1 \
+            --query 'tasks[0].taskArn' \
+            --output text)"
+          if [[ -z "$task_arn" || "$task_arn" == "None" ]]; then
+            echo "Failed to start the First Cycle migration task."
+            exit 1
+          fi
+
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$task_arn"
+          exit_code="$(aws ecs describe-tasks \
+            --cluster "$ECS_CLUSTER" \
+            --tasks "$task_arn" \
+            --query 'tasks[0].containers[0].exitCode' \
+            --output text)"
+          if [[ "$exit_code" != "0" ]]; then
+            stopped_reason="$(aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks "$task_arn" \
+              --query 'tasks[0].stoppedReason' \
+              --output text)"
+            echo "First Cycle migration task failed: exit_code=$exit_code stopped_reason=$stopped_reason"
+            exit 1
+          fi
+
+      - name: Create or update Worker service
+        env:
+          WORKER_TASK_DEFINITION_ARN: ${{ steps.worker-task-definition.outputs.arn }}
+        run: |
+          set -euo pipefail
+          service_arn="$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_FIRST_CYCLE_WORKER_SERVICE" \
+            --query 'services[0].serviceArn' \
+            --output text)"
+
+          if [[ "$service_arn" == "None" ]]; then
+            aws ecs create-service \
+              --cluster "$ECS_CLUSTER" \
+              --service-name "$ECS_FIRST_CYCLE_WORKER_SERVICE" \
+              --task-definition "$WORKER_TASK_DEFINITION_ARN" \
+              --desired-count 1 \
+              --launch-type FARGATE \
+              --network-configuration "awsvpcConfiguration={subnets=[$ECS_SUBNET_IDS],securityGroups=[$ECS_SECURITY_GROUP_IDS],assignPublicIp=ENABLED}"
+          else
+            aws ecs update-service \
+              --cluster "$ECS_CLUSTER" \
+              --service "$ECS_FIRST_CYCLE_WORKER_SERVICE" \
+              --task-definition "$WORKER_TASK_DEFINITION_ARN" \
+              --desired-count 1 \
+              --force-new-deployment
+          fi
+
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_FIRST_CYCLE_WORKER_SERVICE"
 
       - name: Render ECS task definition
         run: |

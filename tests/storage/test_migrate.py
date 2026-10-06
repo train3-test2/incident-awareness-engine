@@ -13,6 +13,14 @@ FIRST_CYCLE_TABLES = {
     "detection_results",
     "decisions",
 }
+MIGRATION_IDS = (
+    "001_first_cycle",
+    "002_fusion_stopping_trace",
+    "003_decision_runtime_snapshot",
+    "004_fusion_runtime_config_snapshot",
+    "005_pipeline_runtime_status",
+    "006_s3_object_receipts",
+)
 
 
 class _Cursor:
@@ -60,6 +68,9 @@ class _Connection:
         if "CREATE TABLE pipeline_runtime_status" in query:
             self.existing_tables.add("pipeline_runtime_status")
 
+        if "CREATE TABLE s3_object_receipts" in query:
+            self.existing_tables.add("s3_object_receipts")
+
         if query == "INSERT INTO schema_migrations (migration_id) VALUES (%s)":
             self.applied_migrations.add(str(params[0]))
 
@@ -87,20 +98,8 @@ def test_applies_all_migrations_in_filename_order() -> None:
     applied = apply_migrations(connection)
 
     # Then
-    assert applied == (
-        "001_first_cycle",
-        "002_fusion_stopping_trace",
-        "003_decision_runtime_snapshot",
-        "004_fusion_runtime_config_snapshot",
-        "005_pipeline_runtime_status",
-    )
-    assert connection.applied_migrations == {
-        "001_first_cycle",
-        "002_fusion_stopping_trace",
-        "003_decision_runtime_snapshot",
-        "004_fusion_runtime_config_snapshot",
-        "005_pipeline_runtime_status",
-    }
+    assert applied == MIGRATION_IDS
+    assert connection.applied_migrations == set(MIGRATION_IDS)
     _assert_migration_lock_precedes_history_table(connection)
     first_index = next(
         index for index, (query, _) in enumerate(connection.queries) if "CREATE TABLE runs" in query
@@ -125,20 +124,17 @@ def test_applies_all_migrations_in_filename_order() -> None:
         for index, (query, _) in enumerate(connection.queries)
         if "CREATE TABLE pipeline_runtime_status" in query
     )
-    assert first_index < second_index < third_index < fourth_index < fifth_index
+    sixth_index = next(
+        index
+        for index, (query, _) in enumerate(connection.queries)
+        if "CREATE TABLE s3_object_receipts" in query
+    )
+    assert first_index < second_index < third_index < fourth_index < fifth_index < sixth_index
 
 
 def test_skips_migrations_that_are_already_recorded() -> None:
     # Given
-    connection = _Connection(
-        applied_migrations={
-            "001_first_cycle",
-            "002_fusion_stopping_trace",
-            "003_decision_runtime_snapshot",
-            "004_fusion_runtime_config_snapshot",
-            "005_pipeline_runtime_status",
-        }
-    )
+    connection = _Connection(applied_migrations=set(MIGRATION_IDS))
 
     # When
     applied = apply_migrations(connection)
@@ -158,6 +154,7 @@ def test_skips_migrations_that_are_already_recorded() -> None:
     assert not any(
         "CREATE TABLE pipeline_runtime_status" in query for query, _ in connection.queries
     )
+    assert not any("CREATE TABLE s3_object_receipts" in query for query, _ in connection.queries)
 
 
 def test_applies_only_second_migration_when_first_is_recorded() -> None:
@@ -168,12 +165,7 @@ def test_applies_only_second_migration_when_first_is_recorded() -> None:
     applied = apply_migrations(connection)
 
     # Then
-    assert applied == (
-        "002_fusion_stopping_trace",
-        "003_decision_runtime_snapshot",
-        "004_fusion_runtime_config_snapshot",
-        "005_pipeline_runtime_status",
-    )
+    assert applied == MIGRATION_IDS[1:]
     assert not any("CREATE TABLE runs" in query for query, _ in connection.queries)
     assert any("CREATE TABLE fusion_stopping_traces" in query for query, _ in connection.queries)
     assert any(
@@ -193,11 +185,7 @@ def test_applies_only_third_migration_when_first_two_are_recorded() -> None:
     applied = apply_migrations(connection)
 
     # Then
-    assert applied == (
-        "003_decision_runtime_snapshot",
-        "004_fusion_runtime_config_snapshot",
-        "005_pipeline_runtime_status",
-    )
+    assert applied == MIGRATION_IDS[2:]
     assert not any("CREATE TABLE runs" in query for query, _ in connection.queries)
     assert not any(
         "CREATE TABLE fusion_stopping_traces" in query for query, _ in connection.queries
@@ -225,10 +213,7 @@ def test_applies_only_fourth_migration_when_first_three_are_recorded() -> None:
     applied = apply_migrations(connection)
 
     # Then
-    assert applied == (
-        "004_fusion_runtime_config_snapshot",
-        "005_pipeline_runtime_status",
-    )
+    assert applied == MIGRATION_IDS[3:]
     assert not any("CREATE TABLE runs" in query for query, _ in connection.queries)
     assert any(
         "CREATE TABLE fusion_runtime_config_snapshots" in query for query, _ in connection.queries
@@ -251,7 +236,7 @@ def test_applies_only_fifth_migration_when_first_four_are_recorded() -> None:
     applied = apply_migrations(connection)
 
     # Then
-    assert applied == ("005_pipeline_runtime_status",)
+    assert applied == MIGRATION_IDS[4:]
     assert any("CREATE TABLE pipeline_runtime_status" in query for query, _ in connection.queries)
 
 
@@ -263,20 +248,8 @@ def test_baselines_complete_legacy_first_cycle_schema_before_second_migration() 
     applied = apply_migrations(connection)
 
     # Then
-    assert applied == (
-        "001_first_cycle",
-        "002_fusion_stopping_trace",
-        "003_decision_runtime_snapshot",
-        "004_fusion_runtime_config_snapshot",
-        "005_pipeline_runtime_status",
-    )
-    assert connection.applied_migrations == {
-        "001_first_cycle",
-        "002_fusion_stopping_trace",
-        "003_decision_runtime_snapshot",
-        "004_fusion_runtime_config_snapshot",
-        "005_pipeline_runtime_status",
-    }
+    assert applied == MIGRATION_IDS
+    assert connection.applied_migrations == set(MIGRATION_IDS)
     assert not any("CREATE TABLE runs" in query for query, _ in connection.queries)
     assert any("CREATE TABLE fusion_stopping_traces" in query for query, _ in connection.queries)
     assert any(
@@ -297,6 +270,7 @@ def test_baselines_complete_docker_initdb_schema_without_reapplying_migrations()
             "decision_runtime_snapshots",
             "fusion_runtime_config_snapshots",
             "pipeline_runtime_status",
+            "s3_object_receipts",
         }
     )
 
@@ -304,20 +278,8 @@ def test_baselines_complete_docker_initdb_schema_without_reapplying_migrations()
     applied = apply_migrations(connection)
 
     # Then
-    assert applied == (
-        "001_first_cycle",
-        "002_fusion_stopping_trace",
-        "003_decision_runtime_snapshot",
-        "004_fusion_runtime_config_snapshot",
-        "005_pipeline_runtime_status",
-    )
-    assert connection.applied_migrations == {
-        "001_first_cycle",
-        "002_fusion_stopping_trace",
-        "003_decision_runtime_snapshot",
-        "004_fusion_runtime_config_snapshot",
-        "005_pipeline_runtime_status",
-    }
+    assert applied == MIGRATION_IDS
+    assert connection.applied_migrations == set(MIGRATION_IDS)
     assert not any("CREATE TABLE runs" in query for query, _ in connection.queries)
     assert not any(
         "CREATE TABLE fusion_stopping_traces" in query for query, _ in connection.queries
@@ -394,15 +356,7 @@ def test_main_uses_connection_managed_transaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given
-    connection = _ContextConnection(
-        applied_migrations={
-            "001_first_cycle",
-            "002_fusion_stopping_trace",
-            "003_decision_runtime_snapshot",
-            "004_fusion_runtime_config_snapshot",
-            "005_pipeline_runtime_status",
-        }
-    )
+    connection = _ContextConnection(applied_migrations=set(MIGRATION_IDS))
     received: dict[str, object] = {}
 
     def fake_connect(url: str, *, autocommit: bool) -> _ContextConnection:
