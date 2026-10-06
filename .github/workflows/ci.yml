@@ -131,14 +131,21 @@ jobs:
         run: |
           set -euo pipefail
           image="$ECR_REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA}"
+          image_lookup_error="$RUNNER_TEMP/ecr-image-lookup-error.txt"
           if aws ecr describe-images \
             --repository-name "$ECR_REPOSITORY" \
             --image-ids "imageTag=$GITHUB_SHA" \
-            > /dev/null 2>&1; then
+            > /dev/null 2>"$image_lookup_error"; then
             echo "Reusing existing immutable image tag: $image"
           else
-            docker build --platform linux/amd64 --tag "$image" .
-            docker push "$image"
+            lookup_status=$?
+            if grep --quiet "ImageNotFoundException" "$image_lookup_error"; then
+              docker build --platform linux/amd64 --tag "$image" .
+              docker push "$image"
+            else
+              cat "$image_lookup_error" >&2
+              exit "$lookup_status"
+            fi
           fi
           echo "uri=$image" >> "$GITHUB_OUTPUT"
 
