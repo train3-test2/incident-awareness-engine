@@ -252,3 +252,52 @@ jobs:
             --task-definition "$TASK_DEFINITION_ARN" \
             --force-new-deployment \
             --no-cli-pager
+
+      - name: Wait for Dashboard service stability
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_DASHBOARD_SERVICE"
+
+      - name: Verify running Dashboard task
+        id: dashboard-task
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          service_state="$(
+            aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$ECS_DASHBOARD_SERVICE" \
+              --query 'services[0].[desiredCount,runningCount,pendingCount]' \
+              --output text
+          )"
+          read -r desired_count running_count pending_count <<< "$service_state"
+          if [[ "$desired_count" != "1" || "$running_count" != "1" || "$pending_count" != "0" ]]; then
+            echo "Dashboard service did not reach the expected 1/1/0 state: $service_state"
+            exit 1
+          fi
+
+          task_arn="$(
+            aws ecs list-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --service-name "$ECS_DASHBOARD_SERVICE" \
+              --desired-status RUNNING \
+              --query 'taskArns[0]' \
+              --output text
+          )"
+          if [[ -z "$task_arn" || "$task_arn" == "None" ]]; then
+            echo "Dashboard service is stable but has no running task."
+            exit 1
+          fi
+
+          aws ecs describe-tasks \
+            --cluster "$ECS_CLUSTER" \
+            --tasks "$task_arn" \
+            --query 'tasks[0].lastStatus' \
+            --output text | grep -Fx 'RUNNING'
+          echo "task_arn=$task_arn" >> "$GITHUB_OUTPUT"

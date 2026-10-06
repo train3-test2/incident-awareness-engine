@@ -73,6 +73,15 @@
       "Resource": "*"
     },
     {
+      "Sid": "ReadDashboardServiceStatus",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:DescribeServices",
+        "ecs:ListTasks"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "PassTaskExecutionRole",
       "Effect": "Allow",
       "Action": "iam:PassRole",
