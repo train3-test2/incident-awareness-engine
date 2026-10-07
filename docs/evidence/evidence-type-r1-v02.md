@@ -94,7 +94,7 @@ raw `TimeCreated`와 `EventData.UtcTime` 중 무엇을 `NormalizedEvent.timestam
 
 PR #124는 부모가 없는 관측 완료 체인을 `complete`, 부모 GUID의 EID 1이 capture에 없는 체인을 `truncated`, 이미 방문한 프로세스로 돌아가는 체인을 `cycle`로 보고한다. 이 값은 Raw Pilot 진단 상태이며 현재 R1 Evidence 생성 정책으로 직접 매핑하지 않는다.
 
-approved lineage policy는 평가 Run과 독립된 baseline 또는 사전 정의 운영 정책에서 생성하며, 평가 대상 Normal/Attack Run을 보고 만들지 않는다. 평가 전에 policy를 freeze하고 사용한 config의 version과 hash를 재현 가능하게 기록한다. 평가 대상 Run의 `run_type`이나 Ground Truth label은 extractor 조건으로 사용하지 않는다. 구체적인 config 형식은 이번 PR에서 정하지 않는다.
+approved lineage policy는 평가 Run과 독립된 baseline 또는 사전 정의 운영 정책에서 생성하며, 평가 대상 Normal/Attack Run을 보고 만들지 않는다. 평가 전에 policy를 freeze하고 사용한 config의 version과 hash를 재현 가능하게 기록한다. 평가 대상 Run의 `run_type`이나 Ground Truth label은 extractor 조건으로 사용하지 않는다. Repository-managed config 형식과 loader는 [R1 승인 계보 정책 관리 계약 v0.1](r1-approved-lineage-policy-v0.1.md)에 정의한다. 현재 등록된 정책은 Pair-002 development validation 전용이며 production 정상 계보 승인을 의미하지 않는다.
 
 complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이거나 공백 문자열이면 이름 누락 자체를 deviation으로 해석하지 않고 Evidence를 생성하지 않는다. 이름이 모두 유효할 때만 case-insensitive 비교를 수행한다.
 
@@ -131,6 +131,7 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 - Run별 extraction summary에 fail-closed 진단과 lineage/policy provenance 기록
 - lineage `event_ids`의 anchor→terminal 순서와 network follow-on `event_ids`의 EID 1→EID 3 순서
 - 결정적 `evidence_id`: 두 후보 모두 정렬한 Event ID, `run_id`, `evidence_type`, `extractor_version`을 UUIDv5 identity에 사용하고, lineage deviation은 policy의 `policy_id`, `version`, `config_hash`도 포함
+- repository-managed approved lineage policy config의 strict validation, canonical SHA-256 계산과 기존 `ApprovedLineagePolicy` 변환 loader
 
 아직 TBD인 항목은 다음과 같다.
 
@@ -140,6 +141,7 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 - R1 분석 대상 Event batch의 window 계약
 - Pair-002 development telemetry 기반 end-to-end 검증 완료. production/반복 평가 경로는 후속 작업
 - R1 Fusion profile과 Evidence 소비 규칙
+- production approved lineage policy와 lifecycle 승인
 
 ## 5. Run별 R1 Evidence artifact
 
@@ -173,6 +175,7 @@ downstream에서 artifact를 소비하기 전에는 summary의 `status = complet
 | production runner/CLI 연결 | TBD | R1 batch API 호출 위치와 입력 config 계약 합의 |
 | Pilot·수동 실행의 anchor/terminal 선택 | TBD | 실제 Pilot에서 Event ID를 선택해 전달할 주체와 기준 합의 |
 | 반복 평가용 anchor/terminal selector | development 구현 및 Pair-002 재검증 완료 | [R1 selector v0.1](r1-selector-v0.1.md). 구조 후보가 유일할 때만 선택하며 production 적용과 dataset 확대 검증은 별도 |
+| approved lineage policy 관리 | development config/loader 구현 완료 | [관리 계약 v0.1](r1-approved-lineage-policy-v0.1.md). Pair-002 development policy만 등록했으며 production policy 승인은 별도 |
 | R1 분석 window | TBD | selector는 호출자가 제공한 단일 run/host batch 전체를 사용. 실제 수집 margin과 production 분석 대상 Event batch 범위 합의 필요 |
 | R1 Fusion profile | TBD | 사용할 후보, feature channel, 가중치, window, stopping 영향에 대한 Role1 합의 |
 

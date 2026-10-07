@@ -128,7 +128,7 @@ Raw Sysmon
 
 ## 9. Validation용 approved lineage policy
 
-저장소에는 공식적으로 동결된 production approved lineage policy config가 없다. 이번 검증에는 기존 R1-V02 정상 계보 의미를 표현하는 다음 임시 policy를 사용했다.
+저장소는 이번 검증에 사용한 policy를 `configs/r1_approved_lineage_policies_v0.1.yaml`에서 development validation 전용으로 관리한다. 검증 도구는 [관리 계약 v0.1](r1-approved-lineage-policy-v0.1.md)의 loader를 통해 다음 policy를 읽으며, 이는 production approved lineage policy가 아니다.
 
 | 항목 | 값 |
 | --- | --- |
@@ -136,9 +136,9 @@ Raw Sysmon
 | `version` | `v0.1` |
 | `config_hash` | `59b5eb5a5637f4527a4725a310aa1bece6a9da8bd7f1257edee03be1b15f0b78` |
 | approved lineage | `wsmprovhost.exe → cmd.exe → powershell.exe` |
-| purpose | `temporary_development_validation_only` |
+| purpose | `development_validation_only` |
 
-hash는 `policy_id`, `version`, `approved_lineage`를 key 정렬한 compact JSON의 SHA-256이다. 이 policy는 Pair의 Attack/Normal label이나 Ground Truth를 관찰해 생성하지 않았으며, production policy freeze 또는 평가 승인을 의미하지 않는다.
+hash는 loader가 `policy_id`, `version`, `approved_lineage`를 key 정렬한 compact JSON으로 canonical serialization해 계산한 SHA-256이다. YAML key 순서, 공백과 comment는 hash에 영향을 주지 않는다. 이 policy는 Pair의 Attack/Normal label이나 Ground Truth를 관찰해 생성하지 않았으며, repository 관리 대상으로 옮긴 것은 production policy freeze 또는 평가 승인을 의미하지 않는다.
 
 ## 10. Evidence 생성 결과
 
