@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Evaluation View | Incident Awareness Dashboard</title>
+    <link rel="stylesheet" href="/dashboard-assets/dashboard-shell.css">
+    <link rel="stylesheet" href="/dashboard-assets/evaluation.css">
+    <script type="module" src="/dashboard-assets/evaluation.js"></script>
+</head>
+<body>
+    <header class="app-header">
+        <div class="app-header__inner">
+            <div class="app-brand">
+                <a class="app-brand__name" href="/dashboard">Detection Hub</a>
+                <span class="app-brand__context">Incident Awareness Dashboard</span>
+            </div>
+            <nav class="app-navigation" aria-label="주요 화면">
+                <a href="/dashboard">운영 View</a>
+                <a href="/dashboard/evaluation" aria-current="page">평가 View</a>
+                <a href="/operations">Operations</a>
+            </nav>
+        </div>
+    </header>
+    <main id="evaluation-view" class="app-page evaluation-page">
+        <header class="page-header">
+            <p class="page-eyebrow">Evaluation</p>
+            <h1 class="page-title">평가 View</h1>
+            <p class="page-description">저장된 Evaluation Snapshot의 평가 결과를 조회합니다.</p>
+        </header>
+        <div
+            id="evaluation-status"
+            class="status-message evaluation-status"
+            role="status"
+            aria-live="polite"
+        >
+            평가 정보를 불러오는 중입니다.
+        </div>
+        <div id="evaluation-content" class="evaluation-grid" hidden>
+            <section
+                class="section-card evaluation-section evaluation-section--wide"
+                aria-labelledby="evaluation-snapshot-heading"
+            >
+                <div class="section-header">
+                    <h2 id="evaluation-snapshot-heading" class="section-heading">Evaluation Snapshot</h2>
+                    <p class="section-description">저장된 Snapshot과 고정된 평가 Plan을 표시합니다.</p>
+                </div>
+                <div id="evaluation-purpose-notice" class="evaluation-purpose-notice" role="note"></div>
+                <dl id="evaluation-snapshot-summary" class="evaluation-summary"></dl>
+            </section>
+            <section
+                class="section-card evaluation-section evaluation-section--wide"
+                aria-labelledby="evaluation-coverage-heading"
+            >
+                <div class="section-header">
+                    <h2 id="evaluation-coverage-heading" class="section-heading">Evaluation Coverage</h2>
+                    <p class="section-description">평가 영역별 준비 상태와 제외 Run을 구분해 표시합니다.</p>
+                </div>
+                <div id="evaluation-coverage-statuses" class="evaluation-status-grid"></div>
+                <h3 class="evaluation-subheading">Exclusions</h3>
+                <div id="evaluation-exclusions" class="evaluation-exclusions"></div>
+            </section>
+            <section class="section-card evaluation-section" aria-labelledby="method-comparison-heading">
+                <div class="section-header">
+                    <h2 id="method-comparison-heading" class="section-heading">Method Comparison</h2>
+                </div>
+                <div id="method-comparison" class="evaluation-section-content"></div>
+            </section>
+            <section class="section-card evaluation-section" aria-labelledby="normal-alert-burden-heading">
+                <div class="section-header">
+                    <h2 id="normal-alert-burden-heading" class="section-heading">Normal Alert Burden</h2>
+                </div>
+                <div id="normal-alert-burden" class="evaluation-section-content"></div>
+            </section>
+            <section class="section-card evaluation-section" aria-labelledby="paired-timing-heading">
+                <div class="section-header">
+                    <h2 id="paired-timing-heading" class="section-heading">Paired Timing</h2>
+                </div>
+                <div id="paired-timing" class="evaluation-section-content"></div>
+            </section>
+            <section class="section-card evaluation-section" aria-labelledby="run-level-paired-timing-heading">
+                <div class="section-header">
+                    <h2 id="run-level-paired-timing-heading" class="section-heading">Run-level Paired Timing</h2>
+                </div>
+                <div id="run-level-paired-timing" class="evaluation-section-content"></div>
+            </section>
+        </div>
+    </main>
+</body>
+</html>
