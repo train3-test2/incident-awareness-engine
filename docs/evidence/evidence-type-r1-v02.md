@@ -42,7 +42,7 @@ Attack: wsmprovhost.exe -> cscript.exe -> powershell.exe
 
 화살표는 같은 Target-A 안에서 Sysmon EID 1의 `ParentProcessGuid`와 부모 EID 1의 `ProcessGuid`가 연결됨을 의미한다. 이미지 이름 또는 PID만으로 계보를 확정하지 않는다. 최종 `powershell.exe`의 EID 3도 같은 host와 `ProcessGuid`를 사용해 해당 EID 1에 연결하는 것을 후보 조건으로 한다.
 
-최신 `docs/scenarios/r1.md`에서는 실제 관리 프로세스와 중간 프로세스를 아직 TBD로 두고 있다. 따라서 위 실행 파일 이름은 R1-V02 첫 Pilot을 위한 설계 candidate이며, 실제 telemetry로 확인되기 전에는 정본 시나리오 또는 탐지 vocabulary로 확정하지 않는다.
+Pair-002 development telemetry에서 위 계보가 실제 관측된 것은 확인했지만, 해당 프로세스 이름 자체를 정본 production 시나리오·공격 label 또는 production selector로 확정하지 않는다.
 
 | 비교 항목 | Normal Run candidate | Attack Run candidate | 구분 |
 | --- | --- | --- | --- |
