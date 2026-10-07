@@ -7,9 +7,14 @@ from incident_awareness.dashboard.decision_read_model import (
     DashboardDecisionReader,
     DashboardReadConsistencyError,
 )
+from incident_awareness.dashboard.fusion_engine_read_model import (
+    DashboardFusionEngineReader,
+    FusionEngineReadModel,
+)
 from incident_awareness.storage.repositories.run_repository import RunRepository
 
 _RUN_DETAIL_READ_MAX_ATTEMPTS = 3
+_FUSION_ENGINE_READ_MAX_ATTEMPTS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +22,12 @@ class RunDetailReadModel:
     run: RunMetadata
     current_decision: CurrentDecisionReadModel | None
     decision_history: list[DecisionResult]
+
+
+@dataclass(frozen=True, slots=True)
+class FusionEngineDetailReadModel:
+    run: RunMetadata
+    runtime: FusionEngineReadModel
 
 
 def get_run_detail(
@@ -52,5 +63,32 @@ def get_run_detail(
     raise DashboardReadConsistencyError(
         "unable to read a stable Current Decision and History view with Run Metadata after "
         f"{_RUN_DETAIL_READ_MAX_ATTEMPTS} attempts for "
+        f"run_id={run_id!r}"
+    )
+
+
+def get_fusion_engine_detail(
+    *,
+    run_id: str,
+    run_repository: RunRepository,
+    reader: DashboardFusionEngineReader,
+) -> FusionEngineDetailReadModel | None:
+    for _ in range(_FUSION_ENGINE_READ_MAX_ATTEMPTS):
+        run_before = run_repository.get(run_id)
+        if run_before is None:
+            return None
+
+        runtime = reader.get_current(run_id, run_before.target_host)
+        run_after = run_repository.get(run_id)
+
+        if run_before == run_after:
+            return FusionEngineDetailReadModel(
+                run=run_before,
+                runtime=runtime,
+            )
+
+    raise DashboardReadConsistencyError(
+        "unable to read a stable Fusion Engine Runtime view with Run Metadata after "
+        f"{_FUSION_ENGINE_READ_MAX_ATTEMPTS} attempts for "
         f"run_id={run_id!r}"
     )

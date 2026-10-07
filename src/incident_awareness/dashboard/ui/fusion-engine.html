@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Fusion Engine | Incident Awareness Dashboard</title>
+    <link rel="stylesheet" href="/dashboard-assets/dashboard-shell.css">
+    <link rel="stylesheet" href="/dashboard-assets/detail.css">
+    <link rel="stylesheet" href="/dashboard-assets/fusion-engine.css">
+    <script type="module" src="/dashboard-assets/fusion-engine.js"></script>
+</head>
+<body>
+    <header class="app-header">
+        <div class="app-header__inner">
+            <div class="app-brand">
+                <a class="app-brand__name" href="/dashboard">Detection Hub</a>
+                <span class="app-brand__context">Incident Awareness Dashboard</span>
+            </div>
+            <nav class="app-navigation" aria-label="주요 화면">
+                <a href="/dashboard" aria-current="page">운영 View</a>
+                <a href="/dashboard/evaluation">평가 View</a>
+                <a href="/operations">Operations</a>
+            </nav>
+        </div>
+    </header>
+    <main id="fusion-engine-view" class="app-page detail-page">
+        <header class="page-header">
+            <p class="page-eyebrow">Temporal Fusion</p>
+            <h1 class="page-title">Fusion Engine</h1>
+            <p class="page-description">저장된 Temporal Fusion Runtime과 판단 시점 정보를 조회합니다.</p>
+        </header>
+        <div id="fusion-engine-status" class="status-message detail-status" role="status" aria-live="polite">
+            Fusion Engine 정보를 불러오는 중입니다.
+        </div>
+        <div class="detail-grid fusion-engine-grid">
+            <section class="section-card detail-section" aria-labelledby="fusion-runtime-heading">
+                <div class="section-header">
+                    <h2 id="fusion-runtime-heading" class="section-heading">Fusion Runtime Summary</h2>
+                </div>
+                <div id="fusion-runtime-status" class="status-message detail-section-status" role="status" aria-live="polite"></div>
+                <dl id="fusion-runtime-summary" class="detail-fields"></dl>
+            </section>
+            <section class="section-card detail-section" aria-labelledby="runtime-config-heading">
+                <div class="section-header">
+                    <h2 id="runtime-config-heading" class="section-heading">Runtime Configuration</h2>
+                </div>
+                <div id="runtime-config-status" class="status-message detail-section-status" role="status" aria-live="polite"></div>
+                <dl id="runtime-config-summary" class="detail-fields"></dl>
+            </section>
+            <section class="section-card detail-section" aria-labelledby="stopping-trace-heading">
+                <div class="section-header">
+                    <h2 id="stopping-trace-heading" class="section-heading">Stopping Trace Summary</h2>
+                </div>
+                <div id="stopping-trace-status" class="status-message detail-section-status" role="status" aria-live="polite"></div>
+                <dl id="stopping-trace-summary" class="detail-fields"></dl>
+            </section>
+            <section
+                class="section-card detail-section detail-section--wide"
+                aria-labelledby="fusion-score-trajectory-heading"
+            >
+                <div class="section-header">
+                    <h2 id="fusion-score-trajectory-heading" class="section-heading">Score Trajectory</h2>
+                </div>
+                <div
+                    id="fusion-score-trajectory-status"
+                    class="status-message detail-section-status"
+                    role="status"
+                    aria-live="polite"
+                ></div>
+                <div id="fusion-score-trajectory"></div>
+            </section>
+            <section class="section-card detail-section" aria-labelledby="decision-timing-heading">
+                <div class="section-header">
+                    <h2 id="decision-timing-heading" class="section-heading">Decision Timing</h2>
+                </div>
+                <div id="decision-timing-status" class="status-message detail-section-status" role="status" aria-live="polite"></div>
+                <dl id="decision-timing-summary" class="detail-fields"></dl>
+            </section>
+            <section class="section-card detail-section detail-section--wide" aria-labelledby="fusion-episodes-heading">
+                <div class="section-header">
+                    <h2 id="fusion-episodes-heading" class="section-heading">Fusion Episodes</h2>
+                </div>
+                <div id="fusion-episodes-status" class="status-message detail-section-status" role="status" aria-live="polite"></div>
+                <div id="fusion-episodes-list" class="fusion-engine-episodes"></div>
+            </section>
+        </div>
+        <nav id="run-detail-back-navigation" class="detail-back-navigation" aria-label="Run Detail navigation"></nav>
+    </main>
+</body>
+</html>

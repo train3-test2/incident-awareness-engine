@@ -1,4 +1,4 @@
-"""The identity of one R1 Pair: family, variation and repetition.
+"""The identity of one R1 Pair - family, variation and repetition - and its dataset tier.
 
 R1 data is planned and split by family. Development and hold-out sets are made
 of whole families, a repetition is another Pair of the same family and never
@@ -15,6 +15,12 @@ is handed to Evidence extraction or to Fusion.
 The values must not give the run type away. Both runs of a Pair carry the same
 three values, so a label in one of them could only mislead; a family or a
 variation named after a label is refused.
+
+The dataset tier of a Pair is stated the same way: once, at the top level of the
+rendered scenario, for both runs. It says which pool the Pair belongs to
+(`scenarios/R1/README.md` section 1-3). No contract has a field for it, so the
+runner writes it to the operator trace of each run and the validator compares
+the trace with the scenario. A run has no way to state its own tier.
 """
 
 from collections.abc import Mapping
@@ -30,9 +36,15 @@ from dataclasses import dataclass
 # cannot change without the other.
 LABEL_WORDS = ("normal", "attack", "benign", "malicious", "정상", "공격", "악성")
 
+# The pool a Pair belongs to. `$R1_DATASET_TIERS` in scenarios/R1/run-common.ps1
+# is the same list in the same order. A rehearsal is never part of a formal pool:
+# its scenario states the first one.
+DATASET_TIERS = ("pilot", "development", "holdout")
+REHEARSAL_DATASET_TIER = "pilot"
+
 
 class R1PairIdentityError(ValueError):
-    """Raised when a family, a variation or a repetition cannot identify a Pair."""
+    """Raised when a family, a variation, a repetition or a dataset tier of a Pair is not usable."""
 
 
 @dataclass(frozen=True)
@@ -103,12 +115,34 @@ def read_pair_identity(scenario: Mapping[str, object]) -> R1PairIdentity:
     )
 
 
+def validate_dataset_tier(value: object) -> str:
+    """Return the dataset tier of a Pair: exactly one of `DATASET_TIERS`.
+
+    The comparison is exact. `Pilot`, ` development` and an empty string are not
+    tiers, and nothing stands in for a value that is missing.
+    """
+    if not isinstance(value, str) or value not in DATASET_TIERS:
+        raise R1PairIdentityError(
+            f"dataset_tier must be one of {list(DATASET_TIERS)}, found {value!r}"
+        )
+    return value
+
+
+def read_dataset_tier(scenario: Mapping[str, object]) -> str:
+    """Read the tier a rendered scenario states for its Pair. It must be stated."""
+    return validate_dataset_tier(scenario.get("dataset_tier"))
+
+
 __all__ = [
+    "DATASET_TIERS",
     "LABEL_WORDS",
+    "REHEARSAL_DATASET_TIER",
     "R1PairIdentity",
     "R1PairIdentityError",
     "exposed_label_word",
+    "read_dataset_tier",
     "read_pair_identity",
+    "validate_dataset_tier",
     "validate_family_id",
     "validate_repetition",
     "validate_variation_id",

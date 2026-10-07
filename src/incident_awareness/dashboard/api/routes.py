@@ -6,15 +6,19 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from incident_awareness.common.models.pipeline_runtime import PipelineRuntimeState
 from incident_awareness.dashboard.api.dependencies import (
     get_dashboard_decision_reader,
+    get_dashboard_evaluation_reader,
+    get_dashboard_fusion_engine_reader,
     get_event_repository,
     get_pipeline_runtime_repository,
     get_run_repository,
 )
 from incident_awareness.dashboard.api.models import (
     CurrentDecisionResponse,
+    DashboardEvaluationResponse,
     EventDetailResponse,
     EventTimelineItem,
     EventTimelineResponse,
+    FusionEngineResponse,
     HistoricalDecisionResponse,
     OverviewResponse,
     PipelineRuntimeItem,
@@ -23,8 +27,10 @@ from incident_awareness.dashboard.api.models import (
     RunListItem,
     RunListResponse,
 )
-from incident_awareness.dashboard.api.service import get_run_detail
+from incident_awareness.dashboard.api.service import get_fusion_engine_detail, get_run_detail
 from incident_awareness.dashboard.decision_read_model import DashboardDecisionReader
+from incident_awareness.dashboard.evaluation_read_model import DashboardEvaluationReader
+from incident_awareness.dashboard.fusion_engine_read_model import DashboardFusionEngineReader
 from incident_awareness.storage.repositories.event_repository import EventRepository
 from incident_awareness.storage.repositories.pipeline_runtime_repository import (
     PipelineRuntimeStatusRepository,
@@ -37,6 +43,16 @@ _OVERVIEW_RECENT_RUN_LIMIT = 5
 # snapshot has received recent telemetry. It is not a process-liveness, heartbeat,
 # execution, or SLA timeout: an older running snapshot stays running and is marked stale.
 _PIPELINE_RUNTIME_FRESHNESS_WINDOW = timedelta(minutes=5)
+
+
+@router.get("/evaluation", response_model=DashboardEvaluationResponse)
+def get_evaluation(
+    reader: Annotated[
+        DashboardEvaluationReader,
+        Depends(get_dashboard_evaluation_reader),
+    ],
+) -> DashboardEvaluationResponse:
+    return DashboardEvaluationResponse.from_read_model(reader.get_evaluation())
 
 
 @router.get("/operations/runtime", response_model=PipelineRuntimeListResponse)
@@ -116,6 +132,35 @@ def get_run(
         run=detail.run,
         current_decision=current_response,
         decision_history=detail.decision_history,
+    )
+
+
+@router.get("/runs/{run_id}/fusion-engine", response_model=FusionEngineResponse)
+def get_fusion_engine(
+    run_id: str,
+    repository: Annotated[RunRepository, Depends(get_run_repository)],
+    reader: Annotated[
+        DashboardFusionEngineReader,
+        Depends(get_dashboard_fusion_engine_reader),
+    ],
+) -> FusionEngineResponse:
+    detail = get_fusion_engine_detail(
+        run_id=run_id,
+        run_repository=repository,
+        reader=reader,
+    )
+    if detail is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Run not found",
+        )
+
+    return FusionEngineResponse(
+        run=detail.run,
+        current_decision=detail.runtime.current_decision,
+        fusion_result=detail.runtime.fusion_result,
+        stopping_trace=detail.runtime.stopping_trace,
+        runtime_config_snapshot=detail.runtime.runtime_config_snapshot,
     )
 
 

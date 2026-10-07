@@ -12,6 +12,7 @@ the design of the run type Ground Truth names, never by a process name alone.
 
 import ast
 import hashlib
+import inspect
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -74,6 +75,15 @@ RECORDED_TIMES = (
 )
 ACTION_PREFIX = {"normal": "N", "attack": "A"}
 
+# The reference of an attack run: the EID 1 of its session host, created right
+# after the first action was started (RECORDED_TIMES[0]) and long enough before
+# END_TIME for the evaluation horizon.
+SESSION_UTC_TIME = "2030-01-02 00:00:02.050"
+REFERENCE_TIME = "2030-01-02T00:00:02.050Z"
+SESSION_RECORD_ID = "1"
+POLICY_VERSION = "r1-ref-v0.1"
+HORIZON_SEC = 600
+
 # Passed as `protocol` to leave the Protocol field out of an EID 3.
 OMITTED = object()
 
@@ -107,18 +117,28 @@ def scenario(
     family_id: str = FAMILY_ID,
     variation_id: str = VARIATION_ID,
     repetition: int = REPETITION,
+    attack_reference: object = "A01",
+    normal_reference: object = None,
+    horizon: object = HORIZON_SEC,
+    dataset_tier: object = "pilot",
+    policy_version: object = POLICY_VERSION,
 ) -> dict:
     """The part of a rendered R1 scenario the validator reads.
 
-    `planned_lineage` is what each run is planned to leave.
+    `planned_lineage` is what each run is planned to leave. The attack run names
+    its reference action; the normal run names none. `dataset_tier` is the tier
+    the scenario states for its Pair; `OMITTED` leaves the field out.
     """
-    return {
+    references = {"normal": normal_reference, "attack": attack_reference}
+    rendered = {
         "scenario_version": "v1",
         "scenario_id": "R1",
         "family_id": family_id,
         "variation_id": variation_id,
         "repetition": repetition,
-        "run_metadata": {"target_host": target_host},
+        "dataset_tier": dataset_tier,
+        "run_metadata": {"target_host": target_host, "reference_policy_version": policy_version},
+        "run_length": {"observation_sec": None, "evaluation_horizon_sec": horizon},
         "internal_connection": {
             "required": True,
             "target": DESTINATION_IP if destination else None,
@@ -138,7 +158,7 @@ def scenario(
         "runs": {
             run_type: {
                 "run_type": run_type,
-                "reference_action_id": None,
+                "reference_action_id": references[run_type],
                 "actions": [
                     {
                         "action_id": action_id(run_type, index),
@@ -153,6 +173,9 @@ def scenario(
             for run_type in ("normal", "attack")
         },
     }
+    if dataset_tier is OMITTED:
+        del rendered["dataset_tier"]
+    return rendered
 
 
 def process_event(
@@ -162,10 +185,17 @@ def process_event(
     parent_guid: str | None,
     image: str,
     host: str = TARGET_HOST,
+    utc_time: str | None = None,
 ) -> dict:
-    """One synthetic Sysmon EID 1 in the shape the runner writes."""
+    """One synthetic Sysmon EID 1 in the shape the runner writes.
+
+    The session host is created when the session is opened, the other processes
+    at the launch; `utc_time` replaces that.
+    """
+    if utc_time is None:
+        utc_time = SESSION_UTC_TIME if guid == SESSION_GUID else "2030-01-02 00:05:00.250"
     event_data: dict[str, object] = {
-        "UtcTime": "2030-01-02 00:05:00.250",
+        "UtcTime": utc_time,
         "ProcessGuid": guid,
         "Image": image,
     }
@@ -231,6 +261,7 @@ def run_events(run_type: str, *, connect: bool = True, host: str = TARGET_HOST) 
             parent_guid=SERVICE_GUID,
             image=SESSION_HOST_IMAGE,
             host=host,
+            utc_time=SESSION_UTC_TIME,
         ),
         process_event(
             record_id=2,
@@ -357,15 +388,16 @@ def build_run(
         "family_id": FAMILY_ID,
         "variation_id": VARIATION_ID,
         "repetition": REPETITION,
-        "reference_time": None,
-        "reference_action_id": None,
-        "reference_source_event_id": None,
+        # An attack run records its reference: the EID 1 of its session host.
+        "reference_time": REFERENCE_TIME if run_type == "attack" else None,
+        "reference_action_id": "A01" if run_type == "attack" else None,
+        "reference_source_event_id": SESSION_RECORD_ID if run_type == "attack" else None,
         "vm_snapshot": "synthetic-snapshot",
         "sysmon_config_version": "sysmonconfig-sample-v0.1",
         "detector_set_version": None,
         "scenario_version": "v1",
         "schema_versions": SCHEMA_VERSIONS,
-        "reference_policy_version": None,
+        "reference_policy_version": POLICY_VERSION,
     }
     run_metadata.update(metadata or {})
     (ground_truth_dir / "run_metadata.json").write_text(
@@ -387,13 +419,26 @@ def trace_dir(root: Path) -> Path:
     return root / "operator_trace" / RUN_ID
 
 
+def stated_tier(scenario_bytes: bytes) -> object:
+    """The tier the runner copies to the trace: the one the scenario states.
+
+    A scenario that cannot be read or states none gets `pilot`, so that the tests
+    about such a scenario do not depend on what the trace says.
+    """
+    try:
+        return json.loads(scenario_bytes).get("dataset_tier", "pilot")
+    except (ValueError, AttributeError):
+        return "pilot"
+
+
 def write_trace(
     root: Path, scenario_bytes: bytes, *, rehearsal: bool = False, **stated: object
 ) -> None:
     """Write the operator trace the runner leaves for a run that executed these bytes.
 
-    The scenario copy and the record are written the way the runner writes them.
-    `stated` replaces values of the record, for the tests that break it.
+    The scenario copy and the record are written the way the runner writes them:
+    the tier of the record is the one the scenario states. `stated` replaces
+    values of the record, for the tests that break it.
     """
     directory = trace_dir(root)
     directory.mkdir(parents=True, exist_ok=True)
@@ -401,7 +446,7 @@ def write_trace(
     record = {
         "trace_version": "v1",
         "run_id": RUN_ID,
-        "dataset_tier": "pilot",
+        "dataset_tier": stated_tier(scenario_bytes),
         "mode": "rehearsal" if rehearsal else "collection",
         "scenario_sha256": hashlib.sha256(scenario_bytes).hexdigest(),
     }
@@ -410,9 +455,13 @@ def write_trace(
 
 
 def validate(run: tuple[Path, Path], *, rehearsal: bool = False) -> R1PilotValidationReport:
+    # The validator is given no tier: it reads the one the scenario states.
     root, scenario_path = run
     return validate_r1_pilot_run(
-        artifact_root=root, run_id=RUN_ID, scenario_path=scenario_path, rehearsal=rehearsal
+        artifact_root=root,
+        run_id=RUN_ID,
+        scenario_path=scenario_path,
+        rehearsal=rehearsal,
     )
 
 
@@ -920,23 +969,305 @@ def test_normal_run_with_a_reference_is_refused(tmp_path: Path) -> None:
     assert "records ['reference_action_id']" in errors_of(report)
 
 
-def test_attack_run_with_a_reference_is_refused(tmp_path: Path) -> None:
-    # Given: an attack run that records a reference the Pilot has not decided
+def test_normal_run_records_no_reference(tmp_path: Path) -> None:
+    report = validate(build_run(tmp_path))
+
+    assert report.ok, report.errors
+    assert "run_metadata.json records no reference, as a normal run does" in report.checks
+
+
+def test_attack_run_reference_is_the_record_of_its_session_host(tmp_path: Path) -> None:
+    # Given: an attack run whose reference names the EID 1 of the session host of its lineage
+    report = validate(build_run(tmp_path, run_type="attack"))
+
+    # Then: the three fields are traced to that one record of the original JSONL
+    assert report.ok, report.errors
+    assert "run_metadata.json records the reference action the scenario names: A01" in report.checks
+    assert (
+        "the reference of the run is the EID 1 of its session host: RecordId 1, ProcessGuid "
+        f"{SESSION_GUID}, EventData.UtcTime {SESSION_UTC_TIME}"
+    ) in report.checks
+    assert (
+        "the collection reached the evaluation horizon: end_time is 657.950 s after "
+        "reference_time, the horizon is 600 s"
+    ) in report.checks
+
+
+@pytest.mark.parametrize(
+    "absent",
+    [
+        ("reference_time",),
+        ("reference_action_id",),
+        ("reference_source_event_id",),
+        ("reference_time", "reference_action_id", "reference_source_event_id"),
+    ],
+)
+def test_attack_run_without_its_reference_is_refused(
+    tmp_path: Path, absent: tuple[str, ...]
+) -> None:
+    run = build_run(tmp_path, run_type="attack", metadata=dict.fromkeys(absent))
+
+    report = validate(run)
+
+    assert report.errors == [
+        (
+            f"run_metadata.json of an attack run does not record {list(absent)}; its reference is "
+            "the action A01 (docs/scenarios/r1.md section 4-2)"
+        )
+    ]
+
+
+def test_attack_run_naming_another_reference_action_is_refused(tmp_path: Path) -> None:
+    run = build_run(tmp_path, run_type="attack", metadata={"reference_action_id": "A03"})
+
+    report = validate(run)
+
+    assert report.errors == [
+        "run_metadata.json reference_action_id is 'A03', the scenario names 'A01'"
+    ]
+
+
+@pytest.mark.parametrize("record_id", ["2", "3", "4", "999", "01", ""])
+def test_reference_that_names_another_record_is_refused(tmp_path: Path, record_id: str) -> None:
+    # Given: a reference whose time is right and whose RecordId is not the session host's.
+    # 2 and 3 are the intermediate and the final tool of the same run, 4 is its connection.
+    run = build_run(tmp_path, run_type="attack", metadata={"reference_source_event_id": record_id})
+
+    report = validate(run)
+
+    assert report.errors == [
+        (
+            f"run_metadata.json reference_source_event_id is {record_id!r}, but the EID 1 of the "
+            f"session host of this run ({SESSION_GUID}) is RecordId '1'"
+        )
+    ]
+
+
+def test_reference_time_taken_from_time_created_is_refused(tmp_path: Path) -> None:
+    # Given: Sysmon wrote the record 4 ms after the event, and the run recorded that time
+    events = run_events("attack")
+    events[0]["TimeCreated"] = "2030-01-02T00:00:02.054Z"
     run = build_run(
         tmp_path,
         run_type="attack",
-        metadata={
-            "reference_time": RECORDED_TIMES[0],
-            "reference_action_id": "A01",
-            "reference_source_event_id": "1",
-        },
+        events=events,
+        metadata={"reference_time": "2030-01-02T00:00:02.054Z"},
     )
 
     report = validate(run)
 
-    # Then: it is not reported as passing, because nothing here traces it
+    # Then: the reference is the event time, and nothing else is accepted for it
+    assert report.errors == [
+        (
+            "run_metadata.json reference_time is 2030-01-02T00:00:02.054Z, but the EventData.UtcTime "
+            f"of the EID 1 of the session host of this run ({SESSION_GUID}) is {SESSION_UTC_TIME}"
+        )
+    ]
+
+
+@pytest.mark.parametrize("utc_time", ["", "not-a-time", "2030-01-02T00:00:02.050Z", None])
+def test_session_host_record_without_a_readable_event_time_leaves_no_reference(
+    tmp_path: Path, utc_time: object
+) -> None:
+    # Given: the EID 1 of the session host has no usable UtcTime; its TimeCreated is intact
+    events = run_events("attack")
+    events[0]["EventData"]["UtcTime"] = utc_time
+    events[0]["TimeCreated"] = REFERENCE_TIME
+    run = build_run(tmp_path, run_type="attack", events=events)
+
+    report = validate(run)
+
     assert not report.ok
-    assert "this validator cannot trace one" in errors_of(report)
+    assert "TimeCreated is not used in its place" in errors_of(report)
+    assert "the reference of the run is the EID 1 of its session host" not in "\n".join(
+        report.checks
+    )
+
+
+def test_reference_earlier_than_its_action_is_refused(tmp_path: Path) -> None:
+    # Given: a session host record that precedes the recorded start of A01, as the session
+    # of the pre-run check does
+    events = run_events("attack")
+    events[0]["EventData"]["UtcTime"] = "2030-01-02 00:00:01.000"
+    run = build_run(
+        tmp_path,
+        run_type="attack",
+        events=events,
+        metadata={"reference_time": "2030-01-02T00:00:01.000Z"},
+    )
+
+    report = validate(run)
+
+    assert report.errors == [
+        (
+            "reference_time 2030-01-02T00:00:01.000Z is earlier than the recorded start of A01 "
+            f"({RECORDED_TIMES[0]})"
+        )
+    ]
+
+
+def test_reference_later_than_the_next_action_is_refused(tmp_path: Path) -> None:
+    # Given: a session host record that follows the action that ran in the session
+    events = run_events("attack")
+    events[0]["EventData"]["UtcTime"] = "2030-01-02 00:02:30.000"
+    run = build_run(
+        tmp_path,
+        run_type="attack",
+        events=events,
+        metadata={"reference_time": "2030-01-02T00:02:30.000Z"},
+    )
+
+    report = validate(run)
+
+    assert report.errors == [
+        (
+            "reference_time 2030-01-02T00:02:30.000Z is later than the next recorded action A02 "
+            f"({RECORDED_TIMES[1]})"
+        ),
+        (
+            "end_time 2030-01-02T00:11:00.000Z is earlier than reference_time + 600 s: the "
+            "collection observed 510.000 s after the reference"
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("end_time", "ok"),
+    [
+        ("2030-01-02T00:10:02.050Z", True),
+        ("2030-01-02T00:10:02.049Z", False),
+    ],
+)
+def test_attack_run_has_to_reach_the_horizon_after_its_reference(
+    tmp_path: Path, end_time: str, ok: bool
+) -> None:
+    # Given: a collection that ended exactly 600 s after the reference, and one that ended 1 ms short
+    run = build_run(tmp_path, run_type="attack", metadata={"end_time": end_time})
+
+    report = validate(run)
+
+    assert report.ok is ok, report.errors
+    if not ok:
+        assert report.errors == [
+            (
+                f"end_time {end_time} is earlier than reference_time + 600 s: the collection "
+                "observed 599.999 s after the reference"
+            )
+        ]
+
+
+def test_normal_run_is_not_held_to_a_horizon_from_a_reference(tmp_path: Path) -> None:
+    # A normal run has no reference_time, so no evaluation window is read into it.
+    run = build_run(tmp_path, metadata={"end_time": "2030-01-02T00:10:00.500Z"})
+
+    report = validate(run)
+
+    assert report.ok, report.errors
+    assert "evaluation horizon" not in "\n".join(report.checks)
+
+
+@pytest.mark.parametrize("version", [None, "", "   ", 7], ids=["null", "empty", "blank", "number"])
+@pytest.mark.parametrize("run_type", ["attack", "normal"])
+def test_scenario_naming_an_attack_reference_without_a_policy_version_is_refused(
+    tmp_path: Path, run_type: str, version: object
+) -> None:
+    # Given: a scenario that names the attack reference action and states no usable policy
+    # version, and a run_metadata that records none either - two missing values that an
+    # equality check alone would accept
+    run = build_run(
+        tmp_path,
+        run_type=run_type,
+        scenario_body=scenario(policy_version=version),
+        metadata={"reference_policy_version": None},
+    )
+
+    report = validate(run)
+
+    # Then: both runs of the Pair are refused on the scenario, before anything is compared
+    assert not report.ok
+    assert (
+        "run_metadata.reference_policy_version must be a non-blank string when "
+        f"runs.attack.reference_action_id is set, found {version!r}"
+    ) in errors_of(report)
+    assert report.lineage is None
+    assert "PASS" not in format_report(report)
+
+
+def test_any_stated_policy_version_is_accepted_when_the_run_records_the_same(
+    tmp_path: Path,
+) -> None:
+    # No version is fixed in the validator: the scenario states it and the run records it.
+    run = build_run(
+        tmp_path,
+        run_type="attack",
+        scenario_body=scenario(policy_version="synthetic-ref-v9"),
+        metadata={"reference_policy_version": "synthetic-ref-v9"},
+    )
+
+    report = validate(run)
+
+    assert report.ok, report.errors
+
+
+def test_reference_policy_version_has_to_be_the_one_of_the_scenario(tmp_path: Path) -> None:
+    run = build_run(tmp_path, run_type="attack", metadata={"reference_policy_version": "other"})
+
+    report = validate(run)
+
+    assert report.errors == [
+        "run_metadata.json reference_policy_version is 'other', the scenario states 'r1-ref-v0.1'"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("changes", "problem"),
+    [
+        ({"attack_reference": None}, "runs.attack.reference_action_id must be the session_begin"),
+        ({"attack_reference": "A03"}, "runs.attack.reference_action_id must be the session_begin"),
+        ({"horizon": None}, "run_length.evaluation_horizon_sec must be an integer of 1 or more"),
+        ({"horizon": 0}, "run_length.evaluation_horizon_sec must be an integer of 1 or more"),
+        ({"horizon": "600"}, "run_length.evaluation_horizon_sec must be an integer of 1 or more"),
+        ({"horizon": True}, "run_length.evaluation_horizon_sec must be an integer of 1 or more"),
+    ],
+)
+def test_scenario_without_a_usable_reference_plan_validates_no_attack_run(
+    tmp_path: Path, changes: dict, problem: str
+) -> None:
+    run = build_run(tmp_path, run_type="attack", scenario_body=scenario(**changes))
+
+    report = validate(run)
+
+    assert not report.ok
+    assert "scenario definition is not usable" in errors_of(report)
+    assert problem in errors_of(report)
+    assert report.lineage is None
+
+
+def test_scenario_that_gives_the_normal_run_a_reference_is_not_usable(tmp_path: Path) -> None:
+    run = build_run(tmp_path, scenario_body=scenario(normal_reference="N01"))
+
+    report = validate(run)
+
+    assert not report.ok
+    assert "runs.normal.reference_action_id must be null" in errors_of(report)
+
+
+def test_rehearsal_attack_run_records_its_reference_and_is_not_held_to_the_horizon(
+    tmp_path: Path,
+) -> None:
+    # Given: a rehearsal, which does not wait for the observation window
+    run = build_run(
+        tmp_path,
+        run_type="attack",
+        rehearsal=True,
+        metadata={"end_time": "2030-01-02T00:10:01.000Z"},
+    )
+
+    report = validate(run, rehearsal=True)
+
+    assert report.ok, report.errors
+    assert "the reference of the run is the EID 1 of its session host" in "\n".join(report.checks)
+    assert "evaluation horizon" not in "\n".join(report.checks)
 
 
 def test_target_host_other_than_the_rendered_one_fails(tmp_path: Path) -> None:
@@ -1288,12 +1619,15 @@ def test_run_bound_to_its_scenario_passes_and_reports_the_binding(tmp_path: Path
         "the operator trace, the scenario the run kept and the scenario given to the validator "
         f"are the same bytes: sha256={digest}"
     ) in report.checks
-    assert "the operator trace names this run: dataset_tier=pilot mode=collection" in report.checks
+    assert (
+        "the operator trace names this run and carries the tier its scenario states: "
+        "dataset_tier=pilot mode=collection"
+    ) in report.checks
 
     text = format_report(report)
     assert "tier        : pilot" in text
     assert f"scenario    : sha256={digest}" in text
-    assert "a formal evaluation selector has to leave such a run out" in text
+    assert "a formal selector has to leave such a run out" in text
     assert "operator trace" in text.splitlines()[-1]
 
 
@@ -1345,11 +1679,20 @@ def test_operator_trace_that_is_not_a_json_object_is_refused(
     [
         ({"run_id": OTHER_RUN_ID}, f"run_id is '{OTHER_RUN_ID}', expected '{RUN_ID}'"),
         ({"run_id": None}, f"run_id is None, expected '{RUN_ID}'"),
-        ({"dataset_tier": "formal"}, "dataset_tier is 'formal', expected 'pilot'"),
-        ({"dataset_tier": "Pilot"}, "dataset_tier is 'Pilot', expected 'pilot'"),
-        ({"dataset_tier": ""}, "dataset_tier is '', expected 'pilot'"),
-        ({"dataset_tier": None}, "dataset_tier is None, expected 'pilot'"),
-        ({"dataset_tier": ["pilot"]}, "dataset_tier is ['pilot'], expected 'pilot'"),
+        (
+            {"dataset_tier": "formal"},
+            "dataset_tier is 'formal', the rendered scenario states 'pilot'",
+        ),
+        (
+            {"dataset_tier": "Pilot"},
+            "dataset_tier is 'Pilot', the rendered scenario states 'pilot'",
+        ),
+        ({"dataset_tier": ""}, "dataset_tier is '', the rendered scenario states 'pilot'"),
+        ({"dataset_tier": None}, "dataset_tier is None, the rendered scenario states 'pilot'"),
+        (
+            {"dataset_tier": ["pilot"]},
+            "dataset_tier is ['pilot'], the rendered scenario states 'pilot'",
+        ),
         ({"trace_version": "v2"}, "trace_version is 'v2', expected 'v1'"),
         ({"trace_version": 1}, "trace_version is 1, expected 'v1'"),
         ({"mode": "rehearsal"}, "mode is 'rehearsal', expected 'collection'"),
@@ -1499,7 +1842,9 @@ def test_copy_of_the_scenario_at_another_path_is_accepted(tmp_path: Path) -> Non
 
     # And: the copy the run kept is such a copy
     kept = validate_r1_pilot_run(
-        artifact_root=root, run_id=RUN_ID, scenario_path=trace_dir(root) / "scenario.json"
+        artifact_root=root,
+        run_id=RUN_ID,
+        scenario_path=trace_dir(root) / "scenario.json",
     )
     assert kept.ok, kept.errors
 
@@ -1560,8 +1905,277 @@ def test_every_problem_of_a_trace_is_reported(tmp_path: Path) -> None:
 
     assert report.errors == [
         f"operator trace run_id is '{OTHER_RUN_ID}', expected '{RUN_ID}' ({TRACE_LABEL})",
-        f"operator trace dataset_tier is 'formal', expected 'pilot' ({TRACE_LABEL})",
+        (
+            "operator trace dataset_tier is 'formal', the rendered scenario states 'pilot' "
+            f"({TRACE_LABEL})"
+        ),
     ]
+
+
+@pytest.mark.parametrize("tier", ["development", "holdout"])
+def test_run_of_a_formal_tier_passes_when_its_scenario_states_that_tier(
+    tmp_path: Path, tier: str
+) -> None:
+    # Given: a Pair rendered as a formal tier and a run whose trace carries that tier
+    run = build_run(tmp_path, run_type="attack", scenario_body=scenario(dataset_tier=tier))
+
+    # When: the validator is given the scenario and nothing about the tier
+    report = validate(run)
+
+    # Then: the run passes and the report carries the tier of the scenario and the trace
+    assert report.ok, report.errors
+    assert report.trace is not None
+    assert (report.trace.dataset_tier, report.trace.mode) == (tier, "collection")
+    assert report.scenario_dataset_tier == tier
+    assert (
+        "the operator trace names this run and carries the tier its scenario states: "
+        f"dataset_tier={tier} mode=collection"
+    ) in report.checks
+
+    text = format_report(report)
+    assert f"tier        : {tier}" in text
+    assert f"the operator trace both say dataset_tier={tier}" in text
+    assert "not a formal run" not in text
+    assert "dataset_tier=pilot" not in text
+
+
+@pytest.mark.parametrize(
+    ("in_scenario", "in_trace"),
+    [
+        ("development", "pilot"),
+        ("holdout", "pilot"),
+        ("pilot", "development"),
+        ("holdout", "development"),
+        ("development", "holdout"),
+        ("pilot", "holdout"),
+    ],
+)
+def test_run_whose_trace_states_another_tier_than_its_scenario_is_refused(
+    tmp_path: Path, in_scenario: str, in_trace: str
+) -> None:
+    # Given: a run that is valid in every other respect, whose trace disagrees with the
+    # scenario of its Pair
+    root, scenario_path = build_run(tmp_path, scenario_body=scenario(dataset_tier=in_scenario))
+    write_trace(root, scenario_path.read_bytes(), dataset_tier=in_trace)
+
+    report = validate((root, scenario_path))
+
+    # Then: neither value is taken to make the run fit, and nothing after the trace is judged
+    assert report.errors == [
+        (
+            f"operator trace dataset_tier is {in_trace!r}, the rendered scenario states "
+            f"{in_scenario!r} ({TRACE_LABEL})"
+        )
+    ]
+    assert report.trace is None
+    assert report.lineage is None
+    assert report.scenario_dataset_tier == in_scenario
+    assert f"the scenario states {in_scenario!r}" in format_report(report)
+
+
+@pytest.mark.parametrize(
+    "tier",
+    ["", "formal", "Pilot", "DEVELOPMENT", "pilot ", " pilot", "dev", None, 1, ["pilot"], OMITTED],
+    ids=[
+        "empty",
+        "unknown",
+        "capital",
+        "upper",
+        "trailing-space",
+        "leading-space",
+        "abbreviated",
+        "null",
+        "number",
+        "list",
+        "omitted",
+    ],
+)
+def test_scenario_without_a_usable_tier_validates_nothing(tmp_path: Path, tier: object) -> None:
+    # Given: a run whose trace says pilot, and a scenario that states no tier this project has
+    run = build_run(tmp_path, scenario_body=scenario(dataset_tier=tier))
+
+    report = validate(run)
+
+    # Then: the scenario is refused before the trace is read; the tier of the trace does not
+    # stand in for the one the scenario leaves out
+    assert len(report.errors) == 1
+    assert "scenario definition is not usable" in report.errors[0]
+    assert "dataset_tier must be one of ['pilot', 'development', 'holdout']" in report.errors[0]
+    assert "--dataset-tier" in report.errors[0]
+    assert report.scenario_dataset_tier is None
+    assert report.trace is None
+    assert report.lineage is None
+    assert "PASS" not in format_report(report)
+
+
+def test_validator_takes_no_expected_tier_from_its_caller(tmp_path: Path) -> None:
+    # The tier of the earlier interface is gone: a caller cannot choose what a run is held to.
+    root, scenario_path = build_run(tmp_path)
+
+    assert "dataset_tier" not in inspect.signature(validate_r1_pilot_run).parameters
+    with pytest.raises(TypeError, match="dataset_tier"):
+        validate_r1_pilot_run(  # type: ignore[call-arg]
+            artifact_root=root, run_id=RUN_ID, scenario_path=scenario_path, dataset_tier="pilot"
+        )
+
+
+@pytest.mark.parametrize("run_type", ["normal", "attack"])
+def test_both_runs_of_a_pair_are_held_to_the_tier_of_their_one_scenario(
+    tmp_path: Path, run_type: str
+) -> None:
+    # Given: the two runs of a Pair, validated against the same rendered scenario
+    run = build_run(tmp_path, run_type=run_type, scenario_body=scenario(dataset_tier="holdout"))
+
+    report = validate(run)
+
+    assert report.ok, report.errors
+    assert report.trace is not None
+    assert report.trace.dataset_tier == report.scenario_dataset_tier == "holdout"
+
+
+@pytest.mark.parametrize("run_type", ["normal", "attack"])
+@pytest.mark.parametrize("stating", ["normal", "attack"])
+def test_run_block_stating_another_tier_than_its_pair_validates_nothing(
+    tmp_path: Path, run_type: str, stating: str
+) -> None:
+    # Given: a Pair rendered as development whose trace says development as well, and one run
+    # block that was given a tier of its own
+    body = scenario(dataset_tier="development")
+    body["runs"][stating]["dataset_tier"] = "holdout"
+    root, scenario_path = build_run(tmp_path, run_type=run_type, scenario_body=body)
+    trace = json.loads((trace_dir(root) / "r1_run_trace.json").read_text(encoding="utf-8"))
+    assert trace["dataset_tier"] == "development"
+
+    report = validate((root, scenario_path))
+
+    # Then: the scenario is refused whichever run of the Pair is validated. The trace agrees
+    # with the top-level tier, and that agreement does not make the run pass
+    assert report.errors == [
+        (
+            f"scenario definition is not usable ({scenario_path}): runs.{stating} states "
+            "['dataset_tier']; a Pair states them once at the top level"
+        )
+    ]
+    assert report.scenario_dataset_tier is None
+    assert report.trace is None
+    assert report.lineage is None
+    assert report.identity is None
+    assert "PASS" not in format_report(report)
+
+
+@pytest.mark.parametrize("run_type", ["normal", "attack"])
+@pytest.mark.parametrize("stating", ["normal", "attack"])
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("family_id", FAMILY_ID),
+        ("family_id", "family_x7"),
+        ("variation_id", VARIATION_ID),
+        ("variation_id", "V09"),
+        ("repetition", REPETITION),
+        ("repetition", 4),
+        ("dataset_tier", "pilot"),
+        ("dataset_tier", "development"),
+        ("dataset_tier", None),
+    ],
+    ids=[
+        "family-same",
+        "family-other",
+        "variation-same",
+        "variation-other",
+        "repetition-same",
+        "repetition-other",
+        "tier-same",
+        "tier-other",
+        "tier-null",
+    ],
+)
+def test_run_block_stating_a_value_of_its_pair_validates_nothing(
+    tmp_path: Path, run_type: str, stating: str, name: str, value: object
+) -> None:
+    # Given: a run that is valid in every other respect, and a scenario in which one run block
+    # carries a field the Pair states once at the top level
+    body = scenario()
+    body["runs"][stating][name] = value
+
+    report = validate(build_run(tmp_path, run_type=run_type, scenario_body=body))
+
+    # Then: the field is refused for being there. A value equal to the top-level one and a null
+    # are refused like a different one, and nothing of the run is judged
+    assert len(report.errors) == 1
+    assert "scenario definition is not usable" in report.errors[0]
+    assert (
+        f"runs.{stating} states [{name!r}]; a Pair states them once at the top level"
+    ) in report.errors[0]
+    assert report.trace is None
+    assert report.lineage is None
+    assert report.identity is None
+
+
+def test_every_pair_field_of_a_run_block_is_named(tmp_path: Path) -> None:
+    body = scenario()
+    body["runs"]["attack"].update({"repetition": 2, "dataset_tier": "holdout", "family_id": "x"})
+
+    report = validate(build_run(tmp_path, run_type="normal", scenario_body=body))
+
+    assert (
+        "runs.attack states ['dataset_tier', 'family_id', 'repetition']; a Pair states them "
+        "once at the top level"
+    ) in errors_of(report)
+
+
+@pytest.mark.parametrize("run_type", ["normal", "attack"])
+@pytest.mark.parametrize("stating", ["normal", "attack"])
+@pytest.mark.parametrize("name", ["family_id", "variation_id", "repetition", "dataset_tier"])
+def test_plan_of_a_scenario_whose_run_block_states_a_pair_field_is_not_read(
+    tmp_path: Path, run_type: str, stating: str, name: str
+) -> None:
+    body = scenario()
+    body["runs"][stating][name] = body[name]
+    scenario_path = tmp_path / "scenario.json"
+    scenario_path.write_text(json.dumps(body), encoding="utf-8")
+
+    with pytest.raises(R1ScenarioError, match=rf"runs\.{stating} states \['{name}'\]"):
+        load_r1_pilot_expectation(scenario_path, run_type)
+
+
+@pytest.mark.parametrize("tier", ["development", "holdout"])
+def test_rehearsal_of_a_scenario_of_a_formal_tier_is_refused(tmp_path: Path, tier: str) -> None:
+    # Given: rehearsal artifacts whose scenario and trace both claim a formal tier
+    run = build_run(
+        tmp_path,
+        rehearsal=True,
+        connect=False,
+        scenario_body=scenario(destination=False, dataset_tier=tier),
+    )
+
+    report = validate(run, rehearsal=True)
+
+    assert report.errors == [
+        (
+            "a rehearsal is not formal data: its scenario has to state dataset_tier 'pilot', "
+            f"this one states {tier!r}"
+        )
+    ]
+    assert report.trace is None
+    assert report.lineage is None
+
+
+@pytest.mark.parametrize("tier", ["development", "holdout"])
+def test_rehearsal_whose_trace_claims_a_formal_tier_is_refused(tmp_path: Path, tier: str) -> None:
+    # Given: a rehearsal of a pilot scenario whose trace was written with a formal tier
+    root, scenario_path = build_run(tmp_path, rehearsal=True, connect=False)
+    write_trace(root, scenario_path.read_bytes(), rehearsal=True, dataset_tier=tier)
+
+    report = validate((root, scenario_path), rehearsal=True)
+
+    assert report.errors == [
+        (
+            f"operator trace dataset_tier is {tier!r}, the rendered scenario states 'pilot' "
+            f"({TRACE_LABEL})"
+        )
+    ]
+    assert report.trace is None
 
 
 def test_rehearsal_is_a_pilot_rehearsal_in_its_trace(tmp_path: Path) -> None:

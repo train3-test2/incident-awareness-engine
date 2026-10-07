@@ -1010,6 +1010,26 @@ def test_rejects_unsupported_candidate_type_with_matching_integrity(tmp_path: Pa
     assert "evidence_type" in str(error_info.value)
 
 
+def test_rejects_managed_s0_type_outside_r1_artifact_scope(tmp_path: Path) -> None:
+    # Given
+    run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+    records = _read_jsonl(tmp_path / R1_EVIDENCE_FILENAME)
+    records[0]["evidence_type"] = "encoded_powershell_command"
+    _replace_evidence_records(tmp_path, records)
+
+    # When
+    with pytest.raises(ValueError, match="not supported") as error_info:
+        load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert "evidence_type" in str(error_info.value)
+
+
 def test_rejects_lineage_policy_provenance_mismatch(tmp_path: Path) -> None:
     # Given
     run_and_write_r1_evidence_artifacts(

@@ -5,6 +5,7 @@ import test from "node:test";
 
 import { buildDecisionDetailViewPath } from "../../../src/incident_awareness/dashboard/ui/assets/decision-detail-contract.mjs";
 import { buildEventTimelineViewPath } from "../../../src/incident_awareness/dashboard/ui/assets/event-timeline-contract.mjs";
+import { buildFusionEngineViewPath } from "../../../src/incident_awareness/dashboard/ui/assets/fusion-engine-contract.mjs";
 import {
     buildRunDetailApiPath,
     buildRunDetailViewPath,
@@ -53,6 +54,20 @@ test("Run Detail Event Timeline navigation uses the product path helper", () => 
 
     // Then
     assert.equal(timelinePath, "/dashboard/runs/RUN%2020261005%2F001/timeline");
+});
+
+test("Run Detail Fusion Engine navigation uses the product path helper", () => {
+    // Given
+    const runId = "RUN 20261005/001";
+
+    // When
+    const fusionEnginePath = buildFusionEngineViewPath(runId);
+
+    // Then
+    assert.equal(
+        fusionEnginePath,
+        "/dashboard/runs/RUN%2020261005%2F001/fusion-engine",
+    );
 });
 
 test("Run Detail path builders reject missing and blank identifiers", () => {

@@ -1,0 +1,25 @@
+{
+  "recorded_at": "2026-10-06T02:15:32.420380+00:00",
+  "pair_id": "R1-PAIR-20261005-002",
+  "normal_run_id": "RUN-20261005-913",
+  "attack_run_id": "RUN-20261005-912",
+  "source_index": "R1-PAIR-20261005-002/index.json",
+  "source_index_sha256": "84c9502a11cf6a838dd8f8e9635220c44bcc8832e310195c557ecf221c6f7336",
+  "source_dataset_tier": "development",
+  "source_used_for_diagnostic_or_tuning": false,
+  "effective_usage": "development_tuning",
+  "used_for_tuning": true,
+  "count_as_official_development": false,
+  "eligible_for_train": false,
+  "eligible_for_validation": false,
+  "eligible_for_test": false,
+  "eligible_for_holdout": false,
+  "eligible_for_final_performance": false,
+  "reason": "최종 승인 전 수집 Pair이며 실제 값 검토와 후보 룰 검증에 사용. 원본 분류는 보존하고 역할5 사용 이력을 별도로 기록한다.",
+  "original_data_modified": false,
+  "activities": [
+    "integrity_and_reference_verification",
+    "actual_hayabusa_candidate_rule_execution"
+  ],
+  "qualifying_set_frozen": false
+}

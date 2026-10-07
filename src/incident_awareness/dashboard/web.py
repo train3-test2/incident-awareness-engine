@@ -21,6 +21,11 @@ def get_dashboard_view() -> FileResponse:
     return FileResponse(_UI_DIRECTORY / "dashboard.html", media_type="text/html")
 
 
+@operations_view_router.get("/dashboard/evaluation")
+def get_evaluation_view() -> FileResponse:
+    return FileResponse(_UI_DIRECTORY / "evaluation.html", media_type="text/html")
+
+
 @operations_view_router.get("/operations")
 def get_operations_view() -> FileResponse:
     return FileResponse(_UI_DIRECTORY / "operations.html", media_type="text/html")
@@ -34,6 +39,11 @@ def get_run_detail_view(run_id: str) -> FileResponse:
 @operations_view_router.get("/dashboard/runs/{run_id}/timeline")
 def get_event_timeline_view(run_id: str) -> FileResponse:
     return FileResponse(_UI_DIRECTORY / "event-timeline.html", media_type="text/html")
+
+
+@operations_view_router.get("/dashboard/runs/{run_id}/fusion-engine")
+def get_fusion_engine_view(run_id: str) -> FileResponse:
+    return FileResponse(_UI_DIRECTORY / "fusion-engine.html", media_type="text/html")
 
 
 @operations_view_router.get("/dashboard/runs/{run_id}/events/{event_id:path}")

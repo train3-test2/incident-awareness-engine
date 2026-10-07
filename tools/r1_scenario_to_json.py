@@ -7,7 +7,7 @@ rendered file is a build artifact and is not committed; see
 `scenarios/R1/README.md`.
 
     python tools/r1_scenario_to_json.py scenarios/R1/scenario.yaml --out build/R1/scenario.json \
-        --repetition 1
+        --repetition 1 --dataset-tier pilot
 
 One JSON is rendered for one Pair, and both runs of the Pair read it. It is the
 only place a run takes its values from: the runner has no option that overrides
@@ -25,6 +25,16 @@ The repetition is the only identity value given per rendering:
 
 The canonical YAML states no repetition, so --repetition is always needed. The
 three values are written to RunMetadata for both runs.
+
+The dataset tier of the Pair is given the same way and is always needed:
+
+    --dataset-tier   pilot, development or holdout, spelled exactly so
+
+It has no default and the canonical YAML states none. It is written to the
+rendered JSON once, at the top level, and both runs of the Pair read it there:
+the runner takes no tier of its own, writes this one to the operator trace of
+each run, and the validator holds the trace to it. What each tier means is in
+`scenarios/R1/README.md` section 1-3.
 
 The canonical YAML keeps the Target-A host name, the internal destination and
 the lab network as null. They are injected only when the JSON is rendered for a
@@ -75,10 +85,13 @@ from incident_awareness.collection.r1_destination import (
     validate_lab_cidr,
 )
 from incident_awareness.collection.r1_pair_identity import (
+    DATASET_TIERS,
     R1PairIdentity,
     R1PairIdentityError,
     exposed_label_word,
+    read_dataset_tier,
     read_pair_identity,
+    validate_dataset_tier,
     validate_family_id,
     validate_repetition,
     validate_variation_id,
@@ -91,11 +104,13 @@ STEP_ORDER = ("session_begin", "prepare", "launch", "connect", "session_end")
 LAUNCHER_KINDS = ("batch", "jscript")
 PLANNED_LINEAGE_KEY = "planned_lineage"
 IDENTITY_KEYS = ("family_id", "variation_id", "repetition")
+DATASET_TIER_KEY = "dataset_tier"
 
 _REQUIRED_TOP_LEVEL = (
     "scenario_version",
     "scenario_id",
     *IDENTITY_KEYS,
+    DATASET_TIER_KEY,
     "run_metadata",
     "internal_connection",
     PLANNED_LINEAGE_KEY,
@@ -271,9 +286,9 @@ def _check_runs(scenario: dict) -> None:
         if run_type not in runs:
             raise ValueError(f"runs.{run_type} is missing")
 
-        # The identity of a Pair is stated once, for both runs. A run that could
-        # state its own would let the two runs of a Pair disagree.
-        stated = sorted(key for key in IDENTITY_KEYS if key in runs[run_type])
+        # The identity and the tier of a Pair are stated once, for both runs. A
+        # run that could state its own would let the two runs of a Pair disagree.
+        stated = sorted(key for key in (*IDENTITY_KEYS, DATASET_TIER_KEY) if key in runs[run_type])
         if stated:
             raise ValueError(
                 f"runs.{run_type} states {stated}; a Pair states them once at the top level"
@@ -297,6 +312,22 @@ def _check_runs(scenario: dict) -> None:
                 f"found {list(steps)}"
             )
 
+        # The reference of an attack run is the Sysmon record of the session host
+        # its first action creates (r1.md section 4-2), so that action is the only
+        # one it can name. A normal run records no reference.
+        reference = runs[run_type].get("reference_action_id")
+        if run_type == "attack":
+            if reference != action_ids[0]:
+                raise ValueError(
+                    f"runs.attack.reference_action_id must be the {STEP_ORDER[0]} action "
+                    f"{action_ids[0]!r}, found {reference!r}"
+                )
+        elif reference is not None:
+            raise ValueError(
+                f"runs.{run_type}.reference_action_id must be null, found {reference!r}: "
+                "only an attack run records a reference"
+            )
+
         offsets = [action.get("offset_sec") for action in actions]
         if any(isinstance(offset, bool) or not isinstance(offset, int) for offset in offsets):
             raise ValueError(f"runs.{run_type} offset_sec values must be integers")
@@ -312,6 +343,48 @@ def _check_runs(scenario: dict) -> None:
     if shapes["normal"] != shapes["attack"]:
         raise ValueError(
             "runs.normal and runs.attack must share step, offset_sec and action_type per action"
+        )
+
+
+def _check_run_length(scenario: dict) -> None:
+    # The runner holds a collected attack run to this horizon from its reference_time.
+    run_length = scenario.get("run_length")
+    horizon = run_length.get("evaluation_horizon_sec") if isinstance(run_length, dict) else None
+    if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon < 1:
+        raise ValueError(
+            f"run_length.evaluation_horizon_sec must be an integer of 1 or more, found {horizon!r}"
+        )
+
+
+def _check_reference_policy(scenario: dict) -> None:
+    """A scenario whose attack run names a reference action states the policy version.
+
+    The reference of an attack run is only readable together with the policy it
+    was taken under, so a reference is never recorded next to a missing version.
+    Any non-blank string is accepted: which version is current is a value of the
+    scenario and is not fixed here.
+    """
+    if scenario["runs"]["attack"].get("reference_action_id") is None:
+        return
+
+    run_metadata = scenario.get("run_metadata")
+    version = (
+        run_metadata.get("reference_policy_version") if isinstance(run_metadata, dict) else None
+    )
+    if not isinstance(version, str) or not version.strip():
+        raise ValueError(
+            "run_metadata.reference_policy_version must be a non-blank string when "
+            f"runs.attack.reference_action_id is set, found {version!r}"
+        )
+
+
+def _check_dataset_tier(scenario: dict) -> None:
+    """The canonical YAML states no tier: it is given for every rendering."""
+    stated = scenario.get(DATASET_TIER_KEY)
+    if stated is not None:
+        raise ValueError(
+            f"{DATASET_TIER_KEY} must be null in the scenario YAML, found {stated!r}: the tier of "
+            "a Pair has no default and is given when rendering (--dataset-tier)"
         )
 
 
@@ -360,7 +433,10 @@ def load_r1_scenario(path: Path) -> dict:
 
     _check_planned_lineage(scenario[PLANNED_LINEAGE_KEY])
     _check_runs(scenario)
+    _check_run_length(scenario)
+    _check_reference_policy(scenario)
     _check_identity(scenario)
+    _check_dataset_tier(scenario)
     return scenario
 
 
@@ -383,6 +459,7 @@ def apply_run_inputs(
     internal_port: int | None = None,
     lab_cidr: str | None = None,
     repetition: int | None = None,
+    dataset_tier: str | None = None,
 ) -> dict:
     """Return a copy with the run inputs injected.
 
@@ -394,6 +471,9 @@ def apply_run_inputs(
     A repetition that is given is validated and replaces what the scenario
     states. The family and the variation are not run inputs: the copy keeps the
     values the scenario states.
+
+    A dataset tier that is given is validated and written at the top level, the
+    one place both runs of the Pair read it from.
     """
     rendered = copy.deepcopy(scenario)
 
@@ -416,6 +496,9 @@ def apply_run_inputs(
     if repetition is not None:
         rendered["repetition"] = validate_repetition(repetition)
 
+    if dataset_tier is not None:
+        rendered[DATASET_TIER_KEY] = validate_dataset_tier(dataset_tier)
+
     return rendered
 
 
@@ -434,11 +517,32 @@ def require_pair_identity(scenario: dict) -> R1PairIdentity:
         ) from error
 
 
+def require_dataset_tier(scenario: dict) -> str:
+    """Return the tier a scenario states, or raise when a run could not record one.
+
+    This is what makes --dataset-tier necessary: the canonical YAML states none,
+    and a rendered scenario is not written without one.
+    """
+    try:
+        return read_dataset_tier(scenario)
+    except R1PairIdentityError as error:
+        raise R1PairIdentityError(
+            f"{error}. The tier of a Pair is given when rendering (--dataset-tier) and has "
+            "no default"
+        ) from error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scenario", type=Path, help="path to scenarios/R1/scenario.yaml")
     parser.add_argument("--out", type=Path, required=True, help="path of the JSON to write")
     parser.add_argument("--repetition", type=int, help="which Pair of the family this is, from 1")
+    parser.add_argument(
+        "--dataset-tier",
+        required=True,
+        choices=DATASET_TIERS,
+        help="tier of the Pair, written once to the rendered JSON for both runs; no default",
+    )
     parser.add_argument("--target-host", help="Target-A computer name; omit for a dry run")
     parser.add_argument(
         "--internal-target",
@@ -455,8 +559,10 @@ def main() -> int:
         internal_port=args.internal_port,
         lab_cidr=args.lab_cidr,
         repetition=args.repetition,
+        dataset_tier=args.dataset_tier,
     )
     identity = require_pair_identity(scenario)
+    dataset_tier = require_dataset_tier(scenario)
 
     destination = render_json(scenario, args.out)
     print(f"[+] {args.scenario} -> {destination}")
@@ -464,6 +570,7 @@ def main() -> int:
         f"[+] pair: family_id={identity.family_id} variation_id={identity.variation_id} "
         f"repetition={identity.repetition}"
     )
+    print(f"[+] dataset_tier={dataset_tier}")
     return 0
 
 

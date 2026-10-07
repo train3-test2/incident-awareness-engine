@@ -4,8 +4,15 @@ import pytest
 
 from incident_awareness.common.models.evidence import Evidence
 from incident_awareness.evaluation.baselines.static_features import extract_static_features
+from incident_awareness.evidence.r1_multi_event import (
+    EXTRACTOR_VERSION as R1_EXTRACTOR_VERSION,
+)
+from incident_awareness.evidence.r1_multi_event import (
+    R1_CANDIDATE_EVIDENCE_TYPES_BY_EXTRACTOR_VERSION,
+)
 
 NAMES = ("encoded_powershell_command", "script_interpreter_external_connection")
+R1_NAMES = tuple(sorted(R1_CANDIDATE_EVIDENCE_TYPES_BY_EXTRACTOR_VERSION[R1_EXTRACTOR_VERSION]))
 
 
 RUN = "RUN-20261004-001"
@@ -58,6 +65,22 @@ def test_diagnostic_and_unselected_types_are_not_features():
     # Then
     assert actual_1.values == (0,)
     assert actual_2.evidence_ids == ()
+
+
+def test_registered_r1_evidence_types_are_valid_static_features():
+    # Given
+    rows = [
+        row("E-R1-001", R1_NAMES[0], extractor_version="r1-v0.1"),
+        row("E-R1-002", R1_NAMES[1], extractor_version="r1-v0.1"),
+    ]
+
+    # When
+    result = extract(rows, names=R1_NAMES)
+
+    # Then
+    assert result.feature_names == R1_NAMES
+    assert result.values == (1, 1)
+    assert result.evidence_ids == ("E-R1-001", "E-R1-002")
 
 
 def test_empty_window_is_zero_vector_without_detection_status():
