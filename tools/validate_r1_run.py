@@ -8,6 +8,11 @@ in that module so they can be tested without going through a subprocess.
     uv run python tools/validate_r1_run.py --artifact-root <rehearsal-root> --run-id <run_id> \
         --scenario <scenario.json rendered for the run> --rehearsal
 
+There is no option for the dataset tier. The rendered scenario states the tier
+of its Pair (`tools/r1_scenario_to_json.py --dataset-tier`), and the run passes
+only when its operator trace states exactly that tier. A scenario that states no
+tier is refused, and the scenario of a rehearsal has to say `pilot`.
+
 `--scenario` is the JSON `tools/r1_scenario_to_json.py` rendered for the Pair this
 run belongs to. It carries the planned lineage, the family, variation and
 repetition of the Pair, the Target-A name and the internal destination. The run
@@ -17,8 +22,8 @@ not judged here: no approved lineage policy is part of the scenario.
 It has to be the file the run executed. The runner keeps the bytes it read and
 their SHA-256 under `operator_trace/<run_id>/` of the artifact root, and the
 validator refuses a scenario with another digest, a run without that trace and
-a trace that does not mark the run `dataset_tier=pilot`. A copy of the same
-bytes at another path is the same scenario.
+a trace whose `dataset_tier` is not the one the scenario states. A copy of the
+same bytes at another path is the same scenario.
 
 `--record-out` also stores the printed report as the lineage record of the run
 (`docs/scenarios/r1.md` section 6). It is operator evidence: keep it next to the

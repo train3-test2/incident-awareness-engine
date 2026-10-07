@@ -19,6 +19,13 @@ family_id: remote_management          # PoC start guide v1.1 section 5-1 (kept o
 variation_id: V02
 repetition: null
 
+# Dataset tier of the Pair: pilot, development or holdout (scenarios/R1/README.md
+# section 1-3). Like the identity above it is stated once for both runs of the
+# Pair, and a run cannot state or replace it. This file states none and there is
+# no default: the tier is given for every rendered scenario (--dataset-tier). The
+# runner writes the rendered value to the operator trace of each run unchanged.
+dataset_tier: null
+
 # Gate character - issue #73, integrated standard 3.0 section 7-2. The Pilot
 # itself claims no performance (docs/scenarios/r1.md section 1).
 gate_type: feasibility
@@ -36,7 +43,10 @@ run_metadata:
   target_host: null
   sysmon_config_version: sysmonconfig-sample-v0.1
   detector_set_version: null
-  reference_policy_version: null      # no reference action is decided yet (r1.md section 11-5)
+  # How reference_time is taken for an attack run (r1.md section 4-2). A scenario
+  # whose attack run names a reference action has to state it: the renderer, the
+  # runner and the validator refuse a null or blank value. No code fixes the value.
+  reference_policy_version: r1-ref-v0.1
   schema_versions:
     run_metadata: v0.2
     event: v0.3
@@ -56,11 +66,13 @@ telemetry:
     - 1
     - 3
 
-# The observation length is a run input (-ObservationSec), not a scenario value:
-# r1.md section 11-4 leaves the evaluation horizon to role 5. The runner only
-# requires the window to cover the last action below.
+# The observation length is a run input (-ObservationSec), not a scenario value.
+# The evaluation horizon is a scenario value (r1.md section 11-4): the runner
+# refuses a window shorter than it, and a collected attack run has to end at or
+# after reference_time + evaluation_horizon_sec.
 run_length:
   observation_sec: null
+  evaluation_horizon_sec: 600
 
 # Destination of the internal connection made by the final management tool. Both
 # values and the lab network are injected when the JSON is rendered
@@ -152,7 +164,7 @@ outputs:
 runs:
   normal:
     run_type: normal
-    reference_action_id: null
+    reference_action_id: null         # a normal run records no reference (r1.md section 4-2)
     actions:
       - action_id: N01
         offset_sec: 0
@@ -182,7 +194,7 @@ runs:
 
   attack:
     run_type: attack
-    reference_action_id: null         # undecided (r1.md sections 4-2 and 11-5)
+    reference_action_id: A01          # the action that opens the session (r1.md section 4-2)
     actions:
       - action_id: A01
         offset_sec: 0

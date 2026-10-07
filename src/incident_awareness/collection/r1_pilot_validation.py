@@ -19,13 +19,18 @@ Controller. It does three things.
 
 1. It checks the contract files the way the S0 validator does: `RunMetadata`,
    `ExecutionRecordRow`, the Manifest with recomputed SHA-256, and one `run_id`
-   across all of them.
+   across all of them. A normal run records no reference. An attack run records
+   the reference action its scenario names, and its `reference_time` and
+   `reference_source_event_id` have to be the EventData.UtcTime and the RecordId
+   of the EID 1 of the session host of the lineage found in step 3; a collection
+   run also has to end at or after `reference_time` plus the evaluation horizon
+   of the scenario.
 2. It checks the operator trace. The scenario given to this validator, the
    scenario copy the run kept and the SHA-256 the trace records have to be the
-   same bytes, and the trace has to name this run and mark it
-   `dataset_tier=pilot`. A scenario edited after the run can therefore not be
-   the plan the run is judged against, and a run without a usable trace is not
-   validated at all.
+   same bytes, and the trace has to name this run and state the dataset tier
+   that scenario states for its Pair. A scenario edited after the run can
+   therefore not be the plan the run is judged against, and a run without a
+   usable trace is not validated at all.
 3. It finds the final management tool instance of the run in the raw Sysmon
    JSONL and hands it to `r1_lineage.verify_r1_lineage`, which checks the parent
    chain by host and ProcessGuid and the EID 3 carrying the same host and
@@ -37,9 +42,15 @@ of its Pair - is read from the scenario JSON that was rendered for the run
 (`tools/r1_scenario_to_json.py`), never from this code. The bytes are read once:
 what is compared with the operator trace is what the plan is parsed from.
 
-Every run the R1 Pilot runner writes is a Pilot run, a rehearsal included, and
-its trace says so. A formal evaluation selector has to leave out every run whose
-trace says `dataset_tier=pilot`; this validator accepts no other tier.
+The dataset tier belongs to the Pair. The rendered scenario states it once -
+`pilot`, `development` or `holdout`, and always `pilot` for a rehearsal - and
+the runner copies it to the operator trace of each run. This validator reads
+the expected tier from the scenario and accepts a run only when its trace states
+exactly that tier. The caller cannot choose the expectation, and a scenario that
+states no tier validates nothing. Neither does a scenario in which a run block
+states a tier, a family, a variation or a repetition of its own: both blocks
+are read, whichever run is validated. What a formal selector has to check on
+top of this is in `scenarios/R1/README.md` section 1-3.
 
 This is a conformance check of one collected run against its own plan. It
 detects nothing, builds no Evidence and produces no Fusion input. `run_type` is
@@ -72,6 +83,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PureWindowsPath
 
 from incident_awareness.collection.r1_destination import (
@@ -93,8 +105,11 @@ from incident_awareness.collection.r1_lineage import (
     verify_r1_lineage,
 )
 from incident_awareness.collection.r1_pair_identity import (
+    DATASET_TIERS,
+    REHEARSAL_DATASET_TIER,
     R1PairIdentity,
     R1PairIdentityError,
+    read_dataset_tier,
     read_pair_identity,
 )
 
@@ -117,6 +132,12 @@ from incident_awareness.common.models.run import RunMetadata
 SCENARIO_ID = "R1"
 RUN_TYPES = ("normal", "attack")
 CONNECT_STEP = "connect"
+# The action an attack run takes its reference from: the one that opens the
+# session (docs/scenarios/r1.md section 4-2). The time of a record is
+# EventData.UtcTime in the form Sysmon writes it; TimeCreated is never read in
+# its place.
+REFERENCE_STEP = "session_begin"
+EVENT_UTC_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 # The connection an R1 run makes is TCP: the runner refuses a scenario stating
 # another protocol and the task attempts nothing else. This is the spelling
 # Sysmon records; the comparison ignores case.
@@ -125,6 +146,11 @@ PLANNED_LINEAGE_KEY = "planned_lineage"
 LINEAGE_ROLES = ("final tool", "intermediate", "session host")
 REFERENCE_FIELDS = ("reference_time", "reference_action_id", "reference_source_event_id")
 IDENTITY_FIELDS = ("family_id", "variation_id", "repetition")
+# What a Pair states once, at the top level of its rendered scenario, for both
+# of its runs. The renderer and the runner refuse a run block that states one of
+# them. The validator refuses it too: the artifacts it is handed need not have
+# come from either.
+PAIR_FIELDS = (*IDENTITY_FIELDS, "dataset_tier")
 
 # The operator trace the runner writes next to raw/ and ground_truth/
 # (scenarios/R1/run-common.ps1, Write-R1RunTrace).
@@ -132,8 +158,10 @@ TRACE_DIRNAME = "operator_trace"
 TRACE_FILENAME = "r1_run_trace.json"
 TRACE_SCENARIO_FILENAME = "scenario.json"
 TRACE_VERSION = "v1"
-# The only tier the Pilot runner writes, for a rehearsal as well.
-DATASET_TIER = "pilot"
+# The tier of a Pair is a value of its rendered scenario (`DATASET_TIERS` of
+# incident_awareness.collection.r1_pair_identity); the runner copies it to the
+# trace. A rehearsal is never part of a formal pool and always carries this one.
+REHEARSAL_TIER = REHEARSAL_DATASET_TIER
 TRACE_MODES = {False: "collection", True: "rehearsal"}
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
@@ -171,6 +199,10 @@ class R1PilotExpectation:
     destination_ip: str | None
     destination_port: str | None
     identity: R1PairIdentity
+    dataset_tier: str
+    reference_action_id: str | None
+    evaluation_horizon_sec: int
+    reference_policy_version: str | None
 
     @property
     def images(self) -> tuple[str, ...]:
@@ -227,6 +259,7 @@ class R1PilotValidationReport:
     lineage: R1ObservedLineage | None = None
     identity: R1PairIdentity | None = None
     trace: R1RunTrace | None = None
+    scenario_dataset_tier: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -308,6 +341,82 @@ def _load_destination(internal: dict) -> tuple[str | None, str | None]:
         ) from error
 
 
+def _check_run_blocks(scenario: dict) -> None:
+    """Refuse a scenario whose run block states a value that belongs to its Pair.
+
+    Both run blocks are read, whichever run is being validated: a value in the
+    other block lets the two runs of the Pair disagree just the same. A field
+    counts for being there, so one that is null or repeats the top-level value
+    is refused like one that differs. A `runs` or a run block that is not an
+    object states nothing, and is reported where the plan is read.
+    """
+    runs = scenario.get("runs")
+    if not isinstance(runs, dict):
+        return
+
+    for run_type in RUN_TYPES:
+        block = runs.get(run_type)
+        if not isinstance(block, dict):
+            continue
+        stated = sorted(name for name in PAIR_FIELDS if name in block)
+        if stated:
+            raise R1ScenarioError(
+                f"runs.{run_type} states {stated}; a Pair states them once at the top level"
+            )
+
+
+def _parse_scenario(scenario_bytes: bytes) -> dict:
+    """The rendered scenario the bytes hold, once it is known to be an R1 scenario.
+
+    Everything the validator reads of a scenario comes through here, so a run
+    block that states a value of the Pair is refused before the tier or the plan
+    is taken from it.
+    """
+    try:
+        scenario = json.loads(scenario_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise R1ScenarioError(f"scenario is not readable JSON: {error}") from error
+
+    scenario = _mapping(scenario, "scenario")
+    if scenario.get("scenario_id") != SCENARIO_ID:
+        raise R1ScenarioError(
+            f"scenario_id must be {SCENARIO_ID!r}, found {scenario.get('scenario_id')!r}"
+        )
+    _check_run_blocks(scenario)
+    return scenario
+
+
+def _load_dataset_tier(scenario: dict) -> str:
+    """The dataset tier a scenario states for its Pair. It has to be stated."""
+    try:
+        return read_dataset_tier(scenario)
+    except R1PairIdentityError as error:
+        raise R1ScenarioError(
+            f"{error}. The rendered scenario states the tier of its Pair "
+            "(tools/r1_scenario_to_json.py --dataset-tier); nothing given to the validator "
+            "replaces it"
+        ) from error
+
+
+def _load_reference_policy_version(scenario: dict, run_metadata: dict) -> str | None:
+    """The reference policy version both runs of the Pair record.
+
+    A scenario whose attack run names a reference action has to state it as a
+    non-blank string. A reference recorded next to a missing version could not be
+    read later, and two missing values would compare as equal. Which version is
+    current is a value of the scenario: none is expected here.
+    """
+    version = run_metadata.get("reference_policy_version")
+    attack = _mapping(scenario.get("runs"), "runs").get("attack")
+    names_reference = isinstance(attack, dict) and attack.get("reference_action_id") is not None
+    if names_reference and (not isinstance(version, str) or not version.strip()):
+        raise R1ScenarioError(
+            "run_metadata.reference_policy_version must be a non-blank string when "
+            f"runs.attack.reference_action_id is set, found {version!r}"
+        )
+    return version
+
+
 def _load_identity(scenario: dict) -> R1PairIdentity:
     """The Pair a scenario was rendered for: its family, variation and repetition."""
     try:
@@ -338,16 +447,7 @@ def _read_expectation(scenario_bytes: bytes, run_type: str) -> R1PilotExpectatio
     if run_type not in RUN_TYPES:
         raise R1ScenarioError(f"run_type must be one of {RUN_TYPES}, found {run_type!r}")
 
-    try:
-        scenario = json.loads(scenario_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise R1ScenarioError(f"scenario is not readable JSON: {error}") from error
-
-    scenario = _mapping(scenario, "scenario")
-    if scenario.get("scenario_id") != SCENARIO_ID:
-        raise R1ScenarioError(
-            f"scenario_id must be {SCENARIO_ID!r}, found {scenario.get('scenario_id')!r}"
-        )
+    scenario = _parse_scenario(scenario_bytes)
 
     # The lineage a run is checked against is the planned one of its run type.
     key = PLANNED_LINEAGE_KEY
@@ -361,12 +461,11 @@ def _read_expectation(scenario_bytes: bytes, run_type: str) -> R1PilotExpectatio
         _mapping(scenario.get("internal_connection"), "internal_connection")
     )
     identity = _load_identity(scenario)
+    actions = _load_actions(run, f"runs.{run_type}")
+    run_metadata = _mapping(scenario.get("run_metadata"), "run_metadata")
 
     return R1PilotExpectation(
-        target_host=_text(
-            _mapping(scenario.get("run_metadata"), "run_metadata").get("target_host"),
-            "run_metadata.target_host",
-        ),
+        target_host=_text(run_metadata.get("target_host"), "run_metadata.target_host"),
         final_image=_text(
             _mapping(lineage.get("final_tool"), f"{key}.final_tool").get("image"),
             f"{key}.final_tool.image",
@@ -376,11 +475,48 @@ def _read_expectation(scenario_bytes: bytes, run_type: str) -> R1PilotExpectatio
             _mapping(lineage.get("session_host"), f"{key}.session_host").get("image"),
             f"{key}.session_host.image",
         ),
-        actions=_load_actions(run, f"runs.{run_type}"),
+        actions=actions,
         destination_ip=destination_ip,
         destination_port=destination_port,
         identity=identity,
+        dataset_tier=_load_dataset_tier(scenario),
+        reference_action_id=_load_reference_action(run, run_type, actions),
+        evaluation_horizon_sec=_load_horizon(scenario),
+        reference_policy_version=_load_reference_policy_version(scenario, run_metadata),
     )
+
+
+def _load_reference_action(
+    run: dict, run_type: str, actions: tuple[R1ScenarioAction, ...]
+) -> str | None:
+    """The reference action of one run type: none for a normal run, the session action for an attack run."""
+    stated = run.get("reference_action_id")
+    if run_type != "attack":
+        if stated is not None:
+            raise R1ScenarioError(
+                f"runs.{run_type}.reference_action_id must be null, found {stated!r}: only an "
+                "attack run records a reference"
+            )
+        return None
+
+    begin = [action.action_id for action in actions if action.step == REFERENCE_STEP]
+    if len(begin) != 1:
+        raise R1ScenarioError(f"runs.attack.actions must hold exactly one {REFERENCE_STEP!r} step")
+    if stated != begin[0]:
+        raise R1ScenarioError(
+            f"runs.attack.reference_action_id must be the {REFERENCE_STEP} action {begin[0]!r}, "
+            f"found {stated!r}"
+        )
+    return begin[0]
+
+
+def _load_horizon(scenario: dict) -> int:
+    horizon = _mapping(scenario.get("run_length"), "run_length").get("evaluation_horizon_sec")
+    if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon < 1:
+        raise R1ScenarioError(
+            f"run_length.evaluation_horizon_sec must be an integer of 1 or more, found {horizon!r}"
+        )
+    return horizon
 
 
 def _check_run_trace(
@@ -388,6 +524,7 @@ def _check_run_trace(
     run_id: str,
     scenario_bytes: bytes,
     rehearsal: bool,
+    dataset_tier: str,
     report: R1PilotValidationReport,
 ) -> R1RunTrace | None:
     """Check that the scenario given to the validator is the one the run executed.
@@ -396,7 +533,7 @@ def _check_run_trace(
     SHA-256, under `operator_trace/<run_id>/`. Three digests have to agree: the
     one the trace records, the one of the kept copy and the one of the scenario
     this validator was given. The trace also has to name this run, its mode and
-    the Pilot tier.
+    `dataset_tier`, the tier that scenario states for its Pair.
 
     Returns the trace when everything held and None after reporting what did
     not. Nothing is repaired or guessed: a run without a usable trace is not
@@ -426,13 +563,14 @@ def _check_run_trace(
     expected = {
         "trace_version": TRACE_VERSION,
         "run_id": run_id,
-        "dataset_tier": DATASET_TIER,
+        "dataset_tier": dataset_tier,
         "mode": TRACE_MODES[rehearsal],
     }
     for name, wanted in expected.items():
         stated = trace.get(name)
         if not isinstance(stated, str) or stated != wanted:
-            report.fail(f"operator trace {name} is {stated!r}, expected {wanted!r} ({trace_label})")
+            source = "the rendered scenario states" if name == "dataset_tier" else "expected"
+            report.fail(f"operator trace {name} is {stated!r}, {source} {wanted!r} ({trace_label})")
 
     recorded = trace.get("scenario_sha256")
     if not isinstance(recorded, str) or _SHA256_HEX.fullmatch(recorded) is None:
@@ -470,9 +608,10 @@ def _check_run_trace(
         f"are the same bytes: sha256={recorded}"
     )
     report.passed(
-        f"the operator trace names this run: dataset_tier={DATASET_TIER} mode={expected['mode']}"
+        "the operator trace names this run and carries the tier its scenario states: "
+        f"dataset_tier={dataset_tier} mode={expected['mode']}"
     )
-    return R1RunTrace(dataset_tier=DATASET_TIER, mode=expected["mode"], scenario_sha256=recorded)
+    return R1RunTrace(dataset_tier=dataset_tier, mode=expected["mode"], scenario_sha256=recorded)
 
 
 def _check_rehearsal_isolation(
@@ -531,18 +670,42 @@ def _check_run_metadata(
             f"{stated.family_id} variation_id={stated.variation_id} repetition={stated.repetition}"
         )
 
-    # A normal run has no reference by contract. An attack run of the Pilot has
-    # none either, because r1.md section 11-5 has not decided the reference
-    # action. A value here could not be traced to telemetry by this validator, so
-    # it is refused rather than reported as passing unchecked.
+    # A normal run has no reference by contract. An attack run records the
+    # reference action its scenario names, with a time and a source record.
+    # Whether those two are the right record is checked against the telemetry
+    # once the lineage of the run is known (_check_reference).
     recorded = [name for name in REFERENCE_FIELDS if getattr(metadata, name) is not None]
-    if recorded:
-        report.fail(
-            f"run_metadata.json records {recorded}, but the R1 Pilot records no reference "
-            "action (docs/scenarios/r1.md section 11-5) and this validator cannot trace one"
-        )
+    wanted = expectation.reference_action_id
+    if wanted is None:
+        if recorded:
+            report.fail(
+                f"run_metadata.json records {recorded}, but a normal run records no reference "
+                "(docs/scenarios/r1.md section 4-2)"
+            )
+        else:
+            report.passed("run_metadata.json records no reference, as a normal run does")
     else:
-        report.passed("run_metadata.json records no reference, as the Pilot does")
+        absent = [name for name in REFERENCE_FIELDS if getattr(metadata, name) is None]
+        if absent:
+            report.fail(
+                f"run_metadata.json of an attack run does not record {absent}; its reference is "
+                f"the action {wanted} (docs/scenarios/r1.md section 4-2)"
+            )
+        elif metadata.reference_action_id != wanted:
+            report.fail(
+                f"run_metadata.json reference_action_id is {metadata.reference_action_id!r}, the "
+                f"scenario names {wanted!r}"
+            )
+        else:
+            report.passed(
+                f"run_metadata.json records the reference action the scenario names: {wanted}"
+            )
+
+    if metadata.reference_policy_version != expectation.reference_policy_version:
+        report.fail(
+            f"run_metadata.json reference_policy_version is {metadata.reference_policy_version!r}, "
+            f"the scenario states {expectation.reference_policy_version!r}"
+        )
 
     if not (metadata.vm_snapshot or "").strip():
         report.fail("run_metadata.json vm_snapshot is empty; r1.md section 6 records it per run")
@@ -806,6 +969,105 @@ def _verify_anchor(
     )
 
 
+def _stamp(moment: datetime) -> str:
+    return (
+        moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
+    )
+
+
+def _check_reference(
+    metadata: RunMetadata,
+    records: list[ExecutionRecordRow],
+    expectation: R1PilotExpectation,
+    rehearsal: bool,
+    report: R1PilotValidationReport,
+) -> None:
+    """Check that the reference of an attack run is the EID 1 of the session host of its lineage.
+
+    The lineage was found in the original JSONL by ProcessGuid, starting from the
+    final tool. Its last node is the session host the first action created, and
+    that record is what the reference has to name: its RecordId as
+    `reference_source_event_id` and its EventData.UtcTime as `reference_time`.
+    TimeCreated is not read. A run whose lineage was not established, or whose
+    reference fields are incomplete, was reported already and is not judged here.
+    """
+    if expectation.reference_action_id is None or report.lineage is None:
+        return
+    if any(getattr(metadata, name) is None for name in REFERENCE_FIELDS):
+        return
+    if metadata.reference_action_id != expectation.reference_action_id:
+        return
+
+    session = report.lineage.nodes[-1]
+    described = f"the EID 1 of the session host of this run ({session.key.process_guid})"
+    before = len(report.errors)
+
+    if session.record_id is None or metadata.reference_source_event_id != session.record_id:
+        report.fail(
+            f"run_metadata.json reference_source_event_id is "
+            f"{metadata.reference_source_event_id!r}, but {described} is RecordId "
+            f"{session.record_id!r}"
+        )
+
+    try:
+        recorded = datetime.strptime(session.event_utc_time or "", EVENT_UTC_FORMAT).replace(
+            tzinfo=UTC
+        )
+    except ValueError:
+        report.fail(
+            f"{described} carries no readable EventData.UtcTime ({session.event_utc_time!r}); "
+            "TimeCreated is not used in its place"
+        )
+        return
+    reference_time = metadata.reference_time
+    if reference_time != recorded:
+        report.fail(
+            f"run_metadata.json reference_time is {_stamp(reference_time)}, but the "
+            f"EventData.UtcTime of {described} is {session.event_utc_time}"
+        )
+
+    if len(report.errors) == before:
+        report.passed(
+            f"the reference of the run is the EID 1 of its session host: RecordId "
+            f"{session.record_id}, ProcessGuid {session.key.process_guid}, EventData.UtcTime "
+            f"{session.event_utc_time}"
+        )
+
+    # The session host is created by the reference action and exists before the
+    # next action runs in it.
+    by_action = [record.action_id for record in records]
+    if expectation.reference_action_id in by_action:
+        index = by_action.index(expectation.reference_action_id)
+        started = records[index].timestamp
+        if reference_time < started:
+            report.fail(
+                f"reference_time {_stamp(reference_time)} is earlier than the recorded start of "
+                f"{expectation.reference_action_id} ({_stamp(started)})"
+            )
+        if index + 1 < len(records) and reference_time > records[index + 1].timestamp:
+            report.fail(
+                f"reference_time {_stamp(reference_time)} is later than the next recorded action "
+                f"{records[index + 1].action_id} ({_stamp(records[index + 1].timestamp)})"
+            )
+
+    # The evaluation window of an attack run is its reference_time plus the
+    # horizon. A rehearsal does not wait and is not held to it.
+    horizon = expectation.evaluation_horizon_sec
+    if rehearsal or metadata.end_time is None:
+        return
+    observed = (metadata.end_time - reference_time).total_seconds()
+    if metadata.end_time < reference_time + timedelta(seconds=horizon):
+        report.fail(
+            f"end_time {_stamp(metadata.end_time)} is earlier than reference_time + {horizon} s: "
+            f"the collection observed {observed:.3f} s after the reference"
+        )
+    else:
+        report.passed(
+            f"the collection reached the evaluation horizon: end_time is {observed:.3f} s after "
+            f"reference_time, the horizon is {horizon} s"
+        )
+
+
 def validate_r1_pilot_run(
     *,
     artifact_root: Path,
@@ -813,12 +1075,17 @@ def validate_r1_pilot_run(
     scenario_path: Path,
     rehearsal: bool = False,
 ) -> R1PilotValidationReport:
-    """Validate one R1 Pilot run under `artifact_root` and report everything found.
+    """Validate one R1 run under `artifact_root` and report everything found.
 
     `scenario_path` is the scenario JSON that was rendered for this run. It holds
     the designed lineage and the injected destination and host, and it has to be
     the scenario the operator trace of the run records: the run is judged
     against no other.
+
+    The dataset tier is not an input. The scenario states the tier of its Pair,
+    and the run passes only when its operator trace states exactly that tier. A
+    scenario that states no tier validates nothing, and the scenario and the
+    trace of a rehearsal both have to say `pilot`.
     """
     report = R1PilotValidationReport(run_id=run_id, rehearsal=rehearsal)
 
@@ -890,7 +1157,25 @@ def validate_r1_pilot_run(
         )
         return report
 
-    trace = _check_run_trace(artifact_root, run_id, scenario_bytes, rehearsal, report)
+    # The tier a run is held to is the one its scenario states for the Pair. The
+    # caller gives none, and a scenario without one validates nothing. Neither
+    # does one whose run block states a tier or an identity of its own.
+    try:
+        scenario_tier = _load_dataset_tier(_parse_scenario(scenario_bytes))
+    except R1ScenarioError as error:
+        report.fail(f"scenario definition is not usable ({scenario_path}): {error}")
+        return report
+    report.scenario_dataset_tier = scenario_tier
+    if rehearsal and scenario_tier != REHEARSAL_TIER:
+        report.fail(
+            f"a rehearsal is not formal data: its scenario has to state dataset_tier "
+            f"{REHEARSAL_TIER!r}, this one states {scenario_tier!r}"
+        )
+        return report
+
+    trace = _check_run_trace(
+        artifact_root, run_id, scenario_bytes, rehearsal, scenario_tier, report
+    )
     if trace is None:
         return report
     report.trace = trace
@@ -906,6 +1191,7 @@ def validate_r1_pilot_run(
     _check_run_metadata(metadata, expectation, report)
     _check_actions(metadata, records, expectation, rehearsal, report)
     _check_lineage(jsonl_path, expectation, rehearsal, report)
+    _check_reference(metadata, records, expectation, rehearsal, report)
     return report
 
 
@@ -972,10 +1258,22 @@ def format_report(report: R1PilotValidationReport) -> str:
         "not judged here: whether the lineage is approved. The run was checked against its "
         "planned lineage; no approved lineage policy is read here"
     )
-    lines.append(
-        "not a formal run: only a run whose operator trace says dataset_tier=pilot is accepted "
-        "here, and a formal evaluation selector has to leave such a run out"
-    )
+    if report.trace is None:
+        lines.append(
+            "dataset tier: not established for this run, the operator trace was not accepted "
+            f"(the scenario states {report.scenario_dataset_tier!r})"
+        )
+    elif report.trace.dataset_tier == REHEARSAL_TIER:
+        lines.append(
+            "not a formal run: the scenario of its Pair and its operator trace say "
+            "dataset_tier=pilot, and a formal selector has to leave such a run out"
+        )
+    else:
+        lines.append(
+            "dataset tier: the scenario of the Pair and the operator trace both say "
+            f"dataset_tier={report.trace.dataset_tier}. Whether the Pair is selected as formal "
+            "data is not decided here (scenarios/R1/README.md section 1-3)"
+        )
     lines.append("")
     if report.ok:
         verdict = (
@@ -1025,6 +1323,7 @@ def write_report(
 
 
 __all__ = [
+    "DATASET_TIERS",
     "R1ObservedLineage",
     "R1PilotExpectation",
     "R1PilotValidationReport",

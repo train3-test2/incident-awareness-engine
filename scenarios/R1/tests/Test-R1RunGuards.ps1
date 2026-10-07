@@ -32,7 +32,12 @@
            UTF-16 and code-page stdout are read whether or not stderr carried
            anything, and a non-zero exit code, an empty or unreadable stdout, a
            missing config hash and a hash that is not the file's still stop the
-           run.
+           run,
+        8. the dataset tier of a Pair: read from the scenario like the identity,
+           refused when it is missing or unknown, never taken from a caller, and
+           written to the operator trace of both runs unchanged,
+        9. the reference of an attack run: which record is selected, when none
+           is, and that its time and the two bounds of its window are UTC.
 
         The repository has no PowerShell test harness, so this script is a plain
         runner: it prints one line per case and exits non-zero when any case fails.
@@ -43,7 +48,7 @@
         the same cases against a rendered scenarios/R1/scenario.yaml:
 
             python tools/r1_scenario_to_json.py scenarios/R1/scenario.yaml --out build/R1/scenario.json `
-                --repetition 1
+                --repetition 1 --dataset-tier pilot
             powershell -ExecutionPolicy Bypass -File scenarios\R1\tests\Test-R1RunGuards.ps1 `
                 -BaseScenarioJson build\R1\scenario.json
 
@@ -118,17 +123,19 @@ $script:BaseScenarioText = @'
   "family_id": "remote_management",
   "variation_id": "V02",
   "repetition": 1,
+  "dataset_tier": "pilot",
   "run_metadata": {
     "target_host": null,
     "sysmon_config_version": "sysmonconfig-sample-v0.1",
     "detector_set_version": null,
-    "reference_policy_version": null,
+    "reference_policy_version": "r1-ref-v0.1",
     "schema_versions": {
       "run_metadata": "v0.2", "event": "v0.3", "evidence": "v0.2", "fast_hit": "v0.2",
       "detection_result": "v0.2", "fusion_result": "v0.3", "decision_result": "v0.2",
       "execution_record": "v0.1", "evaluation_input": "v0.1"
     }
   },
+  "run_length": { "observation_sec": null, "evaluation_horizon_sec": 600 },
   "internal_connection": {
     "required": true, "target": null, "port": null, "protocol": "TCP",
     "lab_cidr": null, "max_attempts": 1
@@ -160,7 +167,7 @@ $script:BaseScenarioText = @'
       ]
     },
     "attack": {
-      "run_type": "attack", "reference_action_id": null,
+      "run_type": "attack", "reference_action_id": "A01",
       "actions": [
         { "action_id": "A01", "offset_sec": 0, "step": "session_begin", "action_type": "remote_session", "description": "open the remote session" },
         { "action_id": "A02", "offset_sec": 120, "step": "prepare", "action_type": "file_operation", "description": "common preparation" },
@@ -196,13 +203,17 @@ function New-ScenarioObject {
         [AllowNull()][string]$LabCidr = $TEST_LAB,
         [string]$FamilyId = $TEST_FAMILY,
         [string]$VariationId = $TEST_VARIATION,
-        [int]$Repetition = $TEST_REPETITION
+        [int]$Repetition = $TEST_REPETITION,
+        # The tier a renderer would write for the Pair. The cases that are not
+        # about the tier are rendered as pilot; the runner itself has no default.
+        [string]$DatasetTier = "pilot"
     )
 
     $scenario = $script:BaseScenarioText | ConvertFrom-Json
     $scenario.family_id = $FamilyId
     $scenario.variation_id = $VariationId
     $scenario.repetition = $Repetition
+    $scenario | Add-Member -NotePropertyName "dataset_tier" -NotePropertyValue $DatasetTier -Force
     $scenario.run_metadata.target_host = $null
     if (-not [string]::IsNullOrEmpty($TargetHost)) { $scenario.run_metadata.target_host = $TargetHost }
     $scenario.internal_connection.target = $null
@@ -244,6 +255,9 @@ function Reset-Fakes {
     $script:FakeCalls = New-Object System.Collections.Generic.List[string]
     $script:FakeArguments = @{}
     $script:FakeOptions = $Options
+    # When the session host of the scenario session was created on the fake
+    # target, in the form Sysmon writes a time. Set when that session answers.
+    $script:FakeSessionUtc = "2030-01-01 00:00:00.000"
 }
 
 function Get-FakeOption {
@@ -290,11 +304,13 @@ function New-SyntheticRecords {
         [AllowNull()][string]$DestinationPort = [string]$TEST_PORT,
         [AllowNull()]$Protocol = "tcp",
         [switch]$OmitProtocol,
-        [switch]$DuplicateFinal
+        [switch]$DuplicateFinal,
+        [string]$SessionUtcTime = "2030-01-01 00:00:00.000"
     )
 
     $records = New-Object System.Collections.Generic.List[object]
     $records.Add((New-SyntheticRecord 1 1 $Computer ([ordered]@{
+        UtcTime = $SessionUtcTime
         ProcessGuid = $SESSION_GUID; ProcessId = "4000"; Image = ("C:\synthetic\" + $SessionImage)
         ParentProcessGuid = $OUTSIDE_GUID; ParentProcessId = "700" })))
     $records.Add((New-SyntheticRecord 2 1 $Computer ([ordered]@{
@@ -367,7 +383,13 @@ function New-FakeTransport {
                 }
             }
             if ($Step -eq "begin") {
-                return @{ utc = (Get-FakeOption "BeginUtc" $utc); session_pid = 4000; computer_name = $TEST_HOST }
+                $script:FakeSessionUtc = $script:FakeNow.ToString("yyyy-MM-dd HH:mm:ss.fff")
+                return @{
+                    utc           = (Get-FakeOption "BeginUtc" $utc)
+                    session_pid   = 4000
+                    session_image = (Get-FakeOption "SessionImage" "C:\synthetic\wsmprovhost.exe")
+                    computer_name = $TEST_HOST
+                }
             }
             if ($Step -eq "prepare") { return @{ utc = $utc } }
             if ($Step -eq "launch") { return @{ utc = $utc; intermediate_pid = 4100; final_pid = 4200 } }
@@ -420,7 +442,9 @@ function New-FakeTransport {
                 -IntermediateImage (Get-FakeOption "TelemetryIntermediateImage" ([string]$script:FakeArguments["launch"].executable)) `
                 -ConnectionGuid (Get-FakeOption "ConnectionGuid" $FINAL_GUID) `
                 -DestinationIp $destinationIp -DestinationPort $destinationPort `
-                -Protocol (Get-FakeOption "TelemetryProtocol" "tcp")
+                -Protocol (Get-FakeOption "TelemetryProtocol" "tcp") `
+                -SessionUtcTime (Get-FakeOption "SessionUtcTime" $script:FakeSessionUtc)
+            $records = @($records) + @(Get-FakeOption "ExtraRecords" @())
 
             $lines = @($records | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 5 })
             $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -448,7 +472,8 @@ function Invoke-FakeRun {
     )
 
     return (Invoke-R1PilotRun -RunType $RunType -RunId $RunId -ScenarioJsonPath $ScenarioPath `
-        -DataRoot $DataRoot -WorkDir $WorkDir -ObservationSec $ObservationSec -VmSnapshot $VmSnapshot `
+        -DataRoot $DataRoot -WorkDir $WorkDir -ObservationSec $ObservationSec `
+        -VmSnapshot $VmSnapshot `
         -TargetSysmonBinary $TargetSysmonBinary -TargetSysmonConfigPath $TargetSysmonConfigPath `
         -Connection $Connection -Transport $Transport `
         -NowProvider $script:FakeNowProvider -Sleeper $script:FakeSleeper `
@@ -809,6 +834,103 @@ Assert-RefusedBeforeAnyCall "an empty run_id" {
 Assert-RefusedBeforeAnyCall "an unknown run type" {
     Invoke-FakeRun -RunType "other" -ScenarioPath $goodScenario -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
 } "*RunType must be one of*"
+ # The dataset tier belongs to the Pair. The rendered scenario states it once for
+ # both runs and the runner has no parameter for it: a scenario that states none,
+ # or one the runner does not know, is refused before anything is opened, in a
+ # dry run too, and the scenario of a rehearsal has to state pilot.
+function Save-ScenarioWithTier {
+    <# A rendered scenario whose dataset_tier is the given JSON value. -Omit leaves the field out. #>
+    param([AllowNull()]$Tier, [switch]$Omit)
+
+    $scenario = New-ScenarioObject
+    if ($Omit) {
+        $scenario.PSObject.Properties.Remove("dataset_tier")
+    } else {
+        $scenario.dataset_tier = $Tier
+    }
+    return (Save-Scenario $scenario)
+}
+
+$tierOmitted = Save-ScenarioWithTier -Omit
+$tierNull = Save-ScenarioWithTier -Tier $null
+$tierEmpty = Save-ScenarioWithTier -Tier ""
+foreach ($case in @(
+    @("a scenario that states no dataset tier", $tierOmitted),
+    @("a scenario whose dataset tier is null", $tierNull),
+    @("a scenario whose dataset tier is empty", $tierEmpty))) {
+    Assert-RefusedBeforeAnyCall $case[0] {
+        Invoke-FakeRun -ScenarioPath $case[1] -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
+    } "*dataset_tier is missing from the scenario*There is no default*--dataset-tier*"
+    Assert-RefusedBeforeAnyCall ("a dry run of " + $case[0]) {
+        Invoke-FakeRun -ScenarioPath $case[1] -DataRoot (New-TempRoot) -Transport $null -DryRun
+    } "*dataset_tier is missing from the scenario*"
+}
+foreach ($unknownTier in @("formal", "Pilot", "DEVELOPMENT", " development", "development ", "dev", "hold-out",
+        "pilot,development", "   ", 1, $true)) {
+    $unknownTierPath = Save-ScenarioWithTier -Tier $unknownTier
+    Assert-RefusedBeforeAnyCall ("a scenario with a dataset tier the runner does not know: '" + [string]$unknownTier + "'") {
+        Invoke-FakeRun -ScenarioPath $unknownTierPath -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
+    } "*dataset_tier must be one of pilot, development, holdout*"
+}
+Assert-RefusedBeforeAnyCall "a dry run of a scenario with a dataset tier the runner does not know" {
+    Invoke-FakeRun -ScenarioPath (Save-ScenarioWithTier -Tier "formal") -DataRoot (New-TempRoot) -Transport $null -DryRun
+} "*dataset_tier must be one of*"
+foreach ($formalTier in @("development", "holdout")) {
+    $formalTierPath = Save-ScenarioWithTier -Tier $formalTier
+    Assert-RefusedBeforeAnyCall ("a rehearsal of a scenario rendered as " + $formalTier) {
+        Invoke-FakeRun -ScenarioPath $formalTierPath -DataRoot (New-TempRoot) -Transport (New-FakeTransport) -Rehearsal
+    } "*a rehearsal is not formal data*dataset_tier pilot*"
+    Assert-RefusedBeforeAnyCall ("a dry run of a rehearsal of a scenario rendered as " + $formalTier) {
+        Invoke-FakeRun -ScenarioPath $formalTierPath -DataRoot (New-TempRoot) -Transport $null -Rehearsal -DryRun
+    } "*a rehearsal is not formal data*"
+}
+
+ # One tier for the Pair: a run block cannot state its own.
+foreach ($runType in @("normal", "attack")) {
+    $ownTier = New-ScenarioObject
+    $ownTier.runs.$runType | Add-Member -NotePropertyName "dataset_tier" -NotePropertyValue "holdout"
+    $ownTierPath = Save-Scenario $ownTier
+    Assert-RefusedBeforeAnyCall ("a " + $runType + " run block that states its own dataset tier") {
+        Invoke-FakeRun -RunType $runType -ScenarioPath $ownTierPath -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
+    } ("*runs." + $runType + " states dataset_tier; a Pair states it once at the top level*")
+}
+
+ # Nothing a caller passes can state or replace the tier: no function of the
+ # runner and neither run script has a parameter for it.
+$tierParameters = @(foreach ($name in @("Invoke-R1PilotRun", "Assert-R1RunInputs", "Write-R1RunTrace")) {
+    (Get-Command $name).Parameters.Keys | Where-Object { $_ -like "*Tier*" }
+})
+Assert-True "no function of the runner takes a dataset tier" ($tierParameters.Count -eq 0)
+foreach ($runType in @("normal", "attack")) {
+    $scriptParameters = (Get-Command (Join-Path $PSScriptRoot ("..\" + $runType + "\run.ps1"))).Parameters.Keys
+    Assert-True ($runType + "\run.ps1 has no dataset tier parameter") (
+        @($scriptParameters | Where-Object { $_ -like "*Tier*" }).Count -eq 0 -and
+        @($scriptParameters | Where-Object { $_ -eq "ScenarioJsonPath" }).Count -eq 1)
+}
+Assert-RefusedBeforeAnyCall "the dataset tier argument of the earlier interface is not accepted any more" {
+    Invoke-R1PilotRun -RunType "normal" -RunId "RUN-20300101-001" -ScenarioJsonPath $goodScenario `
+        -DataRoot (New-TempRoot) -WorkDir $TEST_WORK -ObservationSec 660 -DatasetTier "development" `
+        -VmSnapshot "synthetic-snapshot" -Transport (New-FakeTransport) -DryRun
+} "*DatasetTier*"
+
+ # A reference is only readable together with the policy it was taken under. A
+ # scenario whose attack run names a reference action has to state the version,
+ # for both runs of the Pair and before anything is opened. No value is fixed by
+ # the runner: any non-blank version is taken as the scenario states it.
+foreach ($blankPolicy in @($null, "", "   ", 7)) {
+    $noPolicy = New-ScenarioObject
+    $noPolicy.run_metadata.reference_policy_version = $blankPolicy
+    $noPolicyPath = Save-Scenario $noPolicy
+    foreach ($runType in @("attack", "normal")) {
+        Assert-RefusedBeforeAnyCall ("a " + $runType + " run of a scenario that names an attack reference and states the policy version '" + [string]$blankPolicy + "'") {
+            Invoke-FakeRun -RunType $runType -ScenarioPath $noPolicyPath -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
+        } "*run_metadata.reference_policy_version must be a non-blank string when runs.attack.reference_action_id is set*"
+    }
+    Assert-RefusedBeforeAnyCall ("a dry run of a scenario that names an attack reference and states the policy version '" + [string]$blankPolicy + "'") {
+        Invoke-FakeRun -RunType "attack" -ScenarioPath $noPolicyPath -DataRoot (New-TempRoot) -Transport $null -DryRun
+    } "*run_metadata.reference_policy_version must be a non-blank string*"
+}
+
 Assert-RefusedBeforeAnyCall "a missing scenario file" {
     Invoke-FakeRun -ScenarioPath (Join-Path (New-TempRoot) "absent.json") -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
 } "*scenario JSON not found*"
@@ -872,11 +994,45 @@ Assert-RefusedBeforeAnyCall "a scenario whose steps are out of order" {
     Invoke-FakeRun -ScenarioPath (Save-Scenario $reorderedScenario) -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
 } "*in that order*"
 
-$referenceScenario = New-ScenarioObject
-$referenceScenario.runs.attack.reference_action_id = "A01"
-Assert-RefusedBeforeAnyCall "a scenario that names a reference action" {
-    Invoke-FakeRun -RunType "attack" -ScenarioPath (Save-Scenario $referenceScenario) -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
-} "*records no reference action yet*"
+ # The reference action: an attack run names the action that opens the session,
+ # a normal run names none.
+$noReference = New-ScenarioObject
+$noReference.runs.attack.reference_action_id = $null
+Assert-RefusedBeforeAnyCall "an attack run whose scenario names no reference action" {
+    Invoke-FakeRun -RunType "attack" -ScenarioPath (Save-Scenario $noReference) -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
+} "*runs.attack.reference_action_id is missing*"
+$otherReference = New-ScenarioObject
+$otherReference.runs.attack.reference_action_id = "A03"
+Assert-RefusedBeforeAnyCall "an attack run whose reference action is not the one that opens the session" {
+    Invoke-FakeRun -RunType "attack" -ScenarioPath (Save-Scenario $otherReference) -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
+} "*must be the session_begin action A01, found 'A03'*"
+$normalReference = New-ScenarioObject
+$normalReference.runs.normal.reference_action_id = "N01"
+Assert-RefusedBeforeAnyCall "a normal run whose scenario names a reference action" {
+    Invoke-FakeRun -ScenarioPath (Save-Scenario $normalReference) -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
+} "*only an attack run records a reference*"
+Assert-RefusedBeforeAnyCall "a dry run of an attack run whose scenario names no reference action" {
+    Invoke-FakeRun -RunType "attack" -ScenarioPath (Save-Scenario $noReference) -DataRoot (New-TempRoot) -Transport $null -DryRun
+} "*runs.attack.reference_action_id is missing*"
+
+ # The evaluation horizon is a scenario value, and the window covers it.
+foreach ($badHorizon in @($null, 0, -1, "600")) {
+    $horizonScenario = New-ScenarioObject
+    $horizonScenario.run_length.evaluation_horizon_sec = $badHorizon
+    Assert-RefusedBeforeAnyCall ("a scenario whose evaluation horizon is '" + [string]$badHorizon + "'") {
+        Invoke-FakeRun -ScenarioPath (Save-Scenario $horizonScenario) -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
+    } "*evaluation_horizon_sec must be an integer of 1 or more*"
+}
+$noRunLength = New-ScenarioObject
+$noRunLength.PSObject.Properties.Remove("run_length")
+Assert-RefusedBeforeAnyCall "a scenario that states no run_length" {
+    Invoke-FakeRun -ScenarioPath (Save-Scenario $noRunLength) -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
+} "*evaluation_horizon_sec must be an integer of 1 or more*"
+$longHorizon = New-ScenarioObject
+$longHorizon.run_length.evaluation_horizon_sec = 700
+Assert-RefusedBeforeAnyCall "an observation window shorter than the evaluation horizon" {
+    Invoke-FakeRun -ScenarioPath (Save-Scenario $longHorizon) -DataRoot (New-TempRoot) -Transport (New-FakeTransport)
+} "*is shorter than the evaluation horizon of 700 s*"
 
 $encodedScenario = New-ScenarioObject
 $encodedScenario.planned_lineage.final_tool.arguments = @("-EncodedCommand", "{task_script}", "-ChannelDir", "{channel_dir}")
@@ -1040,6 +1196,10 @@ $dryRoot = New-TempRoot
 $dry = Invoke-FakeRun -RunType "attack" -ScenarioPath $goodScenario -DataRoot $dryRoot -Transport $null `
     -Connection $null -DryRun
 Assert-True "a dry run reports its mode" ($dry.mode -eq "dry_run")
+Assert-True "a dry run reports the dataset tier its scenario states" (
+    $dry.dataset_tier -ceq "pilot" -and
+    (Invoke-FakeRun -ScenarioPath (Save-Scenario (New-ScenarioObject -DatasetTier "development")) `
+        -DataRoot (New-TempRoot) -Transport $null -DryRun).dataset_tier -ceq "development")
 Assert-True "a dry run returns the plan it would execute" ($dry.plan.intermediate.executable -eq $attackImage)
 Assert-True "a dry run lists the actions in order" (($dry.actions -join ",") -eq "A01,A02,A03,A04,A05")
 Assert-True "a dry run reports the destination it validated" ($dry.connection.target -eq $TEST_TARGET)
@@ -1133,9 +1293,25 @@ foreach ($case in @(
         $metadata.scenario_id -eq "R1" -and $metadata.run_type -eq $case.type -and
         $metadata.target_host -eq $TEST_HOST -and $metadata.variation_id -eq "V02")
     Assert-True ($label + "run_metadata records the snapshot attestation") ($metadata.vm_snapshot -eq "synthetic-snapshot")
-    Assert-True ($label + "the reference fields stay null") (
-        $null -eq $metadata.reference_time -and $null -eq $metadata.reference_action_id -and
-        $null -eq $metadata.reference_source_event_id)
+    $metadataText = Get-Content -LiteralPath $metadataPath -Raw -Encoding UTF8
+    if ($case.type -eq "attack") {
+        Assert-True ($label + "run_metadata records the reference: the action that opens the session and the EID 1 of its session host") (
+            $metadata.reference_action_id -ceq "A01" -and
+            $metadataText -match '"reference_time":\s+"2030-01-01T00:00:00\.000Z"' -and
+            $metadataText -match '"reference_source_event_id":\s+"1"')
+        Assert-True ($label + "the result reports the same reference") (
+            $result.reference.reference_action_id -ceq "A01" -and
+            $result.reference.reference_time -ceq "2030-01-01T00:00:00.000Z" -and
+            $result.reference.reference_source_event_id -ceq "1")
+    } else {
+        Assert-True ($label + "the reference fields stay null") (
+            $null -eq $metadata.reference_time -and $null -eq $metadata.reference_action_id -and
+            $null -eq $metadata.reference_source_event_id -and
+            $metadataText -match '"reference_time":\s+null' -and $null -eq $result.reference.reference_time -and
+            $null -eq $result.reference.reference_action_id -and $null -eq $result.reference.reference_source_event_id)
+    }
+    Assert-True ($label + "run_metadata records the reference policy version the scenario states") (
+        $metadata.reference_policy_version -ceq "r1-ref-v0.1")
     Assert-True ($label + "start and end are the target's stamps around the window") (
         $metadata.start_time -eq "2030-01-01T00:00:00.000Z" -and $metadata.end_time -eq "2030-01-01T00:11:00.000Z")
     Assert-True ($label + "the actions are recorded in order") ((@($rows | ForEach-Object { $_.action_id }) -join ",") -eq $case.ids)
@@ -1291,6 +1467,52 @@ Assert-True "the pre-run check is told which log to read the recorded name from"
 
 Write-Host "`n=== operator trace ===" -ForegroundColor Cyan
 
+ # The tier the scenario of a Pair states is the tier the trace of a run records,
+ # for each of the three. Nothing but the scenario decides it.
+foreach ($tier in $R1_DATASET_TIERS) {
+    Reset-Fakes
+    $tierRoot = New-TempRoot
+    $tierRunId = "RUN-20300101-03" + [array]::IndexOf($R1_DATASET_TIERS, $tier)
+    $tierResult = Invoke-FakeRun -RunId $tierRunId -DataRoot $tierRoot `
+        -ScenarioPath (Save-Scenario (New-ScenarioObject -DatasetTier $tier)) -Transport (New-FakeTransport)
+    $tierTrace = Get-TraceOf -Root $tierRoot -RunId $tierRunId
+    Assert-True ("a collection run of a scenario rendered as " + $tier + " records " + $tier + " in its trace and reports it") (
+        $tierTrace.record.dataset_tier -ceq $tier -and $tierTrace.record.mode -ceq "collection" -and
+        $tierResult.dataset_tier -ceq $tier)
+    Assert-True ("the run_metadata of a " + $tier + " run carries no tier field: the trace is where it is recorded") (
+        $null -eq (Get-Content -LiteralPath (Join-Path $tierRoot ("ground_truth\" + $tierRunId + "\run_metadata.json")) -Raw |
+            ConvertFrom-Json).PSObject.Properties["dataset_tier"])
+}
+
+ # Both runs of a Pair read one rendered scenario, so they record one tier.
+$pairScenario = Save-Scenario (New-ScenarioObject -DatasetTier "development")
+$pairRoot = New-TempRoot
+Reset-Fakes
+Invoke-FakeRun -RunType "normal" -RunId "RUN-20300101-034" -DataRoot $pairRoot -ScenarioPath $pairScenario `
+    -Transport (New-FakeTransport) | Out-Null
+Reset-Fakes
+Invoke-FakeRun -RunType "attack" -RunId "RUN-20300101-035" -DataRoot $pairRoot -ScenarioPath $pairScenario `
+    -Transport (New-FakeTransport) | Out-Null
+$pairNormalTrace = (Get-TraceOf -Root $pairRoot -RunId "RUN-20300101-034").record
+$pairAttackTrace = (Get-TraceOf -Root $pairRoot -RunId "RUN-20300101-035").record
+Assert-True "the normal and the attack run of one rendered scenario record the same tier and the same scenario" (
+    $pairNormalTrace.dataset_tier -ceq "development" -and $pairAttackTrace.dataset_tier -ceq "development" -and
+    $pairNormalTrace.scenario_sha256 -ceq $pairAttackTrace.scenario_sha256 -and
+    $pairNormalTrace.scenario_sha256 -ceq (Get-FileSha256 $pairScenario))
+
+ # The policy version is the scenario's: whatever non-blank value it states is
+ # what both runs record, and the runner fixes none.
+$otherPolicy = New-ScenarioObject
+$otherPolicy.run_metadata.reference_policy_version = "synthetic-ref-v9"
+$otherPolicyPath = Save-Scenario $otherPolicy
+$otherPolicyRoot = New-TempRoot
+Reset-Fakes
+Invoke-FakeRun -RunType "attack" -RunId "RUN-20300101-036" -DataRoot $otherPolicyRoot -ScenarioPath $otherPolicyPath `
+    -Transport (New-FakeTransport) | Out-Null
+Assert-True "an attack run records the policy version its scenario states, whichever it is" (
+    (Get-Content -LiteralPath (Join-Path $otherPolicyRoot "ground_truth\RUN-20300101-036\run_metadata.json") -Raw |
+        ConvertFrom-Json).reference_policy_version -ceq "synthetic-ref-v9")
+
  # The scenario is read once. A file replaced after that changes neither what
  # the run does nor what its trace keeps.
 $readOnceScenario = Save-Scenario (New-ScenarioObject)
@@ -1332,13 +1554,31 @@ Assert-RefusedBeforeAnyCall "a rehearsal whose run_id already has a rehearsal tr
     Invoke-FakeRun -ScenarioPath $goodScenario -DataRoot $rehearsedRoot -Transport (New-FakeTransport) -Rehearsal
 } "*already has an operator trace*"
 
+ # The tier is read again where the trace is written, from the scenario and from
+ # nowhere else, so no caller can leave a trace with a tier its scenario does not
+ # state, and nothing is created for a scenario whose tier the runner refuses.
+$unknownTierRoot = New-TempRoot
+$traceScenario = ConvertTo-RenderedScenario (New-ScenarioObject)
+Assert-Throws "a trace is never written for a scenario with a tier the runner does not know" {
+    Write-R1RunTrace -EffectiveRoot $unknownTierRoot -RunId "RUN-20300101-042" -Mode "collection" `
+        -Scenario (ConvertTo-RenderedScenario (New-ScenarioObject -DatasetTier "formal")) `
+        -ScenarioBytes ([byte[]](1, 2, 3)) -ScenarioSha256 ("ab" * 32)
+} "*dataset_tier must be one of*"
+Assert-Throws "a rehearsal trace is never written for a scenario of a formal pool" {
+    Write-R1RunTrace -EffectiveRoot $unknownTierRoot -RunId "RUN-20300101-043" -Mode "rehearsal" `
+        -Scenario (ConvertTo-RenderedScenario (New-ScenarioObject -DatasetTier "development")) `
+        -ScenarioBytes ([byte[]](1, 2, 3)) -ScenarioSha256 ("ab" * 32)
+} "*a rehearsal is not formal data*"
+Assert-True "a refused tier leaves no trace directory behind" (
+    @(Get-ChildItem -LiteralPath $unknownTierRoot -Recurse -Force -ErrorAction SilentlyContinue).Count -eq 0)
+
  # Each of the two files is created, never replaced.
 $onceRoot = New-TempRoot
 $onceDir = Write-R1RunTrace -EffectiveRoot $onceRoot -RunId "RUN-20300101-041" -Mode "collection" `
-    -ScenarioBytes ([byte[]](1, 2, 3)) -ScenarioSha256 ("ab" * 32)
+    -Scenario $traceScenario -ScenarioBytes ([byte[]](1, 2, 3)) -ScenarioSha256 ("ab" * 32)
 Assert-Throws "a second trace for the same run_id is refused" {
     Write-R1RunTrace -EffectiveRoot $onceRoot -RunId "RUN-20300101-041" -Mode "collection" `
-        -ScenarioBytes ([byte[]](9, 9, 9)) -ScenarioSha256 ("cd" * 32)
+        -Scenario $traceScenario -ScenarioBytes ([byte[]](9, 9, 9)) -ScenarioSha256 ("cd" * 32)
 } "*already has an operator trace*"
 Assert-Throws "an existing file is never replaced" {
     Write-R1NewFile -Path (Join-Path $onceDir "scenario.json") -Bytes ([byte[]](9, 9, 9))
@@ -1547,6 +1787,253 @@ $approvalWithoutProtocol = [ordered]@{ target = $TEST_TARGET; port = $TEST_PORT 
 Assert-True "mismatched: an approval that states no protocol accepts no record" (
     (Invoke-Lineage (New-SyntheticRecords -OmitProtocol) -Approval $approvalWithoutProtocol).status -eq "mismatched" -and
     (Invoke-Lineage (New-SyntheticRecords) -Approval $approvalWithoutProtocol).status -eq "mismatched")
+
+ # ---------------------------------------------------------------------------
+ # 8b. The reference of an attack run
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== reference of an attack run ===" -ForegroundColor Cyan
+
+ # The session host of the run in the synthetic records: process id 4000, created
+ # at 00:00:00.000, RecordId 1. The session was opened between the two bounds.
+$REFERENCE_FROM = [datetime]::new(2030, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+$REFERENCE_TO = $REFERENCE_FROM.AddSeconds(1)
+
+function New-SessionHostRecord {
+    <# Another EID 1 of the session host image, as the session of another step would leave it. #>
+    param([int]$RecordId, [string]$UtcTime, [string]$ProcessId = "4000",
+        [string]$Guid = "{00000000-0000-0000-0000-000000009000}", [string]$Image = "wsmprovhost.exe",
+        [string]$Computer = $TEST_HOST)
+
+    return (New-SyntheticRecord $RecordId 1 $Computer ([ordered]@{
+        UtcTime = $UtcTime; ProcessGuid = $Guid; ProcessId = $ProcessId; Image = ("C:\synthetic\" + $Image)
+        ParentProcessGuid = $OUTSIDE_GUID; ParentProcessId = "700" }))
+}
+
+function Invoke-Reference {
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Records,
+        [string]$SessionImage = "C:\synthetic\wsmprovhost.exe", [string]$SessionHostGuid = $SESSION_GUID,
+        [datetime]$NotBefore = $REFERENCE_FROM, [datetime]$NotAfter = $REFERENCE_TO)
+
+    return (Get-R1ReferenceEvent -Records (ConvertTo-ParsedRecords $Records) -ComputerName $TEST_HOST `
+        -SessionPid 4000 -SessionImage $SessionImage -ExpectedImage "wsmprovhost.exe" `
+        -NotBefore $NotBefore -NotAfter $NotAfter -SessionHostGuid $SessionHostGuid)
+}
+
+function Invoke-FakeRunOrNull {
+    <# A run that is expected to succeed, or $null when it threw, so that the case fails by its name. #>
+    param([Parameter(Mandatory = $true)][hashtable]$Arguments)
+
+    try {
+        return (Invoke-FakeRun @Arguments)
+    } catch {
+        Write-Host ("       the run threw: " + $_.Exception.Message) -ForegroundColor Yellow
+        return $null
+    }
+}
+
+$selected = Invoke-Reference (New-SyntheticRecords)
+Assert-True "selected: the one EID 1 of the session host in the window is the reference" (
+    $selected.status -eq "selected" -and $selected.reference_time -ceq "2030-01-01T00:00:00.000Z" -and
+    $selected.reference_source_event_id -ceq "1" -and $selected.reference_source_event_id -is [string] -and
+    $selected.process_guid -eq $SESSION_GUID)
+
+ # Sessions of other steps leave the same image on the same target. They are not
+ # the session of the run, whatever their process id.
+$withOtherSessions = @(New-SyntheticRecords) + @(
+    (New-SessionHostRecord 20 "2029-12-31 23:59:58.000" -Guid "{00000000-0000-0000-0000-000000009001}"),
+    (New-SessionHostRecord 21 "2030-01-01 00:11:00.000" -Guid "{00000000-0000-0000-0000-000000009002}"),
+    (New-SessionHostRecord 22 "2030-01-01 00:00:00.500" -ProcessId "5555" -Guid "{00000000-0000-0000-0000-000000009003}"),
+    (New-SessionHostRecord 23 "2030-01-01 00:00:00.500" -Image "cmd.exe" -Guid "{00000000-0000-0000-0000-000000009004}"),
+    (New-SessionHostRecord 24 "2030-01-01 00:00:00.500" -Computer "OTHER-HOST" -Guid "{00000000-0000-0000-0000-000000009005}"))
+$amongOthers = Invoke-Reference $withOtherSessions
+Assert-True "a session host with the same process id before the action or after the session was open is not a candidate" (
+    $amongOthers.status -eq "selected" -and $amongOthers.reference_source_event_id -ceq "1")
+Assert-True "another process id, another image and another host are not candidates either" (
+    $amongOthers.process_guid -eq $SESSION_GUID)
+
+$bounds = @(New-SyntheticRecords -SessionUtcTime "2030-01-01 00:00:01.000")
+Assert-True "the two bounds of the window are part of it" (
+    (Invoke-Reference $bounds).status -eq "selected" -and
+    (Invoke-Reference (New-SyntheticRecords -SessionUtcTime "2030-01-01 00:00:01.001")).status -eq "undetermined" -and
+    (Invoke-Reference (New-SyntheticRecords -SessionUtcTime "2029-12-31 23:59:59.999")).status -eq "undetermined")
+
+$none = Invoke-Reference (New-SyntheticRecords -SessionUtcTime "2030-01-01 00:05:00.000")
+Assert-True "undetermined: no record of the session host in the window" (
+    $none.status -eq "undetermined" -and $none.reason -like "no EID 1 of wsmprovhost.exe with the session process id 4000*" -and
+    $null -eq $none.reference_time -and $null -eq $none.reference_source_event_id)
+
+ # The process id decides nothing on its own: a reused id gives two records, and
+ # which one is the session is not guessed.
+$reused = @(New-SyntheticRecords) + @((New-SessionHostRecord 30 "2030-01-01 00:00:00.700"))
+$twice = Invoke-Reference $reused
+Assert-True "undetermined: two records fit the session (a reused process id)" (
+    $twice.status -eq "undetermined" -and $twice.reason -like "2 EID 1 records*exactly one is the session of this run")
+
+$otherGuid = Invoke-Reference (New-SyntheticRecords) -SessionHostGuid "{00000000-0000-0000-0000-00000000ffff}"
+Assert-True "undetermined: the record that fits is not the session host of the lineage of the run" (
+    $otherGuid.status -eq "undetermined" -and $otherGuid.reason -like "*but the session host of the lineage of this run is*")
+Assert-True "without a lineage the record is still found by what the session reported (a rehearsal)" (
+    (Invoke-Reference (New-SyntheticRecords) -SessionHostGuid "").status -eq "selected")
+
+foreach ($unreadable in @("", "not-a-time", "2030-01-01T00:00:00.000Z", "2030-01-01 00:00:00")) {
+    $badTime = @(New-SyntheticRecords -SessionUtcTime $unreadable)
+    $badTime[0].TimeCreated = "2030-01-01T00:00:00.000Z"
+    $noTime = Invoke-Reference $badTime
+    Assert-True ("undetermined: UtcTime '" + $unreadable + "' cannot be read, and TimeCreated does not replace it") (
+        $noTime.status -eq "undetermined" -and $noTime.reason -like "*TimeCreated is not used in its place*" -and
+        $null -eq $noTime.reference_time)
+}
+$missingTime = @(New-SyntheticRecords)
+$missingTime[0].EventData.Remove("UtcTime")
+Assert-True "undetermined: the record has no UtcTime field" (
+    (Invoke-Reference $missingTime).status -eq "undetermined")
+
+$noGuid = @(New-SyntheticRecords)
+$noGuid[0].EventData.ProcessGuid = ""
+Assert-True "undetermined: the record carries no ProcessGuid" (
+    (Invoke-Reference $noGuid -SessionHostGuid "").reason -like "*carries no ProcessGuid*")
+$noRecordId = @(New-SyntheticRecords)
+$noRecordId[0].Remove("RecordId")
+Assert-True "undetermined: the record carries no RecordId" (
+    (Invoke-Reference $noRecordId).reason -like "*carries no usable RecordId*")
+
+ # Every time of a reference is UTC. The parser of EventData.UtcTime and the two
+ # bounds of the window are strict today; the cases below pin that down, so that
+ # a value read as local time, left without a kind or carrying an offset cannot
+ # slip in later. They hold in whatever time zone the guards run.
+ # Nothing below checks a DateTime this file built. A run is executed and what
+ # its own code produced is looked at: the two bounds Invoke-R1PilotRun hands to
+ # the selection (the recorded start of the first action and the stamp Target-A
+ # took once the session existed), and the DateTime the parser of
+ # Get-R1ReferenceEvent gave the record it selected. Both functions are wrapped
+ # for the length of that one run and call the originals unchanged.
+$UTC_KIND = [System.DateTimeKind]::Utc
+$stampOriginal = ${function:Get-UtcStamp}
+$referenceOriginal = ${function:Get-R1ReferenceEvent}
+$script:ReferenceBounds = $null
+$script:ReferenceStamps = New-Object System.Collections.Generic.List[datetime]
+$script:InsideReference = $false
+function Get-UtcStamp {
+    param([datetime]$Value)
+    # The selection stamps its two bounds and then the time of the record it chose.
+    if ($script:InsideReference) { $script:ReferenceStamps.Add($Value) }
+    return (& $stampOriginal $Value)
+}
+function Get-R1ReferenceEvent {
+    param($Records, $ComputerName, $SessionPid, $SessionImage, $ExpectedImage,
+        [datetime]$NotBefore, [datetime]$NotAfter, $SessionHostGuid)
+
+    $script:ReferenceBounds = @{ NotBefore = $NotBefore; NotAfter = $NotAfter }
+    $script:InsideReference = $true
+    try {
+        return (& $referenceOriginal -Records $Records -ComputerName $ComputerName -SessionPid $SessionPid `
+            -SessionImage $SessionImage -ExpectedImage $ExpectedImage -NotBefore $NotBefore -NotAfter $NotAfter `
+            -SessionHostGuid $SessionHostGuid)
+    } finally {
+        $script:InsideReference = $false
+    }
+}
+try {
+    # The session host is created 250 ms after the action and the session answers
+    # 400 ms after it. The record carries a TimeCreated that is neither.
+    Reset-Fakes @{ BeginUtc = "2030-01-01T00:00:00.400Z"; SessionUtcTime = "2030-01-01 00:00:00.250" }
+    $boundRun = Invoke-FakeRunOrNull @{ RunType = "attack"; RunId = "RUN-20300101-061"; ScenarioPath = $goodScenario
+        DataRoot = (New-TempRoot); Transport = (New-FakeTransport) }
+} finally {
+    Set-Item -Path function:Get-UtcStamp -Value $stampOriginal
+    Set-Item -Path function:Get-R1ReferenceEvent -Value $referenceOriginal
+}
+Assert-True "the lower bound of a run, the recorded start of its first action, is a UTC DateTime" (
+    $null -ne $script:ReferenceBounds -and $script:ReferenceBounds.NotBefore.Kind -eq $UTC_KIND -and
+    $script:ReferenceBounds.NotBefore.Ticks -eq [datetime]::new(2030, 1, 1, 0, 0, 0, $UTC_KIND).Ticks)
+Assert-True "the upper bound of a run, the stamp taken once the session existed, is a UTC DateTime" (
+    $null -ne $script:ReferenceBounds -and $script:ReferenceBounds.NotAfter.Kind -eq $UTC_KIND -and
+    $script:ReferenceBounds.NotAfter.Ticks -eq [datetime]::new(2030, 1, 1, 0, 0, 0, 400, $UTC_KIND).Ticks)
+Assert-True "the time the parser of the runner gave the selected record in that run is a UTC DateTime" (
+    $script:ReferenceStamps.Count -eq 3 -and $script:ReferenceStamps[2].Kind -eq $UTC_KIND -and
+    $script:ReferenceStamps[2].Ticks -eq [datetime]::new(2030, 1, 1, 0, 0, 0, 250, $UTC_KIND).Ticks)
+Assert-True "that run records the EventData.UtcTime between the two bounds as its reference_time, not TimeCreated" (
+    $null -ne $boundRun -and $boundRun.reference.reference_time -ceq "2030-01-01T00:00:00.250Z" -and
+    $boundRun.reference.reference_source_event_id -ceq "1")
+Assert-True "the two functions are the ones of the runner again" (
+    (Get-UtcStamp ([datetime]::new(2030, 1, 1, 0, 0, 0, $UTC_KIND))) -ceq "2030-01-01T00:00:00.000Z" -and
+    $script:ReferenceStamps.Count -eq 3 -and (Invoke-Reference (New-SyntheticRecords)).status -eq "selected" -and
+    $script:ReferenceStamps.Count -eq 3)
+
+ # A time with an offset or without the UTC designator is not converted: it is
+ # refused where it is read.
+foreach ($offsetTime in @("2030-01-01 09:00:00.000+09:00", "2030-01-01 00:00:00.000Z", "2030-01-01 00:00:00.000 +00:00")) {
+    Assert-True ("undetermined: an EventData.UtcTime that carries an offset or a designator is not read: '" + $offsetTime + "'") (
+        (Invoke-Reference (New-SyntheticRecords -SessionUtcTime $offsetTime)).status -eq "undetermined")
+}
+foreach ($notUtcStamp in @("2030-01-01T09:00:00.400+09:00", "2030-01-01T00:00:00.400", "2030-01-01 00:00:00.400Z")) {
+    Assert-FailedRun ("an attack run whose session stamp is not strict UTC: '" + $notUtcStamp + "'") `
+        @{ BeginUtc = $notUtcStamp } "*begin utc must be ISO 8601 UTC ending in 'Z'*" "attack" `
+        "open,invoke:probe,close,open,invoke:begin,close"
+}
+
+$otherImage = Invoke-Reference (New-SyntheticRecords) -SessionImage "C:\synthetic\other.exe"
+Assert-True "undetermined: the session reported another image than the scenario expects" (
+    $otherImage.status -eq "undetermined" -and $otherImage.reason -like "the session reported the image 'other.exe'*")
+
+ # In a run: an attack run without its reference writes no Ground Truth.
+Assert-FailedRun "an attack run whose session host record is not in the collected window" `
+    @{ SessionUtcTime = "2030-01-01 00:05:00.000" } "*reference undetermined: no EID 1 of wsmprovhost.exe*" "attack"
+Assert-FailedRun "an attack run with two records that fit its session" `
+    @{ ExtraRecords = @((New-SessionHostRecord 30 "2030-01-01 00:00:00.000")) } `
+    "*reference undetermined: 2 EID 1 records*" "attack"
+Assert-FailedRun "an attack run whose session host record has no readable UtcTime" `
+    @{ SessionUtcTime = "not-a-time" } "*TimeCreated is not used in its place*" "attack"
+Assert-FailedRun "an attack run whose session reports another image" `
+    @{ SessionImage = "C:\synthetic\other.exe" } "*reference undetermined: the session reported the image*" "attack"
+
+ # A normal run takes no reference, so the same telemetry does not stop it.
+Reset-Fakes @{ SessionUtcTime = "not-a-time" }
+$normalWithoutSessionTime = Invoke-FakeRunOrNull @{ RunId = "RUN-20300101-051"; ScenarioPath = $goodScenario
+    DataRoot = (New-TempRoot); Transport = (New-FakeTransport) }
+Assert-True "a normal run is not stopped by a session host record without a readable time" (
+    $null -ne $normalWithoutSessionTime -and $normalWithoutSessionTime.lineage.status -eq "matched" -and
+    $null -eq $normalWithoutSessionTime.reference.reference_time)
+
+ # The collection of an attack run has to reach reference_time plus the horizon.
+ # The session below was open 30 s after its action, and its host was created then.
+$late = @{ BeginUtc = "2030-01-01T00:00:30.000Z"; SessionUtcTime = "2030-01-01 00:00:30.000" }
+Reset-Fakes $late
+$shortRoot = New-TempRoot
+Assert-Throws "an attack run that ends before reference_time plus the horizon is refused" {
+    Invoke-FakeRun -RunType "attack" -RunId "RUN-20300101-052" -ObservationSec 600 -ScenarioPath $goodScenario `
+        -DataRoot $shortRoot -Transport (New-FakeTransport)
+} "*the collection ended at 2030-01-01T00:10:00.000Z, before reference_time + 600 s (2030-01-01T00:10:30.000Z)*"
+Assert-True "an attack run that ends before the horizon - no execution_record, run_metadata or manifest" (
+    Test-SuccessArtifactsAbsent -Root $shortRoot -RunId "RUN-20300101-052")
+Reset-Fakes
+$atHorizon = Invoke-FakeRunOrNull @{ RunType = "attack"; RunId = "RUN-20300101-053"; ObservationSec = 600
+    ScenarioPath = $goodScenario; DataRoot = (New-TempRoot); Transport = (New-FakeTransport) }
+Assert-True "an attack run that ends exactly at reference_time plus the horizon is accepted" (
+    $null -ne $atHorizon -and $atHorizon.reference.reference_time -ceq "2030-01-01T00:00:00.000Z" -and
+    $atHorizon.lineage.status -eq "matched")
+Reset-Fakes $late
+$normalShort = Invoke-FakeRunOrNull @{ RunId = "RUN-20300101-054"; ObservationSec = 600
+    ScenarioPath = $goodScenario; DataRoot = (New-TempRoot); Transport = (New-FakeTransport) }
+Assert-True "a normal run has no reference_time and is not held to a horizon from one" (
+    $null -ne $normalShort -and $normalShort.lineage.status -eq "matched" -and
+    $null -eq $normalShort.reference.reference_time)
+
+ # A rehearsal does not wait, so it is not held to the horizon. Its attack run
+ # still records its reference.
+Reset-Fakes
+$rehearsedAttackRoot = New-TempRoot
+$rehearsedAttack = Invoke-FakeRunOrNull @{ RunType = "attack"; RunId = "RUN-20300101-055"; Rehearsal = $true
+    ScenarioPath = $goodScenario; DataRoot = $rehearsedAttackRoot; Transport = (New-FakeTransport) }
+$rehearsedMetadataPath = Join-Path $rehearsedAttackRoot "_rehearsal\ground_truth\RUN-20300101-055\run_metadata.json"
+$rehearsedMetadata = ""
+if (Test-Path -LiteralPath $rehearsedMetadataPath) {
+    $rehearsedMetadata = Get-Content -LiteralPath $rehearsedMetadataPath -Raw -Encoding UTF8
+}
+Assert-True "a rehearsal of an attack run records its reference and is not held to the horizon" (
+    $null -ne $rehearsedAttack -and $rehearsedAttack.reference.reference_source_event_id -ceq "1" -and
+    $rehearsedMetadata -match '"reference_action_id":\s+"A01"' -and $script:SleepCalls.Count -eq 0)
 
  # ---------------------------------------------------------------------------
  # 9. Rehearsal

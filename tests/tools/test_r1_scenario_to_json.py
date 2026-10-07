@@ -20,6 +20,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from incident_awareness.collection.r1_pair_identity import (
+    DATASET_TIERS,
     LABEL_WORDS,
     R1PairIdentity,
     R1PairIdentityError,
@@ -27,12 +28,14 @@ from incident_awareness.collection.r1_pair_identity import (
 from incident_awareness.collection.r1_pilot_validation import load_r1_pilot_expectation
 from tools import r1_scenario_to_json as renderer
 from tools.r1_scenario_to_json import (
+    DATASET_TIER_KEY,
     IDENTITY_KEYS,
     RUN_TYPES,
     STEP_ORDER,
     apply_run_inputs,
     is_encoded_option,
     load_r1_scenario,
+    require_dataset_tier,
     require_pair_identity,
     validate_target_host,
 )
@@ -194,14 +197,22 @@ def test_canonical_scenario_keeps_every_run_input_null() -> None:
     assert scenario["run_length"]["observation_sec"] is None
 
 
-def test_canonical_scenario_records_no_reference_and_no_frozen_comparator() -> None:
+def test_canonical_scenario_names_the_reference_of_the_attack_run_only() -> None:
     scenario = _load_canonical()
 
-    assert [scenario["runs"][run_type]["reference_action_id"] for run_type in RUN_TYPES] == [
-        None,
-        None,
-    ]
-    assert scenario["run_metadata"]["reference_policy_version"] is None
+    # The attack run takes its reference from the action that opens the session; the
+    # normal run records none (r1.md section 4-2).
+    assert scenario["runs"]["normal"]["reference_action_id"] is None
+    attack = scenario["runs"]["attack"]
+    assert attack["reference_action_id"] == attack["actions"][0]["action_id"] == "A01"
+    assert attack["actions"][0]["step"] == "session_begin"
+    assert scenario["run_metadata"]["reference_policy_version"] == "r1-ref-v0.1"
+    assert scenario["run_length"]["evaluation_horizon_sec"] == 600
+
+
+def test_canonical_scenario_records_no_frozen_comparator() -> None:
+    scenario = _load_canonical()
+
     assert scenario["run_metadata"]["detector_set_version"] is None
     assert scenario["decisive_comparator"] == {"required": True, "frozen_version": None}
 
@@ -315,6 +326,34 @@ def _no_lineage(scenario: dict) -> None:
     del scenario["planned_lineage"]
 
 
+def _attack_without_reference(scenario: dict) -> None:
+    scenario["runs"]["attack"]["reference_action_id"] = None
+
+
+def _attack_reference_on_another_action(scenario: dict) -> None:
+    scenario["runs"]["attack"]["reference_action_id"] = "A03"
+
+
+def _normal_with_reference(scenario: dict) -> None:
+    scenario["runs"]["normal"]["reference_action_id"] = "N01"
+
+
+def _no_horizon(scenario: dict) -> None:
+    del scenario["run_length"]["evaluation_horizon_sec"]
+
+
+def _zero_horizon(scenario: dict) -> None:
+    scenario["run_length"]["evaluation_horizon_sec"] = 0
+
+
+def _horizon_as_text(scenario: dict) -> None:
+    scenario["run_length"]["evaluation_horizon_sec"] = "600"
+
+
+def _no_run_length(scenario: dict) -> None:
+    del scenario["run_length"]
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -338,6 +377,13 @@ def _no_lineage(scenario: dict) -> None:
         _offsets_going_backwards,
         _other_scenario_id,
         _no_lineage,
+        _attack_without_reference,
+        _attack_reference_on_another_action,
+        _normal_with_reference,
+        _no_horizon,
+        _zero_horizon,
+        _horizon_as_text,
+        _no_run_length,
     ],
 )
 def test_scenario_breaking_a_pilot_rule_is_refused(
@@ -465,6 +511,7 @@ def test_both_runs_read_the_same_injected_destination(tmp_path: Path) -> None:
         internal_port=INTERNAL_PORT,
         lab_cidr=LAB_CIDR,
         repetition=1,
+        dataset_tier="pilot",
     )
     out = render_json(rendered, tmp_path / "scenario.json")
 
@@ -597,6 +644,8 @@ def test_cli_renders_the_injected_values(tmp_path: Path, monkeypatch: pytest.Mon
             LAB_CIDR,
             "--repetition",
             "1",
+            "--dataset-tier",
+            "pilot",
         ],
     )
 
@@ -628,6 +677,8 @@ def test_cli_writes_nothing_for_a_global_destination(
             str(INTERNAL_PORT),
             "--lab-cidr",
             LAB_CIDR,
+            "--dataset-tier",
+            "pilot",
         ],
     )
 
@@ -779,6 +830,7 @@ def test_both_runs_of_a_pair_read_the_same_identity(tmp_path: Path) -> None:
         _load_stating(tmp_path, family_id="family_x7", variation_id="V09"),
         target_host=TARGET_HOST,
         repetition=4,
+        dataset_tier="pilot",
     )
     out = render_json(rendered, tmp_path / "scenario.json")
 
@@ -835,7 +887,16 @@ def test_cli_does_not_render_a_scenario_without_a_repetition(
 ) -> None:
     out = tmp_path / "build" / "scenario.json"
     monkeypatch.setattr(
-        sys, "argv", ["r1_scenario_to_json.py", str(CANONICAL_SCENARIO), "--out", str(out)]
+        sys,
+        "argv",
+        [
+            "r1_scenario_to_json.py",
+            str(CANONICAL_SCENARIO),
+            "--out",
+            str(out),
+            "--dataset-tier",
+            "pilot",
+        ],
     )
 
     with pytest.raises(R1PairIdentityError, match="--repetition"):
@@ -857,7 +918,16 @@ def test_cli_renders_the_identity_of_the_scenario_with_the_given_repetition(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["r1_scenario_to_json.py", str(scenario_path), "--out", str(out), "--repetition", "3"],
+        [
+            "r1_scenario_to_json.py",
+            str(scenario_path),
+            "--out",
+            str(out),
+            "--repetition",
+            "3",
+            "--dataset-tier",
+            "pilot",
+        ],
     )
 
     assert renderer.main() == 0
@@ -895,6 +965,8 @@ def test_cli_refuses_the_removed_family_and_variation_options(
             str(out),
             "--repetition",
             "1",
+            "--dataset-tier",
+            "pilot",
             *removed,
         ],
     )
@@ -1154,7 +1226,16 @@ def test_cli_writes_nothing_for_a_repeated_key(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["r1_scenario_to_json.py", str(scenario_path), "--out", str(out), "--repetition", "1"],
+        [
+            "r1_scenario_to_json.py",
+            str(scenario_path),
+            "--out",
+            str(out),
+            "--repetition",
+            "1",
+            "--dataset-tier",
+            "pilot",
+        ],
     )
 
     with pytest.raises(ValueError, match="duplicate key 'attack'"):
@@ -1162,3 +1243,215 @@ def test_cli_writes_nothing_for_a_repeated_key(
 
     assert not out.exists()
     assert not out.parent.exists()
+
+
+# ---------------------------------------------------------------------------
+# Dataset tier: given once for the Pair when the scenario is rendered
+# ---------------------------------------------------------------------------
+
+
+def _cli_argv(scenario_path: Path, out: Path, *extra: str) -> list[str]:
+    return [
+        "r1_scenario_to_json.py",
+        str(scenario_path),
+        "--out",
+        str(out),
+        "--repetition",
+        "1",
+        *extra,
+    ]
+
+
+def test_canonical_scenario_states_no_dataset_tier() -> None:
+    scenario = _load_canonical()
+
+    assert DATASET_TIER_KEY in scenario
+    assert scenario[DATASET_TIER_KEY] is None
+
+
+@pytest.mark.parametrize("tier", DATASET_TIERS)
+def test_cli_writes_the_given_tier_once_at_the_top_level(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tier: str,
+) -> None:
+    out = tmp_path / "build" / "scenario.json"
+    monkeypatch.setattr(sys, "argv", _cli_argv(CANONICAL_SCENARIO, out, "--dataset-tier", tier))
+
+    assert renderer.main() == 0
+
+    # Then: it is the tier of the Pair - stated once, and no run block has one of its own
+    text = out.read_text(encoding="utf-8")
+    rendered = json.loads(text)
+    assert rendered[DATASET_TIER_KEY] == tier
+    assert text.count('"dataset_tier"') == 1
+    assert all(DATASET_TIER_KEY not in rendered["runs"][run_type] for run_type in RUN_TYPES)
+    assert f"dataset_tier={tier}" in capsys.readouterr().out
+
+
+def test_cli_does_not_render_without_a_dataset_tier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "build" / "scenario.json"
+    monkeypatch.setattr(sys, "argv", _cli_argv(CANONICAL_SCENARIO, out))
+
+    # The option has no default: the parser stops before anything is loaded or written.
+    with pytest.raises(SystemExit) as stopped:
+        renderer.main()
+
+    assert stopped.value.code == 2
+    assert "--dataset-tier" in capsys.readouterr().err
+    assert not out.exists()
+    assert not out.parent.exists()
+
+
+@pytest.mark.parametrize(
+    "tier",
+    [
+        "Pilot",
+        "DEVELOPMENT",
+        " pilot",
+        "pilot ",
+        "",
+        "   ",
+        "formal",
+        "dev",
+        "hold-out",
+        "pilot,holdout",
+    ],
+)
+def test_cli_refuses_a_tier_that_is_not_spelled_exactly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tier: str,
+) -> None:
+    out = tmp_path / "build" / "scenario.json"
+    monkeypatch.setattr(sys, "argv", _cli_argv(CANONICAL_SCENARIO, out, "--dataset-tier", tier))
+
+    with pytest.raises(SystemExit) as stopped:
+        renderer.main()
+
+    assert stopped.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
+    assert not out.exists()
+    assert not out.parent.exists()
+
+
+@pytest.mark.parametrize("tier", DATASET_TIERS)
+def test_given_tier_is_injected_into_a_copy(tier: str) -> None:
+    scenario = _load_canonical()
+
+    rendered = apply_run_inputs(scenario, repetition=1, dataset_tier=tier)
+
+    assert require_dataset_tier(rendered) == tier
+    assert scenario[DATASET_TIER_KEY] is None
+
+
+@pytest.mark.parametrize(
+    "tier", ["Pilot", " pilot", "pilot ", "", "formal", 1, True, ["pilot"]], ids=repr
+)
+def test_value_that_is_not_a_tier_is_refused_before_rendering(tier: object) -> None:
+    with pytest.raises(R1PairIdentityError, match="dataset_tier must be one of"):
+        apply_run_inputs(_load_canonical(), repetition=1, dataset_tier=tier)  # type: ignore[arg-type]
+
+
+def test_scenario_rendered_without_a_tier_is_not_written() -> None:
+    rendered = apply_run_inputs(_load_canonical(), repetition=1)
+
+    with pytest.raises(R1PairIdentityError, match="--dataset-tier"):
+        require_dataset_tier(rendered)
+
+
+def _yaml_stating_a_tier(scenario: dict) -> None:
+    scenario[DATASET_TIER_KEY] = "development"
+
+
+def _yaml_without_the_tier_key(scenario: dict) -> None:
+    del scenario[DATASET_TIER_KEY]
+
+
+def _run_block_stating_a_tier(scenario: dict) -> None:
+    scenario["runs"]["attack"][DATASET_TIER_KEY] = "holdout"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (_yaml_stating_a_tier, "dataset_tier must be null in the scenario YAML"),
+        (_yaml_without_the_tier_key, "missing required keys"),
+        (_run_block_stating_a_tier, "a Pair states them once at the top level"),
+    ],
+)
+def test_scenario_yaml_cannot_state_a_tier_of_its_own(
+    tmp_path: Path, mutate: Callable[[dict], None], message: str
+) -> None:
+    # The tier has one source, the rendering. A YAML that stated one would be a default.
+    with pytest.raises(ValueError, match=message):
+        _load_mutated(tmp_path, mutate)
+
+
+def test_both_runs_of_a_pair_read_the_same_tier(tmp_path: Path) -> None:
+    # Given: one JSON rendered for the Pair
+    rendered = apply_run_inputs(
+        _load_canonical(), target_host=TARGET_HOST, repetition=2, dataset_tier="holdout"
+    )
+    out = render_json(rendered, tmp_path / "scenario.json")
+
+    # When: each run type reads what it is validated against
+    normal = load_r1_pilot_expectation(out, "normal")
+    attack = load_r1_pilot_expectation(out, "attack")
+
+    assert normal.dataset_tier == attack.dataset_tier == "holdout"
+
+
+# ---------------------------------------------------------------------------
+# Reference policy version: stated whenever the attack run names a reference
+# ---------------------------------------------------------------------------
+
+
+def test_canonical_scenario_states_the_policy_its_reference_is_taken_under() -> None:
+    scenario = _load_canonical()
+
+    assert scenario["runs"]["attack"]["reference_action_id"] == "A01"
+    assert scenario["run_length"]["evaluation_horizon_sec"] == 600
+    assert scenario["run_metadata"]["reference_policy_version"] == "r1-ref-v0.1"
+
+
+def _policy_version(value: object) -> Callable[[dict], None]:
+    def mutate(scenario: dict) -> None:
+        scenario["run_metadata"]["reference_policy_version"] = value
+
+    return mutate
+
+
+def _no_policy_version_key(scenario: dict) -> None:
+    del scenario["run_metadata"]["reference_policy_version"]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        _policy_version(None),
+        _policy_version(""),
+        _policy_version("   "),
+        _policy_version(7),
+        _no_policy_version_key,
+    ],
+    ids=["null", "empty", "blank", "number", "missing"],
+)
+def test_scenario_naming_an_attack_reference_without_a_policy_version_is_refused(
+    tmp_path: Path, mutate: Callable[[dict], None]
+) -> None:
+    # Given: reference_action_id A01 and a horizon of 600 s, as the canonical scenario states
+    # them, and no usable reference_policy_version
+    with pytest.raises(ValueError, match="reference_policy_version must be a non-blank string"):
+        _load_mutated(tmp_path, mutate)
+
+
+def test_any_non_blank_policy_version_is_kept_as_stated(tmp_path: Path) -> None:
+    # No version is fixed by the renderer: the value is the scenario's.
+    scenario = _load_mutated(tmp_path, _policy_version("synthetic-ref-v9"))
+
+    assert scenario["run_metadata"]["reference_policy_version"] == "synthetic-ref-v9"

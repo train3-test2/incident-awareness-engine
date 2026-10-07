@@ -1,6 +1,6 @@
 <#
     .SYNOPSIS
-        Execute the R1-V02 Pilot normal run and write its four artifacts.
+        Execute the R1-V02 normal run and write its four artifacts.
 
     .DESCRIPTION
         Run on the Controller. The five actions are the ones listed in
@@ -21,8 +21,12 @@
         file name or an argument.
 
         The family, the variation and the repetition of the Pair are read from
-        scenario.json and written to RunMetadata. This script takes no parameter
-        for them: both runs of a Pair use one rendered scenario.json.
+        scenario.json and written to RunMetadata. The dataset tier of the Pair
+        (pilot, development or holdout) is read from scenario.json too and
+        written to the operator trace of the run. This script takes no parameter
+        for any of them: both runs of a Pair use one rendered scenario.json, and
+        the tier is given once, when that file is rendered
+        (tools/r1_scenario_to_json.py --dataset-tier).
 
         -DryRun validates every input, builds the launch plan and prints it. It
         opens no session and starts nothing, so it can be run anywhere.
@@ -45,8 +49,8 @@
 
     .PARAMETER ObservationSec
         Length of the observation window in seconds from the start of the run. It
-        has to cover the last action; the evaluation horizon itself is not decided
-        (docs/scenarios/r1.md section 11-4), so the value is a run input.
+        has to cover the last action and the evaluation horizon the scenario
+        states (docs/scenarios/r1.md section 11-4).
 
     .PARAMETER TargetAddress
         Name or address the Controller uses to reach Target-A over WinRM. It is

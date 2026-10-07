@@ -34,20 +34,16 @@ def _canned(monkeypatch: pytest.MonkeyPatch, *, errors: list[str]) -> R1PilotVal
 
 
 def _run(monkeypatch: pytest.MonkeyPatch, root: Path, *extra: str) -> int:
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "validate_r1_run.py",
-            "--artifact-root",
-            str(root),
-            "--run-id",
-            RUN_ID,
-            "--scenario",
-            str(root / "scenario.json"),
-            *extra,
-        ],
-    )
+    argv = [
+        "validate_r1_run.py",
+        "--artifact-root",
+        str(root),
+        "--run-id",
+        RUN_ID,
+        "--scenario",
+        str(root / "scenario.json"),
+    ]
+    monkeypatch.setattr(sys, "argv", [*argv, *extra])
     return cli.main()
 
 
@@ -84,6 +80,40 @@ def test_arguments_reach_the_validator_unchanged(
         "scenario_path": tmp_path / "scenario.json",
         "rehearsal": True,
     }
+
+
+@pytest.mark.parametrize("tier", ["pilot", "development", "holdout"])
+def test_tier_option_of_the_earlier_interface_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tier: str,
+) -> None:
+    # The tier a run is held to is the one its rendered scenario states. A caller of the CLI
+    # cannot choose it any more, whatever value is offered.
+    called: list[object] = []
+    monkeypatch.setattr(cli, "validate_r1_pilot_run", lambda **kwargs: called.append(kwargs))
+
+    with pytest.raises(SystemExit) as stopped:
+        _run(monkeypatch, tmp_path, "--dataset-tier", tier)
+
+    assert stopped.value.code == 2
+    assert called == []
+    assert "--dataset-tier" in capsys.readouterr().err
+
+
+def test_cli_help_names_no_tier_option(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["validate_r1_run.py", "--help"])
+
+    with pytest.raises(SystemExit) as stopped:
+        cli.main()
+
+    assert stopped.value.code == 0
+    options = capsys.readouterr().out.split("options:")[-1]
+    assert "--dataset-tier" not in options
+    assert "--scenario" in options
 
 
 def test_record_is_written_for_a_passing_run(
