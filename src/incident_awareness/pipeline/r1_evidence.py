@@ -133,6 +133,10 @@ def run_r1_evidence_pipeline_with_selector(
     """결정적 selector 결과를 기존 명시적 lineage 입력 경로에 연결한다."""
     if not isinstance(approved_policy, ApprovedLineagePolicy):
         raise TypeError("approved_policy must be an ApprovedLineagePolicy")
+    if not isinstance(selector_policy, R1SelectorPolicy):
+        raise TypeError("selector_policy must be an R1SelectorPolicy")
+    if selector_policy.lineage_event_count != len(approved_policy.approved_lineage):
+        raise ValueError("selector lineage_event_count must match approved_lineage length")
 
     event_batch = tuple(events)
     selector_result = select_r1_lineage(

@@ -164,10 +164,11 @@ def _terminal_candidates(
             continue
 
         linked_network_events = networks_by_guid.get(process_guid, ())
-        if any(event.timestamp >= process_event.timestamp for event in linked_network_events):
-            terminal_candidates.append(process_event)
-        elif linked_network_events:
+        if any(event.timestamp < process_event.timestamp for event in linked_network_events):
             has_temporal_inversion = True
+            continue
+        if linked_network_events:
+            terminal_candidates.append(process_event)
 
     return (
         tuple(sorted(terminal_candidates, key=lambda event: (event.timestamp, event.event_id))),
