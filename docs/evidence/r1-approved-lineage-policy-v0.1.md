@@ -71,6 +71,7 @@ Loader가 생성한 `policy_id`, `version`, `config_hash`는 기존 lineage devi
 
 - production approved lineage 정책과 lifecycle 승인
 - scenario family binding과 mismatch fail-closed 계약
+- 단일 vs 복수 approved lineage 표현 및 production 정책 결정. v0.1은 policy 하나당 단일 `approved_lineage`만 표현하며, Pair-002 development policy 하나를 production 정상 계보 전체로 일반화하지 않는다. Production/frozen policy를 정하기 전에 단일 lineage가 충분한지 여러 정상 lineage 승인 집합이 필요한지 결정하고, 필요하면 후속 policy schema/version에서 복수 lineage 표현 계약을 추가한다.
 - production runner/CLI 연결
 - selector provenance의 artifact 영속화
 - Fusion profile, weight, window, threshold와 stopping
