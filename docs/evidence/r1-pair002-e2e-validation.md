@@ -98,7 +98,8 @@ Raw Sysmon
 - `raw_ref.raw_log_id = RAW-002`, `segment_no = 1`, 물리적 JSONL 행 번호와 source RecordId 보존
 - EID 1의 `ProcessGuid`와 `ParentProcessGuid` 문자열 보존
 - EID 3의 `ProcessGuid` 보존 및 계약에 따라 `parent_process_guid = None`
-- `timestamp`는 현재 normalizer가 선택한 `EventData.UtcTime`의 UTC millisecond 값
+- `timestamp_source = event_time`
+- `timestamp`는 `EventData.UtcTime`에서 정규화된 UTC millisecond 값
 - PID는 계보 또는 EID 1→EID 3 연결 키로 사용하지 않음
 
 핵심 RecordId는 `source_event_id`와 `raw_ref.source_record_id`를 함께 사용해 각각 유일한 Event로 resolve했다.
@@ -259,12 +260,12 @@ Evidence에 raw provenance를 중복 저장하지 않아도 원본까지 연결�
 
 ## 17. R1 analysis window 관찰 결과
 
-| Run | anchor → lineage Evidence | lineage → network Evidence |
+| Run | anchor Event → terminal Event | terminal Event → network Evidence |
 | --- | ---: | ---: |
 | Attack | 300.216초 | 180.364초 |
 | Normal | 301.047초 | 179.253초 |
 
-lineage deviation timestamp는 계보 비교 조건을 완성한 terminal Event 시점이고, network follow-on timestamp는 EID 1→EID 3 관계가 완성된 network Event 시점이다. 이 규칙은 미래 Event를 먼저 사용하지 않는 no-look-ahead 원칙을 유지한다.
+첫 번째 간격은 명시적으로 선택한 anchor Event부터 terminal Event까지의 시간이다. Attack에서는 terminal Event 시점이 lineage deviation Evidence timestamp와 같지만, Normal에서는 lineage deviation Evidence가 생성되지 않았다. 두 번째 간격은 terminal Event부터 EID 1→EID 3 관계가 완성된 network follow-on Evidence까지의 시간이다. 이 측정은 미래 Event를 먼저 사용하지 않는 no-look-ahead 원칙을 유지한다.
 
 위 간격은 Pair-002의 관찰값일 뿐 production Fusion window 권고값이 아니다. analysis window, cadence, score weight, threshold와 stopping policy는 Role1 tuning 책임으로 남긴다.
 
