@@ -13,6 +13,11 @@ from incident_awareness.decision.fusion.pipeline import (
     run_fusion_pipeline_from_config,
 )
 
+R1_EVIDENCE_TYPES = (
+    "remote_session_process_lineage_deviation",
+    "remote_process_network_follow_on",
+)
+
 
 def _valid_config_data() -> dict[str, object]:
     return {
@@ -465,6 +470,38 @@ def test_fusion_config_rejects_unmanaged_evidence_type() -> None:
         match="evidence_types contains unmanaged values",
     ):
         FusionConfig.model_validate(config_data)
+
+
+def test_fusion_config_accepts_registered_r1_evidence_types() -> None:
+    # Given
+    config_data = _valid_config_data()
+    scoring = config_data["scoring"]
+    assert isinstance(scoring, dict)
+    scoring["evidence_types"] = list(R1_EVIDENCE_TYPES)
+
+    # When
+    config = FusionConfig.model_validate(config_data)
+
+    # Then
+    assert config.scoring.evidence_types == R1_EVIDENCE_TYPES
+
+
+def test_fusion_config_rejects_blank_evidence_type() -> None:
+    # Given
+    config_data = _valid_config_data()
+    scoring = config_data["scoring"]
+    assert isinstance(scoring, dict)
+    scoring["evidence_types"] = [""]
+
+    # When
+    with pytest.raises(
+        ValidationError,
+        match="evidence_types must not contain blank values",
+    ) as error_info:
+        FusionConfig.model_validate(config_data)
+
+    # Then
+    assert "blank values" in str(error_info.value)
 
 
 @pytest.mark.parametrize(
