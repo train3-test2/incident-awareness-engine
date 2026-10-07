@@ -23,3 +23,9 @@ def test_dashboard_deployment_verifies_the_registered_task_definition() -> None:
 
     assert "tasks[0].[lastStatus,taskDefinitionArn]" in workflow
     assert '"$running_task_definition_arn" != "$TASK_DEFINITION_ARN"' in workflow
+
+
+def test_dashboard_deployment_flattens_network_interface_details() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "attachments[?type=='ElasticNetworkInterface'].details[]" in workflow

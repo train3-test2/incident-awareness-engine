@@ -481,7 +481,7 @@ jobs:
             aws ecs describe-tasks \
               --cluster "$ECS_CLUSTER" \
               --tasks "$TASK_ARN" \
-              --query "tasks[0].attachments[?type=='ElasticNetworkInterface'].details[?name=='networkInterfaceId'].value | [0]" \
+              --query "tasks[0].attachments[?type=='ElasticNetworkInterface'].details[] | [?name=='networkInterfaceId'].value | [0]" \
               --output text
           )"
           if [[ -z "$network_interface_id" || "$network_interface_id" == "None" ]]; then
