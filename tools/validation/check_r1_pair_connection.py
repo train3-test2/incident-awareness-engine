@@ -14,6 +14,7 @@ from incident_awareness.collection.r1_destination import (
     validate_internal_target,
     validate_lab_cidr,
 )
+from incident_awareness.collection.r1_pair_identity import read_dataset_tier, read_pair_identity
 from incident_awareness.evidence.r1_approved_lineage_policy import (
     DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH,
     load_r1_approved_lineage_policy,
@@ -54,6 +55,8 @@ def check_run(pair, run_id, prefix, output, policy: ApprovedLineagePolicy):
     base = pair / run_id / "data"
     scenario_path = base / "operator_trace" / run_id / "scenario.json"
     scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
+    pair_identity = read_pair_identity(scenario)
+    dataset_tier = read_dataset_tier(scenario)
     target_host = scenario["run_metadata"]["target_host"]
     require(
         isinstance(target_host, str)
@@ -191,6 +194,18 @@ def check_run(pair, run_id, prefix, output, policy: ApprovedLineagePolicy):
         "execution_record_sha256": sha(execution_path),
         "manifest_sha256": sha(manifest_path),
         "rendered_scenario_sha256": sha(scenario_path),
+        "validation_provenance": {
+            "scenario": {
+                "family_id": pair_identity.family_id,
+                "variation_id": pair_identity.variation_id,
+                "dataset_tier": dataset_tier,
+            },
+            "approved_policy": {
+                "policy_id": policy.policy_id,
+                "version": policy.version,
+                "config_hash": policy.config_hash,
+            },
+        },
         "normalized_count": len(events),
         "event_types": dict(Counter(e.event_type for e in events)),
         "lineage": [
