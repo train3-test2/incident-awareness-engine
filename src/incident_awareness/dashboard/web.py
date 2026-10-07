@@ -21,6 +21,11 @@ def get_dashboard_view() -> FileResponse:
     return FileResponse(_UI_DIRECTORY / "dashboard.html", media_type="text/html")
 
 
+@operations_view_router.get("/dashboard/evaluation")
+def get_evaluation_view() -> FileResponse:
+    return FileResponse(_UI_DIRECTORY / "evaluation.html", media_type="text/html")
+
+
 @operations_view_router.get("/operations")
 def get_operations_view() -> FileResponse:
     return FileResponse(_UI_DIRECTORY / "operations.html", media_type="text/html")
