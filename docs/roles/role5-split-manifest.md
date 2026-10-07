@@ -49,3 +49,10 @@ RunMetadata에 없는 Pair 관계를 날짜·family_id·variation_id로 자동 �
 후속 학습에서는 train만 사용하고, 운영점 선택에는 validation만 사용한다.
 test 실행 전에는 모델·전처리·운영점·분할 manifest를 함께 동결한다.
 이 기능은 데이터의 자동 분할, 분할 비율 선택, 모델 학습, 운영점 선택을 수행하지 않는다.
+
+## 사용 용도 필수 검증 (#208)
+
+manifest에는 `usage_policy`가 필수다. 외부 sidecar를 읽어 split을 만드는 CLI,
+기존 Pair-002 제외 기록 변환, 누락·충돌 처리와 hash 계약은
+[데이터 사용 용도 경계](role5-dataset-usage-guard.md)를 따른다.
+사용 정책 없는 기존 payload 예시는 정책 추가 후 사용해야 한다.

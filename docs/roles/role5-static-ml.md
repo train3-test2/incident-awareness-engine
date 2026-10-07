@@ -140,3 +140,10 @@ reference 시점에 ACTIVE인 episode도 1건이며, 이후 release 시각은 �
 false_alert_episodes와 benign_run_hours는 계속 normal Run만 사용한다.
 normal Run의 per_run.pre_reference_false_alerts는 null이고, 미평가 Run은 exclusions에만 남긴다.
 전체 pre_reference_false_alerts는 평가된 Attack Run의 합계이며 제외 Run의 0건을 뜻하지 않는다.
+
+## 데이터 사용 정책 및 formal 평가
+
+학습 manifest는 사용 정책을 반드시 포함하며, 허용되지 않은 Run은 학습 전에 거부한다.
+`evaluate_static_model`의 performance 호출은 검증된 `split_manifest`와
+`evaluation_split`을 명시해야 한다. smoke 호출은 개발 점검 용도로 유지한다.
+[사용 용도·split 검증 및 마이그레이션](role5-dataset-usage-guard.md)을 참고한다.
