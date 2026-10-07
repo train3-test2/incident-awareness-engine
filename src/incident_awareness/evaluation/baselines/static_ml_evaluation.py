@@ -15,6 +15,7 @@ from incident_awareness.evaluation.baselines.static_ml_episodes import (
     replay_static_model,
 )
 from incident_awareness.evaluation.evaluation_v0 import evaluate
+from incident_awareness.evaluation.split_manifest import SplitManifest, audit_split_manifest
 
 
 def evaluate_static_model(
@@ -26,6 +27,8 @@ def evaluate_static_model(
     coverage_sha256_by_run: dict[str, str],
     evaluation_horizon_sec: int,
     purpose: Literal["smoke", "performance"],
+    split_manifest: SplitManifest | None = None,
+    evaluation_split: Literal["validation", "test"] | None = None,
 ) -> dict:
     """None explicitly excludes an unexecuted Run; absent keys and empty rows fail.
 
@@ -49,6 +52,19 @@ def evaluate_static_model(
         raise ValueError("unique nonempty inventory must exactly match rows_by_run")
     if purpose != "smoke" and set(ids) & set(model.training_run_ids):
         raise ValueError("performance evaluation must not reuse training Runs")
+    split_audit = None
+    if purpose == "performance":
+        if any(run.scenario_id == "S0" for run in inventory):
+            raise ValueError("S0 is smoke-only")
+        if split_manifest is None or evaluation_split not in ("validation", "test"):
+            raise ValueError("performance requires a usage-validated manifest and evaluation_split")
+        split_audit = audit_split_manifest(split_manifest)
+        if split_audit["manifest_sha256"] != model.split_sha256:
+            raise ValueError("evaluation manifest does not match model split provenance")
+        if set(ids) != set(split_audit["splits"][evaluation_split]["run_ids"]):
+            raise ValueError("performance inventory must exactly cover the selected split")
+    elif split_manifest is not None or evaluation_split is not None:
+        raise ValueError("split arguments are only supported for performance evaluation")
     evaluated_ids = {key for key, value in rows_by_run.items() if value is not None}
     if set(coverage_sha256_by_run) != evaluated_ids or any(
         not isinstance(value, str)
@@ -138,8 +154,11 @@ def evaluate_static_model(
         for field in ("run_start", "run_end", "reference_time", "timestamp"):
             frame[field] = pd.to_datetime(frame[field], utc=True)
     return {
-        "schema_version": "static-ml-evaluation-v0.1",
+        "schema_version": "static-ml-evaluation-v0.2",
         "purpose": purpose,
+        "evaluation_split": evaluation_split,
+        "usage_sha256": split_audit["usage_sha256"] if split_audit else None,
+        "usage_policy_version": split_audit["usage_policy_version"] if split_audit else None,
         "inventory_sha256": _hash([r.model_dump(mode="json") for r in inventory]),
         "model_sha256": _hash(model.model_dump(mode="json")),
         "config": config.model_dump(mode="json"),

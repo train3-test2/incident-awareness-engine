@@ -64,7 +64,8 @@ training_sha256은 sample_id 순으로 정렬한 전체 TrainingRow JSON 해시�
 추론은 신규 Run도 허용한다. `evaluate_static_model()`의 performance 평가는 전체 inventory와
 model.training_run_ids의 중복을 거부한다. 미평가 Run도 이 검사에 포함한다.
 smoke는 학습 Run 재생을 허용한다. report에 training_run_ids와 split_sha256을 보존한다.
-Family 수준의 SplitManifest 교차 검증은 후속 범위다.
+performance 경로는 `audit_split_manifest()`로 Family/Pair 분할과 사용 정책을 재검증하고,
+모델의 split_sha256 일치 및 선택한 validation/test split 전체와 평가 inventory의 일치를 강제한다.
 
 ## 후속 순서
 
@@ -116,13 +117,17 @@ reference_time에 새 탐지한 것으로 보지 않는다. Normal은 전체 관
 정상 Run 총 관측시간으로 나눠 FA/BH를 계산한다. 0건 정상 Run도 시간 분모에 포함한다.
 정상 Run이 없으면 FA/BH는 null이며, 모든 Run 미평가이면 metrics도 null이다.
 
-출력은 StaticML 별도 report이며 inventory의 Run ID 목록과 SHA-256, 제외 목록,
+출력은 `static-ml-evaluation-v0.2` StaticML 별도 report이며, v0.1 대비
+`evaluation_split`, `usage_sha256`, `usage_policy_version`을 추가한다(smoke에서는 null).
+inventory의 Run ID 목록과 SHA-256, 제외 목록,
 평가된 Run별 scenario_id·family_id·variation_id·repetition 및 eligible 시각,
 replay·coverage 참조·모델 및 입력 해시를 보존한다. 전체 RunMetadata는 embed하지 않으므로
 원본 inventory는 별도 artifact로 보관해야 한다. 선택 metadata의 null은 그대로 보존한다. S0는 smoke만 허용한다.
 `comparison_ready`는 이 입력 집합에 미평가 Run이 없다는 뜻으로, 다른 방법과의
 동일 데이터·동일 오경보 조건이나 성능 검증 완료를 보증하지 않는다.
-Family 수준의 분할 manifest 교차 검증과 validation 운영점 선택은 호출 측 후속 단계다.
+Family 수준의 SplitManifest 교차 검증은 performance 평가 경로에 구현되어 있다.
+`audit_split_manifest()` 재검증, 모델의 split_sha256 일치, 선택 split 전체 Run과
+inventory의 일치를 강제한다. validation 운영점 선택은 호출 측 후속 단계다.
 performance에서 train Run 재사용 차단은 이 평가 API가 수행한다.
 
 
@@ -140,3 +145,10 @@ reference 시점에 ACTIVE인 episode도 1건이며, 이후 release 시각은 �
 false_alert_episodes와 benign_run_hours는 계속 normal Run만 사용한다.
 normal Run의 per_run.pre_reference_false_alerts는 null이고, 미평가 Run은 exclusions에만 남긴다.
 전체 pre_reference_false_alerts는 평가된 Attack Run의 합계이며 제외 Run의 0건을 뜻하지 않는다.
+
+## 데이터 사용 정책 및 formal 평가
+
+학습 manifest는 사용 정책을 반드시 포함하며, 허용되지 않은 Run은 학습 전에 거부한다.
+`evaluate_static_model`의 performance 호출은 검증된 `split_manifest`와
+`evaluation_split`을 명시해야 한다. smoke 호출은 개발 점검 용도로 유지한다.
+[사용 용도·split 검증 및 마이그레이션](role5-dataset-usage-guard.md)을 참고한다.

@@ -285,6 +285,9 @@ qualifying/detector-time 정책에서 별도로 동결한다. 이번 감사의 U
 
 ## 리뷰 후속: inventory 비식별화와 split 제외 강제
 
+아래는 #205 작성 당시 상태다. #208 후속 구현의 필수 usage 정책·실제 split/Static ML 경로와
+적용 범위는 [데이터 사용 용도 경계](role5-dataset-usage-guard.md)를 따른다.
+
 저장소 inventory의 두 Run `entity_id`는 `<target-host>`로 치환했다.
 실제 값은 저장소 밖 로컬 input-inventory.json에만 유지한다. 저장소 사본은
 설명·provenance 확인용이며 placeholder를 실제 모델 입력으로 사용하지 않는다.

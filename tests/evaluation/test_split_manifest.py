@@ -10,6 +10,21 @@ from incident_awareness.evaluation.split_manifest import SplitManifest, audit_sp
 def payload():
     ids = [f"RUN-20261004-{i:03d}" for i in range(1, 5)]
     return {
+        "usage_policy": {
+            "schema_version": "dataset-usage-v0.1",
+            "policy_version": "synthetic-v1",
+            "source_sha256": ["a" * 64],
+            "runs": [
+                {
+                    "run_id": rid,
+                    "pair_id": None,
+                    "eligible_splits": ["train", "validation", "test"],
+                    "used_for_tuning": False,
+                    "reason": "synthetic fixture",
+                }
+                for rid in ids
+            ],
+        },
         "manifest_version": "split-v1",
         "grouping_policy_version": "pair-v1",
         "inventory_run_ids": ids,
