@@ -12,10 +12,15 @@ from incident_awareness.decision.fusion.config import (
 from incident_awareness.decision.fusion.pipeline import (
     run_fusion_pipeline_from_config,
 )
+from incident_awareness.evidence.r1_multi_event import (
+    EXTRACTOR_VERSION as R1_EXTRACTOR_VERSION,
+)
+from incident_awareness.evidence.r1_multi_event import (
+    R1_CANDIDATE_EVIDENCE_TYPES_BY_EXTRACTOR_VERSION,
+)
 
-R1_EVIDENCE_TYPES = (
-    "remote_session_process_lineage_deviation",
-    "remote_process_network_follow_on",
+R1_EVIDENCE_TYPES = tuple(
+    sorted(R1_CANDIDATE_EVIDENCE_TYPES_BY_EXTRACTOR_VERSION[R1_EXTRACTOR_VERSION])
 )
 
 

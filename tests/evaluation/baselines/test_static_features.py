@@ -4,12 +4,15 @@ import pytest
 
 from incident_awareness.common.models.evidence import Evidence
 from incident_awareness.evaluation.baselines.static_features import extract_static_features
+from incident_awareness.evidence.r1_multi_event import (
+    EXTRACTOR_VERSION as R1_EXTRACTOR_VERSION,
+)
+from incident_awareness.evidence.r1_multi_event import (
+    R1_CANDIDATE_EVIDENCE_TYPES_BY_EXTRACTOR_VERSION,
+)
 
 NAMES = ("encoded_powershell_command", "script_interpreter_external_connection")
-R1_NAMES = (
-    "remote_session_process_lineage_deviation",
-    "remote_process_network_follow_on",
-)
+R1_NAMES = tuple(sorted(R1_CANDIDATE_EVIDENCE_TYPES_BY_EXTRACTOR_VERSION[R1_EXTRACTOR_VERSION]))
 
 
 RUN = "RUN-20261004-001"

@@ -1,19 +1,23 @@
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
+import yaml
 
 import incident_awareness.evidence.r1_multi_event as r1_multi_event_module
 from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.common.models.evidence import Evidence
 from incident_awareness.evidence.r1_multi_event import (
     EXTRACTOR_VERSION,
+    R1_CANDIDATE_EVIDENCE_TYPES_BY_EXTRACTOR_VERSION,
     ApprovedLineagePolicy,
     extract_remote_process_network_follow_on,
     extract_remote_session_process_lineage_deviation,
 )
 
+_VOCABULARY_PATH = Path(__file__).parents[2] / "configs" / "evidence_types_v0.2.yaml"
 _BASE_TIME = datetime(2026, 10, 3, 1, 0, tzinfo=UTC)
 _PROCESS_GUID = "{11111111-1111-1111-1111-111111111111}"
 _ANCHOR_GUID = "{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}"
@@ -21,6 +25,39 @@ _MIDDLE_GUID = "{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}"
 _TERMINAL_GUID = "{CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC}"
 _SVCHOST_GUID = "{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}"
 _SERVICES_GUID = "{EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE}"
+
+
+def _managed_evidence_types() -> list[str]:
+    vocabulary = yaml.safe_load(_VOCABULARY_PATH.read_text(encoding="utf-8"))
+    evidence_types = vocabulary["evidence_types"]
+    assert isinstance(evidence_types, list)
+    return evidence_types
+
+
+def test_r1_writer_evidence_types_are_in_managed_vocabulary() -> None:
+    # Given
+    managed_evidence_types = set(_managed_evidence_types())
+
+    # When
+    r1_writer_evidence_types = {
+        evidence_type
+        for version_types in R1_CANDIDATE_EVIDENCE_TYPES_BY_EXTRACTOR_VERSION.values()
+        for evidence_type in version_types
+    }
+
+    # Then
+    assert r1_writer_evidence_types <= managed_evidence_types
+
+
+def test_managed_evidence_type_vocabulary_has_no_duplicates() -> None:
+    # Given
+    evidence_types = _managed_evidence_types()
+
+    # When
+    unique_evidence_types = set(evidence_types)
+
+    # Then
+    assert len(evidence_types) == len(unique_evidence_types)
 
 
 def _normalized_event(
