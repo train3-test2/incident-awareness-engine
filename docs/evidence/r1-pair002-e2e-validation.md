@@ -11,7 +11,7 @@ R1 Evidence 구현이 합성 fixture뿐 아니라 실제 Pair-002 Sysmon telemet
 ```text
 Raw Sysmon
 → NormalizedEvent v0.3
-→ R1 candidate Evidence
+→ R1 Evidence (검증 당시 candidate)
 → Run별 artifact
 → artifact loader
 → Evidence provenance resolver
@@ -200,11 +200,11 @@ Normal과 Attack 양쪽에서 network follow-on이 발생했다. 따라서 `feat
 | `run_id` / `extractor_version` | PASS | PASS |
 | canonical Evidence ordering | PASS | PASS |
 | `evidence_id` uniqueness | PASS | PASS |
-| candidate type 허용 범위 | PASS | PASS |
+| R1 extractor type 허용 범위 | PASS | PASS |
 | lineage/policy provenance structure와 ordering | PASS | PASS |
 | summary ↔ Evidence cross-validation | PASS | PASS |
 
-failed artifact를 정상 Evidence로 소비하지 않는 경계는 기존 artifact 회귀 테스트에서 유지됨을 함께 확인했다. Loader가 허용한 R1 candidate type은 extractor-version별 artifact 계약이며 managed vocabulary 등록을 의미하지 않는다.
+failed artifact를 정상 Evidence로 소비하지 않는 경계는 기존 artifact 회귀 테스트에서 유지됨을 함께 확인했다. Loader의 R1 type allowlist는 공식 managed vocabulary와 별개인 extractor-version별 artifact scope 계약이다.
 
 ## 14. Provenance 검증 결과
 
@@ -241,7 +241,7 @@ Evidence에 raw provenance를 중복 저장하지 않아도 원본까지 연결�
 | 총 Evidence | 2 | 1 |
 | diagnostics | `[]` | `[]` |
 
-이 결과는 동결된 계보와 다른 complete lineage가 lineage deviation을 생성하고, 공통 후속 연결은 두 Run 모두에서 생성되는 현재 candidate 의미와 일치한다. 특정 중간 프로세스 이름 자체가 공격 판정 조건인 것은 아니다.
+이 결과는 동결된 계보와 다른 complete lineage가 lineage deviation을 생성하고, 공통 후속 연결은 두 Run 모두에서 생성되는 현재 R1 Evidence 의미와 일치한다. 특정 중간 프로세스 이름 자체가 공격 판정 조건인 것은 아니다.
 
 Normal의 lineage deviation 0건은 수동으로 선택한 단일 Normal lineage가 approved lineage와 일치했다는 의미다. Run 안의 다른 후보 lineage는 평가하지 않았으므로 Normal Run 전체의 false positive가 0건이라는 뜻이 아니며, 이 한 Pair로 false-positive rate를 추정할 수 없다. 반복 평가용 deterministic selector를 도입해 전체 후보 lineage를 평가한 뒤에야 해당 특성을 판단할 수 있다.
 
@@ -271,9 +271,9 @@ Normal의 lineage deviation 0건은 수동으로 선택한 단일 Normal lineage
 
 위 간격은 Pair-002의 관찰값일 뿐 production Fusion window 권고값이 아니다. analysis window, cadence, score weight, threshold와 stopping policy는 Role1 tuning 책임으로 남긴다.
 
-## 18. Managed vocabulary gate 판단
+## 18. Managed vocabulary 등록 상태
 
-`configs/evidence_types_v0.2.yaml`에는 현재 다음 R1 type이 없다.
+Pair-002 development telemetry E2E로 기술적 gate를 충족한 뒤 `configs/evidence_types_v0.2.yaml`에 다음 R1 type을 공식 등록했다.
 
 - `remote_session_process_lineage_deviation`
 - `remote_process_network_follow_on`
@@ -286,13 +286,13 @@ Normal의 lineage deviation 0건은 수동으로 선택한 단일 Normal lineage
 
 이 완료 상태는 Pair-002 development telemetry E2E에 한정되며 production, holdout, 반복 평가 검증 또는 final evaluation 승인을 의미하지 않는다.
 
-따라서 managed vocabulary 등록은 후속 독립 Issue/PR로 진행할 수 있다. 등록은 scoring weight, production readiness, production approved policy, holdout 또는 final evaluation 승인을 의미하지 않는다. 특히 network follow-on은 Normal과 Attack 양쪽에서 발생하므로 단독 공격 신호로 등록하거나 해석하지 않는다.
+등록 후 Role1과 Role5의 managed Evidence type 검증 경로에서 두 type을 공식 member로 인식한다. R1 artifact loader의 extractor-version별 type scope는 별도로 유지한다. 공식 등록은 scoring weight, production readiness, production approved policy, 반복 평가 selector, holdout 또는 final evaluation 승인을 의미하지 않는다. 특히 network follow-on은 Normal과 Attack 양쪽에서 발생하므로 단독 공격 신호로 등록하거나 해석하지 않는다.
 
 ## 19. Role1 / Role5 소비 시 주의사항
 
 ### Role1
 
-실제 Evidence 생성과 artifact 경계가 확인되어 vocabulary 등록 후 development tuning 입력으로 연결할 기술적 기반은 마련됐다. 다음 항목은 Role1 결정 사항이다.
+실제 Evidence 생성과 artifact 경계를 확인했고 두 type을 공식 vocabulary로 등록해 development tuning 입력으로 연결할 계약 기반을 마련했다. 다음 항목은 Role1 결정 사항이다.
 
 - scoring profile 포함 여부와 weight
 - Fusion window와 cadence
@@ -323,7 +323,6 @@ Run별 artifact 생성, loader와 provenance 경로는 확인됐다. 그러나 P
 
 ## 21. 후속 작업
 
-- 두 R1 candidate의 managed Evidence vocabulary 등록
 - Ground Truth와 label에 독립적인 반복 평가 selector 설계·구현
 - production approved lineage policy와 config lifecycle 동결
 - production runner/CLI에서 R1 batch API 호출 경로 연결
@@ -340,4 +339,4 @@ Run별 artifact 생성, loader와 provenance 경로는 확인됐다. 그러나 P
 
 다만 Issue #184에 포함된 Role1 Fusion 입력용 Evidence 전달과 Role5 평가 입력용 artifact 전달은 별도로 완료 여부를 확인해야 한다. 이 validation record만으로 Issue #184 전체가 완료됐다고 판단하거나 close하지 않는다.
 
-managed vocabulary, 반복 평가 selector, production policy/runner, Fusion tuning과 dataset 승인은 별도 후속 작업으로 분리한다.
+반복 평가 selector, production policy/runner, Fusion tuning과 dataset 승인은 별도 후속 작업으로 분리한다.
