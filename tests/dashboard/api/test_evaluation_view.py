@@ -209,12 +209,35 @@ def test_evaluation_stage_two_renders_semantic_tables_without_reordering() -> No
     assert "evaluation-table-scroll" in script
     assert "overflow-x: auto" in stylesheet
     assert "TTSD는 검출된 Attack Run 기준이며 Run Recall과 함께 해석해야 합니다." in script
+    assert "FA/BH는 관측된 Benign Run 시간과 함께 해석해야 합니다." in script
+    assert "Runtime의 최종 경로 선택과는 별개입니다." in script
     assert "Earlier Eligible Path" in script
     for source in (script, contract):
         for forbidden_ordering in (".sort(", ".toSorted(", ".reverse(", ".toReversed("):
             assert forbidden_ordering not in source
     for forbidden_label in ("Winner", "Winning Path", "Fastest", "Best"):
         assert forbidden_label not in script
+
+
+def test_evaluation_bounded_indicators_are_accessible_and_responsive() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/evaluation.js").text
+    stylesheet = client.get("/dashboard-assets/evaluation.css").text
+
+    # Then
+    assert 'document.createElement("progress")' in script
+    assert "progress.max = 1" in script
+    assert "progress.value = field.progressValue" in script
+    assert 'progress.setAttribute("aria-label"' in script
+    assert ".evaluation-metric__progress" in stylesheet
+    assert "accent-color: var(--shell-color-primary)" in stylesheet
+    assert "overflow-wrap: anywhere" in stylesheet
+    assert "word-break: break-word" in stylesheet
+    assert "!important" not in stylesheet
+    assert ":root" not in stylesheet
 
 
 def test_evaluation_view_has_accessible_responsive_shell() -> None:

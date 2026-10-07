@@ -36,6 +36,16 @@
     min-width: 0;
 }
 
+.evaluation-section-content,
+.evaluation-section .identifier {
+    min-width: 0;
+}
+
+.evaluation-section .identifier {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
 .evaluation-section--wide {
     grid-column: 1 / -1;
 }
@@ -205,6 +215,18 @@
     margin-top: var(--shell-space-1);
     font-weight: 650;
     overflow-wrap: anywhere;
+}
+
+.evaluation-metric__value--bounded {
+    display: flex;
+    flex-direction: column;
+    gap: var(--shell-space-2);
+}
+
+.evaluation-metric__progress {
+    width: 100%;
+    height: 0.5rem;
+    accent-color: var(--shell-color-primary);
 }
 
 .evaluation-interpretation-note {

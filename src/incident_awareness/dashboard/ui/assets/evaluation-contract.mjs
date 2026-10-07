@@ -64,6 +64,14 @@ function requireNullableFiniteNumber(value, name) {
     return value;
 }
 
+function requireNullableUnitInterval(value, name) {
+    requireNullableFiniteNumber(value, name);
+    if (value !== null && (value < 0 || value > 1)) {
+        throw new RangeError(`${name} must be between 0 and 1`);
+    }
+    return value;
+}
+
 function requireInteger(value, name) {
     if (!Number.isInteger(value)) {
         throw new TypeError(`${name} must be an integer`);
@@ -94,12 +102,10 @@ function validateMethodMetric(metric, expectedMethod) {
     ]) {
         requireInteger(value[field], `Evaluation ${expectedMethod} metric ${field}`);
     }
-    for (const field of [
-        "run_recall",
-        "median_ttsd_sec",
-        "benign_run_fpr",
-        "ttsd_iqr_sec",
-    ]) {
+    for (const field of ["run_recall", "benign_run_fpr"]) {
+        requireNullableUnitInterval(value[field], `Evaluation ${expectedMethod} metric ${field}`);
+    }
+    for (const field of ["median_ttsd_sec", "ttsd_iqr_sec"]) {
         requireNullableFiniteNumber(value[field], `Evaluation ${expectedMethod} metric ${field}`);
     }
 }
@@ -348,14 +354,22 @@ export function buildMethodComparison(payload) {
             method,
             available: true,
             fields: [
-                { label: "Run Recall", value: formatPercentage(metric.run_recall) },
+                {
+                    label: "Run Recall",
+                    value: formatPercentage(metric.run_recall),
+                    progressValue: metric.run_recall,
+                },
                 {
                     label: "Detected / Total Attack Runs",
                     value: `${metric.detected_runs} / ${metric.total_attack_runs}`,
                 },
                 { label: "Median TTSD", value: formatSeconds(metric.median_ttsd_sec) },
                 { label: "TTSD IQR", value: formatSeconds(metric.ttsd_iqr_sec) },
-                { label: "Benign Run FPR", value: formatPercentage(metric.benign_run_fpr) },
+                {
+                    label: "Benign Run FPR",
+                    value: formatPercentage(metric.benign_run_fpr),
+                    progressValue: metric.benign_run_fpr,
+                },
                 {
                     label: "False Positive / Total Normal Runs",
                     value: `${metric.false_positive_runs} / ${metric.total_normal_runs}`,

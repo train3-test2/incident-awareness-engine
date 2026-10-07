@@ -34,7 +34,19 @@ function createDefinitionField(field, className = "evaluation-metric") {
 
     const description = document.createElement("dd");
     description.classList.add(`${className}__value`);
-    description.textContent = field.value;
+    if (field.progressValue === null || field.progressValue === undefined) {
+        description.textContent = field.value;
+    } else {
+        description.classList.add(`${className}__value--bounded`);
+        const value = document.createElement("span");
+        value.textContent = field.value;
+        const progress = document.createElement("progress");
+        progress.classList.add("evaluation-metric__progress");
+        progress.max = 1;
+        progress.value = field.progressValue;
+        progress.setAttribute("aria-label", `${field.label} ${field.value}`);
+        description.append(value, progress);
+    }
 
     container.append(term, description);
     return container;
@@ -242,7 +254,10 @@ function renderNormalAlertBurden(payload) {
     const grid = document.createElement("div");
     grid.classList.add("evaluation-burden-grid");
     grid.append(...cards);
-    normalAlertBurden.replaceChildren(grid);
+    const note = document.createElement("p");
+    note.classList.add("evaluation-interpretation-note");
+    note.textContent = "FA/BH는 관측된 Benign Run 시간과 함께 해석해야 합니다.";
+    normalAlertBurden.replaceChildren(grid, note);
 }
 
 function createSummaryGroup(titleText, fields) {
@@ -259,7 +274,7 @@ function renderPairedTiming(payload) {
     const summary = buildPairedTimingSummary(payload);
     const explanation = document.createElement("p");
     explanation.classList.add("evaluation-interpretation-note");
-    explanation.textContent = summary.deltaExplanation;
+    explanation.textContent = `${summary.deltaExplanation} Earlier Eligible Path는 Runtime의 최종 경로 선택과는 별개입니다.`;
     pairedTiming.replaceChildren(
         createSummaryGroup("Outcome Counts", summary.counts),
         createSummaryGroup("Both-detected Summary", summary.bothDetected),

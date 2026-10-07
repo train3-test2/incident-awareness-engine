@@ -193,6 +193,23 @@ test("smoke purpose warns against performance claims", () => {
     assert.match(presentation.description, /성능 우위 주장에 사용하는 결과가 아닙니다/);
 });
 
+test("performance purpose remains descriptive without readiness claims", () => {
+    // Given
+    const purpose = "performance";
+
+    // When
+    const presentation = getPurposePresentation(purpose);
+
+    // Then
+    assert.deepEqual(presentation, {
+        label: "performance",
+        title: "Performance Evaluation",
+        description: "성능 평가 목적으로 저장된 Evaluation Snapshot 결과입니다.",
+        modifier: "performance",
+    });
+    assert.doesNotMatch(presentation.description, /production ready|validated|superior/i);
+});
+
 test("nullable presentation consistently uses N/A", () => {
     // Given
     const nullableValues = [null, undefined];
@@ -245,11 +262,11 @@ test("method comparison uses API metrics without recomputing recall or FPR", () 
     // Then
     assert.deepEqual(methods.map((method) => method.method), ["Fast", "Fusion", "Hybrid"]);
     assert.deepEqual(methods[0].fields, [
-        { label: "Run Recall", value: "90.0%" },
+        { label: "Run Recall", value: "90.0%", progressValue: 0.9 },
         { label: "Detected / Total Attack Runs", value: "1 / 2" },
         { label: "Median TTSD", value: "12 sec" },
         { label: "TTSD IQR", value: "7 sec" },
-        { label: "Benign Run FPR", value: "90.0%" },
+        { label: "Benign Run FPR", value: "90.0%", progressValue: 0.9 },
         { label: "False Positive / Total Normal Runs", value: "1 / 2" },
     ]);
 });
@@ -270,6 +287,23 @@ test("method comparison keeps null metrics and nullable values explicit", () => 
     });
     assert.equal(methods[1].fields[2].value, "N/A");
     assert.equal(methods[2].fields[4].value, "N/A");
+    assert.equal(methods[2].fields[4].progressValue, null);
+});
+
+test("bounded indicators use only API recall and FPR values", () => {
+    // Given
+    const payload = evaluationPayload();
+    payload.metrics.Fast.run_recall = 0.25;
+    payload.metrics.Fast.benign_run_fpr = 0.8;
+
+    // When
+    const [fast] = buildMethodComparison(payload);
+
+    // Then
+    assert.equal(fast.fields[0].progressValue, 0.25);
+    assert.equal(fast.fields[4].progressValue, 0.8);
+    assert.ok(fast.fields.slice(1, 4).every((field) => !("progressValue" in field)));
+    assert.equal("progressValue" in fast.fields[5], false);
 });
 
 test("alert burden includes only Fast and Fusion and trusts the API FA/BH", () => {
@@ -491,12 +525,35 @@ test("contract rejects malformed Stage 2 fields before rendering", () => {
             payload.normal_alert_burden.metrics.Fast.per_run[0].observation_seconds = "3600";
             return payload;
         })(),
+        (() => {
+            const payload = evaluationPayload();
+            payload.metrics.Fast.run_recall = 1.1;
+            return payload;
+        })(),
     ];
 
     // When / Then
     for (const payload of invalidPayloads) {
         assert.throws(() => resolveEvaluationQueryState(null, { kind: "success", payload }));
     }
+});
+
+test("contract rejects unsupported purpose and malformed evaluation horizon", () => {
+    // Given
+    const unsupportedPurpose = evaluationPayload();
+    unsupportedPurpose.plan.purpose = "production";
+    const malformedHorizon = evaluationPayload();
+    malformedHorizon.plan.evaluation_horizon_sec = "120";
+
+    // When / Then
+    assert.throws(() => resolveEvaluationQueryState(null, {
+        kind: "success",
+        payload: unsupportedPurpose,
+    }));
+    assert.throws(() => resolveEvaluationQueryState(null, {
+        kind: "success",
+        payload: malformedHorizon,
+    }));
 });
 
 test("contract rejects malformed base fields and non-finite presentation values", () => {
@@ -517,18 +574,25 @@ test("contract rejects malformed base fields and non-finite presentation values"
     }
 });
 
-test("Evaluation contract is pure, order-preserving, and contains no metric formulas", async () => {
+test("Evaluation presentation is pure, order-preserving, and contains no metric formulas", async () => {
     // Given
-    const source = await readFile(
+    const contractSource = await readFile(
         new URL(
             "../../../src/incident_awareness/dashboard/ui/assets/evaluation-contract.mjs",
             import.meta.url,
         ),
         "utf8",
     );
+    const rendererSource = await readFile(
+        new URL(
+            "../../../src/incident_awareness/dashboard/ui/assets/evaluation.js",
+            import.meta.url,
+        ),
+        "utf8",
+    );
 
     // When
-    const forbiddenFragments = [
+    const pureContractForbidden = [
         "document",
         "window",
         "fetch(",
@@ -536,10 +600,16 @@ test("Evaluation contract is pure, order-preserving, and contains no metric form
         "setTimeout(",
         "WebSocket",
         "EventSource",
+    ];
+    const formulaAndOrderingForbidden = [
         "metric.detected_runs / metric.total_attack_runs",
         "metric.false_positive_runs / metric.total_normal_runs",
         "metric.false_alert_episodes / metric.benign_run_hours",
         "row.paths.Fusion.ttsd_sec - row.paths.Fast.ttsd_sec",
+        "eligible_time - reference_time",
+        "Math.min(",
+        "runtime t_e",
+        "winning_path",
         ".sort(",
         ".toSorted(",
         ".reverse(",
@@ -547,7 +617,12 @@ test("Evaluation contract is pure, order-preserving, and contains no metric form
     ];
 
     // Then
-    for (const fragment of forbiddenFragments) {
-        assert.equal(source.includes(fragment), false);
+    for (const fragment of pureContractForbidden) {
+        assert.equal(contractSource.includes(fragment), false);
+    }
+    for (const source of [contractSource, rendererSource]) {
+        for (const fragment of formulaAndOrderingForbidden) {
+            assert.equal(source.includes(fragment), false);
+        }
     }
 });
