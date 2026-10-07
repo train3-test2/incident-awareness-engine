@@ -293,6 +293,9 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
     needs: aws-smoke-deploy
     runs-on: ubuntu-latest
+    concurrency:
+      group: dashboard-deploy-develop
+      cancel-in-progress: true
     permissions:
       contents: read
       id-token: write
@@ -366,7 +369,33 @@ jobs:
           )"
           echo "task_definition_arn=$task_definition_arn" >> "$GITHUB_OUTPUT"
 
+      - name: Check current develop HEAD before Dashboard service update
+        id: current-develop-head
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          latest_develop_sha="$(git ls-remote origin refs/heads/develop | awk '{print $1}')"
+          if [[ -z "$latest_develop_sha" ]]; then
+            echo "Could not resolve the current develop branch HEAD."
+            exit 1
+          fi
+
+          if [[ "$GITHUB_SHA" != "$latest_develop_sha" ]]; then
+            echo "is_current=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Dashboard deployment skipped"
+              echo
+              echo "This run is for stale commit \`$GITHUB_SHA\`; current develop HEAD is \`$latest_develop_sha\`."
+              echo "A newer develop workflow is responsible for deploying the Dashboard."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "is_current=true" >> "$GITHUB_OUTPUT"
+
       - name: Update Dashboard ECS service
+        if: steps.current-develop-head.outputs.is_current == 'true'
         shell: bash
         env:
           TASK_DEFINITION_ARN: ${{ steps.register-dashboard-task-definition.outputs.task_definition_arn }}
@@ -381,6 +410,7 @@ jobs:
             --no-cli-pager
 
       - name: Wait for Dashboard service stability
+        if: steps.current-develop-head.outputs.is_current == 'true'
         timeout-minutes: 15
         shell: bash
         run: |
@@ -391,6 +421,7 @@ jobs:
             --services "$ECS_DASHBOARD_SERVICE"
 
       - name: Verify running Dashboard task
+        if: steps.current-develop-head.outputs.is_current == 'true'
         id: dashboard-task
         shell: bash
         run: |
@@ -430,6 +461,7 @@ jobs:
           echo "task_arn=$task_arn" >> "$GITHUB_OUTPUT"
 
       - name: Summarize Dashboard endpoint
+        if: steps.current-develop-head.outputs.is_current == 'true'
         shell: bash
         env:
           TASK_ARN: ${{ steps.dashboard-task.outputs.task_arn }}
