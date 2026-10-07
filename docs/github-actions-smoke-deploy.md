@@ -139,11 +139,10 @@ GitHub 저장소의 **Settings → Secrets and variables → Actions → Variabl
 해당 환경의 정확한 ARN으로 치환한다. 저장소의 정책 파일 변경만으로 AWS IAM 권한이
 자동 변경되지는 않는다.
 
-Worker Service 배포 권한의 `ECS_CLUSTER_ARN`,
-`ECS_FIRST_CYCLE_WORKER_SERVICE_ARN`은 GitHub Actions Variable이 아니라 IAM 정책
-placeholder다. 현재 개발 환경의 cluster ARN과
-`incident-awareness-engine-first-cycle-worker` Service ARN으로 치환해 GitHub OIDC
-역할 정책에 적용한다.
+Worker·Dashboard Service 배포 권한의 `ECS_CLUSTER_ARN`,
+`ECS_FIRST_CYCLE_WORKER_SERVICE_ARN`, `ECS_DASHBOARD_SERVICE_ARN`은 GitHub Actions
+Variable이 아니라 IAM 정책 placeholder다. 현재 개발 환경의 cluster ARN과 각 Service
+ARN으로 치환해 GitHub OIDC 역할 정책에 적용한다.
 
 ## 실패 확인과 재실행
 

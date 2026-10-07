@@ -276,8 +276,34 @@ def test_github_actions_policy_reads_dashboard_service_status() -> None:
     assert statement == {
         "Sid": "ReadDashboardServiceStatus",
         "Effect": "Allow",
-        "Action": ["ecs:DescribeServices", "ecs:ListTasks"],
+        "Action": "ecs:DescribeServices",
+        "Resource": "ECS_DASHBOARD_SERVICE_ARN",
+        "Condition": {
+            "ArnEquals": {
+                "ecs:cluster": "ECS_CLUSTER_ARN",
+            }
+        },
+    }
+
+
+def test_github_actions_policy_lists_dashboard_tasks_only_in_the_cluster() -> None:
+    policy = json.loads(
+        (IAM_DIRECTORY / "github-actions-smoke-deploy-policy.json").read_text(encoding="utf-8")
+    )
+    statement = next(
+        item for item in policy["Statement"] if item["Sid"] == "ListDashboardServiceTasks"
+    )
+
+    assert statement == {
+        "Sid": "ListDashboardServiceTasks",
+        "Effect": "Allow",
+        "Action": "ecs:ListTasks",
         "Resource": "*",
+        "Condition": {
+            "ArnEquals": {
+                "ecs:cluster": "ECS_CLUSTER_ARN",
+            }
+        },
     }
 
 

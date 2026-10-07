@@ -96,11 +96,24 @@
     {
       "Sid": "ReadDashboardServiceStatus",
       "Effect": "Allow",
-      "Action": [
-        "ecs:DescribeServices",
-        "ecs:ListTasks"
-      ],
-      "Resource": "*"
+      "Action": "ecs:DescribeServices",
+      "Resource": "ECS_DASHBOARD_SERVICE_ARN",
+      "Condition": {
+        "ArnEquals": {
+          "ecs:cluster": "ECS_CLUSTER_ARN"
+        }
+      }
+    },
+    {
+      "Sid": "ListDashboardServiceTasks",
+      "Effect": "Allow",
+      "Action": "ecs:ListTasks",
+      "Resource": "*",
+      "Condition": {
+        "ArnEquals": {
+          "ecs:cluster": "ECS_CLUSTER_ARN"
+        }
+      }
     },
     {
       "Sid": "ReadDashboardNetworkInterface",
