@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from incident_awareness.common.models.event import NormalizedEvent, RawLogReference
 from incident_awareness.common.models.fusion import FusionResult, FusionStoppingTrace
@@ -17,6 +18,8 @@ from incident_awareness.dashboard.decision_read_model import (
     CurrentDecisionReadModel,
     HistoricalDecisionReadModel,
 )
+from incident_awareness.dashboard.evaluation_read_model import EvaluationReadModel
+from incident_awareness.evaluation.result_inputs import EvaluationPlan
 
 
 class RunListItem(BaseModel):
@@ -221,6 +224,186 @@ class FusionEngineResponse(BaseModel):
     fusion_result: FusionResult | None
     stopping_trace: FusionStoppingTrace | None
     runtime_config_snapshot: FusionRuntimeConfigSnapshot | None
+
+
+class EvaluationExclusionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    method: Literal["Fast", "Fusion", "Hybrid"]
+    reason: Literal["not_evaluated"]
+
+
+class EvaluationMethodMetricResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    method: Literal["Fast", "Fusion", "Hybrid"]
+    total_attack_runs: int
+    detected_runs: int
+    run_recall: float | None
+    median_ttsd_sec: float | None
+    total_normal_runs: int
+    false_positive_runs: int
+    benign_run_fpr: float | None
+    ttsd_iqr_sec: float | None
+
+
+class EvaluationMethodMetricsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fast: EvaluationMethodMetricResponse | None = Field(alias="Fast")
+    fusion: EvaluationMethodMetricResponse | None = Field(alias="Fusion")
+    hybrid: EvaluationMethodMetricResponse | None = Field(alias="Hybrid")
+
+
+class EvaluationRunIdsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fast: list[str] = Field(alias="Fast")
+    fusion: list[str] = Field(alias="Fusion")
+    hybrid: list[str] = Field(alias="Hybrid")
+
+
+class NormalAlertBurdenExclusionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    method: Literal["Fast", "Fusion"]
+    reason: Literal["not_evaluated"]
+
+
+class NormalAlertBurdenPerRunResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    entity_id: str
+    family_id: str | None
+    variation_id: str | None
+    repetition: int | None
+    false_alert_episodes: int
+    observation_seconds: float
+
+
+class NormalAlertBurdenMetricResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    evaluated_run_ids: list[str]
+    false_alert_episodes: int
+    benign_run_hours: float
+    false_alerts_per_benign_run_hour: float | None
+    per_run: list[NormalAlertBurdenPerRunResponse]
+
+
+class NormalAlertBurdenMetricsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fast: NormalAlertBurdenMetricResponse = Field(alias="Fast")
+    fusion: NormalAlertBurdenMetricResponse = Field(alias="Fusion")
+
+
+class NormalAlertBurdenResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_id: str
+    plan: EvaluationPlan
+    normal_run_ids: list[str]
+    exclusions: list[NormalAlertBurdenExclusionResponse]
+    comparison_ready: bool
+    metrics: NormalAlertBurdenMetricsResponse
+
+
+class PairedTimingPathResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    eligible_status: Literal["detected", "miss", "not_evaluated"]
+    eligible_time: str | None
+    ttsd_sec: float | None
+
+
+class PairedTimingPathsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fast: PairedTimingPathResponse = Field(alias="Fast")
+    fusion: PairedTimingPathResponse = Field(alias="Fusion")
+
+
+class PairedTimingCountsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    both_detected: int
+    fast_only: int
+    fusion_only: int
+    both_miss: int
+    not_evaluated: int
+
+
+class PairedTimingSummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_count: int
+    fast_earlier: int
+    fusion_earlier: int
+    ties: int
+    median_fusion_minus_fast_sec: float | None
+
+
+class PairedTimingRunResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    entity_id: str
+    family_id: str | None
+    variation_id: str | None
+    repetition: int | None
+    decision_id: str
+    reference_time: str
+    paths: PairedTimingPathsResponse
+    outcome: Literal[
+        "both_detected",
+        "fast_only",
+        "fusion_only",
+        "both_miss",
+        "not_evaluated",
+    ]
+    fusion_minus_fast_sec: float | None
+    earlier_eligible_path: Literal["Fast", "Fusion", "tie"] | None
+
+
+class PairedTimingResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str
+    snapshot_id: str
+    plan: EvaluationPlan
+    attack_run_ids: list[str]
+    exclusions: list[NormalAlertBurdenExclusionResponse]
+    paired_coverage_complete: bool
+    counts: PairedTimingCountsResponse
+    both_detected_summary: PairedTimingSummaryResponse
+    per_run: list[PairedTimingRunResponse]
+
+
+class DashboardEvaluationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_id: str
+    plan: EvaluationPlan
+    exclusions: list[EvaluationExclusionResponse]
+    evaluated_run_ids: EvaluationRunIdsResponse
+    comparison_ready: bool
+    metrics: EvaluationMethodMetricsResponse
+    normal_alert_burden: NormalAlertBurdenResponse
+    paired_timing: PairedTimingResponse
+
+    @classmethod
+    def from_read_model(cls, read_model: EvaluationReadModel) -> "DashboardEvaluationResponse":
+        return cls.model_validate(
+            {
+                **read_model.evaluation,
+                "normal_alert_burden": read_model.normal_alert_burden,
+                "paired_timing": read_model.paired_timing,
+            }
+        )
 
 
 class HistoricalDecisionResponse(BaseModel):
