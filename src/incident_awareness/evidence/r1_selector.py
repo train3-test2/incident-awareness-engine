@@ -117,8 +117,10 @@ def select_r1_lineage(
         process_events,
         network_events,
     )
+    if has_temporal_inversion:
+        return _failed("temporal_inversion")
     if not terminal_candidates:
-        return _failed("temporal_inversion" if has_temporal_inversion else "no_terminal_candidate")
+        return _failed("no_terminal_candidate")
     if len(terminal_candidates) != 1:
         return _failed("ambiguous_terminal_candidate")
 
