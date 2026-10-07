@@ -401,6 +401,35 @@ def test_mixed_network_timestamps_are_temporal_inversion() -> None:
     assert result.diagnostics == ("temporal_inversion",)
 
 
+def test_inverted_terminal_candidate_takes_priority_over_valid_candidate() -> None:
+    # Given
+    anchor, middle, valid_terminal, valid_network = _events()
+    inverted_terminal_guid = "{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}"
+    inverted_terminal = _event(
+        event_id="evt-terminal-inverted",
+        event_type="process_create",
+        timestamp=_BASE_TIME + timedelta(seconds=2),
+        process_guid=inverted_terminal_guid,
+        parent_process_guid=_MIDDLE_GUID,
+    )
+    early_network = _event(
+        event_id="evt-network-early",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=1),
+        process_guid=inverted_terminal_guid,
+    )
+
+    # When
+    result = select_r1_lineage(
+        (anchor, middle, valid_terminal, valid_network, inverted_terminal, early_network),
+        policy=_policy(),
+    )
+
+    # Then
+    assert result.selection is None
+    assert result.diagnostics == ("temporal_inversion",)
+
+
 def test_parent_after_child_is_temporal_inversion() -> None:
     # Given
     anchor = _event(

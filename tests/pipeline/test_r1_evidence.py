@@ -607,6 +607,51 @@ def test_selector_pipeline_rejects_mixed_network_timestamps_without_evidence() -
     assert result.selector_result.diagnostics == ("temporal_inversion",)
 
 
+def test_selector_pipeline_rejects_inverted_candidate_before_valid_candidate() -> None:
+    # Given
+    anchor, middle, valid_terminal = _lineage_events()
+    valid_network = _event(
+        event_id="evt-network-valid",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=3),
+        process_guid=_TERMINAL_GUID,
+    )
+    inverted_terminal_guid = "{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}"
+    inverted_terminal = _event(
+        event_id="evt-terminal-inverted",
+        event_type="process_create",
+        timestamp=_BASE_TIME + timedelta(seconds=2),
+        process_guid=inverted_terminal_guid,
+        parent_process_guid=_MIDDLE_GUID,
+    )
+    early_network = _event(
+        event_id="evt-network-early",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=1),
+        process_guid=inverted_terminal_guid,
+    )
+
+    # When
+    result = run_r1_evidence_pipeline_with_selector(
+        (
+            anchor,
+            middle,
+            valid_terminal,
+            valid_network,
+            inverted_terminal,
+            early_network,
+        ),
+        selector_policy=_selector_policy(),
+        approved_policy=_policy(),
+    )
+
+    # Then
+    assert result.evidences == ()
+    assert result.lineage_input is None
+    assert result.selector_result.diagnostics == ("temporal_inversion",)
+    assert result.extraction_diagnostics == ()
+
+
 def test_selector_pipeline_emits_every_valid_network_follow_on() -> None:
     # Given
     anchor, middle, terminal = _lineage_events()
