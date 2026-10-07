@@ -84,6 +84,8 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
     needs: quality
     runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.image.outputs.uri }}
     permissions:
       contents: read
       id-token: write
@@ -285,3 +287,227 @@ jobs:
           run-task-assign-public-IP: ENABLED
           wait-for-task-stopped: true
           wait-max-delay-seconds: 15
+
+  dashboard-deploy:
+    name: Deploy Dashboard ECS service
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    needs: aws-smoke-deploy
+    runs-on: ubuntu-latest
+    concurrency:
+      group: dashboard-deploy-develop
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_DASHBOARD_SERVICE: ${{ vars.ECS_DASHBOARD_SERVICE }}
+      IMAGE_URI: ${{ needs.aws-smoke-deploy.outputs.image_uri }}
+      DASHBOARD_EXECUTION_ROLE_ARN: ${{ vars.DASHBOARD_EXECUTION_ROLE_ARN }}
+      DASHBOARD_DATABASE_URL_SECRET_ARN: ${{ vars.DASHBOARD_DATABASE_URL_SECRET_ARN }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate Dashboard image URI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${IMAGE_URI//[[:space:]]/}" ]]; then
+            echo "The smoke deployment did not publish an image URI."
+            exit 1
+          fi
+
+          expected_suffix=":${GITHUB_SHA}"
+          if [[ "$IMAGE_URI" != *"$expected_suffix" ]]; then
+            echo "Dashboard image URI must use the current commit SHA tag."
+            exit 1
+          fi
+
+      - name: Validate Dashboard deployment configuration
+        shell: bash
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+
+          for value in AWS_ROLE_ARN AWS_REGION ECS_CLUSTER ECS_DASHBOARD_SERVICE DASHBOARD_EXECUTION_ROLE_ARN DASHBOARD_DATABASE_URL_SECRET_ARN; do
+            if [[ -z "${!value//[[:space:]]/}" ]]; then
+              echo "GitHub Actions variable $value must be configured."
+              exit 1
+            fi
+          done
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Render Dashboard task definition
+        shell: bash
+        run: |
+          python scripts/render_ecs_task_definition.py \
+            --template infra/ecs/task-definition.dashboard.json \
+            --output "$RUNNER_TEMP/task-definition.dashboard.json" \
+            --image-uri "$IMAGE_URI" \
+            --execution-role-arn "$DASHBOARD_EXECUTION_ROLE_ARN" \
+            --database-url-secret-arn "$DASHBOARD_DATABASE_URL_SECRET_ARN"
+
+      - name: Register Dashboard task definition revision
+        id: register-dashboard-task-definition
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          task_definition_arn="$(
+            aws ecs register-task-definition \
+              --cli-input-json "file://$RUNNER_TEMP/task-definition.dashboard.json" \
+              --query 'taskDefinition.taskDefinitionArn' \
+              --output text
+          )"
+          echo "task_definition_arn=$task_definition_arn" >> "$GITHUB_OUTPUT"
+
+      - name: Check current develop HEAD before Dashboard service update
+        id: current-develop-head
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          latest_develop_sha="$(git ls-remote origin refs/heads/develop | awk '{print $1}')"
+          if [[ -z "$latest_develop_sha" ]]; then
+            echo "Could not resolve the current develop branch HEAD."
+            exit 1
+          fi
+
+          if [[ "$GITHUB_SHA" != "$latest_develop_sha" ]]; then
+            echo "is_current=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Dashboard deployment skipped"
+              echo
+              echo "This run is for stale commit \`$GITHUB_SHA\`; current develop HEAD is \`$latest_develop_sha\`."
+              echo "A newer develop workflow is responsible for deploying the Dashboard."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "is_current=true" >> "$GITHUB_OUTPUT"
+
+      - name: Update Dashboard ECS service
+        if: steps.current-develop-head.outputs.is_current == 'true'
+        shell: bash
+        env:
+          TASK_DEFINITION_ARN: ${{ steps.register-dashboard-task-definition.outputs.task_definition_arn }}
+        run: |
+          set -euo pipefail
+
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_DASHBOARD_SERVICE" \
+            --task-definition "$TASK_DEFINITION_ARN" \
+            --force-new-deployment \
+            --no-cli-pager
+
+      - name: Wait for Dashboard service stability
+        if: steps.current-develop-head.outputs.is_current == 'true'
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_DASHBOARD_SERVICE"
+
+      - name: Verify running Dashboard task
+        if: steps.current-develop-head.outputs.is_current == 'true'
+        id: dashboard-task
+        shell: bash
+        env:
+          TASK_DEFINITION_ARN: ${{ steps.register-dashboard-task-definition.outputs.task_definition_arn }}
+        run: |
+          set -euo pipefail
+
+          service_state="$(
+            aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$ECS_DASHBOARD_SERVICE" \
+              --query 'services[0].[desiredCount,runningCount,pendingCount]' \
+              --output text
+          )"
+          read -r desired_count running_count pending_count <<< "$service_state"
+          if [[ "$desired_count" != "1" || "$running_count" != "1" || "$pending_count" != "0" ]]; then
+            echo "Dashboard service did not reach the expected 1/1/0 state: $service_state"
+            exit 1
+          fi
+
+          task_arn="$(
+            aws ecs list-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --service-name "$ECS_DASHBOARD_SERVICE" \
+              --desired-status RUNNING \
+              --query 'taskArns[0]' \
+              --output text
+          )"
+          if [[ -z "$task_arn" || "$task_arn" == "None" ]]; then
+            echo "Dashboard service is stable but has no running task."
+            exit 1
+          fi
+
+          read -r task_status running_task_definition_arn <<< "$(
+            aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks "$task_arn" \
+              --query 'tasks[0].[lastStatus,taskDefinitionArn]' \
+              --output text
+          )"
+          if [[ "$task_status" != "RUNNING" || "$running_task_definition_arn" != "$TASK_DEFINITION_ARN" ]]; then
+            echo "Dashboard task verification failed: status=$task_status task_definition=$running_task_definition_arn expected=$TASK_DEFINITION_ARN"
+            exit 1
+          fi
+          echo "task_arn=$task_arn" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize Dashboard endpoint
+        if: steps.current-develop-head.outputs.is_current == 'true'
+        shell: bash
+        env:
+          TASK_ARN: ${{ steps.dashboard-task.outputs.task_arn }}
+          TASK_DEFINITION_ARN: ${{ steps.register-dashboard-task-definition.outputs.task_definition_arn }}
+        run: |
+          set -euo pipefail
+
+          network_interface_id="$(
+            aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks "$TASK_ARN" \
+              --query "tasks[0].attachments[?type=='ElasticNetworkInterface'].details[?name=='networkInterfaceId'].value | [0]" \
+              --output text
+          )"
+          if [[ -z "$network_interface_id" || "$network_interface_id" == "None" ]]; then
+            echo "Dashboard task has no network interface."
+            exit 1
+          fi
+
+          public_ip="$(
+            aws ec2 describe-network-interfaces \
+              --network-interface-ids "$network_interface_id" \
+              --query 'NetworkInterfaces[0].Association.PublicIp' \
+              --output text
+          )"
+          if [[ -z "$public_ip" || "$public_ip" == "None" ]]; then
+            echo "Dashboard task has no public IP address."
+            exit 1
+          fi
+
+          {
+            echo "## Dashboard deployment"
+            echo
+            echo "- Service: \`$ECS_DASHBOARD_SERVICE\`"
+            echo "- Task definition: \`$TASK_DEFINITION_ARN\`"
+            echo "- Running task: \`$TASK_ARN\`"
+            echo "- Dashboard: [http://$public_ip:8080/dashboard](http://$public_ip:8080/dashboard)"
+            echo "- Health check: \`curl --fail http://$public_ip:8080/healthz\`"
+            echo
+            echo "> Run the health check from a client IP allowed by the Dashboard task security group. The Fargate public IP changes when the task is replaced."
+          } >> "$GITHUB_STEP_SUMMARY"
