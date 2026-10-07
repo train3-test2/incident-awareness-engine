@@ -243,6 +243,8 @@ Evidence에 raw provenance를 중복 저장하지 않아도 원본까지 연결�
 
 이 결과는 동결된 계보와 다른 complete lineage가 lineage deviation을 생성하고, 공통 후속 연결은 두 Run 모두에서 생성되는 현재 candidate 의미와 일치한다. 특정 중간 프로세스 이름 자체가 공격 판정 조건인 것은 아니다.
 
+Normal의 lineage deviation 0건은 수동으로 선택한 단일 Normal lineage가 approved lineage와 일치했다는 의미다. Run 안의 다른 후보 lineage는 평가하지 않았으므로 Normal Run 전체의 false positive가 0건이라는 뜻이 아니며, 이 한 Pair로 false-positive rate를 추정할 수 없다. 반복 평가용 deterministic selector를 도입해 전체 후보 lineage를 평가한 뒤에야 해당 특성을 판단할 수 있다.
+
 ## 16. 반복 평가 selector 요구사항
 
 이번 검증은 특정 development Pair의 source RecordId를 사용해 anchor와 terminal을 명시적으로 resolve했다. 이는 수동 validation에는 적합하지만 production 또는 반복 평가 selector가 아니다.
