@@ -70,7 +70,21 @@ TTSD 분포
 
 ### 2.1 Causal availability 제한
 
-PR #229에서 추가된 R1 selector는 호출자가 전달한 Event batch 전체를 먼저 materialize한 뒤 terminal 후보와 lineage를 결정한다.
+최초 PR #230 분석 artifact는 PR #229 selector로 생성하지 않았다. PR #229 selector 자체는 repository/develop에 이미 merge되어 있었지만, 최초 분석에 사용한 feature branch snapshot에는 아직 `src/incident_awareness/evidence/r1_selector.py`가 포함되지 않았다. 따라서 기존 validation 경로가 audit 조건으로 anchor와 terminal을 resolve한 뒤 명시적인 `R1LineageInput`을 전달했다.
+
+~~~text
+tools/validation/check_r1_pair_connection.py
+→ audit 조건으로 anchor / terminal resolve
+→ R1LineageInput(anchor_event_id, terminal_event_id, approved_policy)
+→ run_and_write_r1_evidence_artifacts()
+→ Role 1 replay 입력 artifact
+~~~
+
+이 수동 validation 경로도 완성된 Run 전체를 사후 검사하는 경로이므로 causal/online availability를 제공하지 않는다.
+
+PR #229 merge commit `9ee8680482cdfe0db23c8d01f1394fb57012d5a2`가 최신 develop 반영 merge commit `064292096a1507a3ae5f5bd720851a02ab1e710b`을 통해 feature branch에 들어온 뒤에는 별도의 selector cross-check를 수행했다. 이 후속 검증은 최초 trajectory/ablation 입력 artifact의 생성 provenance를 변경하지 않는다.
+
+후속 PR #229 selector는 호출자가 전달한 Event batch 전체를 먼저 materialize한 뒤 terminal 후보와 lineage를 결정한다.
 
 현재 selector에서 process Event가 terminal 후보가 되려면 동일 ProcessGuid에 연결된 후속 network Event가 존재해야 한다. 또한 복수 terminal 후보의 유일성 여부도 입력 batch 범위에서 확인한다.
 
@@ -96,7 +110,7 @@ Pair-002 Attack의 lineage deviation Evidence에 기록된 event timestamp는 �
 
 현재 selector는 whole-batch 입력을 사용하며 terminal 후보의 유일성까지 확인하므로, 실제 Evidence 사용 가능 시각은 위 network Event보다 늦거나 selector batch/window 종료 시점일 수 있다. 현재 계약에는 이를 나타내는 `available_at` 또는 watermark가 존재하지 않는다.
 
-따라서 현재 selector로 생성된 R1 Evidence는 다음 임시 소비 규칙을 적용한다.
+따라서 최초 수동 artifact와 후속 selector cross-check 결과 모두 다음 임시 소비 규칙을 적용한다.
 
 ~~~text
 Evidence.timestamp
@@ -131,9 +145,34 @@ feature/modeling/temporal-validity-analysis
 
 develop base:
 6e096d09ce1c996e4b4c7cc60f51ec265ba0bb63
+
+최초 probe config commit:
+888cc9c0dc534fa52981871956800834bb926151
+
+최초 분석 문서 commit:
+66648894a7a9a10db0ae1f247e7b402ea1c3ca10
+
+PR #229 selector merge commit:
+9ee8680482cdfe0db23c8d01f1394fb57012d5a2
+
+최신 develop 반영 merge commit:
+064292096a1507a3ae5f5bd720851a02ab1e710b
+
+리뷰 재현 구현 기준 base:
+327f2e5b5a681ccf3ecdec3d324d933d3ae08637
 ~~~
 
-R1 Evidence type 두 종류가 공식 managed vocabulary에 등록된 이후의 `develop`을 기준으로 사용했다.
+최초 수치 분석은 위 develop base와 명시적 `R1LineageInput` artifact 경로에서 수행했다. `888cc9c0dc534fa52981871956800834bb926151`은 probe config를 추가한 commit이고, `66648894a7a9a10db0ae1f247e7b402ea1c3ca10`은 그 분석 문서를 추가한 별도 commit이다. PR #229 selector와 causal availability 설명은 이후 반영된 코드를 대상으로 한 후속 cross-check 및 제한 분석이다.
+
+리뷰 반영 후 수치 재현은 다음 deterministic script로 수행한다.
+
+~~~text
+tools/analysis/r1_pair002_temporal_probe.py
+~~~
+
+이 script는 기존 artifact를 읽기만 하며 selector 또는 extractor를 호출해 Evidence를 새로 만들지 않는다.
+
+R1 Evidence type 두 종류가 공식 managed vocabulary에 등록된 이후의 코드를 사용했다.
 
 사용한 Evidence type은 다음과 같다.
 
@@ -170,12 +209,20 @@ F3B9157F2A4EC56710A555194A701B9B43DEA52DE1883319C4B94E89616BF95D
 
 ### 4.2 Evidence 재생성
 
-기존 validation 경로를 사용하여 실제 Pair 원본으로부터 R1 Evidence artifact를 다시 생성했다.
+최초 분석에서는 다음 명령으로 기존 validation 경로를 사용하여 실제 Pair 원본으로부터 R1 Evidence artifact를 다시 생성했다.
+
+~~~text
+uv run python tools/validation/check_r1_pair_connection.py --pair "<PAIR_ROOT>" --output "<PAIR002_OUTPUT>"
+~~~
+
+이 경로는 PR #229 selector가 아니라 audit 조건으로 선택한 anchor/terminal을 명시적 `R1LineageInput`으로 전달한다.
 
 사용한 development connection policy:
 
 ~~~text
-r1-v02-development-connection/v0.1
+policy_id   = r1-v02-development-connection
+version     = v0.1
+config_hash = 59b5eb5a5637f4527a4725a310aa1bece6a9da8bd7f1257edee03be1b15f0b78
 ~~~
 
 Extractor version:
@@ -216,7 +263,16 @@ remote_process_network_follow_on          = 1
 diagnostics = []
 ~~~
 
+재생성된 normalized input SHA-256은 다음과 같다. `normalized_events.jsonl`은 UTF-8 text의 CRLF(`\r\n`)를 LF(`\n`)로 canonicalize한 뒤 계산한다. 따라서 Windows CRLF와 Unix LF checkout에서 logical JSONL content가 같으면 동일한 값이 된다.
+
+~~~text
+Attack = d62050b01c8bf8edbdd9c7431a448665a6c622220a3739567dbe325cd7776097
+Normal = f5f6b1e81d928be1eb8329c13b13081930d3d363320ee4784e67abe51b241839
+~~~
+
 ### 4.3 Evidence artifact SHA-256
+
+`r1_evidence.jsonl`과 `r1_extraction_summary.json`은 artifact writer/summary contract에 따라 newline normalization 없이 raw artifact bytes로 SHA-256을 계산한다.
 
 Attack `r1_evidence.jsonl`:
 
@@ -230,11 +286,74 @@ Normal `r1_evidence.jsonl`:
 b0fa9a2d2789da1f3dd0257789a4d143988c035eb225aef136be8e5b5455e8b4
 ~~~
 
+Extraction summary SHA-256:
+
+~~~text
+Attack = 545d4c6f08c9d2c092a26709ab58f6ea3d15fa49632bb71f98e26d074a0e6671
+Normal = 1b882055456c96cf16f26c3163d0d38de9504733d108a951144ef5ce5c15958a
+~~~
+
 두 값 모두 기존 Pair-002 E2E validation에서 기록된 Evidence artifact SHA-256과 byte 단위로 일치했다.
 
 또한 `load_r1_evidence_artifacts()`를 사용한 Role 1 artifact loading이 두 Run 모두 성공했다.
 
 따라서 본 분석에서는 기존 검증과 동일한 R1 Evidence artifact를 입력으로 사용했다고 본다.
+
+### 4.4 PR #229 selector 후속 cross-check
+
+PR #229 반영 후 동일한 Pair normalized Event에 다음 selector 경로를 별도로 적용했다.
+
+~~~text
+R1SelectorPolicy
+→ select_r1_lineage() structural selection
+→ run_r1_evidence_pipeline_with_selector() whole-batch extraction
+~~~
+
+Selector policy provenance는 다음과 같다.
+
+~~~text
+policy_id   = r1-structural-lineage-selector
+version     = v0.1
+config_hash = 669520854868ae24182f502a2c118e66fce9a0fc464283232990182fa848072d
+~~~
+
+후속 cross-check의 anchor/terminal selection과 Evidence 결과는 최초 수동 validation 결과와 일치했다. 그러나 이 selector policy provenance는 후속 cross-check에만 연결한다. 최초 PR #230 replay artifact의 provenance는 계속 `r1-v02-development-connection/v0.1` 및 명시적 `R1LineageInput` 경로다.
+
+### 4.5 Temporal probe 재현
+
+리뷰 반영 후 static score, 기본 replay 및 ablation은 다음 명령으로 재현한다.
+
+~~~text
+uv run python tools/analysis/r1_pair002_temporal_probe.py --artifacts-root "<PAIR002_OUTPUT>" --output "<PAIR002_OUTPUT>/role1-r1-pair002-temporal-probe.json"
+~~~
+
+Script는 각 Run의 normalized input, Evidence JSONL, extraction summary SHA-256과 extractor/policy provenance가 위 값에 정확히 일치하지 않으면 fail-closed로 중단한다. normalized input에만 LF-canonical UTF-8 text hash를 적용하고 Evidence와 extraction summary에는 raw-byte hash를 적용한다. 검증 후 `load_r1_evidence_artifacts`, `load_fusion_config`, `SimpleScorer`, Fusion config의 runner builder와 `TemporalReplayRunner`를 사용하며 분석 로직을 별도로 재구현하지 않는다.
+
+출력 JSON에는 검증한 입력 provenance와 각 hash basis, Fusion config identity, static score, 기본 replay, Window/persistence/cadence ablation 결과가 기록된다. Fusion config file의 text provenance SHA-256도 CRLF를 LF로 canonicalize한 UTF-8 text 기준으로 기록하여 checkout EOL에 영향을 받지 않는다. 최초 probe config commit, 최초 분석 문서 commit과 리뷰 재현 구현 기준 base도 서로 분리해 기록한다.
+
+실제 Pair-002 artifact를 대상으로 다음 명령도 실행했다.
+
+~~~text
+uv run python tools/analysis/r1_pair002_temporal_probe.py --artifacts-root "..\R1-PAIR-20261005-002-role1-output" --output "..\R1-PAIR-20261005-002-role1-output\role1-r1-pair002-temporal-probe.json"
+~~~
+
+명령은 오류 없이 완료되어 output JSON을 생성했다. 이 실행에서 다음 사항을 확인했다.
+
+~~~text
+artifact_origin = manual_r1_lineage_input_validation_path
+selector_used_to_generate_probe_artifacts = false
+
+Attack / Normal normalized input LF-canonical hash 검증 = 통과
+Evidence raw-byte hash 검증 = 통과
+extraction summary raw-byte hash 검증 = 통과
+approved lineage policy provenance 검증 = 통과
+
+static_presence = Attack 1.0 / Normal 0.5
+basic replay = Attack detected / Normal miss
+Window / persistence / cadence ablation = 문서 수치와 일치
+~~~
+
+생성된 output JSON과 기존 Pair-002 artifact는 repository에 추가하지 않는다.
 
 ---
 
@@ -306,6 +425,8 @@ Run 시작 기준 상대 시점:
 180.364초
 ~~~
 
+이 간격은 독립적으로 발견된 공격 timing 특성이 아니다. `scenarios/R1/scenario.yaml`은 Attack의 A03 `process_create`를 +300초, A04 `network_connection`을 +480초에 실행하도록 설계하므로 planned gap은 180초다. 실제 +300.419초와 +480.783초 및 그 차이 180.364초는 이 schedule에 실행 jitter가 더해진 관찰값이다.
+
 ### 6.2 Normal
 
 생성된 scoring Evidence는 한 종류다.
@@ -321,6 +442,8 @@ Run 시작 기준 상대 시점:
 ~~~text
 +480.453초
 ~~~
+
+Normal도 N03 `process_create` +300초와 N04 `network_connection` +480초로 같은 schedule을 사용하며, 실제 terminal-to-network 간격은 179.253초였다.
 
 Attack과 Normal의 `remote_process_network_follow_on` 상대 발생 시점 차이는 다음과 같다.
 
@@ -596,6 +719,8 @@ Temporal Fusion이 static baseline보다 빠르다.
 
 시간 조건이 실제 Fusion 판단 성립 여부에 영향을 주는지 확인하기 위해 다른 조건을 고정하고 Attack Run의 Window 크기만 변경했다.
 
+180/190/200/300초 비교는 scenario가 의도한 180초 schedule 경계 주변에서 WindowEngine, replay grid, persistence 및 cadence mechanics가 예상대로 반응하는지 확인하는 재현 시험이다. 공격군의 자연발생 temporal distribution, R1 고유 timing feature, 최적 Window, 일반화 가능한 temporal discriminability 또는 performance evidence로 사용하지 않는다.
+
 고정 조건:
 
 ~~~text
@@ -859,6 +984,8 @@ Pair-002 Attack의 두 Evidence 간격은 다음과 같다.
 
 따라서 event timestamp 기준 retrospective replay에서 Window와 Stopping Policy가 산출물의 성립 조건에 실질적으로 영향을 준다는 점은 확인됐다. 이는 causal/online 시점에서 해당 Evidence를 사용할 수 있었다는 의미가 아니다.
 
+또한 이 경계는 scenario의 A03/A04 180초 schedule로 만들어졌으므로 공격 행동에서 독립적으로 발견한 timing 경계로 해석하지 않는다.
+
 ---
 
 ## 15. 시간 정보의 추가 구분력 여부
@@ -893,7 +1020,7 @@ window 200초 / cadence 10초 / k=2
 
 따라서 Window, cadence, persistence는 retrospective event-time replay 산출물에 실질적으로 영향을 주는 변수다.
 
-다만 현재 whole-batch selector에는 `available_at` 또는 watermark 계약이 없으므로, 이 결과를 causal/online 판단 결과로 해석하지 않는다.
+다만 최초 수동 validation artifact에는 `available_at` 또는 watermark가 기록되지 않았고, 후속 whole-batch selector에도 같은 계약이 없다. 따라서 이 결과를 causal/online 판단 결과로 해석하지 않는다.
 
 ### 15.2 시간 정보가 static Evidence보다 추가적인 Normal / Attack 구분력을 제공하는가
 
@@ -946,7 +1073,7 @@ remote_process_network_follow_on
 
 여기서 180.364초는 두 Evidence에 기록된 event timestamp 사이의 차이다.
 
-이 값을 Evidence의 causal availability 간격으로 해석하지 않는다. PR #229 selector는 전체 Event batch를 먼저 materialize하고 후속 network Event 및 terminal 후보 유일성을 사용하므로, 첫 Evidence가 실제로 언제 소비 가능했는지는 현재 계약으로 결정할 수 없다.
+이 값을 Evidence의 causal availability 간격으로 해석하지 않는다. 최초 분석은 완성된 Run에서 audit 조건으로 명시적 lineage input을 만든 retrospective validation 경로였고 availability를 기록하지 않았다. 후속 PR #229 selector도 전체 Event batch를 먼저 materialize하고 후속 network Event 및 terminal 후보 유일성을 사용하므로, 첫 Evidence가 실제로 언제 소비 가능했는지는 어느 경로에서도 결정할 수 없다.
 
 또한 현재 `SimpleScorer`는 Evidence의 발생 순서를 Feature로 사용하지 않는다.
 
@@ -1013,7 +1140,7 @@ retrospective fusion_time 필드 생성
 
 이는 retrospective replay 내부에서 score와 Stopping Policy가 어떤 순서로 동작했는지를 보여준다.
 
-그러나 현재 whole-batch selector는 lineage deviation Evidence를 생성하기 위해 후속 network Event와 terminal 후보 유일성 정보를 사용하며, `available_at` 또는 watermark 계약이 없다.
+그러나 최초 수동 validation 경로는 완성된 Run에서 lineage를 resolve했고 `available_at` 또는 watermark를 기록하지 않았다. 후속 whole-batch selector 역시 lineage deviation Evidence를 생성하기 위해 후속 network Event와 terminal 후보 유일성 정보를 사용하며 availability 계약이 없다.
 
 따라서 위 순서를 다음과 같이 해석하지 않는다.
 
@@ -1025,7 +1152,7 @@ Temporal Fusion이 Fast/static comparator보다 먼저 판단했다.
 TTSD가 위 시각을 기준으로 성립한다.
 ~~~
 
-Pair-002에서 `19:38:26.253Z`부터 첫 qualifying EID 3 `19:41:26.617Z`까지의 180.364초는 확정 availability delay가 아니라 현재 selector가 terminal 후보를 확인하기 위해 필요한 정보가 처음 등장하는 시점까지의 하한으로만 기록한다.
+Pair-002에서 `19:38:26.253Z`부터 첫 qualifying EID 3 `19:41:26.617Z`까지의 180.364초는 확정 availability delay가 아니다. 이는 scenario의 180초 schedule과 실행 jitter가 만든 event-time 관찰값이며, 후속 selector 관점에서는 terminal 후보 확인에 필요한 정보가 처음 등장하는 시점까지의 하한일 뿐이다.
 
 ---
 
@@ -1207,7 +1334,9 @@ Static presence 분석은 Run 전체 Evidence set을 시간 정보 없이 비교
 
 ### 20.9 Causal availability 미정의
 
-현재 PR #229 R1 selector는 입력 Event batch 전체를 materialize한 뒤 terminal 후보와 lineage를 결정한다.
+최초 PR #230 artifact는 완성된 Run에서 audit 조건으로 anchor/terminal을 resolve한 뒤 명시적인 `R1LineageInput`으로 생성했다. 이 경로에는 availability 계약이 없다.
+
+후속 PR #229 R1 selector cross-check도 입력 Event batch 전체를 materialize한 뒤 terminal 후보와 lineage를 결정한다.
 
 따라서 Evidence의 `timestamp`는 event time을 나타내지만, 해당 Evidence가 실제 pipeline에서 사용 가능해지는 시각은 현재 계약으로 표현되지 않는다.
 
@@ -1223,6 +1352,18 @@ causal/online replay
 ~~~
 
 이 제한이 해소되기 전에는 본 문서의 trajectory, `fusion_time`, Window/cadence/persistence 결과를 TTSD·조기인지·online 우위의 근거로 사용하지 않는다.
+
+### 20.10 Scenario schedule confound
+
+`scenarios/R1/scenario.yaml`은 Attack과 Normal 모두 process create를 +300초, network connection을 +480초에 배치한다. 따라서 planned gap은 180초다.
+
+~~~text
+Attack observed gap = 180.364초
+Normal observed gap = 179.253초
+~~~
+
+관찰값은 의도된 schedule과 실행 jitter의 결과다. 이에 맞춘 180/190/200/300초 Window ablation은 schedule-induced 경계에서 replay mechanics를 검증하지만, 공격 행동의 자연발생 timing 분포, R1 공격군의 고유 timing feature, 최적 Window, 일반화 가능한 temporal discriminability 또는 성능 근거를 제공하지 않는다.
+
 ---
 
 ## 21. 후속 작업 기준
@@ -1242,7 +1383,7 @@ Temporal Replay가 event timestamp가 아니라 causal availability를 존중하
 관련 회귀 테스트 추가
 ~~~
 
-이 계약이 마련되기 전까지 현재 selector가 생성한 R1 Evidence는 whole-episode retrospective/offline 분석에만 사용한다.
+이 계약이 마련되기 전까지 최초 수동 artifact와 후속 selector 경로에서 생성한 R1 Evidence는 모두 whole-episode retrospective/offline 분석에만 사용한다.
 
 계약 이후 공식 development Run을 대상으로 다음을 확인한다.
 
@@ -1286,7 +1427,7 @@ status = detected
 fusion_time field = 2026-10-05T19:41:45.834Z
 ~~~
 
-이 `fusion_time`은 현재 replay 코드가 Evidence event timestamp를 기준으로 계산한 결과 필드다. 현재 whole-batch selector에는 `available_at` 또는 watermark 계약이 없으므로 실제 causal/online 판단 시점으로 해석하지 않는다.
+이 `fusion_time`은 현재 replay 코드가 Evidence event timestamp를 기준으로 계산한 결과 필드다. 최초 수동 artifact와 후속 whole-batch selector 모두 `available_at` 또는 watermark 계약을 제공하지 않으므로 실제 causal/online 판단 시점으로 해석하지 않는다.
 
 Window, persistence, cadence ablation에서는 동일한 Attack Evidence set이라도 retrospective event-time 조건에 따라 replay 결과가 달라졌다.
 
@@ -1306,14 +1447,29 @@ Normal = 0.5
 현재 결론은 다음 범위로 제한한다.
 
 ~~~text
-Retrospective event-time replay mechanics
+Pair-002 실제 Evidence artifact의 Fusion runtime 연결
 = 확인
 
-Causal/online temporal validity
-= 미평가
+Retrospective event-time replay mechanics 동작
+= 확인
 
-Incremental discriminative value of temporal information
-= 미확인
+Window / cadence / persistence 변경의 retrospective output 영향
+= 확인
+
+Static Evidence presence만으로 Pair-002 분리
+= Attack 1.0 / Normal 0.5
+
+Temporal incremental discriminability
+= NOT ESTABLISHED
+
+Causal/online temporal validity
+= NOT EVALUATED
+
+Pair-002의 약 180초 간격
+= scenario-induced
+
+fusion_time
+= online decision time이 아님
 
 TTSD / early-recognition evidence
 = 사용 불가
@@ -1328,9 +1484,12 @@ Pair-002는 이후 availability 계약 설계와 공식 development Run 분석�
 
 ## 23. 최종 회귀 검증
 
-본 분석에 사용한 R1 probe config와 해당 config의 loader 회귀 테스트를 추가한 뒤 다음 검증을 수행했다.
+본 분석에 사용한 R1 probe config, deterministic 재현 script 및 회귀 테스트를 추가한 뒤 다음 검증을 수행했다.
 
 ~~~text
+uv run pytest tests/tools/test_r1_pair002_temporal_probe.py -q
+5 passed
+
 uv run pytest tests/decision/fusion/test_r1_fusion_config.py -q
 1 passed
 
@@ -1344,10 +1503,10 @@ uv run ruff check .
 All checks passed!
 
 uv run ruff format --check .
-277 files already formatted
+279 files already formatted
 
 uv run pytest
-2906 passed, 95 skipped
+2911 passed, 95 skipped
 ~~~
 
 따라서 현재 변경 범위에서 기존 Fusion 동작 또는 저장소 전체 테스트의 회귀는 확인되지 않았다.
