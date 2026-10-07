@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from incident_awareness.common.models.pipeline_runtime import PipelineRuntimeState
 from incident_awareness.dashboard.api.dependencies import (
     get_dashboard_decision_reader,
+    get_dashboard_evaluation_reader,
     get_dashboard_fusion_engine_reader,
     get_event_repository,
     get_pipeline_runtime_repository,
@@ -13,6 +14,7 @@ from incident_awareness.dashboard.api.dependencies import (
 )
 from incident_awareness.dashboard.api.models import (
     CurrentDecisionResponse,
+    DashboardEvaluationResponse,
     EventDetailResponse,
     EventTimelineItem,
     EventTimelineResponse,
@@ -27,6 +29,7 @@ from incident_awareness.dashboard.api.models import (
 )
 from incident_awareness.dashboard.api.service import get_fusion_engine_detail, get_run_detail
 from incident_awareness.dashboard.decision_read_model import DashboardDecisionReader
+from incident_awareness.dashboard.evaluation_read_model import DashboardEvaluationReader
 from incident_awareness.dashboard.fusion_engine_read_model import DashboardFusionEngineReader
 from incident_awareness.storage.repositories.event_repository import EventRepository
 from incident_awareness.storage.repositories.pipeline_runtime_repository import (
@@ -40,6 +43,16 @@ _OVERVIEW_RECENT_RUN_LIMIT = 5
 # snapshot has received recent telemetry. It is not a process-liveness, heartbeat,
 # execution, or SLA timeout: an older running snapshot stays running and is marked stale.
 _PIPELINE_RUNTIME_FRESHNESS_WINDOW = timedelta(minutes=5)
+
+
+@router.get("/evaluation", response_model=DashboardEvaluationResponse)
+def get_evaluation(
+    reader: Annotated[
+        DashboardEvaluationReader,
+        Depends(get_dashboard_evaluation_reader),
+    ],
+) -> DashboardEvaluationResponse:
+    return DashboardEvaluationResponse.from_read_model(reader.get_evaluation())
 
 
 @router.get("/operations/runtime", response_model=PipelineRuntimeListResponse)
