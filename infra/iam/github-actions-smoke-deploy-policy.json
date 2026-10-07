@@ -45,6 +45,12 @@
       "Resource": "*"
     },
     {
+      "Sid": "UpdateDashboardService",
+      "Effect": "Allow",
+      "Action": "ecs:UpdateService",
+      "Resource": "ECS_DASHBOARD_SERVICE_ARN"
+    },
+    {
       "Sid": "RunSmokeTask",
       "Effect": "Allow",
       "Action": "ecs:RunTask",
@@ -88,6 +94,34 @@
       "Resource": "*"
     },
     {
+      "Sid": "ReadDashboardServiceStatus",
+      "Effect": "Allow",
+      "Action": "ecs:DescribeServices",
+      "Resource": "ECS_DASHBOARD_SERVICE_ARN",
+      "Condition": {
+        "ArnEquals": {
+          "ecs:cluster": "ECS_CLUSTER_ARN"
+        }
+      }
+    },
+    {
+      "Sid": "ListDashboardServiceTasks",
+      "Effect": "Allow",
+      "Action": "ecs:ListTasks",
+      "Resource": "*",
+      "Condition": {
+        "ArnEquals": {
+          "ecs:cluster": "ECS_CLUSTER_ARN"
+        }
+      }
+    },
+    {
+      "Sid": "ReadDashboardNetworkInterface",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeNetworkInterfaces",
+      "Resource": "*"
+    },
+    {
       "Sid": "PassTaskExecutionRole",
       "Effect": "Allow",
       "Action": "iam:PassRole",
@@ -103,6 +137,17 @@
       "Effect": "Allow",
       "Action": "iam:PassRole",
       "Resource": "FIRST_CYCLE_TASK_ROLE_ARN",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "ecs-tasks.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "PassDashboardTaskExecutionRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "DASHBOARD_EXECUTION_ROLE_ARN",
       "Condition": {
         "StringEquals": {
           "iam:PassedToService": "ecs-tasks.amazonaws.com"

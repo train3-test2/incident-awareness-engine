@@ -226,3 +226,98 @@ def test_dashboard_execution_role_secret_policy_is_scoped_to_dashboard_database_
             }
         ],
     }
+
+
+def test_github_actions_policy_passes_only_the_dashboard_execution_role() -> None:
+    policy = json.loads(
+        (IAM_DIRECTORY / "github-actions-smoke-deploy-policy.json").read_text(encoding="utf-8")
+    )
+    statement = next(
+        item for item in policy["Statement"] if item["Sid"] == "PassDashboardTaskExecutionRole"
+    )
+
+    assert statement == {
+        "Sid": "PassDashboardTaskExecutionRole",
+        "Effect": "Allow",
+        "Action": "iam:PassRole",
+        "Resource": "DASHBOARD_EXECUTION_ROLE_ARN",
+        "Condition": {
+            "StringEquals": {
+                "iam:PassedToService": "ecs-tasks.amazonaws.com",
+            }
+        },
+    }
+
+
+def test_github_actions_policy_updates_only_the_dashboard_service() -> None:
+    policy = json.loads(
+        (IAM_DIRECTORY / "github-actions-smoke-deploy-policy.json").read_text(encoding="utf-8")
+    )
+    statement = next(
+        item for item in policy["Statement"] if item["Sid"] == "UpdateDashboardService"
+    )
+
+    assert statement == {
+        "Sid": "UpdateDashboardService",
+        "Effect": "Allow",
+        "Action": "ecs:UpdateService",
+        "Resource": "ECS_DASHBOARD_SERVICE_ARN",
+    }
+
+
+def test_github_actions_policy_reads_dashboard_service_status() -> None:
+    policy = json.loads(
+        (IAM_DIRECTORY / "github-actions-smoke-deploy-policy.json").read_text(encoding="utf-8")
+    )
+    statement = next(
+        item for item in policy["Statement"] if item["Sid"] == "ReadDashboardServiceStatus"
+    )
+
+    assert statement == {
+        "Sid": "ReadDashboardServiceStatus",
+        "Effect": "Allow",
+        "Action": "ecs:DescribeServices",
+        "Resource": "ECS_DASHBOARD_SERVICE_ARN",
+        "Condition": {
+            "ArnEquals": {
+                "ecs:cluster": "ECS_CLUSTER_ARN",
+            }
+        },
+    }
+
+
+def test_github_actions_policy_lists_dashboard_tasks_only_in_the_cluster() -> None:
+    policy = json.loads(
+        (IAM_DIRECTORY / "github-actions-smoke-deploy-policy.json").read_text(encoding="utf-8")
+    )
+    statement = next(
+        item for item in policy["Statement"] if item["Sid"] == "ListDashboardServiceTasks"
+    )
+
+    assert statement == {
+        "Sid": "ListDashboardServiceTasks",
+        "Effect": "Allow",
+        "Action": "ecs:ListTasks",
+        "Resource": "*",
+        "Condition": {
+            "ArnEquals": {
+                "ecs:cluster": "ECS_CLUSTER_ARN",
+            }
+        },
+    }
+
+
+def test_github_actions_policy_reads_dashboard_network_interface() -> None:
+    policy = json.loads(
+        (IAM_DIRECTORY / "github-actions-smoke-deploy-policy.json").read_text(encoding="utf-8")
+    )
+    statement = next(
+        item for item in policy["Statement"] if item["Sid"] == "ReadDashboardNetworkInterface"
+    )
+
+    assert statement == {
+        "Sid": "ReadDashboardNetworkInterface",
+        "Effect": "Allow",
+        "Action": "ec2:DescribeNetworkInterfaces",
+        "Resource": "*",
+    }
