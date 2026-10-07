@@ -193,6 +193,30 @@ def test_evaluation_assets_use_pure_contract_and_safe_dom() -> None:
         assert renderer in script
 
 
+def test_evaluation_stage_two_renders_semantic_tables_without_reordering() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/evaluation.js").text
+    contract = client.get("/dashboard-assets/evaluation-contract.mjs").text
+    stylesheet = client.get("/dashboard-assets/evaluation.css").text
+
+    # Then
+    for element in ("table", "caption", "thead", "tbody", "th"):
+        assert f'document.createElement("{element}")' in script
+    assert 'header.setAttribute("scope", "col")' in script
+    assert "evaluation-table-scroll" in script
+    assert "overflow-x: auto" in stylesheet
+    assert "TTSD는 검출된 Attack Run 기준이며 Run Recall과 함께 해석해야 합니다." in script
+    assert "Earlier Eligible Path" in script
+    for source in (script, contract):
+        for forbidden_ordering in (".sort(", ".toSorted(", ".reverse(", ".toReversed("):
+            assert forbidden_ordering not in source
+    for forbidden_label in ("Winner", "Winning Path", "Fastest", "Best"):
+        assert forbidden_label not in script
+
+
 def test_evaluation_view_has_accessible_responsive_shell() -> None:
     # Given
     client = TestClient(create_app())

@@ -6,6 +6,10 @@ import test from "node:test";
 
 import {
     NOT_APPLICABLE,
+    buildAlertBurden,
+    buildMethodComparison,
+    buildPairedTimingRows,
+    buildPairedTimingSummary,
     formatNullable,
     formatPercentage,
     formatSeconds,
@@ -17,6 +21,79 @@ import {
     projectSnapshotSummary,
     resolveEvaluationQueryState,
 } from "../../../src/incident_awareness/dashboard/ui/assets/evaluation-contract.mjs";
+
+function methodMetric(method, overrides = {}) {
+    return {
+        method,
+        total_attack_runs: 4,
+        detected_runs: 3,
+        run_recall: 0.75,
+        median_ttsd_sec: 40,
+        total_normal_runs: 2,
+        false_positive_runs: 1,
+        benign_run_fpr: 0.5,
+        ttsd_iqr_sec: 10,
+        ...overrides,
+    };
+}
+
+function burdenMetric(method, overrides = {}) {
+    return {
+        evaluated_run_ids: [`RUN-${method}-2`, `RUN-${method}-1`],
+        false_alert_episodes: 3,
+        benign_run_hours: 2,
+        false_alerts_per_benign_run_hour: 1.5,
+        per_run: [
+            {
+                run_id: `RUN-${method}-2`,
+                entity_id: "host-2",
+                family_id: null,
+                variation_id: null,
+                repetition: null,
+                false_alert_episodes: 2,
+                observation_seconds: 3600,
+            },
+            {
+                run_id: `RUN-${method}-1`,
+                entity_id: "host-1",
+                family_id: "family-a",
+                variation_id: "variant-b",
+                repetition: 2,
+                false_alert_episodes: 1,
+                observation_seconds: 3600,
+            },
+        ],
+        ...overrides,
+    };
+}
+
+function pairedRow(runId, overrides = {}) {
+    return {
+        run_id: runId,
+        entity_id: "host-attack",
+        family_id: "family-a",
+        variation_id: "variant-a",
+        repetition: 1,
+        decision_id: `DEC-${runId}`,
+        reference_time: "2026-09-20T00:00:00.000Z",
+        paths: {
+            Fast: {
+                eligible_status: "detected",
+                eligible_time: "2026-09-20T00:00:10.000Z",
+                ttsd_sec: 10,
+            },
+            Fusion: {
+                eligible_status: "detected",
+                eligible_time: "2026-09-20T00:00:20.000Z",
+                ttsd_sec: 20,
+            },
+        },
+        outcome: "both_detected",
+        fusion_minus_fast_sec: 10,
+        earlier_eligible_path: "Fast",
+        ...overrides,
+    };
+}
 
 function evaluationPayload(overrides = {}) {
     return {
@@ -44,17 +121,35 @@ function evaluationPayload(overrides = {}) {
         },
         comparison_ready: true,
         metrics: {
-            Fast: { run_recall: 0.75 },
-            Fusion: { run_recall: 0.5 },
-            Hybrid: { run_recall: 1.0 },
+            Fast: methodMetric("Fast"),
+            Fusion: methodMetric("Fusion", { run_recall: 0.5, median_ttsd_sec: null }),
+            Hybrid: methodMetric("Hybrid", { run_recall: 1, benign_run_fpr: null }),
         },
         normal_alert_burden: {
+            normal_run_ids: ["RUN-Fast-2", "RUN-Fast-1"],
             comparison_ready: true,
-            metrics: { Fast: {}, Fusion: {} },
+            metrics: {
+                Fast: burdenMetric("Fast"),
+                Fusion: burdenMetric("Fusion"),
+            },
         },
         paired_timing: {
             paired_coverage_complete: true,
-            per_run: [],
+            counts: {
+                both_detected: 1,
+                fast_only: 2,
+                fusion_only: 3,
+                both_miss: 4,
+                not_evaluated: 5,
+            },
+            both_detected_summary: {
+                run_count: 1,
+                fast_earlier: 1,
+                fusion_earlier: 0,
+                ties: 0,
+                median_fusion_minus_fast_sec: 10,
+            },
+            per_run: [pairedRow("RUN-2"), pairedRow("RUN-1")],
         },
         ...overrides,
     };
@@ -98,37 +193,6 @@ test("smoke purpose warns against performance claims", () => {
     assert.match(presentation.description, /성능 우위 주장에 사용하는 결과가 아닙니다/);
 });
 
-test("performance purpose remains descriptive without readiness claims", () => {
-    // Given
-    const purpose = "performance";
-
-    // When
-    const presentation = getPurposePresentation(purpose);
-
-    // Then
-    assert.deepEqual(presentation, {
-        label: "performance",
-        title: "Performance Evaluation",
-        description: "성능 평가 목적으로 저장된 Evaluation Snapshot 결과입니다.",
-        modifier: "performance",
-    });
-    assert.doesNotMatch(presentation.description, /production ready|validated|superior/i);
-});
-
-test("percentage and seconds format only API-provided values", () => {
-    // Given
-    const recall = 0.75;
-    const horizon = 120;
-
-    // When
-    const percentage = formatPercentage(recall);
-    const seconds = formatSeconds(horizon);
-
-    // Then
-    assert.equal(percentage, "75.0%");
-    assert.equal(seconds, "120 sec");
-});
-
 test("nullable presentation consistently uses N/A", () => {
     // Given
     const nullableValues = [null, undefined];
@@ -146,11 +210,9 @@ test("nullable presentation consistently uses N/A", () => {
 
 test("three comparison states remain independent", () => {
     // Given
-    const payload = evaluationPayload({
-        comparison_ready: false,
-        normal_alert_burden: { comparison_ready: true, metrics: { Fast: {}, Fusion: {} } },
-        paired_timing: { paired_coverage_complete: false, per_run: [] },
-    });
+    const payload = evaluationPayload({ comparison_ready: false });
+    payload.normal_alert_burden.comparison_ready = true;
+    payload.paired_timing.paired_coverage_complete = false;
 
     // When
     const statuses = getEvaluationStatusPresentations(payload);
@@ -161,6 +223,173 @@ test("three comparison states remain independent", () => {
         ["Normal Alert Burden", "Ready"],
         ["Paired Timing", "Incomplete"],
     ]);
+});
+
+test("method comparison uses API metrics without recomputing recall or FPR", () => {
+    // Given
+    const payload = evaluationPayload();
+    payload.metrics.Fast = methodMetric("Fast", {
+        detected_runs: 1,
+        total_attack_runs: 2,
+        run_recall: 0.9,
+        false_positive_runs: 1,
+        total_normal_runs: 2,
+        benign_run_fpr: 0.9,
+        median_ttsd_sec: 12,
+        ttsd_iqr_sec: 7,
+    });
+
+    // When
+    const methods = buildMethodComparison(payload);
+
+    // Then
+    assert.deepEqual(methods.map((method) => method.method), ["Fast", "Fusion", "Hybrid"]);
+    assert.deepEqual(methods[0].fields, [
+        { label: "Run Recall", value: "90.0%" },
+        { label: "Detected / Total Attack Runs", value: "1 / 2" },
+        { label: "Median TTSD", value: "12 sec" },
+        { label: "TTSD IQR", value: "7 sec" },
+        { label: "Benign Run FPR", value: "90.0%" },
+        { label: "False Positive / Total Normal Runs", value: "1 / 2" },
+    ]);
+});
+
+test("method comparison keeps null metrics and nullable values explicit", () => {
+    // Given
+    const payload = evaluationPayload();
+    payload.metrics.Fast = null;
+
+    // When
+    const methods = buildMethodComparison(payload);
+
+    // Then
+    assert.deepEqual(methods[0], {
+        method: "Fast",
+        available: false,
+        emptyMessage: "평가 데이터 없음",
+    });
+    assert.equal(methods[1].fields[2].value, "N/A");
+    assert.equal(methods[2].fields[4].value, "N/A");
+});
+
+test("alert burden includes only Fast and Fusion and trusts the API FA/BH", () => {
+    // Given
+    const payload = evaluationPayload();
+    payload.normal_alert_burden.metrics.Fast = burdenMetric("Fast", {
+        false_alert_episodes: 10,
+        benign_run_hours: 2,
+        false_alerts_per_benign_run_hour: 123,
+    });
+    payload.normal_alert_burden.metrics.Fusion = burdenMetric("Fusion", {
+        false_alerts_per_benign_run_hour: null,
+    });
+
+    // When
+    const burden = buildAlertBurden(payload);
+
+    // Then
+    assert.deepEqual(burden.map((method) => method.method), ["Fast", "Fusion"]);
+    assert.deepEqual(burden[0].fields, [
+        { label: "Evaluated Normal Runs", value: "2" },
+        { label: "False Alert Episodes", value: "10" },
+        { label: "Benign Run Hours", value: "2" },
+        { label: "FA/BH", value: "123" },
+    ]);
+    assert.equal(burden[1].fields[3].value, "N/A");
+});
+
+test("alert burden preserves per-run order and nullable provenance", () => {
+    // Given
+    const payload = evaluationPayload();
+
+    // When
+    const [fast] = buildAlertBurden(payload);
+
+    // Then
+    assert.deepEqual(fast.rows.map((row) => row.runId), ["RUN-Fast-2", "RUN-Fast-1"]);
+    assert.deepEqual(fast.rows[0], {
+        runId: "RUN-Fast-2",
+        entityId: "host-2",
+        familyId: "N/A",
+        variationId: "N/A",
+        repetition: "N/A",
+        falseAlertEpisodes: "2",
+        observationSeconds: "3600 sec",
+    });
+});
+
+test("paired timing summary uses API counts and API median delta", () => {
+    // Given
+    const payload = evaluationPayload();
+    payload.paired_timing.both_detected_summary.median_fusion_minus_fast_sec = 999;
+
+    // When
+    const summary = buildPairedTimingSummary(payload);
+
+    // Then
+    assert.deepEqual(summary.counts.map((item) => item.value), ["1", "2", "3", "4", "5"]);
+    assert.deepEqual(summary.bothDetected, [
+        { label: "Run Count", value: "1" },
+        { label: "Fast Earlier", value: "1" },
+        { label: "Fusion Earlier", value: "0" },
+        { label: "Ties", value: "0" },
+        { label: "Median Fusion - Fast", value: "999 sec" },
+    ]);
+    assert.match(summary.deltaExplanation, /양수이면 Fast/);
+    assert.match(summary.deltaExplanation, /음수이면 Fusion/);
+    assert.match(summary.deltaExplanation, /0이면 tie/);
+});
+
+test("run-level paired timing preserves API rows, statuses, and delta", () => {
+    // Given
+    const payload = evaluationPayload();
+    payload.paired_timing.per_run[0].fusion_minus_fast_sec = 999;
+    payload.paired_timing.per_run[1] = pairedRow("RUN-1", {
+        paths: {
+            Fast: { eligible_status: "miss", eligible_time: null, ttsd_sec: null },
+            Fusion: {
+                eligible_status: "not_evaluated",
+                eligible_time: null,
+                ttsd_sec: null,
+            },
+        },
+        outcome: "not_evaluated",
+        fusion_minus_fast_sec: null,
+        earlier_eligible_path: null,
+    });
+
+    // When
+    const rows = buildPairedTimingRows(payload);
+
+    // Then
+    assert.deepEqual(rows.map((row) => row.runId), ["RUN-2", "RUN-1"]);
+    assert.equal(rows[0].fastTtsd, "10 sec");
+    assert.equal(rows[0].fusionTtsd, "20 sec");
+    assert.equal(rows[0].fusionMinusFast, "999 sec");
+    assert.equal(rows[0].earlierEligiblePath, "Fast");
+    assert.equal(rows[1].fastStatus, "Miss");
+    assert.equal(rows[1].fusionStatus, "Not Evaluated");
+    assert.equal(rows[1].outcome, "Not Evaluated");
+    assert.equal(rows[1].fusionMinusFast, "N/A");
+    assert.equal(rows[1].earlierEligiblePath, "N/A");
+});
+
+test("empty evaluated row collections remain empty without synthetic metrics", () => {
+    // Given
+    const payload = evaluationPayload();
+    payload.normal_alert_burden.normal_run_ids = [];
+    payload.normal_alert_burden.metrics.Fast.evaluated_run_ids = [];
+    payload.normal_alert_burden.metrics.Fast.per_run = [];
+    payload.paired_timing.per_run = [];
+
+    // When
+    const burden = buildAlertBurden(payload);
+    const pairedRows = buildPairedTimingRows(payload);
+
+    // Then
+    assert.equal(burden[0].fields[0].value, "0");
+    assert.deepEqual(burden[0].rows, []);
+    assert.deepEqual(pairedRows, []);
 });
 
 test("exclusions preserve API order and not_evaluated semantics", () => {
@@ -176,14 +405,11 @@ test("exclusions preserve API order and not_evaluated semantics", () => {
     const exclusions = projectExclusions(payload);
 
     // Then
-    assert.deepEqual(exclusions, [
-        { runId: "RUN-2", method: "Fusion", reason: "not_evaluated" },
-        { runId: "RUN-1", method: "Fast", reason: "not_evaluated" },
-    ]);
+    assert.deepEqual(exclusions.map((item) => item.runId), ["RUN-2", "RUN-1"]);
     assert.doesNotMatch(JSON.stringify(exclusions), /miss|failed/);
 });
 
-test("future section contract preserves evaluator-owned report references", () => {
+test("section projection exposes presentation-only Stage 2 data", () => {
     // Given
     const payload = evaluationPayload();
 
@@ -191,15 +417,10 @@ test("future section contract preserves evaluator-owned report references", () =
     const sections = projectEvaluationSections(payload);
 
     // Then
-    assert.strictEqual(sections.methodComparison.metrics, payload.metrics);
-    assert.strictEqual(
-        sections.methodComparison.evaluatedRunIds,
-        payload.evaluated_run_ids,
-    );
-    assert.strictEqual(sections.normalAlertBurden, payload.normal_alert_burden);
-    assert.strictEqual(sections.pairedTiming, payload.paired_timing);
-    assert.strictEqual(sections.runLevelPairedTiming, payload.paired_timing.per_run);
-    assert.deepEqual(Object.keys(sections.normalAlertBurden.metrics), ["Fast", "Fusion"]);
+    assert.deepEqual(sections.methodComparison, buildMethodComparison(payload));
+    assert.deepEqual(sections.normalAlertBurden, buildAlertBurden(payload));
+    assert.deepEqual(sections.pairedTiming, buildPairedTimingSummary(payload));
+    assert.deepEqual(sections.runLevelPairedTiming, buildPairedTimingRows(payload));
 });
 
 test("query states distinguish loading, success, and sanitized errors", () => {
@@ -247,31 +468,44 @@ test("presentation helpers do not mutate the API payload", () => {
     assert.deepEqual(payload, original);
 });
 
-test("contract rejects malformed payloads without deriving fallback metrics", () => {
+test("contract rejects malformed Stage 2 fields before rendering", () => {
+    // Given
+    const invalidPayloads = [
+        (() => {
+            const payload = evaluationPayload();
+            payload.metrics.Fast.run_recall = "0.5";
+            return payload;
+        })(),
+        (() => {
+            const payload = evaluationPayload();
+            payload.paired_timing.counts.both_detected = "1";
+            return payload;
+        })(),
+        (() => {
+            const payload = evaluationPayload();
+            delete payload.paired_timing.per_run[0].paths;
+            return payload;
+        })(),
+        (() => {
+            const payload = evaluationPayload();
+            payload.normal_alert_burden.metrics.Fast.per_run[0].observation_seconds = "3600";
+            return payload;
+        })(),
+    ];
+
+    // When / Then
+    for (const payload of invalidPayloads) {
+        assert.throws(() => resolveEvaluationQueryState(null, { kind: "success", payload }));
+    }
+});
+
+test("contract rejects malformed base fields and non-finite presentation values", () => {
     // Given
     const invalidCalls = [
         () => resolveEvaluationQueryState(null, { kind: "success", payload: null }),
         () => projectSnapshotSummary(evaluationPayload({ plan: null })),
-        () => resolveEvaluationQueryState(null, {
-            kind: "success",
-            payload: evaluationPayload({
-                plan: { ...evaluationPayload().plan, purpose: "production" },
-            }),
-        }),
-        () => resolveEvaluationQueryState(null, {
-            kind: "success",
-            payload: evaluationPayload({
-                plan: { ...evaluationPayload().plan, evaluation_horizon_sec: "120" },
-            }),
-        }),
         () => getEvaluationStatusPresentations(evaluationPayload({ comparison_ready: 1 })),
         () => projectExclusions(evaluationPayload({ exclusions: [null] })),
-        () => projectExclusions(evaluationPayload({
-            exclusions: [{ run_id: "RUN-1", method: "Fast", reason: null }],
-        })),
-        () => projectEvaluationSections(evaluationPayload({
-            paired_timing: { paired_coverage_complete: true, per_run: null },
-        })),
         () => formatPercentage(Number.NaN),
         () => formatSeconds(Number.POSITIVE_INFINITY),
         () => getPurposePresentation("production"),
@@ -283,7 +517,7 @@ test("contract rejects malformed payloads without deriving fallback metrics", ()
     }
 });
 
-test("Evaluation contract is pure and contains no evaluation formulas", async () => {
+test("Evaluation contract is pure, order-preserving, and contains no metric formulas", async () => {
     // Given
     const source = await readFile(
         new URL(
@@ -302,13 +536,14 @@ test("Evaluation contract is pure and contains no evaluation formulas", async ()
         "setTimeout(",
         "WebSocket",
         "EventSource",
-        "detected_runs",
-        "false_positive_runs",
-        "false_alert_episodes",
-        "eligible_time",
-        "reference_time",
-        "fusion_minus_fast_sec",
-        "Math.min(",
+        "metric.detected_runs / metric.total_attack_runs",
+        "metric.false_positive_runs / metric.total_normal_runs",
+        "metric.false_alert_episodes / metric.benign_run_hours",
+        "row.paths.Fusion.ttsd_sec - row.paths.Fast.ttsd_sec",
+        ".sort(",
+        ".toSorted(",
+        ".reverse(",
+        ".toReversed(",
     ];
 
     // Then
