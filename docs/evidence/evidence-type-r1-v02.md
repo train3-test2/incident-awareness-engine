@@ -6,6 +6,8 @@
 
 이 문서는 R1-V02 Pilot의 Evidence 후보와 필요한 입력 계약을 정리한다. 두 Evidence type 이름은 구현에서 candidate로 사용하지만 공식 vocabulary에는 아직 등록하지 않았으며, 실제 telemetry와 Fusion 사용 방식을 검증한 뒤 등록 여부를 확정한다.
 
+실제 Pair-002 development telemetry E2E 결과는 [R1 Pair-002 Evidence E2E 검증](r1-pair002-e2e-validation.md)에 기록한다. 이 검증은 candidate 생성과 artifact/provenance 경로를 확인한 것이며 managed vocabulary, Fusion scoring 또는 production 준비 완료를 의미하지 않는다.
+
 ## 1. 목적과 범위
 
 R1-V02 첫 Pilot은 Target-A에서 관측한 host-local 프로세스 계보와 후속 네트워크 연결을 대상으로 한다.
@@ -136,7 +138,7 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 - 실제 Pilot에서 `anchor_event`와 `terminal_event`를 선택해 전달할 주체와 기준
 - 반복 평가용 anchor/terminal selector 규칙
 - R1 분석 대상 Event batch의 window 계약
-- 실제 R1 telemetry 기반 end-to-end 검증
+- Pair-002 development telemetry 기반 end-to-end 검증 완료. production/반복 평가 경로는 후속 작업
 - R1 Fusion profile과 Evidence 소비 규칙
 
 ## 5. Run별 candidate Evidence artifact
@@ -164,8 +166,8 @@ downstream에서 artifact를 소비하기 전에는 summary의 `status = complet
 
 | 항목 | 현재 상태 | 확정에 필요한 근거 |
 | --- | --- | --- |
-| 실제 telemetry | TBD | Target-A의 Normal/Attack Sysmon EID 1·3 원본과 PR #124 validator 결과 |
-| timestamp 기준 | 구현 규칙 확정 / telemetry 검증 대기 | 사용 Event 중 가장 늦은 `NormalizedEvent.timestamp` 사용. raw timestamp 선택은 Event/Normalization 계약 책임 |
+| 실제 telemetry | Pair-002 development E2E 검증 완료 | [validation record](r1-pair002-e2e-validation.md). production, holdout 및 반복 평가 검증은 별도 |
+| timestamp 기준 | 구현 규칙 확정 / Pair-002 development telemetry 검증 완료 | 사용 Event 중 가장 늦은 `NormalizedEvent.timestamp` 사용. raw timestamp 선택은 Event/Normalization 계약 책임 |
 | 공식 Evidence vocabulary 등록 | Candidate / TBD | 실제 R1 telemetry와 Fusion 사용 방식 검증 |
 | R1 batch pipeline API | 구현 완료 | `src/incident_awareness/pipeline/r1_evidence.py`에서 NormalizedEvent batch와 명시적 lineage input을 처리 |
 | production runner/CLI 연결 | TBD | R1 batch API 호출 위치와 입력 config 계약 합의 |
