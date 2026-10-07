@@ -4,6 +4,9 @@
 # or holdout/final-evaluation evidence.
 # Window, cadence, and stopping values are carried over from S0 only as initial
 # exploratory probe values; this config does not establish temporal discriminability.
+# Retrospective/offline event-time replay only: the current whole-batch R1 selector
+# has no available_at/watermark contract. Do not interpret replay trajectory,
+# fusion_time, or stopping output as causal/online timing, TTSD, or early recognition.
 config_version: fusion-config-r1-pair002-probe-v0.1
 model_version: null
 

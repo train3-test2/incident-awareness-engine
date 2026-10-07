@@ -2,18 +2,18 @@
 
 ## 1. 목적
 
-본 문서는 R1 Pair-002의 실제 Evidence artifact를 현재 Temporal Fusion 경로에 입력하여 시간 정보가 실제 판단 과정에 어떤 영향을 주는지 확인한 development probe 기록이다.
+본 문서는 R1 Pair-002의 실제 Evidence artifact를 현재 Temporal Fusion 경로에 입력하여 retrospective/offline event-time replay에서 시간 관련 mechanics가 산출물에 어떻게 반영되는지 확인한 development probe 기록이다.
 
 본 분석에서는 다음 항목을 확인한다.
 
 - R1 Evidence artifact와 Temporal Fusion 입력 경계 연결 여부
-- Normal / Attack 실제 score trajectory 생성 여부
+- Normal / Attack retrospective event-time score trajectory 생성 여부
 - Evidence diversity와 시간적 중첩이 score에 미치는 영향
-- Window 크기가 판단 결과에 미치는 영향
-- persistence 조건이 판단 결과에 미치는 영향
-- replay cadence가 판단 결과에 미치는 영향
-- 시간을 제거한 static Evidence presence와 Temporal Fusion 결과의 차이
-- 현재 Pair에서 시간 정보가 추가적인 Normal / Attack 구분력을 제공하는지 여부
+- Window 크기가 retrospective replay 결과에 미치는 영향
+- persistence 조건이 retrospective replay 결과에 미치는 영향
+- replay cadence가 retrospective replay 결과에 미치는 영향
+- 시간을 제거한 whole-episode static Evidence presence와 retrospective replay 결과의 차이
+- 현재 Pair에서 시간 정보가 static Evidence presence보다 추가적인 구분력을 제공하는지 여부
 - Issue #33 시간 정보 유효성 분석의 후속 판단 근거
 
 본 분석은 성능 평가, 최종 파라미터 선택 또는 모델 튜닝을 목적으로 하지 않는다.
@@ -67,6 +67,57 @@ TTSD 분포
 ~~~
 
 본 Pair는 최종 dataset tier 및 freeze 이전에 수집된 development connection-check 자료이므로 공식 평가 데이터에 포함하지 않는다.
+
+### 2.1 Causal availability 제한
+
+PR #229에서 추가된 R1 selector는 호출자가 전달한 Event batch 전체를 먼저 materialize한 뒤 terminal 후보와 lineage를 결정한다.
+
+현재 selector에서 process Event가 terminal 후보가 되려면 동일 ProcessGuid에 연결된 후속 network Event가 존재해야 한다. 또한 복수 terminal 후보의 유일성 여부도 입력 batch 범위에서 확인한다.
+
+Pair-002 Attack의 lineage deviation Evidence에 기록된 event timestamp는 다음과 같다.
+
+~~~text
+2026-10-05T19:38:26.253Z
+~~~
+
+그러나 현재 selector가 해당 terminal을 후보로 확인하려면 최소한 다음 qualifying network Event를 관찰해야 한다.
+
+~~~text
+2026-10-05T19:41:26.617Z
+~~~
+
+두 시각의 차이는 다음과 같다.
+
+~~~text
+180.364초
+~~~
+
+이 값은 Evidence availability delay의 확정값이 아니다.
+
+현재 selector는 whole-batch 입력을 사용하며 terminal 후보의 유일성까지 확인하므로, 실제 Evidence 사용 가능 시각은 위 network Event보다 늦거나 selector batch/window 종료 시점일 수 있다. 현재 계약에는 이를 나타내는 `available_at` 또는 watermark가 존재하지 않는다.
+
+따라서 현재 selector로 생성된 R1 Evidence는 다음 임시 소비 규칙을 적용한다.
+
+~~~text
+Evidence.timestamp
+= 원본 Event 의미의 event time
+
+available_at / watermark
+= 미정의
+
+whole-episode retrospective/offline 분석
+= 허용
+
+causal/online Temporal Replay
+= 사용하지 않음
+
+TTSD / 조기인지 시점 근거
+= 사용하지 않음
+~~~
+
+이 문서의 이하 trajectory, Window, cadence, persistence 및 `fusion_time` 결과는 모두 Evidence의 event timestamp를 기준으로 재생한 retrospective/offline mechanics 분석이다.
+
+`fusion_time`은 현재 코드가 산출한 replay 결과 필드 이름을 그대로 기록한 것이며, Evidence가 해당 시점에 실제로 이용 가능했다는 뜻이 아니다.
 
 ---
 
@@ -582,7 +633,7 @@ status = miss
 
 ### 11.2 190초
 
-190초 Window에서는 두 Evidence가 실제 시간상 약 다음 기간 동안 동시에 활성화될 수 있다.
+190초 Window에서는 두 Evidence의 event timestamp를 기준으로 약 다음 기간 동안 replay상 동시에 활성화될 수 있다.
 
 ~~~text
 약 9.636초
@@ -617,14 +668,14 @@ fusion_time = 2026-10-05T19:41:45.834Z
 
 ### 11.4 300초
 
-300초에서도 최초 판단 시점은 200초와 동일했다.
+300초에서도 최초 retrospective `fusion_time` 필드는 200초와 동일했다.
 
 ~~~text
 status = detected
 fusion_time = 2026-10-05T19:41:45.834Z
 ~~~
 
-따라서 이 Pair와 현재 replay grid에서는 Window를 200초에서 300초로 늘려도 최초 Fusion 판단은 더 빨라지지 않았다.
+따라서 이 Pair와 현재 replay grid에서는 Window를 200초에서 300초로 늘려도 retrospective `fusion_time` 필드는 더 앞당겨지지 않았다.
 
 이 결과는 200초가 일반적인 최소 또는 최적 Window라는 의미가 아니다.
 
@@ -655,7 +706,7 @@ threshold_off = 0.4
 | 2 | 1.0 | miss | None |
 | 3 | 1.0 | miss | None |
 
-`k=1`에서는 첫 score 1.0 시점에 즉시 판단이 생성됐다.
+`k=1`에서는 첫 score 1.0 replay point에서 즉시 `detected` 및 `fusion_time` 필드가 생성됐다.
 
 ~~~text
 2026-10-05T19:41:35.834Z
@@ -720,7 +771,7 @@ status = miss
 
 ### 13.3 20초 cadence
 
-두 Evidence가 동시에 활성화된 실제 구간이 replay grid 사이에 위치하여 score 1.0 상태를 한 번도 sampling하지 못했다.
+두 Evidence의 event-time replay 중첩 구간이 replay grid 사이에 위치하여 score 1.0 상태를 한 번도 sampling하지 못했다.
 
 결과:
 
@@ -729,7 +780,7 @@ max_score = 0.5
 status = miss
 ~~~
 
-따라서 같은 실제 Evidence timestamp를 사용하더라도 cadence 설정에 따라 다음 세 결과가 모두 가능했다.
+따라서 같은 Evidence event timestamp를 사용하더라도 cadence 설정에 따라 다음 세 replay 결과가 모두 가능했다.
 
 ~~~text
 5초:
@@ -747,18 +798,18 @@ status = miss
 → miss
 ~~~
 
-이는 현재 replay 방식에서 cadence가 단순 출력 해상도가 아니라 실제 Stopping Policy 결과에 영향을 줄 수 있음을 보여준다.
+이는 현재 replay 방식에서 cadence가 단순 출력 해상도가 아니라 retrospective Stopping Policy 결과에 영향을 줄 수 있음을 보여준다.
 
 ---
 
 ## 14. Window × Cadence × Persistence 상호작용
 
-이번 ablation을 종합하면 Temporal Fusion 결과는 단순히 Evidence type 수만으로 결정되지 않는다.
+이번 ablation을 종합하면 retrospective event-time replay 결과는 단순히 Evidence type 수만으로 결정되지 않는다.
 
 다음 조건이 함께 작용한다.
 
 ~~~text
-Evidence 사이 실제 시간 간격
+Evidence 사이 event timestamp 간격
 +
 Window 크기
 +
@@ -806,7 +857,7 @@ Pair-002 Attack의 두 Evidence 간격은 다음과 같다.
 → miss
 ~~~
 
-따라서 Temporal Fusion이 실제 시간 상태를 사용하고 있고, Window와 Stopping Policy가 판단 성립 조건에 실질적으로 영향을 준다는 점은 확인됐다.
+따라서 event timestamp 기준 retrospective replay에서 Window와 Stopping Policy가 산출물의 성립 조건에 실질적으로 영향을 준다는 점은 확인됐다. 이는 causal/online 시점에서 해당 Evidence를 사용할 수 있었다는 의미가 아니다.
 
 ---
 
@@ -814,11 +865,11 @@ Pair-002 Attack의 두 Evidence 간격은 다음과 같다.
 
 이번 분석에서 가장 중요한 구분은 다음 두 질문을 분리하는 것이다.
 
-### 15.1 시간 조건이 실제 판단 결과에 영향을 주는가
+### 15.1 retrospective event-time 조건이 replay 결과에 영향을 주는가
 
 현재 Pair에서는 `YES`다.
 
-실제로 다음 설정 변경만으로 Attack 결과가 달라졌다.
+동일한 Evidence set을 event timestamp 기준으로 재생했을 때 다음 설정 변경만으로 Attack replay 결과가 달라졌다.
 
 ~~~text
 window 180초
@@ -840,7 +891,9 @@ window 200초 / cadence 10초 / k=2
 → detected
 ~~~
 
-따라서 Window, cadence, persistence는 실행상 실질적인 판단 변수다.
+따라서 Window, cadence, persistence는 retrospective event-time replay 산출물에 실질적으로 영향을 주는 변수다.
+
+다만 현재 whole-batch selector에는 `available_at` 또는 watermark 계약이 없으므로, 이 결과를 causal/online 판단 결과로 해석하지 않는다.
 
 ### 15.2 시간 정보가 static Evidence보다 추가적인 Normal / Attack 구분력을 제공하는가
 
@@ -865,8 +918,11 @@ Normal = 없음
 따라서 현재 결과는 다음과 같이 구분해서 기록한다.
 
 ~~~text
-Temporal mechanics affect decision outcome
+Retrospective event-time mechanics affect replay outcome
 = 확인
+
+Causal/online temporal effect
+= 미평가
 
 Incremental temporal discriminability beyond static Evidence presence
 = 미확인
@@ -874,25 +930,29 @@ Incremental temporal discriminability beyond static Evidence presence
 
 ---
 
-## 16. Evidence 순서 정보에 대한 제한
+## 16. Event-time 순서 정보에 대한 제한
 
-이번 Pair에서는 다음 순서가 실제로 관측됐다.
+Pair-002 Evidence에 기록된 event timestamp 순서는 다음과 같다.
 
 ~~~text
 Attack:
 
 remote_session_process_lineage_deviation
         ↓
-약 180.364초
+180.364초
         ↓
 remote_process_network_follow_on
 ~~~
 
-그러나 현재 `SimpleScorer`는 Evidence의 발생 순서를 Feature로 사용하지 않는다.
+여기서 180.364초는 두 Evidence에 기록된 event timestamp 사이의 차이다.
+
+이 값을 Evidence의 causal availability 간격으로 해석하지 않는다. PR #229 selector는 전체 Event batch를 먼저 materialize하고 후속 network Event 및 terminal 후보 유일성을 사용하므로, 첫 Evidence가 실제로 언제 소비 가능했는지는 현재 계약으로 결정할 수 없다.
+
+또한 현재 `SimpleScorer`는 Evidence의 발생 순서를 Feature로 사용하지 않는다.
 
 현재 score는 Window 안에 존재하는 서로 다른 scoring Evidence type의 활성 여부만 사용한다.
 
-즉 다음 두 입력이 같은 시점의 Window 안에서 동일하게 존재한다면 현재 Simple Score에서는 순서를 구분하지 않는다.
+즉 다음 두 입력이 같은 replay Window 안에서 동일하게 존재한다면 현재 Simple Score에서는 순서를 구분하지 않는다.
 
 ~~~text
 A → B
@@ -906,37 +966,38 @@ B → A
 Evidence ordering이 공격 구분에 유효하다.
 현재 Fusion이 순서 Feature를 활용한다.
 순서 정보가 static presence보다 추가 구분력을 제공한다.
+180.364초가 실제 Evidence availability delay다.
 ~~~
 
-Evidence 순서 자체의 유효성은 향후 Temporal Feature 단계에서 별도의 ablation 대상으로 검증해야 한다.
+Evidence 순서 자체의 유효성은 causal availability 계약이 마련된 이후 Temporal Feature 단계에서 별도의 ablation 대상으로 검증해야 한다.
 
 ---
 
-## 17. Pre-decision 정보 관찰
+## 17. Retrospective replay 내부 score 형성 순서
 
-기본 300초 probe에서 Attack의 두 번째 Evidence는 다음 시점에 발생했다.
+기본 300초 probe에서 event-time 기준 두 번째 Evidence timestamp는 다음과 같다.
 
 ~~~text
 2026-10-05T19:41:26.617Z
 ~~~
 
-첫 score 1.0은 다음 cadence에서 형성됐다.
+retrospective replay에서는 다음 cadence에서 score 1.0이 형성됐다.
 
 ~~~text
 2026-10-05T19:41:35.834Z
 ~~~
 
-Fusion 판단은 persistence를 한 번 더 충족한 다음 시점이다.
+이후 persistence를 한 번 더 충족하면서 코드상의 `fusion_time` 필드는 다음 값으로 생성됐다.
 
 ~~~text
 2026-10-05T19:41:45.834Z
 ~~~
 
-따라서 최종 `fusion_time` 이전에 이미 score 1.0 상태가 한 cadence 존재했다.
+event-time replay 내부 순서는 다음과 같다.
 
 ~~~text
 19:41:26.617
-두 번째 Evidence 발생
+두 번째 Evidence event timestamp
         ↓
 
 19:41:35.834
@@ -947,16 +1008,24 @@ score = 1.0
 19:41:45.834
 score = 1.0
 두 번째 threshold 충족
-Fusion detected
+retrospective fusion_time 필드 생성
 ~~~
 
-즉 Stopping Policy가 판단을 생성하기 전 score divergence는 존재했다.
+이는 retrospective replay 내부에서 score와 Stopping Policy가 어떤 순서로 동작했는지를 보여준다.
 
-그러나 이 결과는 Temporal Fusion이 다른 static 또는 Fast comparator보다 먼저 유의미한 정보를 확보했다는 의미는 아니다.
+그러나 현재 whole-batch selector는 lineage deviation Evidence를 생성하기 위해 후속 network Event와 terminal 후보 유일성 정보를 사용하며, `available_at` 또는 watermark 계약이 없다.
 
-현재 Attack에서는 `remote_session_process_lineage_deviation` 자체가 이미 약 `+300.419초`에 존재한다.
+따라서 위 순서를 다음과 같이 해석하지 않는다.
 
-별도의 static baseline이 해당 Evidence를 어떻게 사용하는지 비교하지 않은 상태에서 Temporal Fusion의 조기 판단 우위를 주장하지 않는다.
+~~~text
+19:38:26.253Z에 lineage deviation Evidence를 online으로 사용할 수 있었다.
+19:41:35.834Z에 causal score 1.0을 계산할 수 있었다.
+19:41:45.834Z가 실제 online fusion_time이다.
+Temporal Fusion이 Fast/static comparator보다 먼저 판단했다.
+TTSD가 위 시각을 기준으로 성립한다.
+~~~
+
+Pair-002에서 `19:38:26.253Z`부터 첫 qualifying EID 3 `19:41:26.617Z`까지의 180.364초는 확정 availability delay가 아니라 현재 selector가 terminal 후보를 확인하기 위해 필요한 정보가 처음 등장하는 시점까지의 하한으로만 기록한다.
 
 ---
 
@@ -965,48 +1034,55 @@ Fusion detected
 현재 Pair-002에서는 다음 사항을 확인했다.
 
 ~~~text
-R1 Evidence artifact 재현                  확인
-Role 1 artifact loader 연결                확인
-Attack / Normal 실제 trajectory 생성       확인
-Attack fusion_time 생성                    확인
-Normal miss 생성                           확인
-Evidence Window 내 중첩                    확인
-Window 만료에 따른 score 감소              확인
-persistence의 판단 영향                    확인
-cadence의 판단 영향                        확인
-Window의 판단 영향                         확인
-static presence baseline                   확인
-시간 제거 후에도 Pair 분리 가능             확인
-순서 Feature 사용                          미구현
-추가 temporal discriminability             미확인
-일반화 가능성                              미검증
-공식 R1 성능                               미평가
+R1 Evidence artifact 재현                         확인
+Role 1 artifact loader 연결                       확인
+Attack / Normal retrospective trajectory 생성     확인
+retrospective fusion_time 필드 생성                확인
+retrospective Normal miss 생성                     확인
+event-time Window 내 Evidence 중첩                 확인
+Window 만료에 따른 replay score 감소               확인
+persistence의 replay 결과 영향                     확인
+cadence의 replay 결과 영향                         확인
+Window의 replay 결과 영향                          확인
+whole-episode static presence baseline             확인
+시간 제거 후에도 Pair 분리 가능                    확인
+
+selector available_at / watermark 계약             없음
+causal/online trajectory                           미평가
+online fusion_time                                 미평가
+TTSD / 조기인지 시점 근거                          사용 금지
+순서 Feature 사용                                  미구현
+추가 temporal discriminability                     미확인
+일반화 가능성                                      미검증
+공식 R1 성능                                       미평가
 ~~~
 
 ---
 
 ## 19. R1 Feasibility 관점의 현재 판정
 
-Pair-002는 Temporal Fusion의 실행 mechanics를 검증하는 데에는 유효했다.
+Pair-002는 retrospective/offline event-time replay mechanics를 검증하는 데에는 유효했다.
 
-특히 다음 흐름은 실제 Evidence에서 재현됐다.
+현재 코드에서는 다음 replay 흐름을 재현했다.
 
 ~~~text
-Evidence 발생
+Evidence event timestamp
 → Window 유입
 → 서로 다른 Evidence type 중첩
 → score 상승
 → persistence 검사
-→ fusion_time 생성
+→ retrospective fusion_time 필드 생성
 → 선행 Evidence 만료
 → score 감소
 ~~~
 
-또한 Window, cadence, persistence를 변경했을 때 동일한 Attack Evidence에 대해 `detected`와 `miss`가 모두 발생했다.
+또한 Window, cadence, persistence를 변경했을 때 동일한 Attack Evidence set에 대해 `detected`와 `miss`가 모두 발생했다.
 
-따라서 시간 관련 설정이 실제 판단 로직에 사용되고 있다는 점은 확인됐다.
+따라서 시간 관련 설정이 retrospective replay 로직의 산출물에 영향을 준다는 점은 확인됐다.
 
-그러나 static presence ablation에서도 Attack 1.0 / Normal 0.5가 이미 분리됐다.
+그러나 이 결과는 causal availability를 반영한 online Temporal Fusion 결과가 아니다.
+
+또한 whole-episode static presence ablation에서도 Attack 1.0 / Normal 0.5가 이미 분리됐다.
 
 따라서 본 Pair에서 다음 최종 판정을 내리지는 않는다.
 
@@ -1014,17 +1090,25 @@ Evidence 발생
 Temporal information provides unique discriminative value.
 Temporal Fusion is superior to static Evidence.
 Temporal Fusion is superior to Fast Path.
+The recorded fusion_time is an online decision time.
+The recorded fusion_time can be used for TTSD.
 R1 Feasibility = PASS.
 ~~~
 
 현재 상태는 다음과 같이 기록한다.
 
 ~~~text
-Temporal mechanics operational
+Retrospective event-time replay operational
 = YES
 
-Temporal parameters affect decision
+Replay parameters affect retrospective output
 = YES
+
+Causal availability contract
+= NO
+
+Causal/online temporal validity
+= NOT EVALUATED
 
 Static Evidence already separates this Pair
 = YES
@@ -1081,7 +1165,7 @@ remote_process_network_follow_on
 
 ### 20.5 Parameter ablation 범위
 
-이번 ablation은 시간 mechanics 확인을 위해 제한적으로 다음 값만 비교했다.
+이번 ablation은 retrospective event-time replay mechanics 확인을 위해 제한적으로 다음 값만 비교했다.
 
 ~~~text
 Window:
@@ -1104,7 +1188,7 @@ Static presence 분석은 Run 전체 Evidence set을 시간 정보 없이 비교
 
 실제 online static detector의 판단 시점이나 가중치 정책을 구현한 것은 아니다.
 
-따라서 static baseline과 Temporal Fusion의 TTSD 우열을 현재 결과만으로 비교하지 않는다.
+따라서 static baseline과 retrospective Temporal Replay의 결과를 비교할 수는 있지만, 현재 어느 쪽도 causal availability가 확정된 online TTSD 비교 근거로 사용하지 않는다.
 
 ### 20.7 Ordering 미사용
 
@@ -1118,18 +1202,52 @@ Static presence 분석은 Run 전체 Evidence set을 시간 정보 없이 비교
 
 이는 짧은 Evidence 중첩 구간이 replay grid에 의해 sampling되거나 누락될 수 있음을 보여준다.
 
-따라서 향후 공식 R1 분석에서는 cadence 선택이 결과를 인위적으로 유리하게 만들지 않는지 확인해야 한다.
+따라서 향후 causal availability 계약이 마련된 뒤의 공식 R1 분석에서는 cadence 선택이 결과를 인위적으로 유리하게 만들거나 실제 availability 이전 상태를 sampling하지 않는지 확인해야 한다.
 
+
+### 20.9 Causal availability 미정의
+
+현재 PR #229 R1 selector는 입력 Event batch 전체를 materialize한 뒤 terminal 후보와 lineage를 결정한다.
+
+따라서 Evidence의 `timestamp`는 event time을 나타내지만, 해당 Evidence가 실제 pipeline에서 사용 가능해지는 시각은 현재 계약으로 표현되지 않는다.
+
+~~~text
+event time
+= 정의됨
+
+available_at / watermark
+= 미정의
+
+causal/online replay
+= 미평가
+~~~
+
+이 제한이 해소되기 전에는 본 문서의 trajectory, `fusion_time`, Window/cadence/persistence 결과를 TTSD·조기인지·online 우위의 근거로 사용하지 않는다.
 ---
 
 ## 21. 후속 작업 기준
 
 현재 Pair-002 결과만을 근거로 Temporal Feature Builder 또는 ML 모델 개발에 바로 진입하지 않는다.
 
-다음 단계에서는 공식 development Run을 대상으로 다음을 확인해야 한다.
+또한 현재 PR #230에서는 `available_at`/watermark 계약을 새로 구현하지 않는다. 해당 계약은 Evidence producer와 Temporal Fusion consumer가 함께 정의해야 하는 별도 후속 과제로 둔다.
+
+causal/online Temporal 분석을 재개하기 위한 선행 조건은 다음과 같다.
 
 ~~~text
-여러 Normal / Attack Run에서 trajectory 재현 여부
+Evidence event time과 availability time의 의미 분리
+available_at 또는 동등한 watermark 계약 정의
+selector가 availability 정보를 결정하는 규칙 정의
+Evidence serialization / schema 반영
+Temporal Replay가 event timestamp가 아니라 causal availability를 존중하도록 소비 경계 정의
+관련 회귀 테스트 추가
+~~~
+
+이 계약이 마련되기 전까지 현재 selector가 생성한 R1 Evidence는 whole-episode retrospective/offline 분석에만 사용한다.
+
+계약 이후 공식 development Run을 대상으로 다음을 확인한다.
+
+~~~text
+여러 Normal / Attack Run의 causal trajectory 재현 여부
 static Evidence baseline과의 비교
 시간 Feature 제거 ablation
 Window / recency 효과
@@ -1142,6 +1260,7 @@ family-level 일반화 가능성
 특히 다음 질문이 핵심이다.
 
 ~~~text
+causal availability를 보존한 조건에서
 시간 정보를 제거한 baseline과 비교했을 때
 Temporal 정보가 실제로 추가적인 구분력을 제공하는가?
 ~~~
@@ -1152,9 +1271,9 @@ Temporal 정보가 실제로 추가적인 구분력을 제공하는가?
 
 ## 22. 결론
 
-R1 Pair-002를 현재 Temporal Fusion 코드 경로에 연결한 결과 실제 R1 Evidence를 기반으로 Normal / Attack score trajectory와 `fusion_time`을 생성할 수 있음을 확인했다.
+R1 Pair-002를 현재 Temporal Fusion 코드 경로에 연결하여 실제 R1 Evidence를 event timestamp 기준으로 retrospective/offline replay할 수 있음을 확인했다.
 
-기본 probe에서는 다음 결과가 발생했다.
+기본 probe에서 코드가 산출한 retrospective 결과는 다음과 같다.
 
 ~~~text
 Normal:
@@ -1164,14 +1283,16 @@ status = miss
 Attack:
 max score = 1.0
 status = detected
-fusion_time = 2026-10-05T19:41:45.834Z
+fusion_time field = 2026-10-05T19:41:45.834Z
 ~~~
 
-Window, persistence, cadence ablation에서는 동일한 Attack Evidence라도 시간 조건에 따라 판단 결과가 달라졌다.
+이 `fusion_time`은 현재 replay 코드가 Evidence event timestamp를 기준으로 계산한 결과 필드다. 현재 whole-batch selector에는 `available_at` 또는 watermark 계약이 없으므로 실제 causal/online 판단 시점으로 해석하지 않는다.
 
-따라서 Temporal Fusion의 시간 관련 mechanics가 실제 판단 결과에 영향을 준다는 점은 확인됐다.
+Window, persistence, cadence ablation에서는 동일한 Attack Evidence set이라도 retrospective event-time 조건에 따라 replay 결과가 달라졌다.
 
-그러나 시간을 제거한 static Evidence presence에서도 다음과 같이 Pair가 이미 분리됐다.
+따라서 시간 관련 설정이 retrospective replay mechanics의 산출물에 영향을 준다는 점은 확인됐다.
+
+그러나 시간을 제거한 whole-episode static Evidence presence에서도 다음과 같이 Pair가 이미 분리됐다.
 
 ~~~text
 Attack = 1.0
@@ -1180,20 +1301,28 @@ Normal = 0.5
 
 따라서 현재 Pair-002만으로는 시간 정보가 static Evidence보다 추가적인 Normal / Attack 구분력을 제공한다고 결론낼 수 없다.
 
+또한 causal availability가 정의되지 않았으므로 현재 결과로 TTSD, 조기인지 시점, Fast/static 대비 online 우위도 판단하지 않는다.
+
 현재 결론은 다음 범위로 제한한다.
 
 ~~~text
-Temporal mechanics affect the decision
+Retrospective event-time replay mechanics
 = 확인
+
+Causal/online temporal validity
+= 미평가
 
 Incremental discriminative value of temporal information
 = 미확인
+
+TTSD / early-recognition evidence
+= 사용 불가
 
 R1 final feasibility
 = PENDING
 ~~~
 
-Pair-002는 이후 공식 development Run 분석을 위한 연결 및 temporal behavior probe 근거로만 사용한다.
+Pair-002는 이후 availability 계약 설계와 공식 development Run 분석을 준비하기 위한 connection check 및 retrospective/offline probe 근거로만 사용한다.
 
 ---
 
@@ -1215,10 +1344,10 @@ uv run ruff check .
 All checks passed!
 
 uv run ruff format --check .
-273 files already formatted
+277 files already formatted
 
 uv run pytest
-2868 passed, 95 skipped
+2906 passed, 95 skipped
 ~~~
 
 따라서 현재 변경 범위에서 기존 Fusion 동작 또는 저장소 전체 테스트의 회귀는 확인되지 않았다.
