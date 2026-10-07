@@ -65,11 +65,11 @@ Approved lineage policy는 “선택된 lineage가 승인 계보와 같은가”
 
 1. batch의 Event ID와 run/host 범위를 검증한다.
 2. R1 범위의 EID 1/EID 3 역할 Event에 GUID가 모두 존재하는지 확인한다.
-3. 같은 run/host/GUID로 연결된 모든 network Event의 `network.timestamp >= process.timestamp`일 때만 해당 `process_create`를 terminal 후보로 만든다. 하나라도 terminal보다 이르면, 같은 GUID에 정상 시각의 network Event가 함께 있어도 `temporal_inversion`으로 거부한다.
+3. 같은 run/host/GUID로 연결된 모든 network Event의 `network.timestamp >= process.timestamp`일 때만 해당 `process_create`를 terminal 후보로 만든다. Selector candidate 범위에서 하나라도 terminal보다 이른 network Event를 발견하면, 같은 GUID나 다른 GUID에 정상 후보가 함께 있어도 `temporal_inversion`으로 거부한다.
 4. terminal 후보가 정확히 하나일 때만 부모 GUID를 따라 `lineage_event_count`만큼 올라간다.
 5. policy 경계에서 마지막으로 도달한 Event를 anchor로 선택한다.
 
-후보와 결과는 JSONL 행 순서, Python set/dict iteration 순서에 의존하지 않는다. 여러 terminal 후보를 timestamp나 Event ID로 임의 선택하지 않고 ambiguity로 거부한다. 하나의 terminal이 여러 후속 network Event를 가진 경우 selector는 network Event 하나를 선택하지 않는다. 연결된 network Event가 모두 terminal과 같거나 늦고 terminal만 유일하면 기존 pipeline이 모든 follow-on을 독립 Evidence로 처리한다.
+후보와 결과는 JSONL 행 순서, Python set/dict iteration 순서에 의존하지 않는다. Temporal inversion 검사를 후보 수 판단보다 먼저 적용하며, inversion이 없을 때만 terminal 없음, 단일 terminal, 복수 terminal ambiguity를 판단한다. 여러 terminal 후보를 timestamp나 Event ID로 임의 선택하지 않고 ambiguity로 거부한다. 하나의 terminal이 여러 후속 network Event를 가진 경우 selector는 network Event 하나를 선택하지 않는다. 연결된 network Event가 모두 terminal과 같거나 늦고 terminal만 유일하면 기존 pipeline이 모든 follow-on을 독립 Evidence로 처리한다.
 
 ## 5. Fail-closed 경계
 
