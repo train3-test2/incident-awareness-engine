@@ -25,7 +25,7 @@ Raw Sysmon
 - Attack: `RUN-20261005-912`
 - Normal: `RUN-20261005-913`
 - 입력: Sysmon EID 1과 EID 3 JSONL
-- entity 범위: 단일 host `R1-TGTA`
+- entity 범위: 동일한 단일 host `<target-host>`
 - Evidence:
   - `remote_session_process_lineage_deviation`
   - `remote_process_network_follow_on`
@@ -89,7 +89,7 @@ Raw Sysmon
 전체 Event에서 다음 계약을 확인했다.
 
 - `run_id` 보존
-- `host_id = R1-TGTA`
+- `host_id = <target-host>`
 - `source = sysmon`, `source_layer = raw_telemetry`
 - EID 1은 `process_create`, EID 3은 `network_connection`
 - `source_event_id`는 원본 Sysmon RecordId 문자열
@@ -121,7 +121,7 @@ Raw Sysmon
 | Attack | `wsmprovhost.exe → cscript.exe → powershell.exe` | 각 child `ParentProcessGuid`가 직전 parent `ProcessGuid`와 일치 | RecordId 1350 EID 3 GUID가 terminal GUID와 일치 | PASS |
 | Normal | `wsmprovhost.exe → cmd.exe → powershell.exe` | 각 child `ParentProcessGuid`가 직전 parent `ProcessGuid`와 일치 | RecordId 1373 EID 3 GUID가 terminal GUID와 일치 | PASS |
 
-두 network Event의 목적지는 `192.168.34.30:8443/TCP`다. 모든 edge는 동일 `run_id`와 `host_id` 범위에서 GUID로 연결했으며 PID fallback은 사용하지 않았다. 프로세스 이름은 결과 설명과 동결 policy의 sequence 비교에만 사용했고, 특정 이름 자체를 Attack label로 해석하지 않았다.
+두 network Event는 동일한 내부 목적지 endpoint 특성을 공유한다. 실제 host와 내부 목적지 IP/port는 저장소 문서에 기록하지 않고 외부 원본 Pair artifact에만 보존한다. 모든 edge는 동일 `run_id`와 `host_id` 범위에서 GUID로 연결했으며 PID fallback은 사용하지 않았다. 프로세스 이름은 결과 설명과 동결 policy의 sequence 비교에만 사용했고, 특정 이름 자체를 Attack label로 해석하지 않았다.
 
 ## 9. Validation용 approved lineage policy
 
@@ -156,7 +156,7 @@ hash는 `policy_id`, `version`, `approved_lineage`를 key 정렬한 compact JSON
 
 모든 Evidence에서 다음을 확인했다.
 
-- `entity_id = R1-TGTA`
+- `entity_id = <target-host>`
 - `feature_channel_group = fusion_feature`
 - `extractor_version = r1-v0.1`
 - `event_ids`는 실제 correlation에 사용한 `NormalizedEvent.event_id`이며 위 RecordId 의미 순서를 유지
