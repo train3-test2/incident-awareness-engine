@@ -13,6 +13,11 @@ from incident_awareness.evidence.r1_multi_event import (
     extract_remote_process_network_follow_on,
     extract_remote_session_process_lineage_deviation_with_diagnostics,
 )
+from incident_awareness.evidence.r1_selector import (
+    R1SelectorPolicy,
+    R1SelectorResult,
+    select_r1_lineage,
+)
 
 type _CorrelationKey = tuple[str, str, str]
 type _ResolvedLineageInput = tuple[R1LineageInput, NormalizedEvent, NormalizedEvent]
@@ -46,6 +51,16 @@ class R1EvidencePipelineResult:
 
     evidences: tuple[Evidence, ...]
     diagnostics: tuple[R1ExtractionDiagnostic, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class R1SelectedEvidencePipelineResult:
+    """Selector provenance와 기존 R1 Evidence 추출 결과를 함께 반환한다."""
+
+    evidences: tuple[Evidence, ...]
+    selector_result: R1SelectorResult
+    lineage_input: R1LineageInput | None
+    extraction_diagnostics: tuple[R1ExtractionDiagnostic, ...]
 
 
 def run_r1_evidence_pipeline(
@@ -106,6 +121,47 @@ def run_r1_evidence_pipeline_with_diagnostics(
             )
         ),
         diagnostics=tuple(sorted(diagnostics)),
+    )
+
+
+def run_r1_evidence_pipeline_with_selector(
+    events: Iterable[NormalizedEvent],
+    *,
+    selector_policy: R1SelectorPolicy,
+    approved_policy: ApprovedLineagePolicy,
+) -> R1SelectedEvidencePipelineResult:
+    """결정적 selector 결과를 기존 명시적 lineage 입력 경로에 연결한다."""
+    if not isinstance(approved_policy, ApprovedLineagePolicy):
+        raise TypeError("approved_policy must be an ApprovedLineagePolicy")
+
+    event_batch = tuple(events)
+    selector_result = select_r1_lineage(
+        event_batch,
+        policy=selector_policy,
+    )
+    selection = selector_result.selection
+    if selection is None:
+        return R1SelectedEvidencePipelineResult(
+            evidences=(),
+            selector_result=selector_result,
+            lineage_input=None,
+            extraction_diagnostics=(),
+        )
+
+    lineage_input = R1LineageInput(
+        anchor_event_id=selection.anchor_event_id,
+        terminal_event_id=selection.terminal_event_id,
+        approved_policy=approved_policy,
+    )
+    extraction_result = run_r1_evidence_pipeline_with_diagnostics(
+        event_batch,
+        lineage_inputs=(lineage_input,),
+    )
+    return R1SelectedEvidencePipelineResult(
+        evidences=extraction_result.evidences,
+        selector_result=selector_result,
+        lineage_input=lineage_input,
+        extraction_diagnostics=extraction_result.diagnostics,
     )
 
 
@@ -210,7 +266,9 @@ def _required_event(
 __all__ = [
     "R1EvidencePipelineResult",
     "R1LineageInput",
+    "R1SelectedEvidencePipelineResult",
     "r1_evidence_sort_key",
     "run_r1_evidence_pipeline",
     "run_r1_evidence_pipeline_with_diagnostics",
+    "run_r1_evidence_pipeline_with_selector",
 ]
