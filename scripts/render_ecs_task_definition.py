@@ -17,6 +17,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--database-url-secret-arn")
     parser.add_argument("--sqs-queue-url")
     parser.add_argument("--s3-input-bucket")
+    parser.add_argument("--evaluation-snapshot-s3-uri")
     return parser.parse_args()
 
 
@@ -80,6 +81,7 @@ def main() -> None:
             "DATABASE_URL_SECRET_ARN": arguments.database_url_secret_arn,
             "SQS_QUEUE_URL": arguments.sqs_queue_url,
             "S3_INPUT_BUCKET": arguments.s3_input_bucket,
+            "EVALUATION_SNAPSHOT_S3_URI": arguments.evaluation_snapshot_s3_uri,
         },
     )
     arguments.output.write_text(rendered, encoding="utf-8")

@@ -305,7 +305,9 @@ jobs:
       ECS_DASHBOARD_SERVICE: ${{ vars.ECS_DASHBOARD_SERVICE }}
       IMAGE_URI: ${{ needs.aws-smoke-deploy.outputs.image_uri }}
       DASHBOARD_EXECUTION_ROLE_ARN: ${{ vars.DASHBOARD_EXECUTION_ROLE_ARN }}
+      DASHBOARD_TASK_ROLE_ARN: ${{ vars.DASHBOARD_TASK_ROLE_ARN }}
       DASHBOARD_DATABASE_URL_SECRET_ARN: ${{ vars.DASHBOARD_DATABASE_URL_SECRET_ARN }}
+      DASHBOARD_EVALUATION_SNAPSHOT_S3_URI: ${{ vars.DASHBOARD_EVALUATION_SNAPSHOT_S3_URI }}
     steps:
       - uses: actions/checkout@v6
 
@@ -332,7 +334,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          for value in AWS_ROLE_ARN AWS_REGION ECS_CLUSTER ECS_DASHBOARD_SERVICE DASHBOARD_EXECUTION_ROLE_ARN DASHBOARD_DATABASE_URL_SECRET_ARN; do
+          for value in AWS_ROLE_ARN AWS_REGION ECS_CLUSTER ECS_DASHBOARD_SERVICE DASHBOARD_EXECUTION_ROLE_ARN DASHBOARD_TASK_ROLE_ARN DASHBOARD_DATABASE_URL_SECRET_ARN DASHBOARD_EVALUATION_SNAPSHOT_S3_URI; do
             if [[ -z "${!value//[[:space:]]/}" ]]; then
               echo "GitHub Actions variable $value must be configured."
               exit 1
@@ -353,7 +355,9 @@ jobs:
             --output "$RUNNER_TEMP/task-definition.dashboard.json" \
             --image-uri "$IMAGE_URI" \
             --execution-role-arn "$DASHBOARD_EXECUTION_ROLE_ARN" \
-            --database-url-secret-arn "$DASHBOARD_DATABASE_URL_SECRET_ARN"
+            --task-role-arn "$DASHBOARD_TASK_ROLE_ARN" \
+            --database-url-secret-arn "$DASHBOARD_DATABASE_URL_SECRET_ARN" \
+            --evaluation-snapshot-s3-uri "$DASHBOARD_EVALUATION_SNAPSHOT_S3_URI"
 
       - name: Register Dashboard task definition revision
         id: register-dashboard-task-definition

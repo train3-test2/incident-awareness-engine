@@ -74,6 +74,45 @@ def test_render_replaces_all_worker_identifiers() -> None:
     ]
 
 
+def test_render_replaces_all_dashboard_identifiers() -> None:
+    # Given
+    template = (ROOT / "infra" / "ecs" / "task-definition.dashboard.json").read_text(
+        encoding="utf-8"
+    )
+    replacements = {
+        "IMAGE_URI": "registry.example/engine:abc123",
+        "EXECUTION_ROLE_ARN": "arn:aws:iam::123456789012:role/dashboard-execution",
+        "TASK_ROLE_ARN": "arn:aws:iam::123456789012:role/dashboard-task",
+        "DATABASE_URL_SECRET_ARN": (
+            "arn:aws:secretsmanager:region:123456789012:secret:dashboard-db"
+        ),
+        "EVALUATION_SNAPSHOT_S3_URI": (
+            "s3://evaluation-bucket/evaluation/snapshot-001/snapshot.json"
+        ),
+    }
+
+    # When
+    rendered = MODULE.render(template, replacements)
+    task_definition = json.loads(rendered)
+    container = task_definition["containerDefinitions"][0]
+
+    # Then
+    assert task_definition["executionRoleArn"] == replacements["EXECUTION_ROLE_ARN"]
+    assert task_definition["taskRoleArn"] == replacements["TASK_ROLE_ARN"]
+    assert container["image"] == replacements["IMAGE_URI"]
+    assert container["secrets"][0]["valueFrom"].startswith(replacements["DATABASE_URL_SECRET_ARN"])
+    assert container["environment"] == [
+        {
+            "name": "INCIDENT_AWARENESS_EVALUATION_SNAPSHOT_S3_URI",
+            "value": replacements["EVALUATION_SNAPSHOT_S3_URI"],
+        },
+        {
+            "name": "INCIDENT_AWARENESS_EVALUATION_SNAPSHOT_PATH",
+            "value": "/evaluation/current-snapshot.json",
+        },
+    ]
+
+
 def test_render_requires_identifiers_used_by_a_template() -> None:
     template = (ROOT / "infra" / "ecs" / "task-definition.dashboard.json").read_text(
         encoding="utf-8"
@@ -85,7 +124,10 @@ def test_render_requires_identifiers_used_by_a_template() -> None:
             {
                 "IMAGE_URI": "registry.example/engine:abc123",
                 "EXECUTION_ROLE_ARN": "arn:aws:iam::123456789012:role/execution",
-                "TASK_ROLE_ARN": None,
+                "TASK_ROLE_ARN": "arn:aws:iam::123456789012:role/dashboard-task",
                 "DATABASE_URL_SECRET_ARN": None,
+                "EVALUATION_SNAPSHOT_S3_URI": (
+                    "s3://evaluation-bucket/evaluation/snapshot-001/snapshot.json"
+                ),
             },
         )

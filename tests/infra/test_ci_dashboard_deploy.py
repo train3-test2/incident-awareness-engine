@@ -29,3 +29,23 @@ def test_dashboard_deployment_flattens_network_interface_details() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
     assert "attachments[?type=='ElasticNetworkInterface'].details[]" in workflow
+
+
+def test_dashboard_deployment_wires_task_role_and_evaluation_snapshot_source() -> None:
+    # Given
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    # When
+    dashboard_job = workflow[workflow.index("  dashboard-deploy:") :]
+
+    # Then
+    assert "DASHBOARD_TASK_ROLE_ARN: ${{ vars.DASHBOARD_TASK_ROLE_ARN }}" in dashboard_job
+    assert (
+        "DASHBOARD_EVALUATION_SNAPSHOT_S3_URI: ${{ vars.DASHBOARD_EVALUATION_SNAPSHOT_S3_URI }}"
+    ) in dashboard_job
+    assert (
+        "DASHBOARD_EXECUTION_ROLE_ARN DASHBOARD_TASK_ROLE_ARN "
+        "DASHBOARD_DATABASE_URL_SECRET_ARN DASHBOARD_EVALUATION_SNAPSHOT_S3_URI"
+    ) in dashboard_job
+    assert '--task-role-arn "$DASHBOARD_TASK_ROLE_ARN"' in dashboard_job
+    assert '--evaluation-snapshot-s3-uri "$DASHBOARD_EVALUATION_SNAPSHOT_S3_URI"' in dashboard_job

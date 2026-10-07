@@ -106,6 +106,7 @@ def test_dashboard_task_definition_contract() -> None:
     assert task_definition["cpu"] == "256"
     assert task_definition["memory"] == "512"
     assert task_definition["executionRoleArn"] == "EXECUTION_ROLE_ARN"
+    assert task_definition["taskRoleArn"] == "TASK_ROLE_ARN"
     assert task_definition["runtimePlatform"] == {
         "cpuArchitecture": "X86_64",
         "operatingSystemFamily": "LINUX",
@@ -116,15 +117,22 @@ def test_dashboard_task_definition_contract() -> None:
     assert container["image"] == "IMAGE_URI"
     assert container["essential"] is True
     assert container["command"] == [
-        "uvicorn",
-        "incident_awareness.dashboard.api.app:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8080",
+        "python",
+        "-m",
+        "incident_awareness.dashboard.startup",
     ]
     assert container["portMappings"] == [
         {"containerPort": 8080, "protocol": "tcp"},
+    ]
+    assert container["environment"] == [
+        {
+            "name": "INCIDENT_AWARENESS_EVALUATION_SNAPSHOT_S3_URI",
+            "value": "EVALUATION_SNAPSHOT_S3_URI",
+        },
+        {
+            "name": "INCIDENT_AWARENESS_EVALUATION_SNAPSHOT_PATH",
+            "value": "/evaluation/current-snapshot.json",
+        },
     ]
     assert container["secrets"] == [
         {
@@ -228,6 +236,28 @@ def test_dashboard_execution_role_secret_policy_is_scoped_to_dashboard_database_
     }
 
 
+def test_dashboard_task_role_can_read_only_evaluation_snapshot_objects() -> None:
+    # Given
+    policy = json.loads(
+        (IAM_DIRECTORY / "ecs-dashboard-task-role-policy.json").read_text(encoding="utf-8")
+    )
+
+    # When
+    statements = policy["Statement"]
+
+    # Then
+    assert statements == [
+        {
+            "Sid": "ReadDashboardEvaluationSnapshots",
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "DASHBOARD_EVALUATION_SNAPSHOT_OBJECTS_ARN",
+        }
+    ]
+    assert all(statement["Action"] != "s3:ListBucket" for statement in statements)
+    assert all(statement["Resource"] != "*" for statement in statements)
+
+
 def test_github_actions_policy_passes_only_the_dashboard_execution_role() -> None:
     policy = json.loads(
         (IAM_DIRECTORY / "github-actions-smoke-deploy-policy.json").read_text(encoding="utf-8")
@@ -241,6 +271,29 @@ def test_github_actions_policy_passes_only_the_dashboard_execution_role() -> Non
         "Effect": "Allow",
         "Action": "iam:PassRole",
         "Resource": "DASHBOARD_EXECUTION_ROLE_ARN",
+        "Condition": {
+            "StringEquals": {
+                "iam:PassedToService": "ecs-tasks.amazonaws.com",
+            }
+        },
+    }
+
+
+def test_github_actions_policy_passes_the_dashboard_task_role_to_ecs_tasks() -> None:
+    # Given
+    policy = json.loads(
+        (IAM_DIRECTORY / "github-actions-smoke-deploy-policy.json").read_text(encoding="utf-8")
+    )
+
+    # When
+    statement = next(item for item in policy["Statement"] if item["Sid"] == "PassDashboardTaskRole")
+
+    # Then
+    assert statement == {
+        "Sid": "PassDashboardTaskRole",
+        "Effect": "Allow",
+        "Action": "iam:PassRole",
+        "Resource": "DASHBOARD_TASK_ROLE_ARN",
         "Condition": {
             "StringEquals": {
                 "iam:PassedToService": "ecs-tasks.amazonaws.com",
