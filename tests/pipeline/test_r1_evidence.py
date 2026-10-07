@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -5,9 +6,11 @@ import pytest
 from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.evidence import extract_evidence
 from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
+from incident_awareness.evidence.r1_selector import R1SelectorPolicy
 from incident_awareness.pipeline.r1_evidence import (
     R1LineageInput,
     run_r1_evidence_pipeline,
+    run_r1_evidence_pipeline_with_selector,
 )
 
 _BASE_TIME = datetime(2026, 10, 5, 1, 0, tzinfo=UTC)
@@ -164,6 +167,15 @@ def _terminal_lineage_input(
         anchor_event_id=terminal_event_id,
         terminal_event_id=terminal_event_id,
         approved_policy=_policy(approved_lineage=(process_name,)),
+    )
+
+
+def _selector_policy() -> R1SelectorPolicy:
+    return R1SelectorPolicy(
+        policy_id="r1-structural-lineage-selector",
+        version="v0.1",
+        config_hash="669520854868ae24182f502a2c118e66fce9a0fc464283232990182fa848072d",
+        lineage_event_count=3,
     )
 
 
@@ -504,3 +516,238 @@ def test_does_not_merge_s0_evidence_or_require_fusion() -> None:
 
     # Then
     assert evidences == ()
+
+
+def test_selector_pipeline_creates_lineage_and_network_evidence() -> None:
+    # Given
+    anchor, middle, terminal = _lineage_events()
+    network_event = _event(
+        event_id="evt-network",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=3),
+        process_guid=_TERMINAL_GUID,
+    )
+
+    # When
+    result = run_r1_evidence_pipeline_with_selector(
+        [network_event, middle, terminal, anchor],
+        selector_policy=_selector_policy(),
+        approved_policy=_policy(),
+    )
+
+    # Then
+    assert result.selector_result.diagnostics == ()
+    assert result.lineage_input == _lineage_input()
+    assert result.extraction_diagnostics == ()
+    assert {evidence.evidence_type for evidence in result.evidences} == {
+        "remote_process_network_follow_on",
+        "remote_session_process_lineage_deviation",
+    }
+
+
+def test_selector_pipeline_rejects_mismatched_lineage_lengths_before_consuming_events() -> None:
+    # Given
+    events_consumed = False
+
+    def events_that_must_not_be_consumed() -> Iterator[NormalizedEvent]:
+        nonlocal events_consumed
+        events_consumed = True
+        yield from _lineage_events()
+
+    approved_policy = _policy(
+        approved_lineage=(
+            "anchor.exe",
+            "approved-hop.exe",
+            "extra-hop.exe",
+            "terminal.exe",
+        )
+    )
+
+    # When
+    with pytest.raises(
+        ValueError,
+        match="selector lineage_event_count must match approved_lineage length",
+    ):
+        run_r1_evidence_pipeline_with_selector(
+            events_that_must_not_be_consumed(),
+            selector_policy=_selector_policy(),
+            approved_policy=approved_policy,
+        )
+
+    # Then
+    assert events_consumed is False
+
+
+def test_selector_pipeline_rejects_mixed_network_timestamps_without_evidence() -> None:
+    # Given
+    anchor, middle, terminal = _lineage_events()
+    early_network = _event(
+        event_id="evt-network-early",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=1),
+        process_guid=_TERMINAL_GUID,
+    )
+    later_network = _event(
+        event_id="evt-network-later",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=3),
+        process_guid=_TERMINAL_GUID,
+    )
+
+    # When
+    result = run_r1_evidence_pipeline_with_selector(
+        (anchor, middle, terminal, later_network, early_network),
+        selector_policy=_selector_policy(),
+        approved_policy=_policy(),
+    )
+
+    # Then
+    assert result.evidences == ()
+    assert result.lineage_input is None
+    assert result.selector_result.diagnostics == ("temporal_inversion",)
+
+
+def test_selector_pipeline_rejects_inverted_candidate_before_valid_candidate() -> None:
+    # Given
+    anchor, middle, valid_terminal = _lineage_events()
+    valid_network = _event(
+        event_id="evt-network-valid",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=3),
+        process_guid=_TERMINAL_GUID,
+    )
+    inverted_terminal_guid = "{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}"
+    inverted_terminal = _event(
+        event_id="evt-terminal-inverted",
+        event_type="process_create",
+        timestamp=_BASE_TIME + timedelta(seconds=2),
+        process_guid=inverted_terminal_guid,
+        parent_process_guid=_MIDDLE_GUID,
+    )
+    early_network = _event(
+        event_id="evt-network-early",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=1),
+        process_guid=inverted_terminal_guid,
+    )
+
+    # When
+    result = run_r1_evidence_pipeline_with_selector(
+        (
+            anchor,
+            middle,
+            valid_terminal,
+            valid_network,
+            inverted_terminal,
+            early_network,
+        ),
+        selector_policy=_selector_policy(),
+        approved_policy=_policy(),
+    )
+
+    # Then
+    assert result.evidences == ()
+    assert result.lineage_input is None
+    assert result.selector_result.diagnostics == ("temporal_inversion",)
+    assert result.extraction_diagnostics == ()
+
+
+def test_selector_pipeline_emits_every_valid_network_follow_on() -> None:
+    # Given
+    anchor, middle, terminal = _lineage_events()
+    network_events = (
+        _event(
+            event_id="evt-network-1",
+            event_type="network_connection",
+            timestamp=_BASE_TIME + timedelta(seconds=3),
+            process_guid=_TERMINAL_GUID,
+        ),
+        _event(
+            event_id="evt-network-2",
+            event_type="network_connection",
+            timestamp=_BASE_TIME + timedelta(seconds=4),
+            process_guid=_TERMINAL_GUID,
+        ),
+    )
+
+    # When
+    result = run_r1_evidence_pipeline_with_selector(
+        (anchor, middle, terminal, *network_events),
+        selector_policy=_selector_policy(),
+        approved_policy=_policy(),
+    )
+
+    # Then
+    network_evidences = tuple(
+        evidence
+        for evidence in result.evidences
+        if evidence.evidence_type == "remote_process_network_follow_on"
+    )
+    assert result.selector_result.diagnostics == ()
+    assert {tuple(evidence.event_ids) for evidence in network_evidences} == {
+        (terminal.event_id, network_event.event_id) for network_event in network_events
+    }
+
+
+def test_selector_pipeline_matches_manual_lineage_input_result() -> None:
+    # Given
+    anchor, middle, terminal = _lineage_events()
+    network_event = _event(
+        event_id="evt-network",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=3),
+        process_guid=_TERMINAL_GUID,
+    )
+    events = (anchor, middle, terminal, network_event)
+
+    # When
+    selected = run_r1_evidence_pipeline_with_selector(
+        events,
+        selector_policy=_selector_policy(),
+        approved_policy=_policy(),
+    )
+    manual = run_r1_evidence_pipeline(
+        events,
+        lineage_inputs=(_lineage_input(),),
+    )
+
+    # Then
+    assert selected.evidences == manual
+
+
+def test_selector_failure_does_not_create_evidence_or_lose_diagnostic() -> None:
+    # Given
+    first_events = (*_lineage_events(),)
+    first_network = _event(
+        event_id="evt-network",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=3),
+        process_guid=_TERMINAL_GUID,
+    )
+    second_terminal_guid = "{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}"
+    second_terminal = _event(
+        event_id="evt-terminal-2",
+        event_type="process_create",
+        timestamp=_BASE_TIME + timedelta(seconds=2),
+        process_guid=second_terminal_guid,
+        parent_process_guid=_MIDDLE_GUID,
+    )
+    second_network = _event(
+        event_id="evt-network-2",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=3),
+        process_guid=second_terminal_guid,
+    )
+
+    # When
+    result = run_r1_evidence_pipeline_with_selector(
+        (*first_events, first_network, second_terminal, second_network),
+        selector_policy=_selector_policy(),
+        approved_policy=_policy(),
+    )
+
+    # Then
+    assert result.evidences == ()
+    assert result.lineage_input is None
+    assert result.selector_result.diagnostics == ("ambiguous_terminal_candidate",)
+    assert result.extraction_diagnostics == ()

@@ -160,7 +160,7 @@ downstream에서 artifact를 소비하기 전에는 summary의 `status = complet
 
 `resolve_r1_evidence_provenance(evidences, events)`는 artifact loader가 검증한 Evidence의 `event_ids`를 NormalizedEvent batch에서 해석하는 별도의 provenance 경계다. Event batch의 `event_id` 유일성과 모든 참조 Event의 존재, `Evidence.run_id == NormalizedEvent.run_id`, `Evidence.entity_id == NormalizedEvent.host_id`, `Evidence.timestamp == max(NormalizedEvent.timestamp)`를 검증하고 `Evidence.event_ids`의 의미적 순서를 그대로 보존한 Event tuple을 반환한다. `raw_ref`와 `source_event_id`는 resolve된 NormalizedEvent를 통해 추적하며 Evidence에 복제하지 않는다. SHA-256, count, artifact ordering, R1 type scope, summary lineage/policy provenance 같은 artifact 무결성 검증은 PR #188 loader의 책임으로 유지한다.
 
-파일은 기존 artifact를 덮어쓰지 않으며 summary를 마지막 완료 표식으로 게시한다. 동일한 `output_directory`는 재사용하거나 덮어쓰지 않는다. failed Run을 재시도할 때는 새로운 빈 `output_directory`를 명시적으로 사용하며, 이번 구현은 기존 artifact 자동 삭제, 자동 overwrite, 자동 attempt 번호 생성을 하지 않는다. 실행 시각처럼 재실행마다 달라지는 값은 기록하지 않는다. 현재 API는 Pilot·수동 실행의 Event ID 직접 지정 방식만 지원한다. Pair-002 development telemetry E2E는 완료했으며 production runner/CLI 연결과 반복 평가용 selector는 후속 작업이다.
+파일은 기존 artifact를 덮어쓰지 않으며 summary를 마지막 완료 표식으로 게시한다. 동일한 `output_directory`는 재사용하거나 덮어쓰지 않는다. failed Run을 재시도할 때는 새로운 빈 `output_directory`를 명시적으로 사용하며, 이번 구현은 기존 artifact 자동 삭제, 자동 overwrite, 자동 attempt 번호 생성을 하지 않는다. 실행 시각처럼 재실행마다 달라지는 값은 기록하지 않는다. Pilot·수동 실행의 Event ID 직접 지정 API는 유지한다. 독립적인 [R1 selector v0.1](r1-selector-v0.1.md)은 frozen structural policy로 anchor/terminal을 선택해 기존 batch pipeline에 연결하며 Pair-002 development telemetry 재검증을 완료했다. Production runner/CLI 연결과 selector provenance의 artifact 영속화는 후속 작업이다.
 
 ## 6. 미확정 사항
 
@@ -172,8 +172,8 @@ downstream에서 artifact를 소비하기 전에는 summary의 `status = complet
 | R1 batch pipeline API | 구현 완료 | `src/incident_awareness/pipeline/r1_evidence.py`에서 NormalizedEvent batch와 명시적 lineage input을 처리 |
 | production runner/CLI 연결 | TBD | R1 batch API 호출 위치와 입력 config 계약 합의 |
 | Pilot·수동 실행의 anchor/terminal 선택 | TBD | 실제 Pilot에서 Event ID를 선택해 전달할 주체와 기준 합의 |
-| 반복 평가용 anchor/terminal selector | TBD | Ground Truth와 `run_type`을 참조하지 않고 모든 Run에 동일하게 적용할 재현 가능한 규칙 합의 |
-| R1 분석 window | TBD | 실제 수집 margin과 R1 분석 대상 Event batch 범위 합의 |
+| 반복 평가용 anchor/terminal selector | development 구현 및 Pair-002 재검증 완료 | [R1 selector v0.1](r1-selector-v0.1.md). 구조 후보가 유일할 때만 선택하며 production 적용과 dataset 확대 검증은 별도 |
+| R1 분석 window | TBD | selector는 호출자가 제공한 단일 run/host batch 전체를 사용. 실제 수집 margin과 production 분석 대상 Event batch 범위 합의 필요 |
 | R1 Fusion profile | TBD | 사용할 후보, feature channel, 가중치, window, stopping 영향에 대한 Role1 합의 |
 
 두 Evidence type은 구현 및 Pair-002 development telemetry 검증을 거쳐 공식 managed vocabulary에 등록했다. `remote_process_network_follow_on`은 Normal과 Attack 모두에서 발생할 수 있어 단독 공격 신호가 아니며, 두 type의 Fusion profile 포함 여부와 scoring 의미는 Role1이 별도로 결정한다.

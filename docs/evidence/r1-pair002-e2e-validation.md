@@ -17,7 +17,7 @@ Raw Sysmon
 → Evidence provenance resolver
 ```
 
-새 탐지 조건, managed vocabulary, Fusion 설정 또는 반복 평가 selector는 이 검증에서 추가하지 않는다. 원본 telemetry와 생성 artifact도 저장소에 포함하지 않는다.
+최초 PR #209 검증에서는 새 탐지 조건, managed vocabulary, Fusion 설정 또는 반복 평가 selector를 추가하지 않았다. 이후 managed vocabulary와 반복 평가 selector의 후속 상태는 각각 §18과 §16에 구분해 기록한다. 원본 telemetry와 생성 artifact는 저장소에 포함하지 않는다.
 
 ## 2. 검증 범위
 
@@ -243,22 +243,20 @@ Evidence에 raw provenance를 중복 저장하지 않아도 원본까지 연결�
 
 이 결과는 동결된 계보와 다른 complete lineage가 lineage deviation을 생성하고, 공통 후속 연결은 두 Run 모두에서 생성되는 현재 R1 Evidence 의미와 일치한다. 특정 중간 프로세스 이름 자체가 공격 판정 조건인 것은 아니다.
 
-Normal의 lineage deviation 0건은 수동으로 선택한 단일 Normal lineage가 approved lineage와 일치했다는 의미다. Run 안의 다른 후보 lineage는 평가하지 않았으므로 Normal Run 전체의 false positive가 0건이라는 뜻이 아니며, 이 한 Pair로 false-positive rate를 추정할 수 없다. 반복 평가용 deterministic selector를 도입해 전체 후보 lineage를 평가한 뒤에야 해당 특성을 판단할 수 있다.
+Normal의 lineage deviation 0건은 최초 수동 입력과 후속 structural selector가 선택한 단일 Normal lineage가 approved lineage와 일치했다는 의미다. 이 한 Pair로 Normal Run 전체의 false positive나 false-positive rate를 추정할 수 없다. 같은 selector policy를 더 다양한 development dataset에 적용해 후보 유일성과 Evidence 결과를 검증해야 한다.
 
-## 16. 반복 평가 selector 요구사항
+## 16. 반복 평가 selector 후속 검증
 
-이번 검증은 특정 development Pair의 source RecordId를 사용해 anchor와 terminal을 명시적으로 resolve했다. 이는 수동 validation에는 적합하지만 production 또는 반복 평가 selector가 아니다.
+최초 검증은 특정 development Pair의 source RecordId를 사용해 anchor와 terminal을 명시적으로 resolve했다. 이는 수동 validation에는 적합하지만 production 또는 반복 평가 selector가 아니다.
 
-후속 selector는 다음 조건을 만족해야 한다.
+Issue #222 후속 작업에서 [R1 selector v0.1](r1-selector-v0.1.md)을 구현하고 같은 Google Drive 원본을 다시 검증했다. selector는 `lineage_event_count = 3`인 frozen structural policy와 NormalizedEvent batch만 입력받았으며 source RecordId, process name, endpoint 또는 Attack/Normal label을 선택 조건으로 사용하지 않았다.
 
-- Ground Truth, `run_type`, Attack/Normal label에 의존하지 않음
-- `cmd.exe`, `cscript.exe` 등 프로세스 이름으로 label을 역추론하지 않음
-- 동일 NormalizedEvent 입력에 결정적 결과를 생성
-- NormalizedEvent 계약만으로 모든 Run에 같은 규칙을 적용
-- selector policy/version provenance를 재현 가능하게 기록
-- Event ID를 frozen config에 직접 고정하지 않음
+| Run | 자동 선택 결과 | Evidence 결과 | 수동 검증과 비교 |
+| --- | --- | --- | --- |
+| Attack | 유일한 3-Event lineage, selector diagnostics `[]` | lineage deviation 1, network follow-on 1 | 일치 |
+| Normal | 유일한 3-Event lineage, selector diagnostics `[]` | lineage deviation 0, network follow-on 1 | 일치 |
 
-구체적인 selector는 별도 Issue/PR에서 설계하고 구현한다.
+입력 Event 순서를 반대로 바꿔도 선택 결과와 Evidence ID가 같았고 artifact writer, loader, provenance resolver까지 통과했다. 이 결과는 development Pair에서 구조 selector를 재현한 것이며 production analysis window, production runner, approved lineage policy 또는 final evaluation을 확정하지 않는다. Selector policy provenance는 현재 companion 결과에서 추적하며 artifact summary 영속화는 후속 계약이다.
 
 ## 17. R1 analysis window 관찰 결과
 
