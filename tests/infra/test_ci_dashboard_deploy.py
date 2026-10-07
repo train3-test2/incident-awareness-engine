@@ -16,3 +16,10 @@ def test_dashboard_deployment_skips_a_stale_develop_run() -> None:
     assert workflow.index(
         "Check current develop HEAD before Dashboard service update"
     ) < workflow.index("Update Dashboard ECS service")
+
+
+def test_dashboard_deployment_verifies_the_registered_task_definition() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "tasks[0].[lastStatus,taskDefinitionArn]" in workflow
+    assert '"$running_task_definition_arn" != "$TASK_DEFINITION_ARN"' in workflow
