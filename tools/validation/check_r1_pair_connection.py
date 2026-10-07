@@ -14,6 +14,10 @@ from incident_awareness.collection.r1_destination import (
     validate_internal_target,
     validate_lab_cidr,
 )
+from incident_awareness.evidence.r1_approved_lineage_policy import (
+    DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH,
+    load_r1_approved_lineage_policy,
+)
 from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
 from incident_awareness.normalization.sysmon import (
     SysmonNormalizationContext,
@@ -46,7 +50,7 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def check_run(pair, run_id, prefix, output, policy):
+def check_run(pair, run_id, prefix, output, policy: ApprovedLineagePolicy):
     base = pair / run_id / "data"
     scenario_path = base / "operator_trace" / run_id / "scenario.json"
     scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
@@ -209,22 +213,31 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pair", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--approved-policy-config",
+        type=Path,
+        default=DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH,
+    )
+    parser.add_argument(
+        "--approved-policy-id",
+        default="r1-v02-development-connection",
+    )
+    parser.add_argument("--approved-policy-version", default="v0.1")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     index = json.loads((args.pair / "index.json").read_text())
-    # 기존 scenario 문서의 정상 계보를 사용하며 실제 Pair에서 학습하지 않는다.
+    # 저장소에서 관리하는 development validation policy를 사용한다.
+    policy = load_r1_approved_lineage_policy(
+        args.approved_policy_id,
+        args.approved_policy_version,
+        config_path=args.approved_policy_config,
+    )
     policy_data = {
-        "policy_id": "r1-v02-development-connection",
-        "version": "v0.1",
-        "approved_lineage": ["wsmprovhost.exe", "cmd.exe", "powershell.exe"],
+        "policy_id": policy.policy_id,
+        "version": policy.version,
+        "approved_lineage": list(policy.approved_lineage),
     }
     payload = json.dumps(policy_data, sort_keys=True, separators=(",", ":")).encode()
-    policy = ApprovedLineagePolicy(
-        policy_data["policy_id"],
-        policy_data["version"],
-        hashlib.sha256(payload).hexdigest(),
-        tuple(policy_data["approved_lineage"]),
-    )
     (args.output / "audit-policy.json").write_bytes(payload + b"\n")
     results = [
         check_run(args.pair, index[k], p, args.output, policy)
