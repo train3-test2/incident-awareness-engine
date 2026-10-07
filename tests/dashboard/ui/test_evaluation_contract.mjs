@@ -156,6 +156,16 @@ function evaluationPayload(overrides = {}) {
     };
 }
 
+// Runs the call under test in When and records whether it threw, so Then only asserts.
+function captureThrown(call) {
+    try {
+        call();
+        return { threw: false, error: null };
+    } catch (error) {
+        return { threw: true, error };
+    }
+}
+
 test("snapshot summary projects only stored Snapshot and Plan fields", () => {
     // Given
     const payload = evaluationPayload();
@@ -232,14 +242,19 @@ test("decimal presentation rounds to three places without float repr noise", () 
 
     // When
     const formatted = values.map((value) => formatDecimal(value));
+    const nullValue = formatDecimal(null);
+    const undefinedValue = formatDecimal(undefined);
+    const nanOutcome = captureThrown(() => formatDecimal(Number.NaN));
+    const infinityOutcome = captureThrown(() => formatDecimal(Number.NEGATIVE_INFINITY));
+    const stringOutcome = captureThrown(() => formatDecimal("0.5"));
 
     // Then
     assert.deepEqual(formatted, ["0.167", "0.333", "2", "1.5", "120", "0.3", "-0.167", "0", "0"]);
-    assert.equal(formatDecimal(null), NOT_APPLICABLE);
-    assert.equal(formatDecimal(undefined), NOT_APPLICABLE);
-    assert.throws(() => formatDecimal(Number.NaN));
-    assert.throws(() => formatDecimal(Number.NEGATIVE_INFINITY));
-    assert.throws(() => formatDecimal("0.5"));
+    assert.equal(nullValue, NOT_APPLICABLE);
+    assert.equal(undefinedValue, NOT_APPLICABLE);
+    assert.equal(nanOutcome.threw, true);
+    assert.equal(infinityOutcome.threw, true);
+    assert.equal(stringOutcome.threw, true);
 });
 
 test("seconds presentation follows the decimal precision rule", () => {
@@ -624,9 +639,14 @@ test("contract rejects malformed Stage 2 fields before rendering", () => {
         })(),
     ];
 
-    // When / Then
-    for (const payload of invalidPayloads) {
-        assert.throws(() => resolveEvaluationQueryState(null, { kind: "success", payload }));
+    // When
+    const outcomes = invalidPayloads.map((payload) => captureThrown(
+        () => resolveEvaluationQueryState(null, { kind: "success", payload }),
+    ));
+
+    // Then
+    for (const outcome of outcomes) {
+        assert.equal(outcome.threw, true);
     }
 });
 
@@ -637,32 +657,41 @@ test("contract rejects unsupported purpose and malformed evaluation horizon", ()
     const malformedHorizon = evaluationPayload();
     malformedHorizon.plan.evaluation_horizon_sec = "120";
 
-    // When / Then
-    assert.throws(() => resolveEvaluationQueryState(null, {
+    // When
+    const unsupportedPurposeOutcome = captureThrown(() => resolveEvaluationQueryState(null, {
         kind: "success",
         payload: unsupportedPurpose,
     }));
-    assert.throws(() => resolveEvaluationQueryState(null, {
+    const malformedHorizonOutcome = captureThrown(() => resolveEvaluationQueryState(null, {
         kind: "success",
         payload: malformedHorizon,
     }));
+
+    // Then
+    assert.equal(unsupportedPurposeOutcome.threw, true);
+    assert.equal(malformedHorizonOutcome.threw, true);
 });
 
 test("contract rejects malformed base fields and non-finite presentation values", () => {
     // Given
-    const invalidCalls = [
-        () => resolveEvaluationQueryState(null, { kind: "success", payload: null }),
-        () => projectSnapshotSummary(evaluationPayload({ plan: null })),
-        () => getEvaluationStatusPresentations(evaluationPayload({ comparison_ready: 1 })),
-        () => projectExclusions(evaluationPayload({ exclusions: [null] })),
-        () => formatPercentage(Number.NaN),
-        () => formatSeconds(Number.POSITIVE_INFINITY),
-        () => getPurposePresentation("production"),
+    const missingPlan = evaluationPayload({ plan: null });
+    const invalidComparisonReady = evaluationPayload({ comparison_ready: 1 });
+    const invalidExclusions = evaluationPayload({ exclusions: [null] });
+
+    // When
+    const outcomes = [
+        captureThrown(() => resolveEvaluationQueryState(null, { kind: "success", payload: null })),
+        captureThrown(() => projectSnapshotSummary(missingPlan)),
+        captureThrown(() => getEvaluationStatusPresentations(invalidComparisonReady)),
+        captureThrown(() => projectExclusions(invalidExclusions)),
+        captureThrown(() => formatPercentage(Number.NaN)),
+        captureThrown(() => formatSeconds(Number.POSITIVE_INFINITY)),
+        captureThrown(() => getPurposePresentation("production")),
     ];
 
-    // When / Then
-    for (const invalidCall of invalidCalls) {
-        assert.throws(invalidCall);
+    // Then
+    for (const outcome of outcomes) {
+        assert.equal(outcome.threw, true);
     }
 });
 
