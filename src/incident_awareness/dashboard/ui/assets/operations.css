@@ -1,121 +1,55 @@
-:root {
-    color-scheme: light;
-    --text-color: #1f2328;
-    --muted-text-color: #59636e;
-    --border-color: #d1d9e0;
-    --surface-color: #ffffff;
-    --page-background-color: #f6f8fa;
-    --running-color: #0969da;
-    --stale-color: #9a6700;
-    --completed-color: #1a7f37;
-    --failed-color: #cf222e;
-}
-
-*,
-*::before,
-*::after {
-    box-sizing: border-box;
-}
-
-body {
-    margin: 0;
-    font-family: system-ui, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
-    line-height: 1.5;
-    color: var(--text-color);
-    background-color: var(--page-background-color);
-}
-
-.operations-page {
-    max-width: 72rem;
-    margin: 0 auto;
-    padding: 1.5rem 1rem;
-}
-
-.dashboard-navigation {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    margin-bottom: 1rem;
-}
-
-.dashboard-navigation a {
-    padding: 0.375rem 0.625rem;
-    color: var(--running-color);
-    text-decoration: none;
-    border-radius: 0.375rem;
-}
-
-.dashboard-navigation a:hover,
-.dashboard-navigation a:focus-visible {
-    text-decoration: underline;
-}
-
-.dashboard-navigation a[aria-current="page"] {
-    color: var(--surface-color);
-    background-color: var(--running-color);
-}
-
-.page-title {
-    margin: 0 0 1.5rem;
-    font-size: 1.5rem;
-}
-
-.runtime-section {
-    padding: 1rem;
-    background-color: var(--surface-color);
-    border: 1px solid var(--border-color);
-    border-radius: 0.5rem;
-}
-
-.runtime-section h2 {
-    margin: 0 0 0.75rem;
-    font-size: 1.125rem;
-}
-
 .runtime-status {
-    min-height: 1.5rem;
-    color: var(--muted-text-color);
+    margin-bottom: var(--shell-space-3);
 }
 
 .runtime-list {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr));
-    gap: 0.75rem;
-    margin-top: 0.75rem;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 21rem), 1fr));
+    gap: var(--shell-space-3);
 }
 
 .runtime-card {
-    padding: 0.75rem 1rem;
-    background-color: var(--surface-color);
-    border: 1px solid var(--border-color);
-    border-left: 0.25rem solid var(--border-color);
-    border-radius: 0.5rem;
+    min-width: 0;
+    padding: var(--shell-space-4);
+    background-color: var(--shell-color-surface-subtle);
+    border: 1px solid var(--shell-color-border);
+    border-top: 0.25rem solid var(--shell-color-border-strong);
+    border-radius: var(--shell-radius-medium);
 }
 
 .runtime-card--running {
-    border-left-color: var(--running-color);
+    border-top-color: var(--shell-color-primary);
 }
 
 .runtime-card--stale {
-    border-left-style: dashed;
-    border-left-color: var(--stale-color);
+    border-top-style: dashed;
+    border-top-color: var(--shell-color-warning);
 }
 
 .runtime-card--telemetry-unavailable {
-    border-left-style: dashed;
-    border-left-color: var(--muted-text-color);
+    border-top-style: dashed;
+    border-top-color: var(--shell-color-warning);
 }
 
 .runtime-card--completed {
-    border-left-color: var(--completed-color);
+    border-top-color: var(--shell-color-success);
 }
 
 .runtime-card--failed {
-    border-left-color: var(--failed-color);
+    border-top-color: var(--shell-color-danger);
+}
+
+.runtime-card__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: var(--shell-space-3);
+    gap: var(--shell-space-3);
 }
 
 .runtime-card__title {
-    margin: 0 0 0.5rem;
+    min-width: 0;
+    margin: 0;
     font-size: 1rem;
     overflow-wrap: anywhere;
 }
@@ -123,8 +57,9 @@ body {
 .runtime-card__fields {
     display: grid;
     grid-template-columns: max-content minmax(0, 1fr);
-    gap: 0.25rem 0.75rem;
+    gap: var(--shell-space-1) var(--shell-space-3);
     margin: 0;
+    font-size: 0.875rem;
 }
 
 .runtime-field {
@@ -132,7 +67,7 @@ body {
 }
 
 .runtime-field__label {
-    color: var(--muted-text-color);
+    color: var(--shell-color-muted);
 }
 
 .runtime-field__value {
@@ -141,12 +76,17 @@ body {
 }
 
 @media (max-width: 30rem) {
+    .runtime-card__header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
     .runtime-card__fields {
         grid-template-columns: minmax(0, 1fr);
         row-gap: 0;
     }
 
     .runtime-field__value {
-        margin-bottom: 0.375rem;
+        margin-bottom: var(--shell-space-2);
     }
 }

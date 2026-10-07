@@ -90,6 +90,14 @@ class StandalonePreparedRun:
 
 
 @dataclass(frozen=True, slots=True)
+class StandaloneExecution:
+    """One completed standalone execution and its generated artifact directory."""
+
+    output_dir: Path
+    summary: PipelineExecutionSummary
+
+
+@dataclass(frozen=True, slots=True)
 class StandaloneOutputReservation:
     """An output directory atomically reserved for one standalone execution."""
 
@@ -224,6 +232,7 @@ def run_prepared_standalone_run(
     prepared: StandalonePreparedRun,
     *,
     connection: DatabaseConnection,
+    commit: bool = True,
 ) -> PipelineExecutionSummary:
     """Run the existing First Cycle stages with standalone Fast semantics."""
     artifacts = load_s0_pipeline_artifacts(prepared.inputs)
@@ -252,6 +261,7 @@ def run_prepared_standalone_run(
         fast_result,
         decision_result,
         connection=connection,
+        commit=commit,
     )
     return build_execution_summary(
         artifacts,
@@ -260,6 +270,49 @@ def run_prepared_standalone_run(
         fast_result,
         decision_result,
     )
+
+
+def run_standalone_sysmon_jsonl(
+    *,
+    sysmon_jsonl_path: Path,
+    output_root: Path,
+    connection: DatabaseConnection,
+    scenario_id: str = "S0",
+    run_type: RunType = RunType.ATTACK,
+    target_host: str | None = None,
+    entity_id: str | None = None,
+    fusion_config_path: Path | None = None,
+) -> StandaloneExecution:
+    """Run one standalone Sysmon JSONL execution in the caller's transaction.
+
+    The caller owns the transaction and may atomically commit the First Cycle
+    results with another record.  On failure, this function removes only the
+    output directory it reserved for this execution.
+    """
+    reservation = _allocate_identifiers(connection, output_root)
+    try:
+        prepared = prepare_standalone_run(
+            sysmon_jsonl_path=sysmon_jsonl_path,
+            output_dir=reservation.output_dir,
+            run_id=reservation.run_id,
+            decision_id=reservation.decision_id,
+            scenario_id=_validate_identifier(scenario_id, "scenario_id"),
+            run_type=run_type,
+            target_host=target_host,
+            entity_id=entity_id,
+            fusion_config_path=fusion_config_path,
+            output_dir_reserved=True,
+        )
+        summary = run_prepared_standalone_run(
+            prepared,
+            connection=connection,
+            commit=False,
+        )
+    except Exception:
+        shutil.rmtree(reservation.output_dir, ignore_errors=True)
+        raise
+
+    return StandaloneExecution(output_dir=prepared.output_dir, summary=summary)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -291,27 +344,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     database_config = DatabaseConfig.from_environment()
 
     with psycopg.connect(database_config.url, autocommit=False) as connection:
-        reservation = _allocate_identifiers(connection, output_root)
-        try:
-            prepared = prepare_standalone_run(
-                sysmon_jsonl_path=sysmon_jsonl_path,
-                output_dir=reservation.output_dir,
-                run_id=reservation.run_id,
-                decision_id=reservation.decision_id,
-                scenario_id=_validate_identifier(namespace.scenario_id, "scenario_id"),
-                run_type=RunType(namespace.run_type),
-                target_host=namespace.target_host,
-                entity_id=namespace.entity_id,
-                fusion_config_path=namespace.fusion_config,
-                output_dir_reserved=True,
-            )
-            summary = run_prepared_standalone_run(prepared, connection=connection)
-        except Exception:
-            shutil.rmtree(reservation.output_dir, ignore_errors=True)
-            raise
+        execution = run_standalone_sysmon_jsonl(
+            sysmon_jsonl_path=sysmon_jsonl_path,
+            output_root=output_root,
+            connection=connection,
+            scenario_id=namespace.scenario_id,
+            run_type=RunType(namespace.run_type),
+            target_host=namespace.target_host,
+            entity_id=namespace.entity_id,
+            fusion_config_path=namespace.fusion_config,
+        )
 
-    _LOGGER.info("Standalone First Cycle output: %s", prepared.output_dir)
-    print(json.dumps(asdict(summary), sort_keys=True))
+    _LOGGER.info("Standalone First Cycle output: %s", execution.output_dir)
+    print(json.dumps(asdict(execution.summary), sort_keys=True))
     return 0
 
 
@@ -623,6 +668,7 @@ __all__ = [
     "DEFAULT_STANDALONE_FAST_MODE",
     "DEFAULT_STANDALONE_FUSION_CONFIG_PATH",
     "DEFAULT_STANDALONE_SCHEMA_VERSIONS",
+    "StandaloneExecution",
     "StandaloneExecutionConfig",
     "StandaloneOutputReservation",
     "StandalonePreparedRun",
@@ -633,6 +679,7 @@ __all__ = [
     "build_sysmon_artifacts_from_jsonl",
     "prepare_standalone_run",
     "run_prepared_standalone_run",
+    "run_standalone_sysmon_jsonl",
     "select_standalone_execution_config",
     "validate_standalone_sysmon_jsonl",
 ]

@@ -65,11 +65,21 @@ function createRuntimeCard(runtime, telemetryAvailable) {
     heading.classList.add("runtime-card__title");
     heading.textContent = displayValue(runtime.run_id);
 
+    const badge = document.createElement("span");
+    badge.classList.add("status-badge");
+    for (const modifier of presentation.modifiers) {
+        badge.classList.add(`status-badge--${modifier}`);
+    }
+    badge.textContent = presentation.statusLabel;
+
+    const header = document.createElement("div");
+    header.classList.add("runtime-card__header");
+    header.append(heading, badge);
+
     const fields = document.createElement("dl");
     fields.classList.add("runtime-card__fields");
     fields.append(
         createField("Entity ID", displayValue(runtime.entity_id)),
-        createField("상태", presentation.statusLabel),
         createField("Telemetry", presentation.telemetryLabel),
     );
     if (presentation.livenessLabel !== null) {
@@ -86,7 +96,7 @@ function createRuntimeCard(runtime, telemetryAvailable) {
         createField("실패 단계", getStageLabel(runtime.failed_stage)),
     );
 
-    card.append(heading, fields);
+    card.append(header, fields);
     return card;
 }
 

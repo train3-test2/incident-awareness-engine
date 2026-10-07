@@ -23,6 +23,7 @@ DETAIL_VIEW_PATHS = (
     f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/timeline",
     f"/dashboard/runs/{EVENT_VIEW_RUN_ID}/events/{EVENT_ID}",
     f"/dashboard/decisions/{DECISION_ID}",
+    "/dashboard-assets/dashboard-shell.css",
     "/dashboard-assets/detail.css",
     "/dashboard-assets/run-detail.js",
     "/dashboard-assets/run-detail-contract.mjs",
@@ -69,6 +70,25 @@ def database_connection_attempts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return attempts
 
 
+def _assert_common_detail_shell(html: str, script_path: str) -> None:
+    shell_stylesheet = 'href="/dashboard-assets/dashboard-shell.css"'
+    detail_stylesheet = 'href="/dashboard-assets/detail.css"'
+
+    assert shell_stylesheet in html
+    assert detail_stylesheet in html
+    assert html.index(shell_stylesheet) < html.index(detail_stylesheet)
+    assert "Detection Hub" in html
+    assert "Incident Awareness Dashboard" in html
+    assert 'class="app-header"' in html
+    assert 'class="app-page detail-page"' in html
+    assert 'href="/dashboard" aria-current="page">운영 View</a>' in html
+    assert 'href="/operations">Operations</a>' in html
+    assert html.count("<script") == 1
+    assert html.count(f'<script type="module" src="{script_path}">') == 1
+    assert "<style" not in html
+    assert " style=" not in html
+
+
 def test_run_detail_view_serves_html_shell_without_database_access(
     database_connection_attempts: list[str],
 ) -> None:
@@ -82,6 +102,7 @@ def test_run_detail_view_serves_html_shell_without_database_access(
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     html = response.text
+    _assert_common_detail_shell(html, "/dashboard-assets/run-detail.js")
     assert "Run Detail" in html
     assert 'href="/dashboard" aria-current="page"' in html
     assert 'href="/operations"' in html
@@ -126,6 +147,7 @@ def test_historical_decision_view_serves_html_shell_without_database_access(
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     html = response.text
+    _assert_common_detail_shell(html, "/dashboard-assets/decision-detail.js")
     assert "Historical Decision" in html
     assert 'href="/dashboard" aria-current="page"' in html
     assert 'href="/operations"' in html
@@ -166,6 +188,7 @@ def test_event_timeline_view_serves_html_shell_without_database_access(
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     html = response.text
+    _assert_common_detail_shell(html, "/dashboard-assets/event-timeline.js")
     assert "Event Timeline" in html
     assert 'href="/dashboard" aria-current="page"' in html
     assert 'href="/operations"' in html
@@ -202,6 +225,7 @@ def test_event_detail_view_serves_html_shell_without_database_access(
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     html = response.text
+    _assert_common_detail_shell(html, "/dashboard-assets/event-detail.js")
     assert "Event Detail" in html
     assert "Event Metadata" in html
     assert "Raw Log Reference" in html
@@ -279,6 +303,19 @@ def test_detail_stylesheet_is_served_with_css_media_type() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/css")
     assert ".detail-page" in response.text
+
+
+def test_dashboard_shell_stylesheet_is_served_with_css_media_type() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    response = client.get("/dashboard-assets/dashboard-shell.css")
+
+    # Then
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/css")
+    assert ".app-header" in response.text
 
 
 def test_detail_scripts_and_contracts_are_served_with_javascript_media_type() -> None:

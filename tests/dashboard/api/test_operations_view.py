@@ -16,6 +16,7 @@ from incident_awareness.dashboard.api.dependencies import get_pipeline_runtime_r
 JAVASCRIPT_MEDIA_TYPES = {"application/javascript", "text/javascript"}
 OPERATIONS_VIEW_PATHS = (
     "/operations",
+    "/dashboard-assets/dashboard-shell.css",
     "/dashboard-assets/operations.css",
     "/dashboard-assets/operations.js",
     "/dashboard-assets/operations-contract.mjs",
@@ -70,10 +71,13 @@ def test_operations_view_serves_html_shell_without_database_access(
     assert response.headers["content-type"].startswith("text/html")
     html = response.text
     assert "Pipeline Runtime Operations" in html
+    assert 'href="/dashboard-assets/dashboard-shell.css"' in html
     assert 'href="/dashboard-assets/operations.css"' in html
     assert '<script type="module" src="/dashboard-assets/operations.js"></script>' in html
     assert 'id="runtime-status"' in html
     assert 'id="runtime-list"' in html
+    assert "Detection Hub" in html
+    assert "First Cycle 실행 단계와 마지막 보고 상태를 조회합니다." in html
     assert database_connection_attempts == []
 
 
@@ -82,12 +86,39 @@ def test_dashboard_assets_serve_operations_stylesheet() -> None:
     client = TestClient(create_app())
 
     # When
+    shell_response = client.get("/dashboard-assets/dashboard-shell.css")
     response = client.get("/dashboard-assets/operations.css")
 
     # Then
+    assert shell_response.status_code == 200
+    assert shell_response.headers["content-type"].startswith("text/css")
+    assert ".status-badge" in shell_response.text
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/css")
     assert ".runtime-status" in response.text
+
+
+def test_operations_view_uses_shared_shell_and_responsive_layout() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    html = client.get("/operations").text
+    shell = client.get("/dashboard-assets/dashboard-shell.css").text
+    stylesheet = client.get("/dashboard-assets/operations.css").text
+
+    # Then
+    assert html.index("/dashboard-assets/dashboard-shell.css") < html.index(
+        "/dashboard-assets/operations.css"
+    )
+    for semantic_element in ("<header", "<nav", "<main", "<section", "<h1", "<h2"):
+        assert semantic_element in html
+    assert 'class="app-header"' in html
+    assert 'class="app-navigation"' in html
+    assert 'class="app-page operations-page"' in html
+    assert "@media (max-width: 48rem)" in shell
+    assert "@media (max-width: 30rem)" in stylesheet
+    assert "overflow-wrap: anywhere" in stylesheet
 
 
 def test_dashboard_assets_serve_operations_script() -> None:
@@ -323,6 +354,10 @@ def test_operations_script_builds_runtime_cards_with_dom_api() -> None:
     assert "description.textContent = value;" in field_body
     assert 'document.createElement("article")' in card_body
     assert "heading.textContent = displayValue(runtime.run_id);" in card_body
+    assert 'document.createElement("span")' in card_body
+    assert 'badge.classList.add("status-badge")' in card_body
+    assert "badge.textContent = presentation.statusLabel;" in card_body
+    assert "header.append(heading, badge);" in card_body
 
 
 def test_operations_script_renders_cards_from_presentation_contract() -> None:

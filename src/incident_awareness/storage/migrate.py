@@ -28,6 +28,7 @@ _MIGRATION_BASELINE_TABLES = {
     "003_decision_runtime_snapshot": frozenset({"decision_runtime_snapshots"}),
     "004_fusion_runtime_config_snapshot": frozenset({"fusion_runtime_config_snapshots"}),
     "005_pipeline_runtime_status": frozenset({"pipeline_runtime_status"}),
+    "006_s3_object_receipts": frozenset({"s3_object_receipts"}),
 }
 _MIGRATIONS_DIRECTORY = Path(__file__).resolve().parents[3] / "infra" / "postgres" / "migrations"
 

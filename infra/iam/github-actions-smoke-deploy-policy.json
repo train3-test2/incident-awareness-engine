@@ -57,6 +57,27 @@
       "Resource": "ECS_FIRST_CYCLE_TASK_DEFINITION_ARN"
     },
     {
+      "Sid": "RunFirstCycleMigrationTask",
+      "Effect": "Allow",
+      "Action": "ecs:RunTask",
+      "Resource": "ECS_FIRST_CYCLE_MIGRATION_TASK_DEFINITION_ARN"
+    },
+    {
+      "Sid": "ManageFirstCycleWorkerService",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:CreateService",
+        "ecs:UpdateService",
+        "ecs:DescribeServices"
+      ],
+      "Resource": "ECS_FIRST_CYCLE_WORKER_SERVICE_ARN",
+      "Condition": {
+        "ArnEquals": {
+          "ecs:cluster": "ECS_CLUSTER_ARN"
+        }
+      }
+    },
+    {
       "Sid": "ReadSmokeTaskStatus",
       "Effect": "Allow",
       "Action": [
