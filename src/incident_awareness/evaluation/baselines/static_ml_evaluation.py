@@ -154,7 +154,7 @@ def evaluate_static_model(
         for field in ("run_start", "run_end", "reference_time", "timestamp"):
             frame[field] = pd.to_datetime(frame[field], utc=True)
     return {
-        "schema_version": "static-ml-evaluation-v0.1",
+        "schema_version": "static-ml-evaluation-v0.2",
         "purpose": purpose,
         "evaluation_split": evaluation_split,
         "usage_sha256": split_audit["usage_sha256"] if split_audit else None,

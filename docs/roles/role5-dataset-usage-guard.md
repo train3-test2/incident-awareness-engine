@@ -65,8 +65,12 @@ CLI가 읽은 원본 파일 byte hash와 canonical usage hash는 서로 다른 �
 `evaluate_static_model(..., purpose="performance")`는 추가로 `split_manifest`와
 `evaluation_split="validation" | "test"`를 요구한다. 정책을 재검증하고 모델의
 split_sha256과 일치하는지, 평가 inventory가 지정 split 전체를 정확히 포함하는지 확인한다.
-결과에 evaluation_split, usage_sha256, usage_policy_version을 남긴다.
-제외 Run을 rows=None으로 숨기거나 일부만 골라 성능 분모를 바꾸는 것을 허용하지 않는다.
+출력 계약은 `static-ml-evaluation-v0.2`이며 evaluation_split, usage_sha256,
+usage_policy_version을 남긴다. v0.1과 달리 이 세 필드를 포함하며 smoke에서는 null이다.
+선택 split의 Run을 inventory에서 누락하는 것은 거부한다. 다만 `rows=None`은 명시적인
+미평가(`not_evaluated`)로 허용하며, 해당 Run은 exclusions에 기록하고 지표 분모에서 제외한다.
+이때 comparison_ready=false이며, 나머지 평가된 Run의 metrics는 유지한다.
+전체 Run이 미평가인 경우에만 metrics=null이다.
 
 `purpose="smoke"`는 개발 연결 확인용으로 유지하며 formal split 인자를 받지 않는다.
 범용 predict/특징 변환 및 저수준 지표 함수는 개발용 계산도 담당하므로 이 정책을 전역 주입하지 않는다.

@@ -250,6 +250,10 @@ def test_smoke_allows_training_replay_and_preserves_provenance():
     report = evaluate([attack], {attack.run_id: points})
 
     # Then
+    assert report["schema_version"] == "static-ml-evaluation-v0.2"
+    assert report["evaluation_split"] is None
+    assert report["usage_sha256"] is None
+    assert report["usage_policy_version"] is None
     assert report["training_run_ids"] == list(expected_model.training_run_ids)
     assert report["split_sha256"] == expected_model.split_sha256
 
@@ -259,8 +263,9 @@ def test_performance_accepts_disjoint_training_runs():
     attack, points = run(2, [0, 1, 1])
     attack.scenario_id = "R1"
 
-    # When
-    payload = json.loads(Path("tests/fixtures/evaluation/static_ml/split.json").read_text())
+    payload = json.loads(
+        Path("tests/fixtures/evaluation/static_ml/split.json").read_text(encoding="utf-8")
+    )
     # Move the non-training Run to the test split without reusing model training IDs.
     payload["assignments"][1]["split"] = "test"
     payload["assignments"][3]["split"] = "train"
@@ -269,6 +274,7 @@ def test_performance_accepts_disjoint_training_runs():
     trained = model().model_copy(
         update={"split_sha256": audit_split_manifest(manifest)["manifest_sha256"]}
     )
+    # When
     report = evaluate_static_model(
         trained,
         [attack],
@@ -281,11 +287,7 @@ def test_performance_accepts_disjoint_training_runs():
         evaluation_split="test",
     )
 
-    # Then
-    assert report["metrics"]["run_recall"] == 1
-    assert report["usage_policy_version"] == "synthetic-v1"
-    assert len(report["usage_sha256"]) == 64
-    with pytest.raises(ValueError, match="split provenance"):
+    with pytest.raises(ValueError) as provenance_error:
         evaluate_static_model(
             model(),
             [attack],
@@ -297,7 +299,7 @@ def test_performance_accepts_disjoint_training_runs():
             split_manifest=manifest,
             evaluation_split="test",
         )
-    with pytest.raises(ValueError, match="exactly cover"):
+    with pytest.raises(ValueError) as inventory_error:
         evaluate_static_model(
             trained,
             [attack],
@@ -309,6 +311,15 @@ def test_performance_accepts_disjoint_training_runs():
             split_manifest=manifest,
             evaluation_split="validation",
         )
+
+    # Then
+    assert report["schema_version"] == "static-ml-evaluation-v0.2"
+    assert report["evaluation_split"] == "test"
+    assert report["metrics"]["run_recall"] == 1
+    assert report["usage_policy_version"] == "synthetic-v1"
+    assert len(report["usage_sha256"]) == 64
+    assert "split provenance" in str(provenance_error.value)
+    assert "exactly cover" in str(inventory_error.value)
 
 
 @pytest.mark.parametrize("evaluated", [True, False])
