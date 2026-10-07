@@ -66,12 +66,14 @@ Attack 실행 계보    wsmprovhost.exe -> cscript.exe -> powershell.exe
 ```
 
 **승인 계보 정책(approved lineage policy)은 이 폴더에 없다.** scenario 에 넣지 않으며, 렌더러 ·
-실행기 · 검증기는 정책을 읽지 않는다. 첫 Pilot 의 raw telemetry 검증은 `planned_lineage` 만으로 할 수
-있으므로 정책 config 가 정해지기를 기다리지 않는다. 정책을 연결할 때 지켜야 할 조건만 적어 둔다.
+실행기 · raw telemetry 검증기는 정책을 읽지 않는다. 첫 Pilot 의 raw telemetry 검증은
+`planned_lineage` 만으로 수행한다. Role2의 별도 development validation policy와 loader는
+`docs/evidence/r1-approved-lineage-policy-v0.1.md`가 관리한다.
 
-- 정본은 역할 2 의 **별도 versioned config** 가 될 예정이다(PR #136).
-- 구체 형식은 PR #136 의 후속 결정 전까지 `TBD` 다.
-- 연결할 때는 scenario 의 `family_id` 와 정책의 `family_id` 가 다르면 fail-closed 로 거부해야 한다.
+- 정본은 역할 2 의 **별도 versioned config** 이며 scenario 실행 계보와 합치지 않는다.
+- 현재 v0.1 policy schema는 `family_id`를 포함하지 않는 development validation 전용 계약이다.
+- Production runner 또는 frozen evaluation에 연결하기 전에 family binding을 추가하고, scenario의
+  `family_id`와 정책의 `family_id`가 다르면 fail-closed로 거부해야 한다.
 - `run_type` 이나 Ground Truth 라벨은 정책 선택과 Evidence 추출의 입력으로 쓰지 않는다.
 
 ### 1-2. family · variation · repetition
