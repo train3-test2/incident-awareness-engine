@@ -40,6 +40,7 @@ jobs:
           tests/dashboard/ui/test_decision_detail_contract.mjs
           tests/dashboard/ui/test_event_timeline_contract.mjs
           tests/dashboard/ui/test_event_detail_contract.mjs
+          tests/dashboard/ui/test_evaluation_contract.mjs
       - name: Scan secrets with gitleaks
         run: |
           docker run --rm \

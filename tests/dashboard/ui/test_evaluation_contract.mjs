@@ -10,6 +10,7 @@ import {
     buildMethodComparison,
     buildPairedTimingRows,
     buildPairedTimingSummary,
+    formatDecimal,
     formatNullable,
     formatPercentage,
     formatSeconds,
@@ -225,6 +226,33 @@ test("nullable presentation consistently uses N/A", () => {
     assert.ok(values.every((value) => value === NOT_APPLICABLE));
 });
 
+test("decimal presentation rounds to three places without float repr noise", () => {
+    // Given
+    const values = [1 / 6, 1 / 3, 2, 1.5, 120, 0.1 + 0.2, -1 / 6, -0.0001, -0];
+
+    // When
+    const formatted = values.map((value) => formatDecimal(value));
+
+    // Then
+    assert.deepEqual(formatted, ["0.167", "0.333", "2", "1.5", "120", "0.3", "-0.167", "0", "0"]);
+    assert.equal(formatDecimal(null), NOT_APPLICABLE);
+    assert.equal(formatDecimal(undefined), NOT_APPLICABLE);
+    assert.throws(() => formatDecimal(Number.NaN));
+    assert.throws(() => formatDecimal(Number.NEGATIVE_INFINITY));
+    assert.throws(() => formatDecimal("0.5"));
+});
+
+test("seconds presentation follows the decimal precision rule", () => {
+    // Given
+    const values = [1 / 6, 120, 2, 1.5];
+
+    // When
+    const formatted = values.map((value) => formatSeconds(value));
+
+    // Then
+    assert.deepEqual(formatted, ["0.167 sec", "120 sec", "2 sec", "1.5 sec"]);
+});
+
 test("three comparison states remain independent", () => {
     // Given
     const payload = evaluationPayload({ comparison_ready: false });
@@ -330,6 +358,70 @@ test("alert burden includes only Fast and Fusion and trusts the API FA/BH", () =
         { label: "FA/BH", value: "123" },
     ]);
     assert.equal(burden[1].fields[3].value, "N/A");
+});
+
+test("alert burden rounds repeating decimals for display without recomputing FA/BH", () => {
+    // Given
+    const payload = evaluationPayload();
+    payload.normal_alert_burden.metrics.Fast = burdenMetric("Fast", {
+        false_alert_episodes: 1,
+        benign_run_hours: 1 / 6,
+        false_alerts_per_benign_run_hour: 1 / 3,
+    });
+    payload.normal_alert_burden.metrics.Fast.per_run[0].observation_seconds = 1 / 6;
+
+    // When
+    const [fast] = buildAlertBurden(payload);
+
+    // Then
+    assert.deepEqual(fast.fields, [
+        { label: "Evaluated Normal Runs", value: "2" },
+        { label: "False Alert Episodes", value: "1" },
+        { label: "Benign Run Hours", value: "0.167" },
+        { label: "FA/BH", value: "0.333" },
+    ]);
+    assert.equal(fast.rows[0].observationSeconds, "0.167 sec");
+    assert.equal(payload.normal_alert_burden.metrics.Fast.benign_run_hours, 1 / 6);
+    assert.equal(payload.normal_alert_burden.metrics.Fast.false_alerts_per_benign_run_hour, 1 / 3);
+});
+
+test("every seconds display rounds API values without recomputing timing", () => {
+    // Given
+    const payload = evaluationPayload();
+    payload.plan.evaluation_horizon_sec = 120;
+    payload.metrics.Fast.median_ttsd_sec = 1 / 3;
+    payload.metrics.Fast.ttsd_iqr_sec = 2 / 3;
+    payload.paired_timing.both_detected_summary.median_fusion_minus_fast_sec = -1 / 6;
+    payload.paired_timing.per_run[0] = pairedRow("RUN-2", {
+        paths: {
+            Fast: {
+                eligible_status: "detected",
+                eligible_time: "2026-09-20T00:00:10.000Z",
+                ttsd_sec: 1 / 6,
+            },
+            Fusion: {
+                eligible_status: "detected",
+                eligible_time: "2026-09-20T00:00:20.000Z",
+                ttsd_sec: 1 / 3,
+            },
+        },
+        fusion_minus_fast_sec: 99.9999,
+    });
+
+    // When
+    const summary = projectSnapshotSummary(payload);
+    const [fast] = buildMethodComparison(payload);
+    const pairedSummary = buildPairedTimingSummary(payload);
+    const [row] = buildPairedTimingRows(payload);
+
+    // Then
+    assert.equal(summary[3].value, "120 sec");
+    assert.equal(fast.fields[2].value, "0.333 sec");
+    assert.equal(fast.fields[3].value, "0.667 sec");
+    assert.equal(pairedSummary.bothDetected[4].value, "-0.167 sec");
+    assert.equal(row.fastTtsd, "0.167 sec");
+    assert.equal(row.fusionTtsd, "0.333 sec");
+    assert.equal(row.fusionMinusFast, "100 sec");
 });
 
 test("alert burden preserves per-run order and nullable provenance", () => {

@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from incident_awareness.dashboard import evaluation_read_model
 from incident_awareness.dashboard.api.app import create_app
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+EVALUATION_UI_CONTRACT = "tests/dashboard/ui/test_evaluation_contract.mjs"
 JAVASCRIPT_MEDIA_TYPES = {"application/javascript", "text/javascript"}
 EVALUATION_VIEW_PATHS = (
     "/dashboard/evaluation",
@@ -325,3 +327,15 @@ def test_evaluation_view_does_not_depend_on_working_directory(
 
     # Then
     assert [response.status_code for response in responses] == [200] * len(EVALUATION_VIEW_PATHS)
+
+
+def test_ci_runs_evaluation_ui_contract_with_node() -> None:
+    # Given
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    # When
+    node_command = workflow.split("node --test", maxsplit=1)[1].split("- name:", maxsplit=1)[0]
+
+    # Then
+    assert (REPOSITORY_ROOT / EVALUATION_UI_CONTRACT).is_file()
+    assert EVALUATION_UI_CONTRACT in node_command

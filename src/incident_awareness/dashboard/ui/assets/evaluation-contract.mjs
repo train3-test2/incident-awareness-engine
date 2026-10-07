@@ -2,6 +2,7 @@
 
 export const NOT_APPLICABLE = "N/A";
 
+const DISPLAY_DECIMAL_PLACES = 3;
 const LOADING_MESSAGE = "평가 정보를 불러오는 중입니다.";
 const SUCCESS_MESSAGE = "평가 정보를 불러왔습니다.";
 const UNAVAILABLE_MESSAGE = "Evaluation Snapshot을 사용할 수 없습니다.";
@@ -259,6 +260,18 @@ export function formatPercentage(value) {
     return `${(value * 100).toFixed(1)}%`;
 }
 
+// Display rounding only: the API value itself is never recomputed or replaced.
+export function formatDecimal(value) {
+    if (value === null || value === undefined) {
+        return NOT_APPLICABLE;
+    }
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw new TypeError("Decimal value must be a finite number or null");
+    }
+    // Number() drops trailing zeros, and String() renders a rounded -0 as "0".
+    return String(Number(value.toFixed(DISPLAY_DECIMAL_PLACES)));
+}
+
 export function formatSeconds(value) {
     if (value === null || value === undefined) {
         return NOT_APPLICABLE;
@@ -266,7 +279,7 @@ export function formatSeconds(value) {
     if (typeof value !== "number" || !Number.isFinite(value)) {
         throw new TypeError("Seconds value must be a finite number or null");
     }
-    return `${value} sec`;
+    return `${formatDecimal(value)} sec`;
 }
 
 export function getPurposePresentation(purpose) {
@@ -388,10 +401,10 @@ export function buildAlertBurden(payload) {
             fields: [
                 { label: "Evaluated Normal Runs", value: String(metric.evaluated_run_ids.length) },
                 { label: "False Alert Episodes", value: String(metric.false_alert_episodes) },
-                { label: "Benign Run Hours", value: String(metric.benign_run_hours) },
+                { label: "Benign Run Hours", value: formatDecimal(metric.benign_run_hours) },
                 {
                     label: "FA/BH",
-                    value: formatNullable(metric.false_alerts_per_benign_run_hour),
+                    value: formatDecimal(metric.false_alerts_per_benign_run_hour),
                 },
             ],
             rows: metric.per_run.map((row) => ({
