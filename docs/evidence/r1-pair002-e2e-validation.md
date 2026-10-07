@@ -282,7 +282,9 @@ Normal의 lineage deviation 0건은 수동으로 선택한 단일 Normal lineage
 
 1. 실제 development telemetry에서 두 candidate Evidence의 생성 확인
 2. artifact writer, loader와 provenance resolver까지 전체 E2E 확인
-3. 실제 telemetry 검증 전 candidate로 유지한다는 조건 충족
+3. Pair-002 development telemetry에서 Evidence timestamp와 provenance 계약 검증 완료
+
+이 완료 상태는 Pair-002 development telemetry E2E에 한정되며 production, holdout, 반복 평가 검증 또는 final evaluation 승인을 의미하지 않는다.
 
 따라서 managed vocabulary 등록은 후속 독립 Issue/PR로 진행할 수 있다. 등록은 scoring weight, production readiness, production approved policy, holdout 또는 final evaluation 승인을 의미하지 않는다. 특히 network follow-on은 Normal과 Attack 양쪽에서 발생하므로 단독 공격 신호로 등록하거나 해석하지 않는다.
 
