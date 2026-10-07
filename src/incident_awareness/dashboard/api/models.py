@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict
 
 from incident_awareness.common.models.event import NormalizedEvent, RawLogReference
 from incident_awareness.common.models.fusion import FusionResult, FusionStoppingTrace
+from incident_awareness.common.models.fusion_runtime_config import FusionRuntimeConfigSnapshot
 from incident_awareness.common.models.pipeline_runtime import (
     PipelineRuntimeState,
     PipelineRuntimeStatus,
@@ -210,6 +211,16 @@ class RunDetailResponse(BaseModel):
     run: RunMetadata
     current_decision: CurrentDecisionResponse | None
     decision_history: list[DecisionResult]
+
+
+class FusionEngineResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run: RunMetadata
+    current_decision: DecisionResult | None
+    fusion_result: FusionResult | None
+    stopping_trace: FusionStoppingTrace | None
+    runtime_config_snapshot: FusionRuntimeConfigSnapshot | None
 
 
 class HistoricalDecisionResponse(BaseModel):

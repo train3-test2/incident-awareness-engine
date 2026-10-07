@@ -36,6 +36,11 @@ def get_event_timeline_view(run_id: str) -> FileResponse:
     return FileResponse(_UI_DIRECTORY / "event-timeline.html", media_type="text/html")
 
 
+@operations_view_router.get("/dashboard/runs/{run_id}/fusion-engine")
+def get_fusion_engine_view(run_id: str) -> FileResponse:
+    return FileResponse(_UI_DIRECTORY / "fusion-engine.html", media_type="text/html")
+
+
 @operations_view_router.get("/dashboard/runs/{run_id}/events/{event_id:path}")
 def get_event_detail_view(
     run_id: str,
