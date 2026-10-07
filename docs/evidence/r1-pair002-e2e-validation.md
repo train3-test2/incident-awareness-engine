@@ -66,6 +66,8 @@ Raw Sysmon
 
 이번 Python 3.13 Evidence E2E 성공은 Pair metadata의 공식 `py313_validation_status`를 변경하지 않는다. 해당 상태는 수집 validator와 dataset 승인 절차의 책임이다.
 
+원본 Pair metadata의 `dataset_tier = development`와 별도로, Role5의 현재 사용 분류는 [PR #205](https://github.com/train3-test2/incident-awareness-engine/pull/205)에 기록된 `development tuning 전용`이다. training, validation, test, holdout 및 final evaluation 입력에서는 제외한다.
+
 ## 5. Raw telemetry SHA-256
 
 | Run | 파일 | Bytes | SHA-256 | Pair 기록과 일치 |
@@ -296,14 +298,19 @@ network follow-on에 단독 positive weight가 있다고 전제하지 않는다.
 
 ### Role5
 
-Run별 artifact 생성, loader와 provenance 경로는 확인됐다. 그러나 Pair-002는 development이며 holdout 또는 final evaluation용 데이터가 아니다. `py313_validation_status`, source review, split/holdout과 final evaluation 승인은 Evidence E2E 성공과 별도의 dataset gate다.
+Run별 artifact 생성, loader와 provenance 경로는 확인됐다. 그러나 Pair-002의 Role5 사용 분류는 [PR #205](https://github.com/train3-test2/incident-awareness-engine/pull/205)에 기록된 `development tuning 전용`이며 training, validation, test, holdout 또는 final evaluation용 데이터가 아니다. `py313_validation_status`, source review, split/holdout과 final evaluation 승인은 Evidence E2E 성공과 별도의 dataset gate다.
+
+현재 제외 기록은 declarative provenance이며 자동 enforcement가 아니다. [Issue #208](https://github.com/train3-test2/incident-awareness-engine/issues/208)은 dataset/split 구성 경계가 usage/exclusion sidecar를 필수로 소비하고 제외 Run 입력을 오류로 거부하도록 연결하는 후속 작업이다. #208이 완료되기 전에는 이 기록만으로 코드가 Pair-002를 자동 차단한다고 해석하지 않는다.
 
 ## 20. Dataset 상태 및 제한사항
 
-- development Pair 한 쌍에 대한 연결 검증이다.
+- 원본 Pair metadata의 `dataset_tier`는 `development`다.
+- Role5의 현재 실제 사용 분류는 `development tuning 전용`이다.
+- training, validation, test, holdout 및 final evaluation 입력에서 정책·기록상 제외한다.
+- 위 제외는 현재 declarative provenance이며 자동 enforcement는 Issue #208의 후속 범위다.
 - 공식 Python 3.13 collection validator 상태는 metadata상 `pending`이다.
 - 수집 코드의 source review 상태는 `local_unpushed_commit`이다.
-- holdout과 Pilot 사용 대상이 아니다.
+- 공식 development 수량과 Pilot 사용 대상이 아니다.
 - Role5 final evaluation 승인을 받지 않았다.
 - telemetry completeness는 Evidence summary에 제공되지 않아 `not_provided`다.
 - 이 결과로 recall, false-positive rate, TTSD 분포 또는 일반적인 모델 성능을 주장하지 않는다.
@@ -316,6 +323,7 @@ Run별 artifact 생성, loader와 provenance 경로는 확인됐다. 그러나 P
 - production approved lineage policy와 config lifecycle 동결
 - production runner/CLI에서 R1 batch API 호출 경로 연결
 - Role1 R1 Fusion profile, window, weight, threshold와 stopping 결정
+- Issue #208의 usage/exclusion sidecar 기반 train/validation/test 자동 제외 강제
 - dataset source review 및 공식 Python 3.13 validation
 - holdout/final evaluation 승인 절차
 
