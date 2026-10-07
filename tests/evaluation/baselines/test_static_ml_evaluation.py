@@ -11,6 +11,7 @@ from incident_awareness.evaluation.baselines.static_ml_episodes import (
     TimedFeatureRow,
 )
 from incident_awareness.evaluation.baselines.static_ml_evaluation import evaluate_static_model
+from incident_awareness.evaluation.split_manifest import SplitManifest, audit_split_manifest
 
 
 def model():
@@ -259,10 +260,55 @@ def test_performance_accepts_disjoint_training_runs():
     attack.scenario_id = "R1"
 
     # When
-    report = evaluate([attack], {attack.run_id: points}, purpose="performance")
+    payload = json.loads(Path("tests/fixtures/evaluation/static_ml/split.json").read_text())
+    # Move the non-training Run to the test split without reusing model training IDs.
+    payload["assignments"][1]["split"] = "test"
+    payload["assignments"][3]["split"] = "train"
+    payload["inventory_family_ids"][attack.run_id] = "held-out-family"
+    manifest = SplitManifest.model_validate(payload)
+    trained = model().model_copy(
+        update={"split_sha256": audit_split_manifest(manifest)["manifest_sha256"]}
+    )
+    report = evaluate_static_model(
+        trained,
+        [attack],
+        {attack.run_id: points},
+        config(),
+        coverage_sha256_by_run={attack.run_id: "a" * 64},
+        evaluation_horizon_sec=20,
+        purpose="performance",
+        split_manifest=manifest,
+        evaluation_split="test",
+    )
 
     # Then
     assert report["metrics"]["run_recall"] == 1
+    assert report["usage_policy_version"] == "synthetic-v1"
+    assert len(report["usage_sha256"]) == 64
+    with pytest.raises(ValueError, match="split provenance"):
+        evaluate_static_model(
+            model(),
+            [attack],
+            {attack.run_id: points},
+            config(),
+            coverage_sha256_by_run={attack.run_id: "a" * 64},
+            evaluation_horizon_sec=20,
+            purpose="performance",
+            split_manifest=manifest,
+            evaluation_split="test",
+        )
+    with pytest.raises(ValueError, match="exactly cover"):
+        evaluate_static_model(
+            trained,
+            [attack],
+            {attack.run_id: points},
+            config(),
+            coverage_sha256_by_run={attack.run_id: "a" * 64},
+            evaluation_horizon_sec=20,
+            purpose="performance",
+            split_manifest=manifest,
+            evaluation_split="validation",
+        )
 
 
 @pytest.mark.parametrize("evaluated", [True, False])
@@ -383,3 +429,24 @@ def test_per_run_preserves_analysis_metadata_in_json(metadata):
 
     # Then
     assert {key: persisted["per_run"][0][key] for key in metadata} == metadata
+
+
+def test_performance_cannot_skip_usage_manifest():
+    # Given
+    attack, points = run(2, [0, 1, 1])
+    attack.scenario_id = "R1"
+    # When / Then
+    with pytest.raises(ValueError, match="usage-validated manifest"):
+        evaluate([attack], {attack.run_id: points}, purpose="performance")
+
+
+@pytest.mark.parametrize("excluded_run", ["RUN-20261005-912", "RUN-20261005-913"])
+def test_tuning_pair_cannot_enter_performance_without_manifest(excluded_run):
+    # Given
+    attack, points = run(2, [0, 1, 1])
+    attack.scenario_id = "R1"
+    attack.run_id = excluded_run
+    points = [p.model_copy(update={"run_id": excluded_run}) for p in points]
+    # When / Then
+    with pytest.raises(ValueError, match="usage-validated manifest"):
+        evaluate([attack], {excluded_run: points}, purpose="performance")

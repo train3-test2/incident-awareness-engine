@@ -34,5 +34,58 @@
     "RUN-20261004-002": "family-a",
     "RUN-20261004-003": "family-b",
     "RUN-20261004-004": "family-c"
+  },
+  "usage_policy": {
+    "schema_version": "dataset-usage-v0.1",
+    "policy_version": "synthetic-v1",
+    "source_sha256": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "runs": [
+      {
+        "run_id": "RUN-20261004-001",
+        "pair_id": null,
+        "eligible_splits": [
+          "train",
+          "validation",
+          "test"
+        ],
+        "used_for_tuning": false,
+        "reason": "synthetic fixture"
+      },
+      {
+        "run_id": "RUN-20261004-002",
+        "pair_id": null,
+        "eligible_splits": [
+          "train",
+          "validation",
+          "test"
+        ],
+        "used_for_tuning": false,
+        "reason": "synthetic fixture"
+      },
+      {
+        "run_id": "RUN-20261004-003",
+        "pair_id": null,
+        "eligible_splits": [
+          "train",
+          "validation",
+          "test"
+        ],
+        "used_for_tuning": false,
+        "reason": "synthetic fixture"
+      },
+      {
+        "run_id": "RUN-20261004-004",
+        "pair_id": null,
+        "eligible_splits": [
+          "train",
+          "validation",
+          "test"
+        ],
+        "used_for_tuning": false,
+        "reason": "synthetic fixture"
+      }
+    ]
   }
 }

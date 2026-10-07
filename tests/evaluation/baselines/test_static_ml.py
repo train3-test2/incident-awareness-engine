@@ -23,6 +23,21 @@ NAMES = ("encoded_powershell_command", "script_interpreter_external_connection")
 def inputs():
     ids = [f"RUN-20261004-{index:03d}" for index in range(1, 5)]
     manifest = SplitManifest(
+        usage_policy={
+            "schema_version": "dataset-usage-v0.1",
+            "policy_version": "synthetic-v1",
+            "source_sha256": ["a" * 64],
+            "runs": [
+                {
+                    "run_id": rid,
+                    "pair_id": None,
+                    "eligible_splits": ["train", "validation", "test"],
+                    "used_for_tuning": False,
+                    "reason": "synthetic fixture",
+                }
+                for rid in ids
+            ],
+        },
         manifest_version="split-v1",
         grouping_policy_version="pair-v1",
         inventory_run_ids=ids,
