@@ -21,6 +21,10 @@ def sample(tmp_path):
     (operator / "scenario.json").write_text(
         json.dumps(
             {
+                "family_id": "remote_management",
+                "variation_id": "V02",
+                "repetition": 1,
+                "dataset_tier": "development",
                 "run_metadata": {"target_host": "HOST"},
                 "internal_connection": {
                     "target": "10.20.30.40",
@@ -110,6 +114,32 @@ def test_actual_pipeline_preserves_clocks_and_boundary_candidates(sample):
     ]
     assert normalized[0]["timestamp"] != normalized[0]["record_time"]
     assert result["provenance"][0]["source_record_ids"] == ["1", "2", "3"]
+
+
+def test_records_scenario_and_approved_policy_validation_provenance(sample):
+    # Given
+    pair, rid, output, _policy, _rows, _write, _source = sample
+    policy = audit.load_r1_approved_lineage_policy(
+        "r1-v02-development-connection",
+        "v0.1",
+    )
+
+    # When
+    result = audit.check_run(pair, rid, "A", output, policy)
+
+    # Then
+    assert result["validation_provenance"] == {
+        "scenario": {
+            "family_id": "remote_management",
+            "variation_id": "V02",
+            "dataset_tier": "development",
+        },
+        "approved_policy": {
+            "policy_id": "r1-v02-development-connection",
+            "version": "v0.1",
+            "config_hash": "59b5eb5a5637f4527a4725a310aa1bece6a9da8bd7f1257edee03be1b15f0b78",
+        },
+    }
 
 
 def test_duplicate_terminal_rejected_instead_of_chosen(sample):
