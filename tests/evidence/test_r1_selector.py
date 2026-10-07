@@ -380,6 +380,27 @@ def test_network_before_terminal_is_temporal_inversion() -> None:
     assert result.diagnostics == ("temporal_inversion",)
 
 
+def test_mixed_network_timestamps_are_temporal_inversion() -> None:
+    # Given
+    anchor, middle, terminal, later_network = _events()
+    early_network = _event(
+        event_id="evt-network-early",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=1),
+        process_guid=_TERMINAL_GUID,
+    )
+
+    # When
+    result = select_r1_lineage(
+        (anchor, middle, terminal, later_network, early_network),
+        policy=_policy(),
+    )
+
+    # Then
+    assert result.selection is None
+    assert result.diagnostics == ("temporal_inversion",)
+
+
 def test_parent_after_child_is_temporal_inversion() -> None:
     # Given
     anchor = _event(
@@ -448,7 +469,7 @@ def test_multiple_structural_terminal_candidates_are_ambiguous() -> None:
     assert result.diagnostics == ("ambiguous_terminal_candidate",)
 
 
-def test_multiple_network_events_for_one_terminal_do_not_require_arbitrary_selection() -> None:
+def test_multiple_valid_network_events_allow_terminal_selection() -> None:
     # Given
     events = _events()
     second_network = _event(

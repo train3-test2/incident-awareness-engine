@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -541,6 +542,105 @@ def test_selector_pipeline_creates_lineage_and_network_evidence() -> None:
     assert {evidence.evidence_type for evidence in result.evidences} == {
         "remote_process_network_follow_on",
         "remote_session_process_lineage_deviation",
+    }
+
+
+def test_selector_pipeline_rejects_mismatched_lineage_lengths_before_consuming_events() -> None:
+    # Given
+    events_consumed = False
+
+    def events_that_must_not_be_consumed() -> Iterator[NormalizedEvent]:
+        nonlocal events_consumed
+        events_consumed = True
+        yield from _lineage_events()
+
+    approved_policy = _policy(
+        approved_lineage=(
+            "anchor.exe",
+            "approved-hop.exe",
+            "extra-hop.exe",
+            "terminal.exe",
+        )
+    )
+
+    # When
+    with pytest.raises(
+        ValueError,
+        match="selector lineage_event_count must match approved_lineage length",
+    ):
+        run_r1_evidence_pipeline_with_selector(
+            events_that_must_not_be_consumed(),
+            selector_policy=_selector_policy(),
+            approved_policy=approved_policy,
+        )
+
+    # Then
+    assert events_consumed is False
+
+
+def test_selector_pipeline_rejects_mixed_network_timestamps_without_evidence() -> None:
+    # Given
+    anchor, middle, terminal = _lineage_events()
+    early_network = _event(
+        event_id="evt-network-early",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=1),
+        process_guid=_TERMINAL_GUID,
+    )
+    later_network = _event(
+        event_id="evt-network-later",
+        event_type="network_connection",
+        timestamp=_BASE_TIME + timedelta(seconds=3),
+        process_guid=_TERMINAL_GUID,
+    )
+
+    # When
+    result = run_r1_evidence_pipeline_with_selector(
+        (anchor, middle, terminal, later_network, early_network),
+        selector_policy=_selector_policy(),
+        approved_policy=_policy(),
+    )
+
+    # Then
+    assert result.evidences == ()
+    assert result.lineage_input is None
+    assert result.selector_result.diagnostics == ("temporal_inversion",)
+
+
+def test_selector_pipeline_emits_every_valid_network_follow_on() -> None:
+    # Given
+    anchor, middle, terminal = _lineage_events()
+    network_events = (
+        _event(
+            event_id="evt-network-1",
+            event_type="network_connection",
+            timestamp=_BASE_TIME + timedelta(seconds=3),
+            process_guid=_TERMINAL_GUID,
+        ),
+        _event(
+            event_id="evt-network-2",
+            event_type="network_connection",
+            timestamp=_BASE_TIME + timedelta(seconds=4),
+            process_guid=_TERMINAL_GUID,
+        ),
+    )
+
+    # When
+    result = run_r1_evidence_pipeline_with_selector(
+        (anchor, middle, terminal, *network_events),
+        selector_policy=_selector_policy(),
+        approved_policy=_policy(),
+    )
+
+    # Then
+    network_evidences = tuple(
+        evidence
+        for evidence in result.evidences
+        if evidence.evidence_type == "remote_process_network_follow_on"
+    )
+    assert result.selector_result.diagnostics == ()
+    assert {tuple(evidence.event_ids) for evidence in network_evidences} == {
+        (terminal.event_id, network_event.event_id) for network_event in network_events
     }
 
 
