@@ -167,7 +167,7 @@ downstream에서 artifact를 소비하기 전에는 summary의 `status = complet
 | 항목 | 현재 상태 | 확정에 필요한 근거 |
 | --- | --- | --- |
 | 실제 telemetry | Pair-002 development E2E 검증 완료 | [validation record](r1-pair002-e2e-validation.md). production, holdout 및 반복 평가 검증은 별도 |
-| timestamp 기준 | 구현 규칙 확정 / telemetry 검증 대기 | 사용 Event 중 가장 늦은 `NormalizedEvent.timestamp` 사용. raw timestamp 선택은 Event/Normalization 계약 책임 |
+| timestamp 기준 | 구현 규칙 확정 / Pair-002 development telemetry 검증 완료 | 사용 Event 중 가장 늦은 `NormalizedEvent.timestamp` 사용. raw timestamp 선택은 Event/Normalization 계약 책임 |
 | 공식 Evidence vocabulary 등록 | Candidate / TBD | 실제 R1 telemetry와 Fusion 사용 방식 검증 |
 | R1 batch pipeline API | 구현 완료 | `src/incident_awareness/pipeline/r1_evidence.py`에서 NormalizedEvent batch와 명시적 lineage input을 처리 |
 | production runner/CLI 연결 | TBD | R1 batch API 호출 위치와 입력 config 계약 합의 |
