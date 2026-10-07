@@ -44,7 +44,11 @@ class DashboardFusionEngineReader:
             runtime_config_snapshot = self._runtime_config_repository.get(run_id, entity_id)
             head_after = self._decision_repository.get_current_head(run_id, entity_id)
 
-            if _same_current_head(head_before, head_after):
+            if _same_current_head(head_before, head_after) and _runtime_versions_match(
+                fusion_result,
+                stopping_trace,
+                runtime_config_snapshot,
+            ):
                 return FusionEngineReadModel(
                     current_decision=head_before,
                     fusion_result=fusion_result,
@@ -67,3 +71,20 @@ def _same_current_head(
         return before is after
 
     return before.decision_id == after.decision_id
+
+
+def _runtime_versions_match(
+    fusion_result: FusionResult | None,
+    stopping_trace: FusionStoppingTrace | None,
+    runtime_config_snapshot: FusionRuntimeConfigSnapshot | None,
+) -> bool:
+    versions = {
+        version
+        for version in (
+            None if fusion_result is None else fusion_result.scoring_config_version,
+            None if stopping_trace is None else stopping_trace.scoring_config_version,
+            (None if runtime_config_snapshot is None else runtime_config_snapshot.config_version),
+        )
+        if version is not None
+    }
+    return len(versions) <= 1
