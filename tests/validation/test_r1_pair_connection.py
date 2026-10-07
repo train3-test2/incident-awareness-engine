@@ -128,6 +128,9 @@ def test_records_scenario_and_approved_policy_validation_provenance(sample):
     result = audit.check_run(pair, rid, "A", output, policy)
 
     # Then
+    assert policy.config_hash == (
+        "59b5eb5a5637f4527a4725a310aa1bece6a9da8bd7f1257edee03be1b15f0b78"
+    )
     assert result["validation_provenance"] == {
         "scenario": {
             "family_id": "remote_management",
@@ -137,7 +140,7 @@ def test_records_scenario_and_approved_policy_validation_provenance(sample):
         "approved_policy": {
             "policy_id": "r1-v02-development-connection",
             "version": "v0.1",
-            "config_hash": "59b5eb5a5637f4527a4725a310aa1bece6a9da8bd7f1257edee03be1b15f0b78",
+            "config_hash": policy.config_hash,
         },
     }
 

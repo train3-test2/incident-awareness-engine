@@ -51,6 +51,14 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _approved_policy_provenance(policy: ApprovedLineagePolicy):
+    return {
+        "policy_id": policy.policy_id,
+        "version": policy.version,
+        "config_hash": policy.config_hash,
+    }
+
+
 def check_run(pair, run_id, prefix, output, policy: ApprovedLineagePolicy):
     base = pair / run_id / "data"
     scenario_path = base / "operator_trace" / run_id / "scenario.json"
@@ -200,11 +208,7 @@ def check_run(pair, run_id, prefix, output, policy: ApprovedLineagePolicy):
                 "variation_id": pair_identity.variation_id,
                 "dataset_tier": dataset_tier,
             },
-            "approved_policy": {
-                "policy_id": policy.policy_id,
-                "version": policy.version,
-                "config_hash": policy.config_hash,
-            },
+            "approved_policy": _approved_policy_provenance(policy),
         },
         "normalized_count": len(events),
         "event_types": dict(Counter(e.event_type for e in events)),
@@ -247,13 +251,11 @@ def main():
         args.approved_policy_version,
         config_path=args.approved_policy_config,
     )
-    policy_data = {
-        "policy_id": policy.policy_id,
-        "version": policy.version,
-        "approved_lineage": list(policy.approved_lineage),
-    }
-    payload = json.dumps(policy_data, sort_keys=True, separators=(",", ":")).encode()
-    (args.output / "audit-policy.json").write_bytes(payload + b"\n")
+    policy_provenance = _approved_policy_provenance(policy)
+    (args.output / "audit-policy.json").write_text(
+        json.dumps(policy_provenance, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     results = [
         check_run(args.pair, index[k], p, args.output, policy)
         for k, p in [("attack_run_id", "A"), ("normal_run_id", "N")]
@@ -262,7 +264,6 @@ def main():
         "pair_id": index["pair_id"],
         "purpose": "development_tuning_connection_check",
         "production_selector": False,
-        "policy_hash_basis": "canonical JSON without trailing newline",
         "runs": results,
     }
     (args.output / "connection-report.json").write_text(
