@@ -291,6 +291,32 @@ bucket + decoded object key + eTag
 advisory lock을 확보하고, Pipeline 실행·receipt 기록 또는 skip 처리 뒤 transaction을 끝내 lock을
 해제한다. 따라서 두 Worker가 같은 S3 object version을 동시에 실행하지 않는다.
 
+### `s3_object_receipts` 보관 정책
+
+성공 receipt는 S3 input identity의 영속 중복 실행을 막기 위한 운영 메타데이터이며, Run과
+분석 결과의 장기 보관 수단이 아니다. `completed_at` 기준으로 아래 정책을 적용한다.
+
+| 항목 | 정책 |
+| --- | --- |
+| 보관 대상 | 성공적으로 처리되어 `run_id`가 기록된 receipt만 |
+| 보관 기간 | 완료 시각 후 28일 |
+| 기간 근거 | 입력 JSONL 21일 보관 + 원본 만료 후 운영 확인 여유 7일 |
+| 삭제 범위 | `s3_object_receipts` 행만 삭제하며 `runs` 및 결과 테이블은 삭제하지 않음 |
+| 실행 주체 | Worker가 아닌 별도 운영 cleanup 작업 |
+
+Receipt cleanup은 S3 Lifecycle과 독립적으로 동작한다. 28일이 지난 receipt identity는 원본
+입력 JSONL이 이미 만료된 상태이므로, 같은 key·ETag의 오래된 S3 Event가 다시 전달되더라도
+재처리 대상으로 복구하지 않는다. 입력을 다시 처리해야 하면 항상 새 `ING-<uuidv4>` object를
+제출한다.
+
+운영 cleanup 작업은 아래 조건으로만 삭제한다. 실제 스케줄러·실행 주체는 별도 Infrastructure
+변경에서 구성하며, Worker 처리 transaction 안에서 이 쿼리를 실행하지 않는다.
+
+```sql
+DELETE FROM s3_object_receipts
+WHERE completed_at < CURRENT_TIMESTAMP - INTERVAL '28 days';
+```
+
 ### 재시도와 영구 실패 처리 정책
 
 Worker는 실패한 SQS 메시지를 임의로 삭제하지 않는다. source Queue의 `maxReceiveCount=3`을
