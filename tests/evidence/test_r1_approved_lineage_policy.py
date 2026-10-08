@@ -7,8 +7,10 @@ import pytest
 from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.evidence.r1_approved_lineage_policy import (
     DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH,
+    DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
     load_r1_approved_lineage_policies,
     load_r1_approved_lineage_policy,
+    validate_r1_policy_family_binding,
 )
 from incident_awareness.evidence.r1_multi_event import (
     ApprovedLineagePolicy,
@@ -31,6 +33,9 @@ _POLICY_ID = "r1-v02-development-connection"
 _POLICY_VERSION = "v0.1"
 _POLICY_HASH = "59b5eb5a5637f4527a4725a310aa1bece6a9da8bd7f1257edee03be1b15f0b78"
 _APPROVED_LINEAGE = ("wsmprovhost.exe", "cmd.exe", "powershell.exe")
+_FAMILY_POLICY_ID = "r1-remote-management-approved-lineage"
+_FAMILY_POLICY_VERSION = "v0.2"
+_FAMILY_POLICY_HASH = "6d4235ccc33fcc2484a679d6b6b9b8972cf67f45ff8de35d02eb402380e7f788"
 
 
 def _policy_payload(
@@ -42,6 +47,25 @@ def _policy_payload(
     return {
         "policy_id": policy_id,
         "version": version,
+        "approved_lineage": list(approved_lineage)
+        if isinstance(approved_lineage, tuple)
+        else approved_lineage,
+    }
+
+
+def _family_policy_payload(
+    *,
+    policy_id: object = _FAMILY_POLICY_ID,
+    version: object = _FAMILY_POLICY_VERSION,
+    family_id: object = "remote_management",
+    lifecycle: object = "development",
+    approved_lineage: object = _APPROVED_LINEAGE,
+) -> dict[str, object]:
+    return {
+        "policy_id": policy_id,
+        "version": version,
+        "family_id": family_id,
+        "lifecycle": lifecycle,
         "approved_lineage": list(approved_lineage)
         if isinstance(approved_lineage, tuple)
         else approved_lineage,
@@ -189,6 +213,26 @@ def test_loads_repository_managed_development_policy() -> None:
     assert policy.version == _POLICY_VERSION
     assert policy.approved_lineage == _APPROVED_LINEAGE
     assert policy.config_hash == _POLICY_HASH
+
+
+def test_loads_repository_managed_family_bound_development_policy() -> None:
+    # Given
+    config_path = DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH
+
+    # When
+    policy = load_r1_approved_lineage_policy(
+        _FAMILY_POLICY_ID,
+        _FAMILY_POLICY_VERSION,
+        config_path=config_path,
+    )
+
+    # Then
+    assert policy.policy_id == _FAMILY_POLICY_ID
+    assert policy.version == _FAMILY_POLICY_VERSION
+    assert policy.family_id == "remote_management"
+    assert policy.lifecycle == "development"
+    assert policy.approved_lineage == _APPROVED_LINEAGE
+    assert policy.config_hash == _FAMILY_POLICY_HASH
 
 
 def test_semantically_identical_configs_have_the_same_hash(tmp_path: Path) -> None:
@@ -394,12 +438,12 @@ def test_rejects_unknown_config_version(tmp_path: Path) -> None:
     config_path = tmp_path / "unknown-version.yaml"
     _write_registry(
         config_path,
-        config_version="v0.2",
+        config_version="v9.9",
         policies=[_policy_payload()],
     )
 
     # When
-    with pytest.raises(ValueError, match="does not match v0.1"):
+    with pytest.raises(ValueError, match="does not match v0.1 or v0.2"):
         load_r1_approved_lineage_policies(config_path)
 
     # Then
@@ -572,3 +616,203 @@ def test_loaded_policy_provenance_is_preserved_in_artifacts(tmp_path: Path) -> N
     assert lineage_evidence.features["policy_id"] == policy.policy_id
     assert lineage_evidence.features["version"] == policy.version
     assert lineage_evidence.features["config_hash"] == policy.config_hash
+
+
+def test_semantically_identical_family_bound_configs_have_the_same_hash(tmp_path: Path) -> None:
+    # Given
+    first_path = tmp_path / "first-v0.2.yaml"
+    second_path = tmp_path / "second-v0.2.yaml"
+    _write_registry(
+        first_path,
+        config_version="v0.2",
+        policies=[_family_policy_payload()],
+    )
+    second_path.write_text(
+        """policies:
+  - lifecycle: development
+    approved_lineage: [wsmprovhost.exe, cmd.exe, powershell.exe]
+    family_id: remote_management
+    version: v0.2
+    policy_id: r1-remote-management-approved-lineage
+config_version: v0.2
+""",
+        encoding="utf-8",
+    )
+
+    # When
+    first = load_r1_approved_lineage_policies(first_path)[0]
+    second = load_r1_approved_lineage_policies(second_path)[0]
+
+    # Then
+    assert first == second
+    assert first.config_hash == _FAMILY_POLICY_HASH
+
+
+@pytest.mark.parametrize("missing_field", ["family_id", "lifecycle"])
+def test_family_bound_policy_rejects_missing_contract_fields(
+    tmp_path: Path,
+    missing_field: str,
+) -> None:
+    # Given
+    config_path = tmp_path / f"missing-{missing_field}-v0.2.yaml"
+    policy = _family_policy_payload()
+    policy.pop(missing_field)
+    _write_registry(config_path, config_version="v0.2", policies=[policy])
+
+    # When
+    with pytest.raises(ValueError, match="does not match v0.2"):
+        load_r1_approved_lineage_policies(config_path)
+
+    # Then
+    assert config_path.is_file()
+
+
+@pytest.mark.parametrize("family_id", ["", "   ", " remote_management", "remote_management "])
+def test_family_bound_policy_rejects_invalid_family_id(
+    tmp_path: Path,
+    family_id: str,
+) -> None:
+    # Given
+    config_path = tmp_path / "invalid-family-v0.2.yaml"
+    _write_registry(
+        config_path,
+        config_version="v0.2",
+        policies=[_family_policy_payload(family_id=family_id)],
+    )
+
+    # When
+    with pytest.raises(ValueError, match="does not match v0.2"):
+        load_r1_approved_lineage_policies(config_path)
+
+    # Then
+    assert config_path.is_file()
+
+
+@pytest.mark.parametrize("lifecycle", ["development", "frozen", "production_candidate"])
+def test_family_bound_policy_accepts_canonical_lifecycle_values(
+    tmp_path: Path,
+    lifecycle: str,
+) -> None:
+    # Given
+    config_path = tmp_path / f"{lifecycle}-v0.2.yaml"
+    _write_registry(
+        config_path,
+        config_version="v0.2",
+        policies=[_family_policy_payload(lifecycle=lifecycle)],
+    )
+
+    # When
+    policy = load_r1_approved_lineage_policies(config_path)[0]
+
+    # Then
+    assert policy.lifecycle == lifecycle
+
+
+def test_family_bound_policy_rejects_unknown_lifecycle(tmp_path: Path) -> None:
+    # Given
+    config_path = tmp_path / "unknown-lifecycle-v0.2.yaml"
+    _write_registry(
+        config_path,
+        config_version="v0.2",
+        policies=[_family_policy_payload(lifecycle="final-ish")],
+    )
+
+    # When
+    with pytest.raises(ValueError, match="does not match v0.2"):
+        load_r1_approved_lineage_policies(config_path)
+
+    # Then
+    assert config_path.is_file()
+
+
+def test_family_bound_policy_rejects_duplicate_identity(tmp_path: Path) -> None:
+    # Given
+    config_path = tmp_path / "duplicate-family-policy-v0.2.yaml"
+    _write_registry(
+        config_path,
+        config_version="v0.2",
+        policies=[
+            _family_policy_payload(),
+            _family_policy_payload(lifecycle="frozen"),
+        ],
+    )
+
+    # When
+    with pytest.raises(ValueError, match="identities must be unique"):
+        load_r1_approved_lineage_policies(config_path)
+
+    # Then
+    assert config_path.is_file()
+
+
+@pytest.mark.parametrize(
+    ("changed_field", "changed_value"),
+    [
+        ("family_id", "other_family"),
+        ("lifecycle", "frozen"),
+        ("approved_lineage", ("wsmprovhost.exe", "powershell.exe")),
+    ],
+)
+def test_family_bound_semantic_changes_change_the_hash(
+    tmp_path: Path,
+    changed_field: str,
+    changed_value: object,
+) -> None:
+    # Given
+    base_path = tmp_path / "base-v0.2.yaml"
+    changed_path = tmp_path / "changed-v0.2.yaml"
+    base_policy = _family_policy_payload()
+    changed_policy = {**base_policy, changed_field: changed_value}
+    _write_registry(base_path, config_version="v0.2", policies=[base_policy])
+    _write_registry(changed_path, config_version="v0.2", policies=[changed_policy])
+
+    # When
+    base = load_r1_approved_lineage_policies(base_path)[0]
+    changed = load_r1_approved_lineage_policies(changed_path)[0]
+
+    # Then
+    assert changed.config_hash != base.config_hash
+
+
+def test_family_binding_accepts_matching_scenario_family() -> None:
+    # Given
+    policy = load_r1_approved_lineage_policy(
+        _FAMILY_POLICY_ID,
+        _FAMILY_POLICY_VERSION,
+        config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+    )
+
+    # When
+    result = validate_r1_policy_family_binding("remote_management", policy)
+
+    # Then
+    assert result is None
+
+
+def test_family_binding_rejects_mismatched_scenario_family() -> None:
+    # Given
+    policy = load_r1_approved_lineage_policy(
+        _FAMILY_POLICY_ID,
+        _FAMILY_POLICY_VERSION,
+        config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+    )
+
+    # When
+    with pytest.raises(ValueError, match="does not match approved policy family_id"):
+        validate_r1_policy_family_binding("other_family", policy)
+
+    # Then
+    assert policy.family_id == "remote_management"
+
+
+def test_family_binding_rejects_legacy_unbound_policy() -> None:
+    # Given
+    policy = load_r1_approved_lineage_policy(_POLICY_ID, _POLICY_VERSION)
+
+    # When
+    with pytest.raises(ValueError, match="legacy unbound"):
+        validate_r1_policy_family_binding("remote_management", policy)
+
+    # Then
+    assert policy.family_id is None
+    assert policy.lifecycle is None

@@ -204,7 +204,7 @@ Pair-002와 Pair-003에서 다음 결과가 반복됐다.
 - 모든 Run에서 selector/extraction diagnostics가 비어 있었다.
 - 입력 순서를 바꿔도 Pair-003 selector, Evidence, artifact와 provenance가 동일했다.
 
-이는 동일-family development 반복에서 selector/policy 안정성 근거를 강화한다. 다만 current Pair-owned tier 계약으로 수집한 Pair는 Pair-003 한 개뿐이고 Pair-002는 legacy baseline이다. 현재 v0.1 policy에는 explicit family binding과 lifecycle 승격 계약도 없다. 따라서 development frozen candidate 근거는 강화됐지만 production/final evaluation policy로 승격하거나 여러 family에 일반화하지 않는다. 추가 current-contract development Pair 검증과 #234 family binding/lifecycle 결정이 필요하다.
+이는 동일-family development 반복에서 selector/policy 안정성 근거를 강화한다. 다만 current Pair-owned tier 계약으로 수집한 Pair는 Pair-003 한 개뿐이고 Pair-002는 legacy baseline이다. 후속 v0.2 계약은 explicit family binding과 lifecycle 허용값을 제공하지만, 이 검증에 사용한 v0.1 policy와 historical artifact를 새 policy로 rewrite하지 않는다. Development frozen candidate 근거는 강화됐지만 production/final evaluation policy로 승격하거나 여러 family에 일반화하지 않으며, 추가 current-contract development Pair 검증과 formal freeze 승인이 필요하다.
 
 ## 12. Role1·Role5 사용 범위
 
@@ -250,12 +250,12 @@ Pair-002와 Pair-003에서 다음 결과가 반복됐다.
 | pair-specific overfitting 검토 | 완료, current-contract Pair 수 제한 명시 |
 | Role1/Role5 사용 범위 | offline/static 및 dataset 경계 정리 완료 |
 | policy stability 평가 | 완료: frozen candidate 근거 강화 |
-| formal family-bound lifecycle 승격 | 후속 #234 |
-| 최종 평가용 ApprovedLineagePolicy version/hash formal freeze | 미완료: #234 family binding/lifecycle 연계 후 수행 |
+| formal family-bound lifecycle 계약 | 완료: v0.2 family binding과 lifecycle validation 제공 |
+| 최종 평가용 ApprovedLineagePolicy version/hash formal freeze | 미완료: 별도 승인과 새 frozen identity/version 발급 필요 |
 | holdout 이후 policy 변경 금지 lifecycle 기록 | 미완료: frozen lifecycle 확정 후 적용 |
 | production runner/CLI 연결 | 후속 #228 |
 | online availability/TTSD | 후속 #231/#232 |
 
 이번 PR에서는 Pair-002 legacy baseline과 Pair-003 current-contract development Pair에 동일 selector와 policy를 적용한 multi-run development regression 범위를 완료했다. Actual telemetry에서 확인한 범위는 정상 selector, Evidence, artifact, provenance와 결정성이며, malformed fail-closed 조건은 기존 synthetic regression을 재확인한 범위다. Pair-003 raw를 가능한 fail-closed 형태로 변조해 전수 검증했다는 의미는 아니다.
 
-#227 Issue 전체는 아직 완료되지 않았다. 최종 평가용 ApprovedLineagePolicy version/hash formal freeze와 holdout 이후 policy를 변경하지 않도록 하는 frozen lifecycle 기록이 남아 있으며, 해당 항목은 #234 family binding/lifecycle과 연계해 완료해야 한다. 따라서 #227은 Open 상태로 유지하고, production, holdout, final evaluation, online availability 또는 formal policy freeze 완료를 이번 PR에서 주장하지 않는다.
+#227 Issue 전체는 아직 완료되지 않았다. v0.2 family/lifecycle 계약은 formal freeze를 안전하게 발급할 기반만 제공하며, 최종 평가용 ApprovedLineagePolicy version/hash 발급과 holdout 이후 policy를 변경하지 않도록 하는 frozen lifecycle 기록은 별도 승인으로 남는다. 따라서 #227은 Open 상태로 유지하고, production, holdout, final evaluation, online availability 또는 formal policy freeze 완료를 이번 PR에서 주장하지 않는다.

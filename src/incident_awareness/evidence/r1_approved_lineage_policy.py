@@ -10,10 +10,17 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError, f
 from yaml.constructor import ConstructorError
 from yaml.resolver import BaseResolver
 
-from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
+from incident_awareness.collection.r1_pair_identity import validate_family_id
+from incident_awareness.evidence.r1_multi_event import (
+    ApprovedLineagePolicy,
+    R1PolicyLifecycle,
+)
 
 DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH = (
     Path(__file__).parents[3] / "configs" / "r1_approved_lineage_policies_v0.1.yaml"
+)
+DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH = (
+    Path(__file__).parents[3] / "configs" / "r1_approved_lineage_policies_v0.2.yaml"
 )
 
 
@@ -46,7 +53,7 @@ _UniqueKeySafeLoader.add_constructor(
 )
 
 
-class _ApprovedLineagePolicyConfig(BaseModel):
+class _PolicyIdentityAndLineage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     policy_id: StrictStr
@@ -72,11 +79,36 @@ class _ApprovedLineagePolicyConfig(BaseModel):
         return value
 
 
-class _ApprovedLineagePolicyRegistry(BaseModel):
+class _LegacyApprovedLineagePolicyConfig(_PolicyIdentityAndLineage):
+    pass
+
+
+class _FamilyBoundApprovedLineagePolicyConfig(_PolicyIdentityAndLineage):
+    family_id: StrictStr
+    lifecycle: R1PolicyLifecycle
+
+    @field_validator("family_id")
+    @classmethod
+    def validate_policy_family_id(cls, value: str) -> str:
+        return validate_family_id(value)
+
+
+class _LegacyApprovedLineagePolicyRegistry(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     config_version: Literal["v0.1"]
-    policies: list[_ApprovedLineagePolicyConfig] = Field(min_length=1)
+    policies: list[_LegacyApprovedLineagePolicyConfig] = Field(min_length=1)
+
+
+class _FamilyBoundApprovedLineagePolicyRegistry(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    config_version: Literal["v0.2"]
+    policies: list[_FamilyBoundApprovedLineagePolicyConfig] = Field(min_length=1)
+
+
+_PolicyConfig = _LegacyApprovedLineagePolicyConfig | _FamilyBoundApprovedLineagePolicyConfig
+_PolicyRegistry = _LegacyApprovedLineagePolicyRegistry | _FamilyBoundApprovedLineagePolicyRegistry
 
 
 def load_r1_approved_lineage_policies(
@@ -117,7 +149,26 @@ def load_r1_approved_lineage_policy(
     raise ValueError(f"R1 approved lineage policy was not found: {policy_id}/{version}")
 
 
-def _load_registry(config_path: Path) -> _ApprovedLineagePolicyRegistry:
+def validate_r1_policy_family_binding(
+    scenario_family_id: str,
+    policy: ApprovedLineagePolicy,
+) -> None:
+    """Scenario와 family-bound policy가 같은 canonical family인지 검증한다."""
+    if not isinstance(policy, ApprovedLineagePolicy):
+        raise TypeError("policy must be an ApprovedLineagePolicy")
+    validated_scenario_family_id = validate_family_id(scenario_family_id)
+    if policy.family_id is None or policy.lifecycle is None:
+        raise ValueError(
+            "legacy unbound approved policy is not eligible for family-bound execution"
+        )
+    if validated_scenario_family_id != policy.family_id:
+        raise ValueError(
+            "scenario family_id does not match approved policy family_id: "
+            f"{validated_scenario_family_id} != {policy.family_id}"
+        )
+
+
+def _load_registry(config_path: Path) -> _PolicyRegistry:
     if not isinstance(config_path, Path):
         raise TypeError("config_path must be a Path")
     if not config_path.is_file():
@@ -131,28 +182,49 @@ def _load_registry(config_path: Path) -> _ApprovedLineagePolicyRegistry:
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
         raise ValueError("R1 approved lineage policy config is not valid YAML") from error
 
+    config_version = config_data.get("config_version") if isinstance(config_data, dict) else None
+    registry_type: type[_PolicyRegistry]
+    if config_version == "v0.1":
+        registry_type = _LegacyApprovedLineagePolicyRegistry
+    elif config_version == "v0.2":
+        registry_type = _FamilyBoundApprovedLineagePolicyRegistry
+    else:
+        raise ValueError("R1 approved lineage policy config does not match v0.1 or v0.2")
+
     try:
-        return _ApprovedLineagePolicyRegistry.model_validate(config_data)
+        return registry_type.model_validate(config_data)
     except ValidationError as error:
-        raise ValueError("R1 approved lineage policy config does not match v0.1") from error
+        raise ValueError(
+            f"R1 approved lineage policy config does not match {config_version}"
+        ) from error
 
 
-def _build_policy(policy_config: _ApprovedLineagePolicyConfig) -> ApprovedLineagePolicy:
+def _build_policy(policy_config: _PolicyConfig) -> ApprovedLineagePolicy:
     canonical_payload = _canonical_policy_payload(policy_config)
+    family_id = None
+    lifecycle = None
+    if isinstance(policy_config, _FamilyBoundApprovedLineagePolicyConfig):
+        family_id = policy_config.family_id
+        lifecycle = policy_config.lifecycle
     return ApprovedLineagePolicy(
         policy_id=policy_config.policy_id,
         version=policy_config.version,
         config_hash=hashlib.sha256(canonical_payload).hexdigest(),
         approved_lineage=tuple(policy_config.approved_lineage),
+        family_id=family_id,
+        lifecycle=lifecycle,
     )
 
 
-def _canonical_policy_payload(policy_config: _ApprovedLineagePolicyConfig) -> bytes:
+def _canonical_policy_payload(policy_config: _PolicyConfig) -> bytes:
     payload = {
         "policy_id": policy_config.policy_id,
         "version": policy_config.version,
         "approved_lineage": policy_config.approved_lineage,
     }
+    if isinstance(policy_config, _FamilyBoundApprovedLineagePolicyConfig):
+        payload["family_id"] = policy_config.family_id
+        payload["lifecycle"] = policy_config.lifecycle
     return json.dumps(
         payload,
         ensure_ascii=True,
@@ -172,6 +244,8 @@ def _validate_lookup_identity(field_name: str, value: str) -> None:
 
 __all__ = [
     "DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH",
+    "DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH",
     "load_r1_approved_lineage_policies",
     "load_r1_approved_lineage_policy",
+    "validate_r1_policy_family_binding",
 ]

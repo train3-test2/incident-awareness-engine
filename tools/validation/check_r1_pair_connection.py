@@ -16,8 +16,9 @@ from incident_awareness.collection.r1_destination import (
 )
 from incident_awareness.collection.r1_pair_identity import read_dataset_tier, read_pair_identity
 from incident_awareness.evidence.r1_approved_lineage_policy import (
-    DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH,
+    DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
     load_r1_approved_lineage_policy,
+    validate_r1_policy_family_binding,
 )
 from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
 from incident_awareness.normalization.sysmon import (
@@ -52,18 +53,28 @@ def sha(path):
 
 
 def _approved_policy_provenance(policy: ApprovedLineagePolicy):
-    return {
+    provenance = {
         "policy_id": policy.policy_id,
         "version": policy.version,
         "config_hash": policy.config_hash,
     }
+    if policy.family_id is not None:
+        provenance["family_id"] = policy.family_id
+        provenance["lifecycle"] = policy.lifecycle
+    return provenance
+
+
+def _read_scenario_and_pair_identity(pair, run_id):
+    scenario_path = pair / run_id / "data" / "operator_trace" / run_id / "scenario.json"
+    scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
+    return scenario_path, scenario, read_pair_identity(scenario)
 
 
 def check_run(pair, run_id, prefix, output, policy: ApprovedLineagePolicy):
     base = pair / run_id / "data"
-    scenario_path = base / "operator_trace" / run_id / "scenario.json"
-    scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
-    pair_identity = read_pair_identity(scenario)
+    scenario_path, scenario, pair_identity = _read_scenario_and_pair_identity(pair, run_id)
+    if policy.family_id is not None:
+        validate_r1_policy_family_binding(pair_identity.family_id, policy)
     dataset_tier = read_dataset_tier(scenario)
     target_host = scenario["run_metadata"]["target_host"]
     require(
@@ -235,22 +246,29 @@ def main():
     parser.add_argument(
         "--approved-policy-config",
         type=Path,
-        default=DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH,
+        default=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
     )
     parser.add_argument(
         "--approved-policy-id",
-        default="r1-v02-development-connection",
+        default="r1-remote-management-approved-lineage",
     )
-    parser.add_argument("--approved-policy-version", default="v0.1")
+    parser.add_argument("--approved-policy-version", default="v0.2")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     index = json.loads((args.pair / "index.json").read_text())
+    pair_identities = [
+        _read_scenario_and_pair_identity(args.pair, index[key])[2]
+        for key in ("attack_run_id", "normal_run_id")
+    ]
     # 저장소에서 관리하는 development validation policy를 사용한다.
     policy = load_r1_approved_lineage_policy(
         args.approved_policy_id,
         args.approved_policy_version,
         config_path=args.approved_policy_config,
     )
+    if policy.family_id is not None:
+        for pair_identity in pair_identities:
+            validate_r1_policy_family_binding(pair_identity.family_id, policy)
     policy_provenance = _approved_policy_provenance(policy)
     (args.output / "audit-policy.json").write_text(
         json.dumps(policy_provenance, ensure_ascii=False, indent=2) + "\n",

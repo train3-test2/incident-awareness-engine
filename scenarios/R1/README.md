@@ -67,13 +67,16 @@ Attack 실행 계보    wsmprovhost.exe -> cscript.exe -> powershell.exe
 
 **승인 계보 정책(approved lineage policy)은 이 폴더에 없다.** scenario 에 넣지 않으며, 렌더러 ·
 실행기 · raw telemetry 검증기는 정책을 읽지 않는다. 첫 Pilot 의 raw telemetry 검증은
-`planned_lineage` 만으로 수행한다. Role2의 별도 development validation policy와 loader는
-`docs/evidence/r1-approved-lineage-policy-v0.1.md`가 관리한다.
+`planned_lineage` 만으로 수행한다. Role2의 별도 policy와 loader는 historical
+`docs/evidence/r1-approved-lineage-policy-v0.1.md`와 family-bound
+`docs/evidence/r1-approved-lineage-policy-v0.2.md`가 관리한다.
 
 - 정본은 역할 2 의 **별도 versioned config** 이며 scenario 실행 계보와 합치지 않는다.
-- 현재 v0.1 policy schema는 `family_id`를 포함하지 않는 development validation 전용 계약이다.
-- Production runner 또는 frozen evaluation에 연결하기 전에 family binding을 추가하고, scenario의
-  `family_id`와 정책의 `family_id`가 다르면 fail-closed로 거부해야 한다.
+- v0.1 policy schema는 `family_id`를 포함하지 않는 historical development validation 전용 계약이다.
+- v0.2 family-bound policy는 scenario의 `family_id`와 정책의 `family_id`가 다르면 selector 전에
+  fail-closed한다. 현재 등록 policy는 development lifecycle이며 formal frozen/production policy는 아니다.
+- Role2 Pair validation CLI는 v0.2 family-bound policy를 기본으로 사용한다. Historical v0.1 재현은
+  policy config, ID와 version을 모두 명시해야 하며 current-contract 검증으로 해석하지 않는다.
 - `run_type` 이나 Ground Truth 라벨은 정책 선택과 Evidence 추출의 입력으로 쓰지 않는다.
 
 ### 1-2. family · variation · repetition
@@ -102,8 +105,8 @@ Attack 실행 계보    wsmprovhost.exe -> cscript.exe -> powershell.exe
   `tests/label_shortcut_cases.json` 하나를 읽어 목록과 판정이 같은지 확인하므로, 한쪽만 고치면
   테스트가 실패한다.
 - 세 값은 Ground Truth 기록이다. Evidence 추출이나 Fusion 의 입력으로 넘기지 않는다.
-- 지금은 `family_id` 를 승인 계보 정책과 대조하지 않는다. 정책 config 가 연결되면 정책의
-  `family_id` 와 다를 때 거부해야 한다(§1-1).
+- Raw 수집 경로 자체는 승인 계보를 판정하지 않는다. Approved policy를 명시한 Evidence/validation
+  경로는 v0.2 공용 validator로 `family_id`가 다를 때 거부한다(§1-1).
 - S0 는 `repetition` 을 적지 않으며 지금까지처럼 `1` 이 기록된다.
 
 ### 1-3. 데이터 계획과 정식 Run 의 조건
@@ -524,8 +527,9 @@ trace 의 tier 가 그 값과 정확히 같을 때만 통과시킨다. scenario 
 - 검증기는 프로세스 이름 하나로 Run 을 판정하지 않는다. `run_type` 은 Ground Truth 에서 읽고,
   telemetry 의 계보가 **그 Run 의 실행 계보와 같은지**만 비교한다. 같은 Image 의 다른 인스턴스가
   있어도 계획한 계보가 아니면 그 Run 의 인스턴스로 보지 않는다.
-- **계보가 승인된 것인지는 판정하지 않는다.** 검증기는 승인 계보 정책을 읽지 않는다(§1-1). 출력에는
-  `pair` 줄과, 승인 여부를 판단하지 않았다는 `not judged here` 를 적는다.
+- **계보가 승인된 것인지는 판정하지 않는다.** Raw collection 검증기는 승인 계보 정책을 읽지 않는다
+  (§1-1). 출력에는 `pair` 줄과, 승인 여부를 판단하지 않았다는 `not judged here`를 적는다. Family
+  binding은 Role2 automated/Evidence validation 경계에서 수행한다.
 - 출력의 `tier` 줄은 trace 의 `dataset_tier`, `scenario` 줄은 결속된 SHA-256 이다. tier 가 `pilot` 이면
   마지막에 `not a formal run` 을 적는다. `development` · `holdout` 이면 scenario 와 trace 의 tier 가
   같다는 것만 적으며, 그 Pair 가 정식 selector 의 조건(§1-3)을 만족하는지는 판단하지 않는다.
@@ -660,9 +664,9 @@ rehearsal 은 관측 창을 건너뛰어 마지막 행위 직후에 Sysmon 을 e
   machine-readable failure artifact 가 필요한지는 후속 계약 작업에서 정한다.
 - **reference 의 attribution 증빙** — 실행기가 reference 를 고를 때 쓴 세션 PID 와 두 시각 경계는
   실행기 출력에만 남는다. 별도 attribution 파일은 만들지 않았다(§5-1).
-- **승인 계보 정책 연결** — 정책은 이 폴더에 없다(§1-1). 역할 2 의 config 형식이 정해지면 scenario 의
-  `family_id` 와 정책의 `family_id` 를 fail-closed 로 대조하고, 어느 정책 아래에서 만든 Run 인지 남기는
-  방법을 정한다.
+- **승인 계보 정책 production 연결** — 정책은 이 폴더에 없고 역할 2의 v0.2 config가 family binding을
+  제공한다(§1-1). Production runner에서 family-bound policy를 선택하고 formal frozen identity를
+  기록하는 연결은 후속이다.
 - **Evidence type · R1 Fusion profile** — 각각 역할 2 · 역할 1 의 작업이다. 이 폴더는 Evidence 를
   만들지 않고 Fusion 입력을 내지 않는다.
 - **S0 · R1 공통 부분** — 지금은 R1 이 S0 의 `run-common.ps1` 과 `s0_validation` 의 검사를 그대로

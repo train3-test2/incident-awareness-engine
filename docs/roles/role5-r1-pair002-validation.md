@@ -71,7 +71,10 @@ Normal 한 번의 0 hit를 FP 검증 완료로 해석하지 않는다.
 uv sync --locked
 INCIDENT_AWARENESS_EVENT_TYPES_PATH=configs/event_types_v0.2.yaml \
 PYTHONPATH=src uv run python tools/validation/check_r1_pair_connection.py \
-  --pair '<로컬 Pair-002 디렉터리>' --output '<존재하지 않는 출력 디렉터리>'
+  --pair '<로컬 Pair-002 디렉터리>' --output '<존재하지 않는 출력 디렉터리>' \
+  --approved-policy-config configs/r1_approved_lineage_policies_v0.1.yaml \
+  --approved-policy-id r1-v02-development-connection \
+  --approved-policy-version v0.1
 ```
 
 출력은 Run별 `normalized_events.jsonl`, `r1_evidence.jsonl`,
@@ -87,6 +90,8 @@ production selector/최종 평가 detector로 재사용하면 안 된다.
 감사용 `r1-v02-development-connection/v0.1`이다. 실제 Pair에서 정상 계보를 학습하거나
 Attack hit에 맞춰 바꾼 것이 아니며, 공식 운영 정책 freeze를 의미하지 않는다.
 정책 hash는 줄바꿈 없는 canonical JSON을 기준으로 한다.
+이 historical v0.1 재현은 policy config, ID와 version을 명시적으로 선택하며 current-contract
+Pair validation의 기본 policy는 family-bound v0.2다.
 
 ## 후속 경계
 
