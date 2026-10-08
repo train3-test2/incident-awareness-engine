@@ -142,3 +142,100 @@ def test_invalid_context_rejected(tmp_path, change):
         args["entity_id"] = "unknown"
     with pytest.raises(ValueError):
         select_fast_hit(**args)
+
+
+@pytest.mark.parametrize("failure", ["write", "publish"])
+def test_cli_failure_cleans_staging_and_allows_retry(tmp_path, monkeypatch, failure):
+    # Given
+    from pathlib import Path
+
+    args = prepare(tmp_path, "2026-10-08T00:00:01.000Z,rule-a,HOST,1\n")
+    policy = tmp_path / "policy.json"
+    policy.write_text(args["policy"].model_dump_json(), encoding="utf-8")
+    output = tmp_path / "selected"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "fast_selection",
+            "--hits",
+            str(args["hits_path"]),
+            "--trace",
+            str(args["trace_path"]),
+            "--policy",
+            str(policy),
+            "--run-id",
+            RUN,
+            "--entity-id",
+            "entity",
+            "--output-dir",
+            str(output),
+        ],
+    )
+    original_write = Path.write_text
+
+    def fail_write(path, *values, **kwargs):
+        if path.name == "selection-audit.json":
+            raise OSError("injected write failure")
+        return original_write(path, *values, **kwargs)
+
+    def fail_publish(path, target):
+        raise OSError("injected publish failure")
+
+    # When
+    with monkeypatch.context() as patch:
+        if failure == "write":
+            patch.setattr(Path, "write_text", fail_write)
+        else:
+            patch.setattr(Path, "rename", fail_publish)
+        with pytest.raises(SystemExit) as error:
+            main()
+    output_exists_after_failure = output.exists()
+    staging_after_failure = list(tmp_path.glob(".selected-*"))
+    main()
+    selection = json.loads((output / "selection.json").read_text(encoding="utf-8"))
+    audit = json.loads((output / "selection-audit.json").read_text(encoding="utf-8"))
+
+    # Then
+    assert error.value.code == 2
+    assert not output_exists_after_failure
+    assert staging_after_failure == []
+    assert selection == audit["selection"]
+    assert list(tmp_path.glob(".selected-*")) == []
+
+
+def test_cli_preserves_existing_empty_directory(tmp_path, monkeypatch):
+    # Given
+    args = prepare(tmp_path, "")
+    policy = tmp_path / "policy.json"
+    policy.write_text(args["policy"].model_dump_json(), encoding="utf-8")
+    output = tmp_path / "selected"
+    output.mkdir()
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "fast_selection",
+            "--hits",
+            str(args["hits_path"]),
+            "--trace",
+            str(args["trace_path"]),
+            "--policy",
+            str(policy),
+            "--run-id",
+            RUN,
+            "--entity-id",
+            "entity",
+            "--output-dir",
+            str(output),
+        ],
+    )
+
+    # When
+    with pytest.raises(SystemExit) as error:
+        main()
+    contents = list(output.iterdir())
+
+    # Then
+    assert error.value.code == 2
+    assert output.is_dir()
+    assert contents == []
+    assert list(tmp_path.glob(".selected-*")) == []

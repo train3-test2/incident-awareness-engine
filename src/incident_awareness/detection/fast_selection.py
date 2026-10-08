@@ -3,6 +3,8 @@
 import argparse
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -119,14 +121,22 @@ def main() -> None:
             run_id=args.run_id,
             entity_id=args.entity_id,
         )
-        args.output_dir.mkdir(exist_ok=False)
-        (args.output_dir / "selection.json").write_text(
-            selection.model_dump_json(indent=2) + "\n", encoding="utf-8"
-        )
-        # Written last; consumers should require this completion/provenance file.
-        (args.output_dir / "selection-audit.json").write_text(
-            json.dumps(audit, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
+        if os.path.lexists(args.output_dir):
+            raise FileExistsError(f"output directory already exists: {args.output_dir}")
+        # A sibling staging directory keeps publication on the same filesystem.
+        with tempfile.TemporaryDirectory(
+            prefix=f".{args.output_dir.name}-", dir=args.output_dir.parent
+        ) as staging_name:
+            staging = Path(staging_name)
+            (staging / "selection.json").write_text(
+                selection.model_dump_json(indent=2) + "\n", encoding="utf-8"
+            )
+            (staging / "selection-audit.json").write_text(
+                json.dumps(audit, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+            if os.path.lexists(args.output_dir):
+                raise FileExistsError(f"output directory already exists: {args.output_dir}")
+            staging.rename(args.output_dir)
     except (ValueError, TypeError, KeyError, OSError) as exc:
         parser.error(str(exc))
 

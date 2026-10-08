@@ -51,6 +51,8 @@ uv run python -m incident_awareness.detection.fast_selection \
 
 새 디렉터리만 허용한다. selection.json은 기존 Role3 Adapter 입력과 호환된다.
 selection-audit.json은 policy/hash, source CSV·hits·trace 해시, 정렬된 대상 hit ID와 selection을
-보존하며 마지막에 기록한다. I/O 실패로 부분 디렉터리가 남을 수 있으므로 두 파일과
-내용 일치를 확인해야 한다. audit 없는 부분 출력은 완료 산출물로 소비하지 않는다.
+보존한다. 같은 부모의 임시 디렉터리에 두 파일을 모두 기록한 뒤 디렉터리를 rename하여
+완료 산출물을 게시한다. 기록 또는 게시 실패 시 임시 디렉터리는 정리되며, 새 최종 경로에
+부분 출력은 남기지 않는다. 동일 output-dir로 여러 프로세스를 동시에 실행하지 않는다.
+소비자는 두 파일과 내용 일치를 확인하며 audit 없는 출력은 완료 산출물로 소비하지 않는다.
 전체 Fast episode 생성, cooldown, causal Fusion, detector final freeze는 범위 밖이다.
