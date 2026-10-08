@@ -170,20 +170,49 @@ Archive prefix와 별도 보관 계약으로 정의한다. 자동 입력 원본�
 
 입력 JSONL을 장기 보관해야 하는 경우에는 자동 입력 prefix를 재사용하지 않고, 별도의
 Archive prefix와 보관 정책을 사용한다. 구성 파일은
-`infra/s3/first-cycle-ingest-lifecycle.json`이며, 다음 명령으로 적용한다.
+`infra/s3/first-cycle-ingest-lifecycle.json`이다. `put-bucket-lifecycle-configuration`은
+버킷의 **전체** Lifecycle 구성을 교체하므로, 이 파일만 바로 적용해서는 안 된다. 먼저
+현재 규칙을 조회·검토한 뒤, 같은 ID의 규칙만 갱신하고 다른 prefix의 규칙은 보존한 병합
+구성을 적용한다.
 
 ```powershell
+$bucket = "<FIRST_CYCLE_S3_BUCKET>"
+$profile = "incident-dev"
+$region = "ap-northeast-2"
+$mergedPath = Join-Path $env:TEMP "first-cycle-ingest-lifecycle-merged.json"
+
+# NoSuchLifecycleConfiguration일 때만 빈 구성으로 시작한다.
+$existingOutput = & aws s3api get-bucket-lifecycle-configuration `
+  --bucket $bucket --profile $profile --region $region --output json 2>&1
+if ($LASTEXITCODE -eq 0) {
+  $configuration = ($existingOutput | Out-String | ConvertFrom-Json)
+} elseif (($existingOutput | Out-String) -match "NoSuchLifecycleConfiguration") {
+  $configuration = [pscustomobject]@{ Rules = @() }
+} else {
+  $existingOutput | Write-Error
+  throw "기존 S3 Lifecycle 구성을 조회하지 못했습니다."
+}
+
+$newRule = Get-Content infra/s3/first-cycle-ingest-lifecycle.json -Raw |
+  ConvertFrom-Json
+$newRuleId = $newRule.Rules[0].ID
+
+# 동일 ID만 교체하고, 다른 prefix의 기존 규칙은 그대로 보존한다.
+$configuration.Rules = @(
+  $configuration.Rules | Where-Object { $_.ID -ne $newRuleId }
+) + @($newRule.Rules[0])
+$configuration | ConvertTo-Json -Depth 10 | Set-Content $mergedPath -Encoding utf8
+
 aws s3api put-bucket-lifecycle-configuration `
-  --bucket <FIRST_CYCLE_S3_BUCKET> `
-  --lifecycle-configuration file://infra/s3/first-cycle-ingest-lifecycle.json `
+  --bucket $bucket `
+  --lifecycle-configuration "file://$mergedPath" `
   --profile incident-dev `
   --region ap-northeast-2
 ```
 
 적용 후에는 아래 명령으로 대상 prefix와 만료 기간을 확인한다. 출력의 `prefix`가
-`incoming/first-cycle/sysmon/`이고 `expireDays`가 `21`이어야 한다. 다른 prefix가
-표시되거나 규칙이 여러 개인 경우, 기존 규칙을 보존한 상태로 구성 파일을 병합한 뒤 다시
-적용한다.
+`incoming/first-cycle/sysmon/`이고 `expireDays`가 `21`이어야 한다. 병합 전·후에 다른
+prefix 규칙도 그대로 있는지 함께 확인한다.
 
 ```powershell
 aws s3api get-bucket-lifecycle-configuration `
