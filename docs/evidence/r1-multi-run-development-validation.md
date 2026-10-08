@@ -55,7 +55,17 @@ Pair-003의 렌더링된 scenario와 두 operator trace는 다음 값을 동일�
 | Normal | `RUN-20261008-915` |
 | Attack | `RUN-20261008-916` |
 
-`dataset_tier`는 scenario 최상위 Pair 값이며 두 trace 값과 일치한다. 현재 repository validator로 두 Run의 contract 파일, operator trace, manifest, planned lineage를 검증해 모두 PASS했다. Pair-003는 current-contract development 입력이며 holdout이나 final evaluation 입력이 아니다.
+`dataset_tier`의 source of truth는 렌더링된 `scenario.json` 최상위 Pair 값이다. Validator에는 `--dataset-tier` 입력이 없으며, scenario의 `dataset_tier`와 operator trace의 `dataset_tier`가 정확히 같은지 검증한다. 현재 repository validator로 두 Run의 contract 파일, operator trace, manifest, planned lineage를 검증해 모두 PASS했다. Pair-003는 이 current Pair-owned tier contract를 만족하는 development 입력이며 holdout이나 final evaluation 입력이 아니다.
+
+각 Run은 다음 `cmd.exe` 형식으로 검증했다.
+
+```bat
+uv run python tools/validate_r1_run.py ^
+  --artifact-root <data-root> ^
+  --run-id <run-id> ^
+  --scenario <scenario.json> ^
+  --record-out <record-path>
+```
 
 원본 ZIP은 read-only로 취급하고 저장소 밖 validation 경로에만 압축 해제했다.
 
