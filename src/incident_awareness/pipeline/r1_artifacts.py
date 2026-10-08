@@ -189,6 +189,7 @@ def run_and_write_r1_evidence_artifacts(
         evidence_artifact_sha256=_sha256(evidence_content),
         selector=validated_selector_provenance,
     )
+    _validate_summary_contract(completed_summary)
     _publish_files(
         (
             (evidence_path, evidence_content),
