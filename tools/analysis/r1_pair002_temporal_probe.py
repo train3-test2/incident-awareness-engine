@@ -3,8 +3,9 @@
 import argparse
 import hashlib
 import json
+import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,12 +29,12 @@ EXTRACTOR_VERSION = "r1-v0.1"
 INITIAL_DEVELOP_BASE = "6e096d09ce1c996e4b4c7cc60f51ec265ba0bb63"
 INITIAL_ANALYSIS_DOCUMENT_COMMIT = "66648894a7a9a10db0ae1f247e7b402ea1c3ca10"
 REVIEW_REPRODUCTION_BASE = "327f2e5b5a681ccf3ecdec3d324d933d3ae08637"
+COMMIT_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{40}")
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULT_CONFIG_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "configs"
-    / "fusion"
-    / "fusion_config_r1_pair002_probe_v0.1.yaml"
+    REPOSITORY_ROOT / "configs" / "fusion" / "fusion_config_r1_pair002_probe_v0.1.yaml"
 )
 
 
@@ -121,7 +122,25 @@ def _require_sha256(
         raise ValueError(f"{label} SHA-256 mismatch: expected {expected}, got {actual}")
 
 
-def _git_execution_revision(repository_root: Path) -> ExecutionRevision:
+def _normalize_execution_commit(value: str) -> str:
+    if COMMIT_SHA_PATTERN.fullmatch(value) is None:
+        raise ValueError("execution commit must be a full 40-character hexadecimal Git SHA")
+    return value.lower()
+
+
+def _parse_execution_commit(value: str) -> str:
+    try:
+        return _normalize_execution_commit(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
+def _git_execution_revision(
+    repository_root: Path,
+    *,
+    expected_commit: str,
+) -> ExecutionRevision:
+    expected_commit = _normalize_execution_commit(expected_commit)
     try:
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -131,6 +150,17 @@ def _git_execution_revision(repository_root: Path) -> ExecutionRevision:
             text=True,
             encoding="utf-8",
         ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError("unable to capture the probe execution Git commit") from error
+    if not commit:
+        raise ValueError("probe execution commit must not be blank")
+    actual_commit = _normalize_execution_commit(commit)
+    if actual_commit != expected_commit:
+        raise ValueError(
+            f"probe execution commit mismatch: expected {expected_commit}, got {actual_commit}"
+        )
+
+    try:
         status = subprocess.run(
             ["git", "status", "--porcelain"],
             cwd=repository_root,
@@ -140,11 +170,9 @@ def _git_execution_revision(repository_root: Path) -> ExecutionRevision:
             encoding="utf-8",
         ).stdout
     except (OSError, subprocess.CalledProcessError) as error:
-        raise ValueError("unable to capture the probe execution Git revision") from error
-    if not commit:
-        raise ValueError("probe execution commit must not be blank")
+        raise ValueError("unable to capture the probe execution Git dirty state") from error
     return ExecutionRevision(
-        execution_commit=commit,
+        execution_commit=actual_commit,
         execution_dirty=bool(status.strip()),
     )
 
@@ -293,6 +321,7 @@ def _replay_summary(
 def run_probe(
     artifacts_root: Path,
     *,
+    execution_commit: str,
     config_path: Path = DEFAULT_CONFIG_PATH,
     run_specs: dict[str, PairRunSpec] = PAIR002_RUNS,
     execution_revision: ExecutionRevision | None = None,
@@ -303,8 +332,21 @@ def run_probe(
 
     config = load_fusion_config(config_path)
     _validate_probe_config(config)
+    expected_execution_commit = _normalize_execution_commit(execution_commit)
     if execution_revision is None:
-        execution_revision = _git_execution_revision(Path(__file__).resolve().parents[2])
+        execution_revision = _git_execution_revision(
+            REPOSITORY_ROOT,
+            expected_commit=expected_execution_commit,
+        )
+    elif (
+        _normalize_execution_commit(execution_revision.execution_commit)
+        != expected_execution_commit
+    ):
+        raise ValueError(
+            "probe execution commit mismatch: "
+            f"expected {expected_execution_commit}, "
+            f"got {execution_revision.execution_commit}"
+        )
     runs = {
         run_id: _load_validated_run(artifacts_root, run_id, spec)
         for run_id, spec in run_specs.items()
@@ -420,14 +462,24 @@ def write_probe_result(result: dict[str, object], output: Path) -> None:
     )
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
-    args = parser.parse_args()
+    parser.add_argument("--execution-commit", type=_parse_execution_commit, required=True)
+    args = parser.parse_args(argv)
 
-    result = run_probe(args.artifacts_root, config_path=args.config)
+    execution_revision = _git_execution_revision(
+        REPOSITORY_ROOT,
+        expected_commit=args.execution_commit,
+    )
+    result = run_probe(
+        args.artifacts_root,
+        config_path=args.config,
+        execution_commit=args.execution_commit,
+        execution_revision=execution_revision,
+    )
     write_probe_result(result, args.output)
 
 

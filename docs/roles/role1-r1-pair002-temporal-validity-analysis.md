@@ -324,14 +324,15 @@ config_hash = 669520854868ae24182f502a2c118e66fce9a0fc464283232990182fa848072d
 리뷰 반영 후 static score, 기본 replay 및 ablation은 다음 명령으로 재현한다.
 
 ~~~text
-uv run python tools/analysis/r1_pair002_temporal_probe.py --artifacts-root "<PAIR002_OUTPUT>" --output "<PAIR002_OUTPUT>/role1-r1-pair002-temporal-probe.json"
+$executionCommit = git rev-parse HEAD
+uv run python tools/analysis/r1_pair002_temporal_probe.py --execution-commit $executionCommit --artifacts-root "<PAIR002_OUTPUT>" --output "<PAIR002_OUTPUT>/role1-r1-pair002-temporal-probe.json"
 ~~~
 
-Script는 각 Run의 normalized input, Evidence JSONL, extraction summary SHA-256과 extractor/policy provenance가 위 값에 정확히 일치하지 않으면 fail-closed로 중단한다. normalized input에만 LF-canonical UTF-8 text hash를 적용하고 Evidence와 extraction summary에는 raw-byte hash를 적용한다. 검증 후 `load_r1_evidence_artifacts`, `load_fusion_config`, `SimpleScorer`, Fusion config의 runner builder와 `TemporalReplayRunner`를 사용하며 분석 로직을 별도로 재구현하지 않는다.
+`--execution-commit`에는 실행할 checkout의 전체 40자리 Git SHA를 전달한다. Script는 전달된 SHA와 실제 `git rev-parse HEAD`가 일치할 때만 진행하며, `execution_dirty`는 실제 작업 트리에서 자동 수집한다. 각 Run의 normalized input, Evidence JSONL, extraction summary SHA-256과 extractor/policy provenance가 위 값에 정확히 일치하지 않으면 fail-closed로 중단한다. normalized input에만 LF-canonical UTF-8 text hash를 적용하고 Evidence와 extraction summary에는 raw-byte hash를 적용한다. 검증 후 `load_r1_evidence_artifacts`, `load_fusion_config`, `SimpleScorer`, Fusion config의 runner builder와 `TemporalReplayRunner`를 사용하며 분석 로직을 별도로 재구현하지 않는다.
 
 출력 JSON에는 검증한 입력 provenance와 각 hash basis, Fusion config identity, static score, 기본 replay, Window/persistence/cadence ablation 결과가 기록된다. Fusion config file의 text provenance SHA-256도 CRLF를 LF로 canonicalize한 UTF-8 text 기준으로 기록하여 checkout EOL에 영향을 받지 않는다. 최초 probe config commit, 최초 분석 문서 commit과 리뷰 재현 구현 기준 base도 서로 분리해 기록한다.
 
-실제 Pair-002 artifact를 대상으로 다음 명령도 실행했다.
+필수 `--execution-commit` 인자를 도입하기 전에는 실제 Pair-002 artifact를 대상으로 다음 명령도 실행했다. 아래 명령은 당시 실행 기록이며 새 CLI의 재현 명령 예시가 아니다.
 
 ~~~text
 uv run python tools/analysis/r1_pair002_temporal_probe.py --artifacts-root "..\R1-PAIR-20261005-002-role1-output" --output "..\R1-PAIR-20261005-002-role1-output\role1-r1-pair002-temporal-probe.json"

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -8,6 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import tools.analysis.r1_pair002_temporal_probe as temporal_probe
 from incident_awareness.common.models.evidence import Evidence
 from tools.analysis.r1_pair002_temporal_probe import (
     APPROVED_POLICY_CONFIG_HASH,
@@ -19,13 +21,20 @@ from tools.analysis.r1_pair002_temporal_probe import (
     ArtifactHashes,
     ExecutionRevision,
     PairRunSpec,
+    _git_execution_revision,
     _sha256_lf_normalized_text,
+    main,
     run_probe,
 )
 
 ENTITY_ID = "fixture-target"
 ATTACK_START = datetime(2026, 10, 5, 19, 33, 25, 834000, tzinfo=UTC)
 NORMAL_START = datetime(2026, 10, 5, 19, 56, 52, 355000, tzinfo=UTC)
+EXECUTION_COMMIT = "a" * 40
+EXECUTION_REVISION = ExecutionRevision(
+    execution_commit=EXECUTION_COMMIT,
+    execution_dirty=True,
+)
 
 
 def _sha256(path: Path) -> str:
@@ -183,11 +192,9 @@ def test_reproduces_documented_pair002_temporal_mechanics(
     # When
     result = run_probe(
         artifacts_root,
+        execution_commit=EXECUTION_COMMIT,
         run_specs=run_specs,
-        execution_revision=ExecutionRevision(
-            execution_commit="fixture-execution-commit",
-            execution_dirty=True,
-        ),
+        execution_revision=EXECUTION_REVISION,
     )
 
     # Then
@@ -196,7 +203,7 @@ def test_reproduces_documented_pair002_temporal_mechanics(
         result["analysis_revision"]["review_reproduction_base"]
         != (result["analysis_revision"]["execution_commit"])
     )
-    assert result["analysis_revision"]["execution_commit"] == "fixture-execution-commit"
+    assert result["analysis_revision"]["execution_commit"] == EXECUTION_COMMIT
     assert result["analysis_revision"]["execution_dirty"] is True
 
     basic = result["basic_replay"]
@@ -247,7 +254,12 @@ def test_fails_closed_when_an_input_hash_does_not_match(
 
     # When
     with pytest.raises(ValueError) as exc_info:
-        run_probe(artifacts_root, run_specs=run_specs)
+        run_probe(
+            artifacts_root,
+            execution_commit=EXECUTION_COMMIT,
+            run_specs=run_specs,
+            execution_revision=EXECUTION_REVISION,
+        )
 
     # Then
     assert "normalized input SHA-256 mismatch" in str(exc_info.value)
@@ -267,7 +279,12 @@ def test_normalized_input_hash_is_portable_between_lf_and_crlf(
     # When
     normalized_path.write_bytes(crlf_content)
     canonical_hash = _sha256_lf_normalized_text(normalized_path)
-    result = run_probe(artifacts_root, run_specs=run_specs)
+    result = run_probe(
+        artifacts_root,
+        execution_commit=EXECUTION_COMMIT,
+        run_specs=run_specs,
+        execution_revision=EXECUTION_REVISION,
+    )
 
     # Then
     assert hashlib.sha256(lf_content).hexdigest() == expected_lf_hash
@@ -296,7 +313,138 @@ def test_evidence_and_summary_hashes_remain_raw_byte_contracts(
 
     # When
     with pytest.raises(ValueError) as exc_info:
-        run_probe(artifacts_root, run_specs=run_specs)
+        run_probe(
+            artifacts_root,
+            execution_commit=EXECUTION_COMMIT,
+            run_specs=run_specs,
+            execution_revision=EXECUTION_REVISION,
+        )
 
     # Then
     assert error_text in str(exc_info.value)
+
+
+def test_cli_requires_execution_commit(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "--artifacts-root",
+                str(tmp_path),
+                "--output",
+                str(tmp_path / "result.json"),
+            ]
+        )
+
+    assert exc_info.value.code == 2
+
+
+def test_cli_rejects_invalid_execution_commit(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "--artifacts-root",
+                str(tmp_path),
+                "--output",
+                str(tmp_path / "result.json"),
+                "--execution-commit",
+                "not-a-full-git-sha",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+
+
+def test_cli_fails_closed_when_execution_commit_does_not_match_head(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actual_commit = "b" * 40
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, 0, stdout=f"{actual_commit}\n", stderr="")
+
+    monkeypatch.setattr(temporal_probe.subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError, match="probe execution commit mismatch"):
+        main(
+            [
+                "--artifacts-root",
+                str(tmp_path),
+                "--output",
+                str(tmp_path / "result.json"),
+                "--execution-commit",
+                EXECUTION_COMMIT,
+            ]
+        )
+
+
+def test_git_execution_revision_fails_closed_when_git_lookup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.CalledProcessError(128, args)
+
+    monkeypatch.setattr(temporal_probe.subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError, match="unable to capture.*Git commit"):
+        _git_execution_revision(tmp_path, expected_commit=EXECUTION_COMMIT)
+
+
+def test_cli_records_matching_head_and_actual_dirty_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    captured: dict[str, object] = {}
+
+    def fake_git_run(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        stdout = f"{EXECUTION_COMMIT}\n" if command[1] == "rev-parse" else " M file.py\n"
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    def fake_run_probe(
+        artifacts_root: Path,
+        *,
+        execution_commit: str,
+        config_path: Path,
+        execution_revision: ExecutionRevision,
+    ) -> dict[str, object]:
+        captured.update(
+            artifacts_root=artifacts_root,
+            execution_commit=execution_commit,
+            config_path=config_path,
+            execution_revision=execution_revision,
+        )
+        return {"ok": True}
+
+    def fake_write_probe_result(result: dict[str, object], output: Path) -> None:
+        captured.update(result=result, output=output)
+
+    monkeypatch.setattr(temporal_probe.subprocess, "run", fake_git_run)
+    monkeypatch.setattr(temporal_probe, "run_probe", fake_run_probe)
+    monkeypatch.setattr(temporal_probe, "write_probe_result", fake_write_probe_result)
+    output = tmp_path / "result.json"
+
+    main(
+        [
+            "--artifacts-root",
+            str(tmp_path),
+            "--output",
+            str(output),
+            "--execution-commit",
+            EXECUTION_COMMIT.upper(),
+        ]
+    )
+
+    assert commands == [["git", "rev-parse", "HEAD"], ["git", "status", "--porcelain"]]
+    assert captured["execution_commit"] == EXECUTION_COMMIT
+    assert captured["execution_revision"] == ExecutionRevision(
+        execution_commit=EXECUTION_COMMIT,
+        execution_dirty=True,
+    )
+    assert captured["result"] == {"ok": True}
+    assert captured["output"] == output
