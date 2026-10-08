@@ -1,0 +1,9 @@
+# Pair-002 development validation 전용이며 production 승인 정책이 아니다.
+config_version: v0.1
+policies:
+  - policy_id: r1-v02-development-connection
+    version: v0.1
+    approved_lineage:
+      - wsmprovhost.exe
+      - cmd.exe
+      - powershell.exe

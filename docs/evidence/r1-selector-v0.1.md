@@ -38,7 +38,7 @@ R1-V02 development 재검증에는 다음 payload를 사용했다.
 
 위 key 정렬 compact JSON의 SHA-256은 `669520854868ae24182f502a2c118e66fce9a0fc464283232990182fa848072d`다. 이 policy는 구조적 선택 범위를 고정할 뿐 production approved lineage policy를 대신하지 않는다.
 
-Approved lineage policy는 “선택된 lineage가 승인 계보와 같은가”를 판단한다. Selector policy는 “어느 lineage를 평가할 것인가”를 정한다. 두 policy의 ID, version, hash와 각 policy의 책임은 서로 독립적이다. 다만 selector를 Evidence 추출 경로에 연결할 때 `lineage_event_count`는 `approved_lineage` 길이와 같아야 하며, 다르면 Event 선택 전에 입력 오류로 거부한다.
+Approved lineage policy는 “선택된 lineage가 승인 계보와 같은가”를 판단한다. Selector policy는 “어느 lineage를 평가할 것인가”를 정한다. 두 policy의 ID, version, hash와 각 policy의 책임은 서로 독립적이다. Repository-managed approved policy의 config와 loader 계약은 [R1 승인 계보 정책 관리 계약 v0.1](r1-approved-lineage-policy-v0.1.md)에 정의한다. 다만 selector를 Evidence 추출 경로에 연결할 때 `lineage_event_count`는 `approved_lineage` 길이와 같아야 하며, 다르면 Event 선택 전에 입력 오류로 거부한다.
 
 ## 3. 입력과 출력
 

@@ -14,6 +14,11 @@ from incident_awareness.collection.r1_destination import (
     validate_internal_target,
     validate_lab_cidr,
 )
+from incident_awareness.collection.r1_pair_identity import read_dataset_tier, read_pair_identity
+from incident_awareness.evidence.r1_approved_lineage_policy import (
+    DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH,
+    load_r1_approved_lineage_policy,
+)
 from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
 from incident_awareness.normalization.sysmon import (
     SysmonNormalizationContext,
@@ -46,10 +51,20 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def check_run(pair, run_id, prefix, output, policy):
+def _approved_policy_provenance(policy: ApprovedLineagePolicy):
+    return {
+        "policy_id": policy.policy_id,
+        "version": policy.version,
+        "config_hash": policy.config_hash,
+    }
+
+
+def check_run(pair, run_id, prefix, output, policy: ApprovedLineagePolicy):
     base = pair / run_id / "data"
     scenario_path = base / "operator_trace" / run_id / "scenario.json"
     scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
+    pair_identity = read_pair_identity(scenario)
+    dataset_tier = read_dataset_tier(scenario)
     target_host = scenario["run_metadata"]["target_host"]
     require(
         isinstance(target_host, str)
@@ -187,6 +202,14 @@ def check_run(pair, run_id, prefix, output, policy):
         "execution_record_sha256": sha(execution_path),
         "manifest_sha256": sha(manifest_path),
         "rendered_scenario_sha256": sha(scenario_path),
+        "validation_provenance": {
+            "scenario": {
+                "family_id": pair_identity.family_id,
+                "variation_id": pair_identity.variation_id,
+                "dataset_tier": dataset_tier,
+            },
+            "approved_policy": _approved_policy_provenance(policy),
+        },
         "normalized_count": len(events),
         "event_types": dict(Counter(e.event_type for e in events)),
         "lineage": [
@@ -209,23 +232,30 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pair", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--approved-policy-config",
+        type=Path,
+        default=DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH,
+    )
+    parser.add_argument(
+        "--approved-policy-id",
+        default="r1-v02-development-connection",
+    )
+    parser.add_argument("--approved-policy-version", default="v0.1")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     index = json.loads((args.pair / "index.json").read_text())
-    # 기존 scenario 문서의 정상 계보를 사용하며 실제 Pair에서 학습하지 않는다.
-    policy_data = {
-        "policy_id": "r1-v02-development-connection",
-        "version": "v0.1",
-        "approved_lineage": ["wsmprovhost.exe", "cmd.exe", "powershell.exe"],
-    }
-    payload = json.dumps(policy_data, sort_keys=True, separators=(",", ":")).encode()
-    policy = ApprovedLineagePolicy(
-        policy_data["policy_id"],
-        policy_data["version"],
-        hashlib.sha256(payload).hexdigest(),
-        tuple(policy_data["approved_lineage"]),
+    # 저장소에서 관리하는 development validation policy를 사용한다.
+    policy = load_r1_approved_lineage_policy(
+        args.approved_policy_id,
+        args.approved_policy_version,
+        config_path=args.approved_policy_config,
     )
-    (args.output / "audit-policy.json").write_bytes(payload + b"\n")
+    policy_provenance = _approved_policy_provenance(policy)
+    (args.output / "audit-policy.json").write_text(
+        json.dumps(policy_provenance, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     results = [
         check_run(args.pair, index[k], p, args.output, policy)
         for k, p in [("attack_run_id", "A"), ("normal_run_id", "N")]
@@ -234,7 +264,6 @@ def main():
         "pair_id": index["pair_id"],
         "purpose": "development_tuning_connection_check",
         "production_selector": False,
-        "policy_hash_basis": "canonical JSON without trailing newline",
         "runs": results,
     }
     (args.output / "connection-report.json").write_text(
