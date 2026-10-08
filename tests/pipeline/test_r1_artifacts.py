@@ -15,6 +15,7 @@ from incident_awareness.evidence.r1_multi_event import (
 from incident_awareness.pipeline.r1_artifacts import (
     R1_EVIDENCE_FILENAME,
     R1_EXTRACTION_SUMMARY_FILENAME,
+    R1SelectorProvenance,
     load_r1_evidence_artifacts,
     load_r1_extraction_summary,
     run_and_write_r1_evidence_artifacts,
@@ -322,6 +323,183 @@ def test_completed_extraction_with_no_evidence_is_not_failed(tmp_path: Path) -> 
     ]
     assert summary["error_type"] is None
     assert summary["error_message"] is None
+
+
+def test_rejects_selected_selector_without_lineage_before_publication(
+    tmp_path: Path,
+) -> None:
+    # Given
+    selector_provenance = R1SelectorProvenance(
+        policy_id="r1-selector-policy",
+        version="v0.1",
+        config_hash="sha256:selector-policy",
+        status="selected",
+        diagnostics=(),
+    )
+
+    # When
+    with pytest.raises(
+        ValueError,
+        match="selected selector provenance requires a lineage input",
+    ):
+        run_and_write_r1_evidence_artifacts(
+            _events(),
+            run_id=_RUN_ID,
+            output_directory=tmp_path,
+            lineage_inputs=(),
+            selector_provenance=selector_provenance,
+        )
+
+    # Then
+    assert not (tmp_path / R1_EVIDENCE_FILENAME).exists()
+    assert not (tmp_path / R1_EXTRACTION_SUMMARY_FILENAME).exists()
+
+
+def test_rejects_invalid_selector_status_before_artifact_publication(
+    tmp_path: Path,
+) -> None:
+    # Given
+    evidence_path = tmp_path / R1_EVIDENCE_FILENAME
+    summary_path = tmp_path / R1_EXTRACTION_SUMMARY_FILENAME
+
+    # When
+    with pytest.raises(ValueError, match="status must be selected or failed"):
+        selector_provenance = R1SelectorProvenance(
+            policy_id="r1-selector-policy",
+            version="v0.1",
+            config_hash="sha256:selector-policy",
+            status="unknown",
+            diagnostics=(),
+        )
+        run_and_write_r1_evidence_artifacts(
+            _events(),
+            run_id=_RUN_ID,
+            output_directory=tmp_path,
+            lineage_inputs=[_lineage_input()],
+            selector_provenance=selector_provenance,
+        )
+
+    # Then
+    assert not evidence_path.exists()
+    assert not summary_path.exists()
+
+
+def test_rejects_invalid_selector_diagnostic() -> None:
+    # Given
+    invalid_diagnostic = "not_a_real_diagnostic"
+
+    # When
+    with pytest.raises(ValueError) as error_info:
+        R1SelectorProvenance(
+            policy_id="r1-selector-policy",
+            version="v0.1",
+            config_hash="sha256:selector-policy",
+            status="failed",
+            diagnostics=(invalid_diagnostic,),
+        )
+
+    # Then
+    assert str(error_info.value) == "diagnostics must contain valid R1 selector diagnostics"
+
+
+def test_rejects_non_tuple_selector_diagnostics() -> None:
+    # Given
+    diagnostics = ["ambiguous_terminal_candidate"]
+
+    # When
+    with pytest.raises(ValueError) as error_info:
+        R1SelectorProvenance(
+            policy_id="r1-selector-policy",
+            version="v0.1",
+            config_hash="sha256:selector-policy",
+            status="failed",
+            diagnostics=diagnostics,
+        )
+
+    # Then
+    assert str(error_info.value) == "diagnostics must contain valid R1 selector diagnostics"
+
+
+def test_accepts_selected_selector_without_diagnostics() -> None:
+    # Given
+    diagnostics = ()
+
+    # When
+    provenance = R1SelectorProvenance(
+        policy_id="r1-selector-policy",
+        version="v0.1",
+        config_hash="sha256:selector-policy",
+        status="selected",
+        diagnostics=diagnostics,
+    )
+
+    # Then
+    assert provenance.status == "selected"
+    assert provenance.diagnostics == ()
+
+
+def test_rejects_selected_selector_with_diagnostic() -> None:
+    # Given
+    diagnostic = "ambiguous_terminal_candidate"
+
+    # When
+    with pytest.raises(ValueError) as error_info:
+        R1SelectorProvenance(
+            policy_id="r1-selector-policy",
+            version="v0.1",
+            config_hash="sha256:selector-policy",
+            status="selected",
+            diagnostics=(diagnostic,),
+        )
+
+    # Then
+    assert str(error_info.value) == ("selected selector provenance must not contain diagnostics")
+
+
+def test_accepts_failed_selector_with_valid_diagnostic() -> None:
+    # Given
+    diagnostic = "ambiguous_terminal_candidate"
+
+    # When
+    provenance = R1SelectorProvenance(
+        policy_id="r1-selector-policy",
+        version="v0.1",
+        config_hash="sha256:selector-policy",
+        status="failed",
+        diagnostics=(diagnostic,),
+    )
+
+    # Then
+    assert provenance.status == "failed"
+    assert provenance.diagnostics == ("ambiguous_terminal_candidate",)
+
+
+def test_loads_completed_artifact_with_valid_selector_provenance(
+    tmp_path: Path,
+) -> None:
+    # Given
+    selector_provenance = R1SelectorProvenance(
+        policy_id="r1-selector-policy",
+        version="v0.1",
+        config_hash="sha256:selector-policy",
+        status="selected",
+        diagnostics=(),
+    )
+
+    # When
+    written = run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+        selector_provenance=selector_provenance,
+    )
+    loaded = load_r1_evidence_artifacts(tmp_path)
+
+    # Then
+    assert written.summary.selector == selector_provenance
+    assert loaded.summary.selector == selector_provenance
+    assert loaded.evidences == written.evidences
 
 
 def test_lineage_provenance_is_deterministic_and_preserves_inputs(tmp_path: Path) -> None:

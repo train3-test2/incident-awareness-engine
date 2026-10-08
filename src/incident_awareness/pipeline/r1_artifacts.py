@@ -21,6 +21,7 @@ from incident_awareness.evidence.r1_multi_event import (
     REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION,
     R1ExtractionDiagnostic,
 )
+from incident_awareness.evidence.r1_selector import R1SelectorDiagnostic
 from incident_awareness.pipeline.r1_evidence import (
     R1LineageInput,
     r1_evidence_sort_key,
@@ -31,7 +32,11 @@ R1_EVIDENCE_FILENAME = "r1_evidence.jsonl"
 R1_EXTRACTION_SUMMARY_FILENAME = "r1_extraction_summary.json"
 
 type R1ExtractionStatus = Literal["completed", "failed"]
+type R1SelectorStatus = Literal["selected", "failed"]
 type TelemetryCompleteness = Literal["not_provided"]
+
+_SELECTOR_STATUS_TYPE_ADAPTER = TypeAdapter(R1SelectorStatus)
+_SELECTOR_DIAGNOSTICS_TYPE_ADAPTER = TypeAdapter(tuple[R1SelectorDiagnostic, ...])
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +48,46 @@ class R1LineageInputProvenance:
     policy_id: str
     policy_version: str
     policy_config_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class R1SelectorProvenance:
+    """자동 실행에 사용한 selector policy와 선택 결과를 기록한다."""
+
+    policy_id: str
+    version: str
+    config_hash: str
+    status: R1SelectorStatus
+    diagnostics: tuple[R1SelectorDiagnostic, ...]
+
+    def __post_init__(self) -> None:
+        try:
+            _SELECTOR_STATUS_TYPE_ADAPTER.validate_python(self.status, strict=True)
+        except ValidationError as error:
+            raise ValueError("status must be selected or failed") from error
+
+        try:
+            _SELECTOR_DIAGNOSTICS_TYPE_ADAPTER.validate_python(
+                self.diagnostics,
+                strict=True,
+            )
+        except ValidationError as error:
+            raise ValueError("diagnostics must contain valid R1 selector diagnostics") from error
+
+        for field_name, value in (
+            ("policy_id", self.policy_id),
+            ("version", self.version),
+            ("config_hash", self.config_hash),
+        ):
+            if not isinstance(value, str):
+                raise TypeError(f"{field_name} must be a string")
+            if not value.strip():
+                raise ValueError(f"{field_name} must be a non-blank string")
+
+        if self.status == "selected" and self.diagnostics:
+            raise ValueError("selected selector provenance must not contain diagnostics")
+        if self.status == "failed" and not self.diagnostics:
+            raise ValueError("failed selector provenance requires diagnostics")
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +106,7 @@ class R1ExtractionSummary:
     error_type: str | None
     error_message: str | None
     evidence_artifact_sha256: str | None
+    selector: R1SelectorProvenance | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +123,8 @@ _SUMMARY_FIELD_NAMES = frozenset(field.name for field in fields(R1ExtractionSumm
 _LINEAGE_PROVENANCE_FIELD_NAMES = frozenset(
     field.name for field in fields(R1LineageInputProvenance)
 )
+_SELECTOR_PROVENANCE_FIELD_NAMES = frozenset(field.name for field in fields(R1SelectorProvenance))
+_LEGACY_SUMMARY_FIELD_NAMES = _SUMMARY_FIELD_NAMES - {"selector"}
 _SUMMARY_TYPE_ADAPTER = TypeAdapter(R1ExtractionSummary)
 _SHA256_LENGTH = 64
 _HEX_DIGITS = frozenset("0123456789abcdef")
@@ -88,6 +136,7 @@ def run_and_write_r1_evidence_artifacts(
     run_id: str,
     output_directory: Path,
     lineage_inputs: Iterable[R1LineageInput] = (),
+    selector_provenance: R1SelectorProvenance | None = None,
 ) -> R1EvidenceArtifactRun:
     """명시적 R1 입력을 추출하고 immutable JSONL/summary artifact로 게시한다."""
     _validate_run_id(run_id)
@@ -95,11 +144,18 @@ def run_and_write_r1_evidence_artifacts(
     event_batch: tuple[NormalizedEvent, ...] | None = None
     lineage_input_batch: tuple[R1LineageInput, ...] | None = None
     lineage_provenance: tuple[R1LineageInputProvenance, ...] | None = None
+    validated_selector_provenance: R1SelectorProvenance | None = None
 
     try:
         event_batch = tuple(events)
         lineage_input_batch = tuple(lineage_inputs)
         lineage_provenance = _lineage_input_provenance(lineage_input_batch)
+        if selector_provenance is not None and not isinstance(
+            selector_provenance,
+            R1SelectorProvenance,
+        ):
+            raise TypeError("selector_provenance must be an R1SelectorProvenance or None")
+        validated_selector_provenance = selector_provenance
         _validate_event_run_scope(event_batch, run_id=run_id)
         pipeline_result = run_r1_evidence_pipeline_with_diagnostics(
             event_batch,
@@ -119,6 +175,7 @@ def run_and_write_r1_evidence_artifacts(
             error_type=type(error).__name__,
             error_message=str(error),
             evidence_artifact_sha256=None,
+            selector=validated_selector_provenance,
         )
         try:
             _publish_files(
@@ -146,7 +203,9 @@ def run_and_write_r1_evidence_artifacts(
         error_type=None,
         error_message=None,
         evidence_artifact_sha256=_sha256(evidence_content),
+        selector=validated_selector_provenance,
     )
+    _validate_summary_contract(completed_summary)
     _publish_files(
         (
             (evidence_path, evidence_content),
@@ -291,6 +350,14 @@ def _serialize_summary(summary: R1ExtractionSummary) -> bytes:
         "error_message": summary.error_message,
         "evidence_artifact_sha256": summary.evidence_artifact_sha256,
     }
+    if summary.selector is not None:
+        payload["selector"] = {
+            "policy_id": summary.selector.policy_id,
+            "version": summary.selector.version,
+            "config_hash": summary.selector.config_hash,
+            "status": summary.selector.status,
+            "diagnostics": list(summary.selector.diagnostics),
+        }
     return (
         json.dumps(
             payload,
@@ -321,8 +388,9 @@ def _read_summary(path: Path) -> R1ExtractionSummary:
 def _validate_summary_payload(payload: object) -> None:
     if not isinstance(payload, dict):
         raise TypeError("R1 extraction summary must be a JSON object")
-    if set(payload) != _SUMMARY_FIELD_NAMES:
+    if set(payload) not in (_LEGACY_SUMMARY_FIELD_NAMES, _SUMMARY_FIELD_NAMES):
         raise ValueError("R1 extraction summary fields do not match the writer contract")
+    payload.setdefault("selector", None)
 
     for field_name in ("run_id", "extractor_version"):
         value = payload[field_name]
@@ -340,6 +408,20 @@ def _validate_summary_payload(payload: object) -> None:
         value = payload[field_name]
         if value is not None and not isinstance(value, str):
             raise TypeError(f"{field_name} must be a string or null")
+
+    selector = payload["selector"]
+    if selector is not None:
+        if not isinstance(selector, dict) or set(selector) != _SELECTOR_PROVENANCE_FIELD_NAMES:
+            raise TypeError("selector must match the selector provenance contract")
+        for field_name in ("policy_id", "version", "config_hash", "status"):
+            value = selector[field_name]
+            if not isinstance(value, str) or not value.strip():
+                raise TypeError(f"selector {field_name} must be a non-blank string")
+        diagnostics = selector["diagnostics"]
+        if not isinstance(diagnostics, list) or any(
+            not isinstance(item, str) for item in diagnostics
+        ):
+            raise TypeError("selector diagnostics must be an array of strings")
 
     lineage_inputs = payload["lineage_inputs"]
     if lineage_inputs is None:
@@ -366,6 +448,16 @@ def _validate_summary_contract(summary: R1ExtractionSummary) -> None:
         sorted(summary.lineage_inputs, key=_lineage_provenance_key)
     ):
         raise ValueError("lineage_inputs must use the writer's canonical ordering")
+
+    if summary.selector is not None:
+        if summary.selector.status == "selected":
+            if not summary.lineage_inputs:
+                raise ValueError("selected selector provenance requires a lineage input")
+        else:
+            if summary.lineage_inputs:
+                raise ValueError("failed selector provenance must not contain lineage inputs")
+            if summary.status == "completed" and summary.evidence_count != 0:
+                raise ValueError("failed selector provenance must not contain Evidence")
 
     if summary.status == "completed":
         if summary.input_event_count is None or summary.evidence_count is None:
@@ -537,6 +629,7 @@ __all__ = [
     "R1EvidenceArtifactRun",
     "R1ExtractionSummary",
     "R1LineageInputProvenance",
+    "R1SelectorProvenance",
     "load_r1_evidence_artifacts",
     "load_r1_extraction_summary",
     "run_and_write_r1_evidence_artifacts",
