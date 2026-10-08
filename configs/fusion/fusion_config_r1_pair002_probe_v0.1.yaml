@@ -1,0 +1,37 @@
+# R1 Pair-002 development probe only.
+# Connects the validated Pair-002 R1 Evidence artifact boundary to Temporal Fusion.
+# Not an R1-final or production setting, performance baseline, train/validation/test input,
+# or holdout/final-evaluation evidence.
+# Window, cadence, and stopping values are carried over from S0 only as initial
+# exploratory probe values; this config does not establish temporal discriminability.
+# Retrospective/offline event-time replay only: the current whole-batch R1 selector
+# has no available_at/watermark contract. Do not interpret replay trajectory,
+# fusion_time, or stopping output as causal/online timing, TTSD, or early recognition.
+config_version: fusion-config-r1-pair002-probe-v0.1
+model_version: null
+
+window:
+  window_size_sec: 300
+
+replay:
+  step_size_sec: 10
+
+scoring:
+  method: simple_score
+  scorer_version: simple-score-v0.1
+  profile_id: r1-pair002-probe-v0.1
+  evidence_types:
+    - remote_session_process_lineage_deviation
+    - remote_process_network_follow_on
+
+# simple_score uses the two registered R1 types as an equal-weight profile, so
+# each distinct active type contributes 0.5 and reachable scores are 0, 0.5, 1.0.
+# remote_process_network_follow_on occurs in both Pair-002 Normal and Attack and
+# must not be interpreted as a standalone positive attack indicator.
+# threshold_on 0.8 therefore requires both types to be active in the same window.
+# persistence_k 2 requires that state at two consecutive 10-second replay points.
+# threshold_off 0.4 releases an active episode when the score falls to 0.
+stopping:
+  threshold_on: 0.8
+  threshold_off: 0.4
+  persistence_k: 2
