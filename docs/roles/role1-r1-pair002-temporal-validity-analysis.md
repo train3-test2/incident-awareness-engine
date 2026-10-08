@@ -354,6 +354,37 @@ basic replay = Attack detected / Normal miss
 Window / persistence / cadence ablation = 문서 수치와 일치
 ~~~
 
+필수 `--execution-commit` 인자를 도입한 뒤에는 다음 Windows PowerShell 환경에서 Temporal Probe를 다시 실행해 검증했다.
+
+~~~powershell
+$env:PYTHONPATH = "src"
+uv run python tools/analysis/r1_pair002_temporal_probe.py --execution-commit eb1f2e288f5e6cdc4afb5e69260f8ca68bc5f4d4 --artifacts-root "..\R1-PAIR-20261005-002-role1-output" --output "..\R1-PAIR-20261005-002-role1-output\role1-r1-pair002-temporal-probe-eb1f2e2.json"
+~~~
+
+이번 재실행의 provenance와 외부 결과 파일은 다음과 같다. 실제 실행 commit은 `execution_commit`이며, `review_reproduction_base`는 리뷰 재현 구현의 기준 commit이므로 서로 같은 의미로 사용하지 않는다.
+
+~~~text
+analysis_mode            = retrospective_offline_event_time_mechanics
+execution_commit         = eb1f2e288f5e6cdc4afb5e69260f8ca68bc5f4d4
+execution_dirty          = false
+review_reproduction_base = 327f2e5b5a681ccf3ecdec3d324d933d3ae08637
+execution_environment    = Windows PowerShell / PYTHONPATH=src
+output_path              = ..\R1-PAIR-20261005-002-role1-output\role1-r1-pair002-temporal-probe-eb1f2e2.json
+output_sha256            = 5ee649f55b5cf6cf9ed1985e30b45721bfc32f14a474318f9e55cee40501f37e
+~~~
+
+재실행 결과는 다음과 같다.
+
+~~~text
+Attack basic replay      = detected / 2026-10-05T19:41:45.834Z
+Normal basic replay      = miss
+static_presence          = Attack 1.0 / Normal 0.5
+Window/persistence/cadence ablation = 기존 분석 결과와 일치
+input provenance / config hash      = 기존 분석 기록과 일치
+~~~
+
+이번 검증도 `retrospective_offline_event_time_mechanics`에 한정된 후향적 event-time mechanics 재현이며 causal 또는 online 결과가 아니다. 위 provenance는 이번 재실행에만 해당하며 과거 실행 기록을 소급하여 변경하지 않는다.
+
 생성된 output JSON과 기존 Pair-002 artifact는 repository에 추가하지 않는다.
 
 ---
