@@ -15,6 +15,7 @@ from incident_awareness.evidence.r1_multi_event import (
 from incident_awareness.pipeline.r1_artifacts import (
     R1_EVIDENCE_FILENAME,
     R1_EXTRACTION_SUMMARY_FILENAME,
+    R1SelectorProvenance,
     load_r1_evidence_artifacts,
     load_r1_extraction_summary,
     run_and_write_r1_evidence_artifacts,
@@ -322,6 +323,36 @@ def test_completed_extraction_with_no_evidence_is_not_failed(tmp_path: Path) -> 
     ]
     assert summary["error_type"] is None
     assert summary["error_message"] is None
+
+
+def test_rejects_selected_selector_without_lineage_before_publication(
+    tmp_path: Path,
+) -> None:
+    # Given
+    selector_provenance = R1SelectorProvenance(
+        policy_id="r1-selector-policy",
+        version="v0.1",
+        config_hash="sha256:selector-policy",
+        status="selected",
+        diagnostics=(),
+    )
+
+    # When
+    with pytest.raises(
+        ValueError,
+        match="selected selector provenance requires a lineage input",
+    ):
+        run_and_write_r1_evidence_artifacts(
+            _events(),
+            run_id=_RUN_ID,
+            output_directory=tmp_path,
+            lineage_inputs=(),
+            selector_provenance=selector_provenance,
+        )
+
+    # Then
+    assert not (tmp_path / R1_EVIDENCE_FILENAME).exists()
+    assert not (tmp_path / R1_EXTRACTION_SUMMARY_FILENAME).exists()
 
 
 def test_lineage_provenance_is_deterministic_and_preserves_inputs(tmp_path: Path) -> None:
