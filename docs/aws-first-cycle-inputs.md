@@ -142,7 +142,86 @@ S3 Event Notification은 prefix `incoming/first-cycle/sysmon/`와 suffix `sysmon
 객체를 로컬의 `telemetry/sysmon-0001.jsonl`로 내려받아 standalone CLI를 호출한다.
 Worker가 생성한 Run·Manifest·결과는 이 `incoming/` prefix에 쓰지 않는다. 결과는
 PostgreSQL과 CloudWatch Logs에 저장하며, 생성 Artifact를 S3에 장기 보관하는 정책은 별도
-계약으로 정의한다.
+Archive prefix와 별도 보관 계약으로 정의한다. 자동 입력 원본의 보관·삭제 정책은 아래와
+같다.
+
+### 자동 입력 Artifact 보관·삭제 정책
+
+자동 입력 원본은 재처리와 장애 분석에 필요한 기간만 보관한다. S3 Lifecycle 규칙은 아래
+정책을 적용한다.
+
+| 항목 | 정책 |
+| --- | --- |
+| 대상 prefix | `incoming/first-cycle/sysmon/` 아래의 현재 객체와 noncurrent 객체 버전 |
+| 보관 기간 | 현재 객체는 생성 후 21일, noncurrent 객체 버전은 noncurrent 전환 후 21일 |
+| 삭제 시점 | S3 Lifecycle이 각 보관 기간 경과 후 비동기로 삭제 |
+| 미완료 multipart upload | 시작 후 1일이 지나면 중단 |
+| 재제출 | 삭제 전후와 관계없이 새 `ING-<uuidv4>` prefix로만 제출 |
+
+21일은 source Queue·DLQ의 최대 보관 기간과 운영 확인 여유를 함께 고려한 기간이다. DLQ
+메시지를 분석하거나 재제출할 때 필요한 원본 JSONL은 이 기간 동안 유지된다.
+
+다음 대상은 이 Lifecycle 규칙의 삭제 범위에 **포함하지 않는다**.
+
+- 수동 실행용 완성 Artifact인 `first-cycle/`
+- PostgreSQL의 Run·Event·Fusion·Detection·Decision 결과
+- CloudWatch Logs, SQS source Queue 및 DLQ 메시지
+- 다른 시나리오·역할의 S3 prefix
+
+입력 JSONL을 장기 보관해야 하는 경우에는 자동 입력 prefix를 재사용하지 않고, 별도의
+Archive prefix와 보관 정책을 사용한다. 구성 파일은
+`infra/s3/first-cycle-ingest-lifecycle.json`이다. `put-bucket-lifecycle-configuration`은
+버킷의 **전체** Lifecycle 구성을 교체하므로, 이 파일만 바로 적용해서는 안 된다. 먼저
+현재 규칙을 조회·검토한 뒤, 같은 ID의 규칙만 갱신하고 다른 prefix의 규칙은 보존한 병합
+구성을 적용한다.
+
+```powershell
+$bucket = "<FIRST_CYCLE_S3_BUCKET>"
+$profile = "incident-dev"
+$region = "ap-northeast-2"
+$mergedPath = Join-Path $env:TEMP "first-cycle-ingest-lifecycle-merged.json"
+
+# NoSuchLifecycleConfiguration일 때만 빈 구성으로 시작한다.
+$existingOutput = & aws s3api get-bucket-lifecycle-configuration `
+  --bucket $bucket --profile $profile --region $region --output json 2>&1
+if ($LASTEXITCODE -eq 0) {
+  $configuration = ($existingOutput | Out-String | ConvertFrom-Json)
+} elseif (($existingOutput | Out-String) -match "NoSuchLifecycleConfiguration") {
+  $configuration = [pscustomobject]@{ Rules = @() }
+} else {
+  $existingOutput | Write-Error
+  throw "기존 S3 Lifecycle 구성을 조회하지 못했습니다."
+}
+
+$newRule = Get-Content infra/s3/first-cycle-ingest-lifecycle.json -Raw |
+  ConvertFrom-Json
+$newRuleId = $newRule.Rules[0].ID
+
+# 동일 ID만 교체하고, 다른 prefix의 기존 규칙은 그대로 보존한다.
+$configuration.Rules = @(
+  $configuration.Rules | Where-Object { $_.ID -ne $newRuleId }
+) + @($newRule.Rules[0])
+$configuration | ConvertTo-Json -Depth 10 | Set-Content $mergedPath -Encoding utf8
+
+aws s3api put-bucket-lifecycle-configuration `
+  --bucket $bucket `
+  --lifecycle-configuration "file://$mergedPath" `
+  --profile incident-dev `
+  --region ap-northeast-2
+```
+
+적용 후에는 아래 명령으로 대상 prefix와 만료 기간을 확인한다. 출력의 `prefix`가
+`incoming/first-cycle/sysmon/`이고 `expireDays`가 `21`이어야 한다. 병합 전·후에 다른
+prefix 규칙도 그대로 있는지 함께 확인한다.
+
+```powershell
+aws s3api get-bucket-lifecycle-configuration `
+  --bucket <FIRST_CYCLE_S3_BUCKET> `
+  --profile incident-dev `
+  --region ap-northeast-2 `
+  --query "Rules[].{id:ID,status:Status,prefix:Filter.Prefix,expireDays:Expiration.Days}" `
+  --output table
+```
 
 현재 이 절은 자동 처리 Worker가 구현될 때 적용할 입력 계약이다. 현재 제공되는 수동 ECS
 실행은 계속 `first-cycle/<source-run-id>/telemetry/sysmon-0001.jsonl` 경로와
@@ -172,6 +251,27 @@ source Queue인 `incident-awareness-first-cycle-ingest`만 redrive 대상으로 
 DLQ의 redrive 허용 정책은 `infra/sqs/first-cycle-ingest-dlq-attributes.json`에서 관리한다.
 Worker 구현 전에는 DLQ 메시지를 자동으로 삭제하거나 재처리하지 않는다. 운영자가 실패 원인을
 확인한 뒤 수정된 입력을 새 `ING-<uuidv4>`로 다시 업로드하는 방식으로 재제출한다.
+
+### DLQ와 입력 Artifact 보관 관계
+
+SQS 메시지와 S3 입력 JSONL은 서로 다른 리소스이며, DLQ 메시지가 남아 있다고 해서 S3
+객체가 보존되거나 반대로 S3 객체 만료가 DLQ 메시지를 삭제하지 않는다. 각 보관 정책의
+책임은 다음과 같다.
+
+| 리소스 | 보관 기간 | 책임 |
+| --- | --- | --- |
+| source Queue 메시지 | 4일 | 일시적 실패의 자동 재시도 전달 |
+| DLQ 메시지 | 14일 | 영구 실패·반복 실패의 원인 확인과 수동 재제출 판단 |
+| 자동 입력 JSONL | 21일 | DLQ 분석·원본 확인·수정본 재제출에 필요한 원본 보존 |
+
+입력 JSONL의 21일 보관 기간은 DLQ의 14일보다 길다. 따라서 운영자는 DLQ 보관 기간 안에
+원본을 확인하고, 필요한 경우 수정된 파일을 **새** `ING-<uuidv4>` prefix로 재제출해야 한다.
+기존 DLQ 메시지를 redrive하거나 동일 key를 덮어써 재실행하지 않는다.
+
+S3 Lifecycle 만료로 객체가 삭제된 뒤에도 DLQ 메시지가 남아 있을 수 있다. 이 경우 Worker가
+원본을 내려받을 수 없으므로 해당 메시지는 복구 대상으로 사용하지 않고, 원본을 별도 Archive에서
+복원하거나 새 입력 객체로 다시 제출한다. DLQ와 S3 Lifecycle은 서로의 보관 기간을 연장하거나
+삭제하지 않는다.
 
 ### Worker SQS 메시지 입력
 
@@ -219,6 +319,36 @@ bucket + decoded object key + eTag
 같은 identity로 다시 처리한다. Worker는 receipt 조회 전에 이 identity의 PostgreSQL transaction
 advisory lock을 확보하고, Pipeline 실행·receipt 기록 또는 skip 처리 뒤 transaction을 끝내 lock을
 해제한다. 따라서 두 Worker가 같은 S3 object version을 동시에 실행하지 않는다.
+
+### `s3_object_receipts` 보관 정책
+
+성공 receipt는 S3 input identity의 영속 중복 실행을 막기 위한 운영 메타데이터이며, Run과
+분석 결과의 장기 보관 수단이 아니다. `completed_at` 기준으로 아래 정책을 적용한다.
+
+| 항목 | 정책 |
+| --- | --- |
+| 보관 대상 | 성공적으로 처리되어 `run_id`가 기록된 receipt만 |
+| 보관 기간 | 완료 시각 후 28일 |
+| 기간 근거 | 입력 JSONL 21일 보관 + 원본 만료 후 운영 확인 여유 7일 |
+| 삭제 범위 | `s3_object_receipts` 행만 삭제하며 `runs` 및 결과 테이블은 삭제하지 않음 |
+| 실행 주체 | Worker가 아닌 별도 운영 cleanup 작업 |
+
+28일은 S3 Lifecycle의 만료 처리 대상이 되는 기준일과 운영 여유를 더한 **cleanup 후보
+선정 기준**일 뿐, 원본이 이미 삭제됐다는 보장 시각이 아니다. S3 Lifecycle 삭제는 비동기로
+지연될 수 있으며, 현재 Worker는 receipt가 없고 원본 다운로드가 가능하면 같은 입력을 다시
+실행한다.
+
+따라서 아래 선행 조건 중 하나가 구현·검증되기 전에는 receipt cleanup을 활성화하지 않는다.
+
+1. cleanup 작업이 28일 경과 후보마다 S3 `HeadObject`를 수행하고, 실제로 `NoSuchKey` 또는
+   해당 object version 부재를 확인한 receipt만 삭제한다.
+2. Worker가 28일 경과 입력을 명시적으로 영구 실패로 거부하여, receipt가 삭제된 뒤에도
+   원본 객체가 남아 있어 재처리되는 일을 막는다.
+
+현재는 두 조건 모두 구현되지 않았으므로 스케줄러·정리 SQL을 운영 환경에서 실행하지 않는다.
+향후 cleanup은 Worker 처리 transaction과 분리하고, 삭제 대상·S3 확인 결과·삭제 건수를
+CloudWatch Logs에 기록해야 한다. 입력을 다시 처리해야 하면 항상 새 `ING-<uuidv4>` object를
+제출한다.
 
 ### 재시도와 영구 실패 처리 정책
 
