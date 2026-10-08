@@ -75,6 +75,8 @@ Attack 실행 계보    wsmprovhost.exe -> cscript.exe -> powershell.exe
 - v0.1 policy schema는 `family_id`를 포함하지 않는 historical development validation 전용 계약이다.
 - v0.2 family-bound policy는 scenario의 `family_id`와 정책의 `family_id`가 다르면 selector 전에
   fail-closed한다. 현재 등록 policy는 development lifecycle이며 formal frozen/production policy는 아니다.
+- Role2 Pair validation CLI는 v0.2 family-bound policy를 기본으로 사용한다. Historical v0.1 재현은
+  policy config, ID와 version을 모두 명시해야 하며 current-contract 검증으로 해석하지 않는다.
 - `run_type` 이나 Ground Truth 라벨은 정책 선택과 Evidence 추출의 입력으로 쓰지 않는다.
 
 ### 1-2. family · variation · repetition

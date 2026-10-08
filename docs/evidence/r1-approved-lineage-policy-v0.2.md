@@ -70,9 +70,15 @@ NormalizedEvent batch + scenario family metadata
 → artifact
 ```
 
-Mismatch이면 selector를 호출하지 않고 completed artifact도 게시하지 않는다. 기존 v0.1 default path와 lower-level manual API는 historical reproduction을 위해 유지한다.
+Mismatch이면 selector를 호출하지 않고 completed artifact도 게시하지 않는다. 기존 automated API의 legacy config 기본값과 lower-level manual API는 historical reproduction을 위해 유지한다.
 
-Raw collection 전용 `tools/validate_r1_run.py`는 Evidence policy를 import하거나 승인 여부를 판단하지 않는다. Role2 validation 경로인 `tools/validation/check_r1_pair_connection.py`가 family-bound policy를 선택하면 공용 validator로 scenario family를 비교하고 loader가 계산한 `config_hash`를 audit provenance에 기록한다. Validation tool은 hash canonicalization을 재구현하지 않는다. 기존 `dataset_tier`의 scenario 소유 및 operator trace 일치 계약은 변경하지 않는다.
+Raw collection 전용 `tools/validate_r1_run.py`는 Evidence policy를 import하거나 승인 여부를 판단하지 않는다. Role2 validation 경로인 `tools/validation/check_r1_pair_connection.py`의 current-contract CLI 기본값은 v0.2 family-bound development policy다. 공용 validator로 scenario family를 비교하고 loader가 계산한 `config_hash`를 audit provenance에 기록한다. Family mismatch는 normalization 전에 거부한다. Historical v0.1 reproduction은 policy config, ID와 version을 CLI에 모두 명시한 경우에만 사용한다. Validation tool은 hash canonicalization을 재구현하지 않는다. 기존 `dataset_tier`의 scenario 소유 및 operator trace 일치 계약은 변경하지 않는다.
+
+```text
+--approved-policy-config configs/r1_approved_lineage_policies_v0.1.yaml
+--approved-policy-id r1-v02-development-connection
+--approved-policy-version v0.1
+```
 
 ## 6. Migration과 후속 결정
 
