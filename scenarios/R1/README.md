@@ -74,7 +74,8 @@ Attack 실행 계보    wsmprovhost.exe -> cscript.exe -> powershell.exe
 - 정본은 역할 2 의 **별도 versioned config** 이며 scenario 실행 계보와 합치지 않는다.
 - v0.1 policy schema는 `family_id`를 포함하지 않는 historical development validation 전용 계약이다.
 - v0.2 family-bound policy는 scenario의 `family_id`와 정책의 `family_id`가 다르면 selector 전에
-  fail-closed한다. 현재 등록 policy는 development lifecycle이며 formal frozen/production policy는 아니다.
+  fail-closed한다. Registry에는 development policy와 별도 pre-holdout frozen policy가 있으며
+  production policy는 등록하지 않았다.
 - Role2 Pair validation CLI는 v0.2 family-bound policy를 기본으로 사용한다. Historical v0.1 재현은
   policy config, ID와 version을 모두 명시해야 하며 current-contract 검증으로 해석하지 않는다.
 - `run_type` 이나 Ground Truth 라벨은 정책 선택과 Evidence 추출의 입력으로 쓰지 않는다.
@@ -664,9 +665,9 @@ rehearsal 은 관측 창을 건너뛰어 마지막 행위 직후에 Sysmon 을 e
   machine-readable failure artifact 가 필요한지는 후속 계약 작업에서 정한다.
 - **reference 의 attribution 증빙** — 실행기가 reference 를 고를 때 쓴 세션 PID 와 두 시각 경계는
   실행기 출력에만 남는다. 별도 attribution 파일은 만들지 않았다(§5-1).
-- **승인 계보 정책 production 연결** — 정책은 이 폴더에 없고 역할 2의 v0.2 config가 family binding을
-  제공한다(§1-1). Production runner에서 family-bound policy를 선택하고 formal frozen identity를
-  기록하는 연결은 후속이다.
+- **승인 계보 정책 production 연결** — 정책은 이 폴더에 없고 역할 2의 v0.2 config가 family binding과
+  별도 formal frozen identity를 제공한다(§1-1). Production runner에서 family-bound policy를 선택하는
+  연결과 production policy 승인은 후속이다.
 - **Evidence type · R1 Fusion profile** — 각각 역할 2 · 역할 1 의 작업이다. 이 폴더는 Evidence 를
   만들지 않고 Fusion 입력을 내지 않는다.
 - **S0 · R1 공통 부분** — 지금은 R1 이 S0 의 `run-common.ps1` 과 `s0_validation` 의 검사를 그대로

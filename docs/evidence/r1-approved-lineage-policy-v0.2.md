@@ -1,8 +1,8 @@
 # R1 승인 계보 정책 family binding 및 lifecycle 계약 v0.2
 
-> 상태: family-bound development policy 계약 구현 완료
+> 상태: family-bound development 및 pre-holdout frozen policy 계약 구현 완료
 > availability: `OFFLINE WHOLE-EPISODE ONLY`
-> 비범위: formal frozen policy 발급, production 배포, WMI policy, selector·Evidence 의미 변경
+> 비범위: production 배포, WMI policy, selector·Evidence 의미 변경
 
 ## 1. 목적과 v0.1 호환성
 
@@ -25,6 +25,14 @@ policies:
       - wsmprovhost.exe
       - cmd.exe
       - powershell.exe
+  - policy_id: r1-remote-management-approved-lineage
+    version: v0.3
+    family_id: remote_management
+    lifecycle: frozen
+    approved_lineage:
+      - wsmprovhost.exe
+      - cmd.exe
+      - powershell.exe
 ```
 
 `family_id`는 rendered scenario의 canonical family naming과 같은 규칙을 사용한다. 비어 있거나 앞뒤 공백을 포함하거나 Run label을 노출하는 값은 허용하지 않는다. `variation_id`는 이번 binding 대상이 아니다.
@@ -39,7 +47,7 @@ Loader는 YAML duplicate key, 알 수 없는 필드, config version 불일치, �
 - `frozen`: evaluation 전에 고정한 immutable provenance다. Holdout/final 결과를 본 뒤 같은 identity/version의 내용을 변경하지 않는다.
 - `production_candidate`: production runner 연결 후보다. Frozen evaluation과 실제 production deployment를 같은 상태로 해석하지 않는다.
 
-Policy ID 문자열에서 lifecycle을 추론하지 않는다. `foo`, `prod`, `final-ish` 등 미정의 값은 runtime에서 거부한다. 이번 registry에는 `development` policy만 등록하며 formal `frozen` 또는 `production_candidate` policy를 자동 발급하지 않는다.
+Policy ID 문자열에서 lifecycle을 추론하지 않는다. `foo`, `prod`, `final-ish` 등 미정의 값은 runtime에서 거부한다. Registry에는 current validation용 `development/v0.2`와 final evaluation용 `frozen/v0.3`을 별도 identity로 등록한다. `production_candidate` policy는 등록하지 않는다.
 
 ## 4. Identity, version과 hash
 
@@ -53,7 +61,7 @@ v0.2 `config_hash` 입력은 다음 object다.
 - `lifecycle`
 - `approved_lineage`
 
-이 object를 key 정렬, 공백 없는 JSON separators와 ASCII escaping으로 canonical serialization하고 UTF-8 bytes의 SHA-256 lowercase hex를 계산한다. YAML 표현, key 순서와 comment는 hash에 포함되지 않는다. 현재 등록된 family-bound development policy hash는 `6d4235ccc33fcc2484a679d6b6b9b8972cf67f45ff8de35d02eb402380e7f788`이다. v0.1은 기존 세 필드 hash basis를 계속 사용한다.
+이 object를 key 정렬, 공백 없는 JSON separators와 ASCII escaping으로 canonical serialization하고 UTF-8 bytes의 SHA-256 lowercase hex를 계산한다. YAML 표현, key 순서와 comment는 hash에 포함되지 않는다. Family-bound development `v0.2` hash는 `6d4235ccc33fcc2484a679d6b6b9b8972cf67f45ff8de35d02eb402380e7f788`, frozen `v0.3` hash는 `b3d1d28a909b494f660d3e8164a994a3d818a98dadcd10336560b4bec38680d2`다. v0.1은 기존 세 필드 hash basis를 계속 사용한다.
 
 ## 5. Family binding과 실행 경계
 
@@ -72,7 +80,7 @@ NormalizedEvent batch + scenario family metadata
 
 Mismatch이면 selector를 호출하지 않고 completed artifact도 게시하지 않는다. 기존 automated API의 legacy config 기본값과 lower-level manual API는 historical reproduction을 위해 유지한다.
 
-Raw collection 전용 `tools/validate_r1_run.py`는 Evidence policy를 import하거나 승인 여부를 판단하지 않는다. Role2 validation 경로인 `tools/validation/check_r1_pair_connection.py`의 current-contract CLI 기본값은 v0.2 family-bound development policy다. 공용 validator로 scenario family를 비교하고 loader가 계산한 `config_hash`를 audit provenance에 기록한다. Family mismatch는 normalization 전에 거부한다. Historical v0.1 reproduction은 policy config, ID와 version을 CLI에 모두 명시한 경우에만 사용한다. Validation tool은 hash canonicalization을 재구현하지 않는다. 기존 `dataset_tier`의 scenario 소유 및 operator trace 일치 계약은 변경하지 않는다.
+Raw collection 전용 `tools/validate_r1_run.py`는 Evidence policy를 import하거나 승인 여부를 판단하지 않는다. Role2 validation 경로인 `tools/validation/check_r1_pair_connection.py`의 current-contract CLI 기본값은 v0.2 family-bound development policy다. Frozen v0.3은 formal evaluation에서 명시적으로 선택하며 development validation 기본값을 대체하지 않는다. 공용 validator로 scenario family를 비교하고 loader가 계산한 `config_hash`를 audit provenance에 기록한다. Family mismatch는 normalization 전에 거부한다. Historical v0.1 reproduction은 policy config, ID와 version을 CLI에 모두 명시한 경우에만 사용한다. Validation tool은 hash canonicalization을 재구현하지 않는다. 기존 `dataset_tier`의 scenario 소유 및 operator trace 일치 계약은 변경하지 않는다.
 
 ```text
 --approved-policy-config configs/r1_approved_lineage_policies_v0.1.yaml
@@ -80,11 +88,15 @@ Raw collection 전용 `tools/validate_r1_run.py`는 Evidence policy를 import하
 --approved-policy-version v0.1
 ```
 
-## 6. Migration과 후속 결정
+## 6. Formal freeze
+
+[Frozen v0.3 record](r1-approved-lineage-policy-freeze-v0.3.md)는 freeze 시각, 기준 commit, identity와 pre-holdout 불변 원칙을 기록한다. Holdout/final 결과를 확인한 뒤 같은 frozen identity/version의 semantic content를 수정하지 않는다. 변경이 필요하면 새 development cycle과 새 policy identity/version으로 별도 평가한다.
+
+## 7. Migration과 후속 결정
 
 - Legacy v0.1 policy와 기존 Pair-002·Pair-003 artifact provenance는 rewrite하지 않는다.
 - v0.2도 policy 하나당 단일 `approved_lineage`만 표현한다. 복수 정상 lineage가 필요하면 후속 schema/version에서 계약한다.
 - WMI family에는 별도 family-bound policy가 필요하지만 이번 작업에서 policy나 process-name special case를 등록하지 않는다.
-- #227의 multi-run development 근거는 formal freeze 후보 판단에 사용할 수 있다. 최종 평가용 version/hash 발급과 holdout 이후 변경 금지 기록은 별도 승인 후 새 `frozen` identity/version으로 수행한다.
+- #227의 multi-run development 근거로 final evaluation용 `frozen/v0.3` identity/hash와 holdout 이후 변경 금지 기록을 확정했다. 기존 development와 historical artifact는 rewrite하지 않는다.
 - #228 production runner는 family-bound policy와 scenario family metadata를 사용해야 한다. 이번 offline high-level API 구현만으로 production 연결 완료를 뜻하지 않는다.
 - `OFFLINE WHOLE-EPISODE ONLY`, Evidence timestamp, selector와 Evidence semantics, `available_at`/watermark 제한은 이 governance 계약과 별개이며 변경하지 않는다.

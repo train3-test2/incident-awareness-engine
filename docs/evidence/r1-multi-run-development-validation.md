@@ -1,6 +1,6 @@
 # R1 다중 Run development Evidence 검증
 
-> 상태: PASS / Issue #227 development regression 범위
+> 상태: PASS / Issue #227 completion evidence
 > 검증일: 2026-10-09
 > availability: `OFFLINE WHOLE-EPISODE ONLY`
 
@@ -204,7 +204,7 @@ Pair-002와 Pair-003에서 다음 결과가 반복됐다.
 - 모든 Run에서 selector/extraction diagnostics가 비어 있었다.
 - 입력 순서를 바꿔도 Pair-003 selector, Evidence, artifact와 provenance가 동일했다.
 
-이는 동일-family development 반복에서 selector/policy 안정성 근거를 강화한다. 다만 current Pair-owned tier 계약으로 수집한 Pair는 Pair-003 한 개뿐이고 Pair-002는 legacy baseline이다. 후속 v0.2 계약은 explicit family binding과 lifecycle 허용값을 제공하지만, 이 검증에 사용한 v0.1 policy와 historical artifact를 새 policy로 rewrite하지 않는다. Development frozen candidate 근거는 강화됐지만 production/final evaluation policy로 승격하거나 여러 family에 일반화하지 않으며, 추가 current-contract development Pair 검증과 formal freeze 승인이 필요하다.
+이는 동일-family development 반복에서 selector/policy 안정성 근거를 강화한다. 다만 current Pair-owned tier 계약으로 수집한 Pair는 Pair-003 한 개뿐이고 Pair-002는 legacy baseline이다. v0.2 계약은 explicit family binding과 lifecycle 허용값을 제공하지만, 이 검증에 사용한 v0.1 policy와 historical artifact를 새 policy로 rewrite하지 않는다. Repository 계약에는 Pair-003 외에 추가 current-contract development Pair를 formal freeze의 필수 수량으로 정한 규칙이 없다. 팀은 이 데이터 한계를 유지한 채 `remote_management` family의 최종 평가 입력을 [frozen v0.3 policy](r1-approved-lineage-policy-freeze-v0.3.md)로 holdout 열람 전에 고정했다. 이는 production 성능 승인이나 다른 family 일반화를 의미하지 않는다.
 
 ## 12. Role1·Role5 사용 범위
 
@@ -249,13 +249,13 @@ Pair-002와 Pair-003에서 다음 결과가 반복됐다.
 | Pair-002 baseline replay | 완료 |
 | pair-specific overfitting 검토 | 완료, current-contract Pair 수 제한 명시 |
 | Role1/Role5 사용 범위 | offline/static 및 dataset 경계 정리 완료 |
-| policy stability 평가 | 완료: frozen candidate 근거 강화 |
+| policy stability 평가 | 완료: frozen identity 발급 근거 확정. current-contract Pair 수 제한 유지 |
 | formal family-bound lifecycle 계약 | 완료: v0.2 family binding과 lifecycle validation 제공 |
-| 최종 평가용 ApprovedLineagePolicy version/hash formal freeze | 미완료: 별도 승인과 새 frozen identity/version 발급 필요 |
-| holdout 이후 policy 변경 금지 lifecycle 기록 | 미완료: frozen lifecycle 확정 후 적용 |
+| 최종 평가용 ApprovedLineagePolicy version/hash formal freeze | 완료: `r1-remote-management-approved-lineage/v0.3`, hash `b3d1d28a909b494f660d3e8164a994a3d818a98dadcd10336560b4bec38680d2` |
+| holdout 이후 policy 변경 금지 lifecycle 기록 | 완료: [pre-holdout freeze record](r1-approved-lineage-policy-freeze-v0.3.md)에 동일 frozen identity/version의 in-place 변경 금지 기록 |
 | production runner/CLI 연결 | 후속 #228 |
 | online availability/TTSD | 후속 #231/#232 |
 
 이번 PR에서는 Pair-002 legacy baseline과 Pair-003 current-contract development Pair에 동일 selector와 policy를 적용한 multi-run development regression 범위를 완료했다. Actual telemetry에서 확인한 범위는 정상 selector, Evidence, artifact, provenance와 결정성이며, malformed fail-closed 조건은 기존 synthetic regression을 재확인한 범위다. Pair-003 raw를 가능한 fail-closed 형태로 변조해 전수 검증했다는 의미는 아니다.
 
-#227 Issue 전체는 아직 완료되지 않았다. v0.2 family/lifecycle 계약은 formal freeze를 안전하게 발급할 기반만 제공하며, 최종 평가용 ApprovedLineagePolicy version/hash 발급과 holdout 이후 policy를 변경하지 않도록 하는 frozen lifecycle 기록은 별도 승인으로 남는다. 따라서 #227은 Open 상태로 유지하고, production, holdout, final evaluation, online availability 또는 formal policy freeze 완료를 이번 PR에서 주장하지 않는다.
+#234의 family/lifecycle 계약을 기반으로 최종 평가용 frozen policy identity/version/hash와 holdout 이후 동일 frozen identity를 변경하지 않는 lifecycle 기록을 이번 작업에서 확정했다. 따라서 #227의 남은 두 조건까지 완료되며 이번 PR이 merge된 뒤 #227을 close할 수 있다. 이 결론은 holdout 또는 final evaluation을 실행했다는 뜻이 아니며, production runner #228, `available_at`/watermark #231과 Temporal Replay/TTSD #232는 별도 후속 범위다.

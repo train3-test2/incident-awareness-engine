@@ -2,7 +2,7 @@
 
 > 상태: development/offline high-level orchestration
 > availability: `OFFLINE WHOLE-EPISODE ONLY`
-> 비범위: production runner/CLI, causal online input, Fusion/Role5 평가, formal frozen policy 발급
+> 비범위: production runner/CLI, causal online input, Fusion/Role5 평가, formal evaluation 실행
 
 ## 1. 목적
 
@@ -77,5 +77,5 @@ Selector 실패 후 생성되는 빈 artifact는 `evidence_count = 0`, `selector
 
 - 이 경로는 caller가 제공한 whole-episode batch를 한 번에 처리하는 development/offline API다. Production runner/CLI 연결은 #228 범위다.
 - Evidence timestamp는 semantic Event time이며 causal `available_at`이 아니다. Availability/watermark는 #231, Temporal Replay/TTSD는 #232 범위다.
-- Approved policy v0.2는 family binding과 lifecycle 계약을 제공한다. 등록된 policy는 `development`이며 formal frozen policy는 아직 발급하지 않았다. Historical v0.1 unbound policy는 기존 재현 경로에서만 유지한다.
-- Production/frozen policy 승인, 여러 정상 lineage 표현, analysis window, Fusion scoring과 Role5 evaluation은 이 경로가 결정하지 않는다. Production runner 연결은 #228 범위다.
+- Approved policy v0.2는 family binding과 lifecycle 계약을 제공한다. Registry에는 development `v0.2`와 pre-holdout frozen `v0.3`을 별도 identity로 등록했다. Historical v0.1 unbound policy는 기존 재현 경로에서만 유지한다.
+- Development 실행은 development policy를 사용하고 formal evaluation은 frozen policy를 명시적으로 선택한다. Production policy 승인, 여러 정상 lineage 표현, analysis window, Fusion scoring과 Role5 evaluation은 이 경로가 결정하지 않는다. Production runner 연결은 #228 범위다.
