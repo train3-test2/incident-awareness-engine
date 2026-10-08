@@ -98,7 +98,7 @@ function createRuntimeSummaryCard(runtime, telemetryAvailable) {
 
     const heading = document.createElement("h3");
     heading.classList.add("runtime-summary-card__title");
-    if (runtime.run_id.trim()) {
+    if (runtime.status === "completed" && runtime.run_id.trim()) {
         const link = document.createElement("a");
         link.href = buildRunDetailViewPath(runtime.run_id);
         link.textContent = runtime.run_id;

@@ -29,6 +29,14 @@ const RUN_LIST_MESSAGES = new Map([
     ["error", "Run 목록을 불러오지 못했습니다."],
 ]);
 const PIPELINE_RUNTIME_STATUSES = new Set(["running", "completed", "failed"]);
+const PIPELINE_RUNTIME_STAGES = new Set([
+    "artifact_validation",
+    "normalization",
+    "fusion",
+    "fast_handoff",
+    "hybrid",
+    "persistence",
+]);
 
 export function displayValue(value) {
     if (value === null || value === undefined) {
@@ -234,12 +242,19 @@ export function resolveRuntimeSummaryQueryState(previousState, result) {
                     || Array.isArray(runtime)
                     || typeof runtime.run_id !== "string"
                     || !PIPELINE_RUNTIME_STATUSES.has(runtime.status)
+                    || !Object.hasOwn(runtime, "current_stage")
+                    || (
+                        runtime.current_stage !== null
+                        && !PIPELINE_RUNTIME_STAGES.has(runtime.current_stage)
+                    )
+                    || typeof runtime.updated_at !== "string"
                     || typeof runtime.is_stale !== "boolean"
                 ),
             )
         ) {
             throw new TypeError(
-                "Runtime Summary items must include run_id, status, and is_stale",
+                "Runtime Summary items must include valid run_id, status, current_stage, "
+                + "updated_at, and is_stale fields",
             );
         }
 

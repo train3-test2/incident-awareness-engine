@@ -323,6 +323,44 @@ def test_dashboard_runtime_summary_preserves_order_and_operations_state_meaning(
     assert "clearTimeout(timeoutId);" in script
 
 
+def test_dashboard_runtime_summary_requires_api_presentation_fields() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    contract = client.get("/dashboard-assets/dashboard-contract.mjs").text
+
+    # Then
+    assert (
+        'const PIPELINE_RUNTIME_STATUSES = new Set(["running", "completed", "failed"]);' in contract
+    )
+    assert "const PIPELINE_RUNTIME_STAGES = new Set([" in contract
+    assert '!Object.hasOwn(runtime, "current_stage")' in contract
+    assert "runtime.current_stage !== null" in contract
+    assert "!PIPELINE_RUNTIME_STAGES.has(runtime.current_stage)" in contract
+    assert 'typeof runtime.updated_at !== "string"' in contract
+    assert 'typeof runtime.is_stale !== "boolean"' in contract
+
+
+def test_dashboard_runtime_summary_links_only_completed_runs_to_run_detail() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/dashboard.js").text
+    card_source = script.split("function createRuntimeSummaryCard", maxsplit=1)[1].split(
+        "function renderOverviewState",
+        maxsplit=1,
+    )[0]
+
+    # Then
+    assert 'if (runtime.status === "completed" && runtime.run_id.trim()) {' in card_source
+    assert "link.href = buildRunDetailViewPath(runtime.run_id);" in card_source
+    assert "heading.textContent = runtime.run_id;" in card_source
+    assert card_source.count("buildRunDetailViewPath") == 1
+    assert "if (runtime.run_id.trim()) {" not in card_source
+
+
 def test_dashboard_contract_has_no_dom_network_or_timer_access() -> None:
     # Given
     client = TestClient(create_app())
