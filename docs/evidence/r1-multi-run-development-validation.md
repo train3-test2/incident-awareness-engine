@@ -179,6 +179,10 @@ Evidence.event_ids
 - `r1_extraction_summary.json` bytes/SHA-256
 - provenance resolver 결과
 
+### Fail-closed 검증 경계
+
+기존 synthetic selector regression을 이번 branch에서 다시 실행해 duplicate ProcessGuid, truncated lineage, ambiguous terminal candidate와 temporal inversion이 selection 없이 구조화된 diagnostic으로 fail-closed되는 계약을 재확인했다. Pair-003 실제 raw telemetry를 duplicate, truncated, ambiguous 또는 temporal inversion 형태로 변조하는 신규 actual-run 검증은 수행하지 않았다.
+
 ## 10. Pair-002 baseline replay
 
 Pair-002는 current-contract development 수량에 포함하지 않고 legacy development/tuning baseline으로만 사용했다. 로컬에 보존된 frozen raw JSONL을 동일 Evidence execution commit과 동일 selector/policy로 재실행했다.
@@ -206,9 +210,10 @@ Pair-002와 Pair-003에서 다음 결과가 반복됐다.
 
 ### Role1
 
-- Pair-003의 completed artifact를 development Fusion score/weight/window/threshold tuning 입력 후보로 사용할 수 있다.
+- Pair-003의 completed artifact는 offline whole-episode connection check, static Evidence feature 분석 후보와 artifact/interface 연결 확인에만 사용할 수 있다.
 - selector와 approved policy identity, diagnostics, Evidence type/count와 artifact hash를 함께 전달해야 한다.
-- Pair-002는 legacy tuning baseline으로만 사용하고 current-contract development 수량에는 포함하지 않는다.
+- Fusion score, weight, window, threshold tuning, 모델 선택과 causal temporal evaluation은 아직 승인된 사용 범위가 아니다. Role1의 별도 승인과 #231 `available_at`/watermark 계약 이후에 판단한다.
+- Pair-002는 legacy 비교 baseline으로만 사용하고 current-contract development 수량에는 포함하지 않는다.
 
 ### Role5
 
@@ -240,12 +245,13 @@ Pair-002와 Pair-003에서 다음 결과가 반복됐다.
 | artifact writer/loader | 완료 |
 | provenance resolver | 완료 |
 | original/reverse/shuffle 결정성 | 완료 |
+| duplicate ProcessGuid/truncated/ambiguous/temporal inversion fail-closed | 기존 synthetic selector regression 재확인 완료. Pair-003 실제 telemetry 변조 검증은 미수행 |
 | Pair-002 baseline replay | 완료 |
 | pair-specific overfitting 검토 | 완료, current-contract Pair 수 제한 명시 |
-| Role1/Role5 development 범위 | 완료 |
+| Role1/Role5 사용 범위 | offline/static 및 dataset 경계 정리 완료 |
 | policy stability 평가 | 완료: frozen candidate 근거 강화 |
 | formal family-bound lifecycle 승격 | 후속 #234 |
 | production runner/CLI 연결 | 후속 #228 |
 | online availability/TTSD | 후속 #231/#232 |
 
-Issue #227의 다중 Run development regression 목표는 완료된 것으로 판단한다. 종료는 production, holdout, final evaluation, online availability 또는 formal policy freeze 완료를 의미하지 않으며 해당 항목은 기존 후속 Issue로 유지한다.
+Pair-002 legacy baseline과 Pair-003 current-contract development Pair에 동일 selector와 policy를 적용한 반복 regression은 완료된 것으로 판단한다. Actual telemetry multi-run에서 확인한 범위는 정상 selector, Evidence, artifact, provenance와 결정성이며, malformed fail-closed 조건은 기존 synthetic regression을 재확인한 범위다. Pair-003 raw를 가능한 fail-closed 형태로 변조해 전수 검증했다는 의미는 아니다. 이 경계로 #227은 종료할 수 있으며, production, holdout, final evaluation, online availability 또는 formal policy freeze는 기존 후속 Issue로 유지한다.
