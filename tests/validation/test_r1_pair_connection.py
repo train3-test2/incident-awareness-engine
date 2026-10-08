@@ -6,6 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from incident_awareness.evidence.r1_approved_lineage_policy import (
+    DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+)
+
 SCRIPT = Path(__file__).parents[2] / "tools/validation/check_r1_pair_connection.py"
 spec = importlib.util.spec_from_file_location("pair_check", SCRIPT)
 audit = importlib.util.module_from_spec(spec)
@@ -143,6 +147,51 @@ def test_records_scenario_and_approved_policy_validation_provenance(sample):
             "config_hash": policy.config_hash,
         },
     }
+
+
+def test_family_bound_policy_validates_scenario_family_and_records_governance(sample):
+    # Given
+    pair, rid, output, _policy, _rows, _write, _source = sample
+    policy = audit.load_r1_approved_lineage_policy(
+        "r1-remote-management-approved-lineage",
+        "v0.2",
+        config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+    )
+
+    # When
+    result = audit.check_run(pair, rid, "A", output, policy)
+
+    # Then
+    assert result["validation_provenance"]["approved_policy"] == {
+        "policy_id": "r1-remote-management-approved-lineage",
+        "version": "v0.2",
+        "config_hash": policy.config_hash,
+        "family_id": "remote_management",
+        "lifecycle": "development",
+    }
+
+
+def test_pair_connection_rejects_family_mismatch_before_normalization(sample):
+    # Given
+    pair, rid, output, _policy, _rows, _write, source = sample
+    policy = audit.load_r1_approved_lineage_policy(
+        "r1-remote-management-approved-lineage",
+        "v0.2",
+        config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+    )
+    scenario_path = pair / rid / "data/operator_trace" / rid / "scenario.json"
+    scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
+    scenario["family_id"] = "other_family"
+    scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
+    original_source = source.read_bytes()
+
+    # When
+    with pytest.raises(ValueError, match="does not match approved policy family_id"):
+        audit.check_run(pair, rid, "A", output, policy)
+
+    # Then
+    assert source.read_bytes() == original_source
+    assert tuple(output.iterdir()) == ()
 
 
 def test_duplicate_terminal_rejected_instead_of_chosen(sample):

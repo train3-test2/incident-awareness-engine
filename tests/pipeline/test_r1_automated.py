@@ -6,9 +6,11 @@ import pytest
 
 from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.evidence.r1_approved_lineage_policy import (
+    DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
     load_r1_approved_lineage_policy,
 )
 from incident_awareness.evidence.r1_selector import R1SelectorPolicy
+from incident_awareness.pipeline import r1_automated
 from incident_awareness.pipeline.r1_artifacts import (
     load_r1_evidence_artifacts,
     run_and_write_r1_evidence_artifacts,
@@ -30,6 +32,8 @@ _MIDDLE_GUID = "{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}"
 _TERMINAL_GUID = "{CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC}"
 _POLICY_ID = "r1-v02-development-connection"
 _POLICY_VERSION = "v0.1"
+_FAMILY_POLICY_ID = "r1-remote-management-approved-lineage"
+_FAMILY_POLICY_VERSION = "v0.2"
 
 
 def _event(
@@ -403,6 +407,82 @@ def test_shuffled_input_produces_identical_evidence_and_artifacts(tmp_path: Path
     assert first.artifact_run.summary_path.read_bytes() == (
         second.artifact_run.summary_path.read_bytes()
     )
+
+
+def test_family_bound_policy_runs_for_matching_scenario_family() -> None:
+    # Given
+    events = _events()
+
+    # When
+    result = run_r1_evidence_pipeline_from_policy(
+        events,
+        selector_policy=_selector_policy(),
+        approved_policy_id=_FAMILY_POLICY_ID,
+        approved_policy_version=_FAMILY_POLICY_VERSION,
+        approved_policy_config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+        scenario_family_id="remote_management",
+    )
+
+    # Then
+    assert result.lineage_input is not None
+    assert result.lineage_input.approved_policy.family_id == "remote_management"
+    assert result.lineage_input.approved_policy.lifecycle == "development"
+
+
+def test_family_mismatch_fails_before_selector_and_artifact_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    output_directory = _output_directory(tmp_path, "family-mismatch")
+    selector_calls: list[object] = []
+    monkeypatch.setattr(
+        r1_automated,
+        "run_r1_evidence_pipeline_with_selector",
+        lambda *args, **kwargs: selector_calls.append((args, kwargs)),
+    )
+
+    # When
+    with pytest.raises(ValueError, match="does not match approved policy family_id"):
+        run_and_write_r1_evidence_artifacts_from_policy(
+            _events(),
+            run_id=_RUN_ID,
+            output_directory=output_directory,
+            selector_policy=_selector_policy(),
+            approved_policy_id=_FAMILY_POLICY_ID,
+            approved_policy_version=_FAMILY_POLICY_VERSION,
+            approved_policy_config_path=(DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH),
+            scenario_family_id="other_family",
+        )
+
+    # Then
+    assert selector_calls == []
+    assert tuple(output_directory.iterdir()) == ()
+
+
+def test_family_bound_policy_requires_scenario_family_before_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    selector_calls: list[object] = []
+    monkeypatch.setattr(
+        r1_automated,
+        "run_r1_evidence_pipeline_with_selector",
+        lambda *args, **kwargs: selector_calls.append((args, kwargs)),
+    )
+
+    # When
+    with pytest.raises(ValueError, match="scenario_family_id is required"):
+        run_r1_evidence_pipeline_from_policy(
+            _events(),
+            selector_policy=_selector_policy(),
+            approved_policy_id=_FAMILY_POLICY_ID,
+            approved_policy_version=_FAMILY_POLICY_VERSION,
+            approved_policy_config_path=(DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH),
+        )
+
+    # Then
+    assert selector_calls == []
 
 
 def _second_terminal_events() -> tuple[NormalizedEvent, NormalizedEvent]:

@@ -18,6 +18,7 @@ from incident_awareness.collection.r1_pair_identity import read_dataset_tier, re
 from incident_awareness.evidence.r1_approved_lineage_policy import (
     DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH,
     load_r1_approved_lineage_policy,
+    validate_r1_policy_family_binding,
 )
 from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
 from incident_awareness.normalization.sysmon import (
@@ -52,11 +53,15 @@ def sha(path):
 
 
 def _approved_policy_provenance(policy: ApprovedLineagePolicy):
-    return {
+    provenance = {
         "policy_id": policy.policy_id,
         "version": policy.version,
         "config_hash": policy.config_hash,
     }
+    if policy.family_id is not None:
+        provenance["family_id"] = policy.family_id
+        provenance["lifecycle"] = policy.lifecycle
+    return provenance
 
 
 def check_run(pair, run_id, prefix, output, policy: ApprovedLineagePolicy):
@@ -64,6 +69,8 @@ def check_run(pair, run_id, prefix, output, policy: ApprovedLineagePolicy):
     scenario_path = base / "operator_trace" / run_id / "scenario.json"
     scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
     pair_identity = read_pair_identity(scenario)
+    if policy.family_id is not None:
+        validate_r1_policy_family_binding(pair_identity.family_id, policy)
     dataset_tier = read_dataset_tier(scenario)
     target_host = scenario["run_metadata"]["target_host"]
     require(
