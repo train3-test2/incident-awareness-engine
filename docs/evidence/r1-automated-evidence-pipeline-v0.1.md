@@ -2,7 +2,7 @@
 
 > 상태: development/offline high-level orchestration
 > availability: `OFFLINE WHOLE-EPISODE ONLY`
-> 비범위: production runner/CLI, causal online input, Fusion/Role5 평가, family binding
+> 비범위: production runner/CLI, causal online input, Fusion/Role5 평가, formal frozen policy 발급
 
 ## 1. 목적
 
@@ -10,9 +10,11 @@
 
 ```text
 NormalizedEvent batch
+→ scenario family metadata
+→ repository-managed ApprovedLineagePolicy loader
+→ family binding validation
 → deterministic selector
 → anchor / terminal
-→ repository-managed ApprovedLineagePolicy loader
 → R1LineageInput
 → existing R1 Evidence pipeline
 → existing immutable artifact writer
@@ -29,8 +31,9 @@ NormalizedEvent batch
 - `R1SelectorPolicy`
 - approved policy `policy_id`와 `version`
 - 선택적인 repository config path override
+- family-bound policy를 사용할 때 rendered scenario의 `scenario_family_id`
 
-입력을 materialize하고 `load_r1_approved_lineage_policy()`로 policy를 로드한 뒤 `run_r1_evidence_pipeline_with_selector()`를 호출한다. 반환형은 기존 `R1SelectedEvidencePipelineResult`이므로 Evidence, selector result, 생성된 `R1LineageInput`, extraction diagnostics를 그대로 확인할 수 있다.
+입력을 materialize하고 `load_r1_approved_lineage_policy()`로 policy를 로드한다. Family-bound policy는 공용 validator로 scenario family 일치를 확인한 뒤에만 `run_r1_evidence_pipeline_with_selector()`를 호출한다. 반환형은 기존 `R1SelectedEvidencePipelineResult`이므로 Evidence, selector result, 생성된 `R1LineageInput`, extraction diagnostics를 그대로 확인할 수 있다.
 
 ### Artifact 실행
 
@@ -40,6 +43,7 @@ NormalizedEvent batch
 
 - Selector는 이름, PID, Ground Truth, `run_type`, Attack/Normal label 또는 Pair별 RecordId 없이 구조적으로 anchor와 terminal을 선택한다.
 - Approved policy loader는 repository config validation, policy identity lookup, canonical hash 계산의 유일한 source of truth다. Orchestration은 YAML을 직접 parse하거나 hash를 재계산하지 않는다.
+- Family-bound policy의 `scenario_family_id` mismatch와 누락은 selector 실행 전에 configuration 오류로 거부한다. Family mismatch를 selector diagnostic으로 변환하지 않는다.
 - 기존 R1 Evidence pipeline은 selector가 만든 `R1LineageInput`으로 lineage deviation과 terminal GUID 기반 network follow-on을 생성한다.
 - Artifact writer는 기존 immutable JSONL/summary 계약, canonical ordering, SHA-256과 lineage/policy provenance를 유지한다.
 
@@ -47,7 +51,7 @@ NormalizedEvent batch
 
 ## 4. Fail-closed와 provenance
 
-- 알 수 없는 policy, malformed config, 중복 identity 또는 잘못된 lineage는 loader에서 실패하며 selector, Evidence, artifact writer를 실행하지 않는다.
+- 알 수 없는 policy, malformed config, 중복 identity, 잘못된 lineage 또는 family mismatch는 selector, Evidence, artifact writer를 실행하기 전에 실패한다.
 - Selector가 no candidate, ambiguity, temporal inversion, truncated lineage 또는 duplicate GUID로 실패하면 Evidence를 생성하지 않는다. 구조화된 selector diagnostics는 `R1AutomatedEvidenceArtifactRun.pipeline_result.selector_result`에 유지한다.
 - 자동 실행 summary의 `selector`에는 selector policy ID/version/config hash, `selected` 또는 `failed` status와 selector diagnostics를 기록한다. Selector 성공 시 선택된 anchor/terminal과 approved policy provenance는 기존 `lineage_inputs`에 기록해 중복하지 않는다.
 - 기존 manual artifact는 `selector` 필드를 생략하며 새 loader는 selector 필드가 없는 기존 artifact와 새 자동 실행 artifact를 모두 읽는다.
@@ -73,5 +77,5 @@ Selector 실패 후 생성되는 빈 artifact는 `evidence_count = 0`, `selector
 
 - 이 경로는 caller가 제공한 whole-episode batch를 한 번에 처리하는 development/offline API다. Production runner/CLI 연결은 #228 범위다.
 - Evidence timestamp는 semantic Event time이며 causal `available_at`이 아니다. Availability/watermark는 #231, Temporal Replay/TTSD는 #232 범위다.
-- Approved policy v0.1은 development validation lifecycle이며 `family_id` binding이 없다. Family compatibility와 mismatch fail-closed는 #234 범위다.
-- Production/frozen policy 승인, 여러 정상 lineage 표현, analysis window, Fusion scoring과 Role5 evaluation은 이 경로가 결정하지 않는다.
+- Approved policy v0.2는 family binding과 lifecycle 계약을 제공한다. 등록된 policy는 `development`이며 formal frozen policy는 아직 발급하지 않았다. Historical v0.1 unbound policy는 기존 재현 경로에서만 유지한다.
+- Production/frozen policy 승인, 여러 정상 lineage 표현, analysis window, Fusion scoring과 Role5 evaluation은 이 경로가 결정하지 않는다. Production runner 연결은 #228 범위다.
