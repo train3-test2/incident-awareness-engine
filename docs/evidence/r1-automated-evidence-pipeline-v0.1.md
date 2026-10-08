@@ -49,11 +49,11 @@ NormalizedEvent batch
 
 - 알 수 없는 policy, malformed config, 중복 identity 또는 잘못된 lineage는 loader에서 실패하며 selector, Evidence, artifact writer를 실행하지 않는다.
 - Selector가 no candidate, ambiguity, temporal inversion, truncated lineage 또는 duplicate GUID로 실패하면 Evidence를 생성하지 않는다. 구조화된 selector diagnostics는 `R1AutomatedEvidenceArtifactRun.pipeline_result.selector_result`에 유지한다.
-- Selector 성공 시 summary의 기존 `lineage_inputs`에 선택된 anchor/terminal과 approved policy ID/version/config hash가 기록된다.
-- 현재 artifact summary schema는 selector policy ID/version/hash와 selector diagnostics를 영속화하지 않는다. 이 값은 runtime result에서만 확인하며 schema를 이번 경로에서 확장하지 않는다.
+- 자동 실행 summary의 `selector`에는 selector policy ID/version/config hash, `selected` 또는 `failed` status와 selector diagnostics를 기록한다. Selector 성공 시 선택된 anchor/terminal과 approved policy provenance는 기존 `lineage_inputs`에 기록해 중복하지 않는다.
+- 기존 manual artifact는 `selector` 필드를 생략하며 새 loader는 selector 필드가 없는 기존 artifact와 새 자동 실행 artifact를 모두 읽는다.
 - Artifact publication과 재시도는 기존 writer의 immutable output 및 failed-summary 계약을 그대로 따른다.
 
-Selector 실패 후 생성되는 빈 artifact의 `evidence_count = 0`과 `diagnostics = []`은 selector 조건을 정상 통과한 no-match를 의미하지 않는다. 실제 실패 사유는 함께 반환된 runtime selector result를 확인해야 한다.
+Selector 실패 후 생성되는 빈 artifact는 `evidence_count = 0`, `selector.status = failed`와 non-empty `selector.diagnostics`를 함께 기록한다. 따라서 artifact consumer는 selector 정보가 없는 기존 manual 0건 또는 `selector.status = selected`인 자동 실행 결과와 fail-closed 0건을 구분할 수 있다. 기존 summary의 `diagnostics`는 lineage extraction 진단 의미를 유지한다.
 
 ## 5. 결정성과 manual API 호환
 
@@ -75,4 +75,3 @@ Selector 실패 후 생성되는 빈 artifact의 `evidence_count = 0`과 `diagno
 - Evidence timestamp는 semantic Event time이며 causal `available_at`이 아니다. Availability/watermark는 #231, Temporal Replay/TTSD는 #232 범위다.
 - Approved policy v0.1은 development validation lifecycle이며 `family_id` binding이 없다. Family compatibility와 mismatch fail-closed는 #234 범위다.
 - Production/frozen policy 승인, 여러 정상 lineage 표현, analysis window, Fusion scoring과 Role5 evaluation은 이 경로가 결정하지 않는다.
-- Selector provenance의 artifact 영속화는 후속 artifact contract 결정이 필요하다.
