@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -8,12 +9,18 @@ from incident_awareness.evidence.r1_approved_lineage_policy import (
     load_r1_approved_lineage_policy,
 )
 from incident_awareness.evidence.r1_selector import R1SelectorPolicy
-from incident_awareness.pipeline.r1_artifacts import load_r1_evidence_artifacts
+from incident_awareness.pipeline.r1_artifacts import (
+    load_r1_evidence_artifacts,
+    run_and_write_r1_evidence_artifacts,
+)
 from incident_awareness.pipeline.r1_automated import (
     run_and_write_r1_evidence_artifacts_from_policy,
     run_r1_evidence_pipeline_from_policy,
 )
-from incident_awareness.pipeline.r1_evidence import run_r1_evidence_pipeline_with_selector
+from incident_awareness.pipeline.r1_evidence import (
+    R1LineageInput,
+    run_r1_evidence_pipeline_with_selector,
+)
 
 _RUN_ID = "RUN-20261005-001"
 _HOST_ID = "TARGET-A"
@@ -194,6 +201,7 @@ def test_selector_failure_preserves_diagnostics_and_writes_no_evidence(tmp_path:
         approved_policy_id=_POLICY_ID,
         approved_policy_version=_POLICY_VERSION,
     )
+    loaded = load_r1_evidence_artifacts(output_directory)
 
     # Then
     assert result.pipeline_result.selector_result.diagnostics == ("ambiguous_terminal_candidate",)
@@ -201,6 +209,10 @@ def test_selector_failure_preserves_diagnostics_and_writes_no_evidence(tmp_path:
     assert result.artifact_run.evidences == ()
     assert result.artifact_run.summary.evidence_count == 0
     assert result.artifact_run.summary.lineage_inputs == ()
+    assert result.artifact_run.summary.selector is not None
+    assert result.artifact_run.summary.selector.status == "failed"
+    assert result.artifact_run.summary.selector.diagnostics == ("ambiguous_terminal_candidate",)
+    assert loaded.summary.selector == result.artifact_run.summary.selector
 
 
 def test_writes_existing_artifact_contract_with_policy_provenance(tmp_path: Path) -> None:
@@ -231,6 +243,12 @@ def test_writes_existing_artifact_contract_with_policy_provenance(tmp_path: Path
     assert provenance.policy_config_hash == (
         result.pipeline_result.lineage_input.approved_policy.config_hash
     )
+    assert result.artifact_run.summary.selector is not None
+    assert result.artifact_run.summary.selector.policy_id == ("r1-structural-lineage-selector")
+    assert result.artifact_run.summary.selector.version == "v0.1"
+    assert result.artifact_run.summary.selector.config_hash == _selector_policy().config_hash
+    assert result.artifact_run.summary.selector.status == "selected"
+    assert result.artifact_run.summary.selector.diagnostics == ()
     assert loaded.evidences == result.artifact_run.evidences
     assert loaded.summary == result.artifact_run.summary
 
@@ -255,6 +273,36 @@ def test_extraction_diagnostic_is_preserved_in_runtime_and_summary(tmp_path: Pat
     assert [evidence.evidence_type for evidence in result.artifact_run.evidences] == [
         "remote_process_network_follow_on"
     ]
+    assert result.artifact_run.summary.selector is not None
+    assert result.artifact_run.summary.selector.status == "selected"
+
+
+def test_manual_zero_evidence_is_distinct_from_selector_failure(tmp_path: Path) -> None:
+    # Given
+    anchor, middle, terminal, _ = _events(middle_process_name="cmd.exe")
+    approved_policy = load_r1_approved_lineage_policy(_POLICY_ID, _POLICY_VERSION)
+    lineage_input = R1LineageInput(
+        anchor_event_id=anchor.event_id,
+        terminal_event_id=terminal.event_id,
+        approved_policy=approved_policy,
+    )
+    output_directory = _output_directory(tmp_path, "manual-zero")
+
+    # When
+    result = run_and_write_r1_evidence_artifacts(
+        (anchor, middle, terminal),
+        run_id=_RUN_ID,
+        output_directory=output_directory,
+        lineage_inputs=(lineage_input,),
+    )
+    loaded = load_r1_evidence_artifacts(output_directory)
+    summary_payload = json.loads(result.summary_path.read_text(encoding="utf-8"))
+
+    # Then
+    assert result.evidences == ()
+    assert result.summary.selector is None
+    assert loaded.summary.selector is None
+    assert "selector" not in summary_payload
 
 
 def test_unknown_policy_fails_before_artifact_creation(tmp_path: Path) -> None:
