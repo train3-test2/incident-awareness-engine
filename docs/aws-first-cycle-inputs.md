@@ -180,6 +180,20 @@ aws s3api put-bucket-lifecycle-configuration `
   --region ap-northeast-2
 ```
 
+적용 후에는 아래 명령으로 대상 prefix와 만료 기간을 확인한다. 출력의 `prefix`가
+`incoming/first-cycle/sysmon/`이고 `expireDays`가 `21`이어야 한다. 다른 prefix가
+표시되거나 규칙이 여러 개인 경우, 기존 규칙을 보존한 상태로 구성 파일을 병합한 뒤 다시
+적용한다.
+
+```powershell
+aws s3api get-bucket-lifecycle-configuration `
+  --bucket <FIRST_CYCLE_S3_BUCKET> `
+  --profile incident-dev `
+  --region ap-northeast-2 `
+  --query "Rules[].{id:ID,status:Status,prefix:Filter.Prefix,expireDays:Expiration.Days}" `
+  --output table
+```
+
 현재 이 절은 자동 처리 Worker가 구현될 때 적용할 입력 계약이다. 현재 제공되는 수동 ECS
 실행은 계속 `first-cycle/<source-run-id>/telemetry/sysmon-0001.jsonl` 경로와
 `INCIDENT_AWARENESS_STANDALONE=true` override를 사용한다.
