@@ -1,6 +1,6 @@
 # R1 다중 Run development Evidence 검증
 
-> 상태: PASS / Issue #227 development regression
+> 상태: PASS / Issue #227 development regression 범위
 > 검증일: 2026-10-09
 > availability: `OFFLINE WHOLE-EPISODE ONLY`
 
@@ -251,7 +251,11 @@ Pair-002와 Pair-003에서 다음 결과가 반복됐다.
 | Role1/Role5 사용 범위 | offline/static 및 dataset 경계 정리 완료 |
 | policy stability 평가 | 완료: frozen candidate 근거 강화 |
 | formal family-bound lifecycle 승격 | 후속 #234 |
+| 최종 평가용 ApprovedLineagePolicy version/hash formal freeze | 미완료: #234 family binding/lifecycle 연계 후 수행 |
+| holdout 이후 policy 변경 금지 lifecycle 기록 | 미완료: frozen lifecycle 확정 후 적용 |
 | production runner/CLI 연결 | 후속 #228 |
 | online availability/TTSD | 후속 #231/#232 |
 
-Pair-002 legacy baseline과 Pair-003 current-contract development Pair에 동일 selector와 policy를 적용한 반복 regression은 완료된 것으로 판단한다. Actual telemetry multi-run에서 확인한 범위는 정상 selector, Evidence, artifact, provenance와 결정성이며, malformed fail-closed 조건은 기존 synthetic regression을 재확인한 범위다. Pair-003 raw를 가능한 fail-closed 형태로 변조해 전수 검증했다는 의미는 아니다. 이 경계로 #227은 종료할 수 있으며, production, holdout, final evaluation, online availability 또는 formal policy freeze는 기존 후속 Issue로 유지한다.
+이번 PR에서는 Pair-002 legacy baseline과 Pair-003 current-contract development Pair에 동일 selector와 policy를 적용한 multi-run development regression 범위를 완료했다. Actual telemetry에서 확인한 범위는 정상 selector, Evidence, artifact, provenance와 결정성이며, malformed fail-closed 조건은 기존 synthetic regression을 재확인한 범위다. Pair-003 raw를 가능한 fail-closed 형태로 변조해 전수 검증했다는 의미는 아니다.
+
+#227 Issue 전체는 아직 완료되지 않았다. 최종 평가용 ApprovedLineagePolicy version/hash formal freeze와 holdout 이후 policy를 변경하지 않도록 하는 frozen lifecycle 기록이 남아 있으며, 해당 항목은 #234 family binding/lifecycle과 연계해 완료해야 한다. 따라서 #227은 Open 상태로 유지하고, production, holdout, final evaluation, online availability 또는 formal policy freeze 완료를 이번 PR에서 주장하지 않는다.
