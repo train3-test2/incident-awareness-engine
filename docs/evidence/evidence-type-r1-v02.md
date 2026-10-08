@@ -112,7 +112,7 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 | 단독 공격 판정용인지 | 아니오. 네트워크 연결 존재만으로 Normal과 Attack을 구분하지 않음 |
 | Fusion에서의 역할 | Normal/Attack 모두에서 발생하므로 단독 공격 신호가 아님. 현재 `feature_channel_group = fusion_feature`로 생성되지만, 실제 R1 scoring profile 포함 여부는 Role1이 결정 |
 
-두 유형에 필요한 NormalizedEvent Full 경로의 Event ↔ Event 의미적·인과적 correlation과 Semantic Evidence 생성은 Role2 책임이다. `src/incident_awareness/pipeline/r1_evidence.py`는 NormalizedEvent batch와 명시적인 lineage input을 받아 R1 Evidence 함수를 호출한다. 현재 S0 production pipeline은 단일 `NormalizedEvent`를 받는 `extract_evidence()`만 사용하며, R1 batch API를 production runner/CLI에서 호출하는 위치는 아직 TBD다. 생성된 Evidence 사이의 시간차, 순서, 최근성, Window 내 공존은 Role1 Fusion이 처리한다.
+두 유형에 필요한 NormalizedEvent Full 경로의 Event ↔ Event 의미적·인과적 correlation과 Semantic Evidence 생성은 Role2 책임이다. `src/incident_awareness/pipeline/r1_evidence.py`는 NormalizedEvent batch와 명시적인 lineage input을 받아 R1 Evidence 함수를 호출한다. [R1 자동 Evidence 실행 경로 v0.1](r1-automated-evidence-pipeline-v0.1.md)은 development/offline 범위에서 selector와 repository-managed approved policy loader를 기존 Evidence·artifact 경로에 연결한다. 현재 S0 production pipeline은 단일 `NormalizedEvent`를 받는 `extract_evidence()`만 사용하며, R1 batch API를 production runner/CLI에서 호출하는 위치는 아직 TBD다. 생성된 Evidence 사이의 시간차, 순서, 최근성, Window 내 공존은 Role1 Fusion이 처리한다.
 
 현재 `anchor_event_id`와 `terminal_event_id`를 직접 지정하는 방식은 Pilot과 수동 실행을 위한 명시적 입력 방식이다. `NormalizedEvent.event_id`는 Run마다 달라질 수 있으므로 반복 평가용 frozen config에 특정 Event ID를 그대로 고정하지 않는다. 반복 평가에서는 Ground Truth나 `run_type`을 참조하지 않고 모든 Run에 동일하게 재현 가능한 anchor/terminal selector 규칙을 평가 전에 동결해야 한다. 구체적인 selector 규칙은 실제 R1 telemetry를 확인한 뒤 확정하며, 프로세스 이름 shortcut이나 Ground Truth 기반 선택은 사용하지 않는다.
 
