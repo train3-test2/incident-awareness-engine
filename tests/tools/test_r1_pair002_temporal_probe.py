@@ -17,6 +17,7 @@ from tools.analysis.r1_pair002_temporal_probe import (
     EXTRACTOR_VERSION,
     NORMAL_RUN_ID,
     ArtifactHashes,
+    ExecutionRevision,
     PairRunSpec,
     _sha256_lf_normalized_text,
     run_probe,
@@ -180,10 +181,23 @@ def test_reproduces_documented_pair002_temporal_mechanics(
     artifacts_root, run_specs = pair_artifacts
 
     # When
-    result = run_probe(artifacts_root, run_specs=run_specs)
+    result = run_probe(
+        artifacts_root,
+        run_specs=run_specs,
+        execution_revision=ExecutionRevision(
+            execution_commit="fixture-execution-commit",
+            execution_dirty=True,
+        ),
+    )
 
     # Then
     assert result["static_presence"] == {"attack": 1.0, "normal": 0.5}
+    assert (
+        result["analysis_revision"]["review_reproduction_base"]
+        != (result["analysis_revision"]["execution_commit"])
+    )
+    assert result["analysis_revision"]["execution_commit"] == "fixture-execution-commit"
+    assert result["analysis_revision"]["execution_dirty"] is True
 
     basic = result["basic_replay"]
     assert basic["attack"] == {

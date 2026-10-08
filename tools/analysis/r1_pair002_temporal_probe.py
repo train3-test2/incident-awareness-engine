@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -50,6 +51,12 @@ class PairRunSpec:
     run_end: datetime
     replay_end: datetime
     hashes: ArtifactHashes
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionRevision:
+    execution_commit: str
+    execution_dirty: bool
 
 
 PAIR002_RUNS = {
@@ -112,6 +119,34 @@ def _require_sha256(
     actual = hash_file(path)
     if actual != expected:
         raise ValueError(f"{label} SHA-256 mismatch: expected {expected}, got {actual}")
+
+
+def _git_execution_revision(repository_root: Path) -> ExecutionRevision:
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError("unable to capture the probe execution Git revision") from error
+    if not commit:
+        raise ValueError("probe execution commit must not be blank")
+    return ExecutionRevision(
+        execution_commit=commit,
+        execution_dirty=bool(status.strip()),
+    )
 
 
 def _load_validated_run(
@@ -260,6 +295,7 @@ def run_probe(
     *,
     config_path: Path = DEFAULT_CONFIG_PATH,
     run_specs: dict[str, PairRunSpec] = PAIR002_RUNS,
+    execution_revision: ExecutionRevision | None = None,
 ) -> dict[str, object]:
     """Validate immutable inputs and reproduce the documented Pair-002 probe."""
     if set(run_specs) != {ATTACK_RUN_ID, NORMAL_RUN_ID}:
@@ -267,6 +303,8 @@ def run_probe(
 
     config = load_fusion_config(config_path)
     _validate_probe_config(config)
+    if execution_revision is None:
+        execution_revision = _git_execution_revision(Path(__file__).resolve().parents[2])
     runs = {
         run_id: _load_validated_run(artifacts_root, run_id, spec)
         for run_id, spec in run_specs.items()
@@ -355,6 +393,8 @@ def run_probe(
             "initial_develop_base": INITIAL_DEVELOP_BASE,
             "initial_analysis_document_commit": INITIAL_ANALYSIS_DOCUMENT_COMMIT,
             "review_reproduction_base": REVIEW_REPRODUCTION_BASE,
+            "execution_commit": execution_revision.execution_commit,
+            "execution_dirty": execution_revision.execution_dirty,
         },
         "fusion_config": {
             "config_version": config.config_version,
