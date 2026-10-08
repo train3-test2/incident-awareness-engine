@@ -1,6 +1,8 @@
 # 평가 경계 검증용 합성 Run 생성기
 
-Issue #174는 evaluation_v0 입출력 검증용 고정 사례를 생성한다.
+Issue #174는 `evaluation_v0`의 Recall/TTSD/IQR/FPR 계산 경계 검증용 최소 fixture를 생성한다.
+`family_id`, `variation_id`, `alert_key` 등을 포함하는 canonical `evaluation_input_v0`
+전체 계약을 재현하거나 검증하는 생성기는 아니다.
 실제 탐지 모델 실행, 학습 데이터 생성, 현실적인 로그 분포 모사가 아니다.
 기존 samples/fake_runs_v0.csv는 변경하지 않는다.
 
@@ -17,7 +19,9 @@ method는 비어 있지 않고 앞뒤 공백이 없는 문자열, horizon은 1~8
 출력 날짜는 고정된 2026-01-01부터이며 같은 인자는 같은 데이터를 생성한다.
 Run ID는 재호출마다 재사용되므로 운영 데이터나 서로 다른 생성 배치를 합쳐 저장하면 안 된다.
 `scenario_id=SYNTHETIC-EVALUATOR-v1`, `data_origin=synthetic`으로 구분한다.
-시각은 UTC이고 실제 정밀도는 밀리초다(CSV의 6자리 소수점 끝 3자리는 0).
+시각은 UTC millisecond `YYYY-MM-DDTHH:MM:SS.mmmZ`로 출력하며 null은 빈 셀이다.
+`synthetic_horizon_seconds` 컬럼에 생성 시 지정한 horizon을 모든 행에 기록한다.
+이 컬럼은 생성 provenance이며 평가기의 `evaluation_horizon`을 자동 설정하지 않는다.
 
 아래 Python 예제도 저장소 루트에서 `PYTHONPATH=src uv run python`으로 실행한다.
 

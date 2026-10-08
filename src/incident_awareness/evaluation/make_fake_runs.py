@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 
+from incident_awareness.common.models.result import _serialize_utc_datetime
+
 
 def make_fake_runs(*, method: str, horizon_seconds: int) -> pd.DataFrame:
     """Seven complete Runs with expected Recall=2/5 and benign Run FPR=1/2."""
@@ -39,6 +41,7 @@ def make_fake_runs(*, method: str, horizon_seconds: int) -> pd.DataFrame:
                 "scenario_id": "SYNTHETIC-EVALUATOR-v1",
                 "synthetic_case": case,
                 "data_origin": "synthetic",
+                "synthetic_horizon_seconds": horizon_seconds,
                 "entity_id": "SYNTHETIC-HOST",
                 "class": kind,
                 "run_start": start,
@@ -63,7 +66,11 @@ def main() -> None:
         frame = make_fake_runs(method=args.method, horizon_seconds=args.horizon_seconds)
     except (TypeError, ValueError) as exc:
         parser.error(str(exc))
-    frame.to_csv(sys.stdout, index=False, date_format="%Y-%m-%dT%H:%M:%S.%fZ", na_rep="")
+    for name in ("run_start", "run_end", "reference_time", "timestamp"):
+        frame[name] = frame[name].map(
+            lambda value: _serialize_utc_datetime(value) if pd.notna(value) else None
+        )
+    frame.to_csv(sys.stdout, index=False, na_rep="")
 
 
 if __name__ == "__main__":
