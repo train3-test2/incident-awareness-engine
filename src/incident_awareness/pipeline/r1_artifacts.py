@@ -35,6 +35,9 @@ type R1ExtractionStatus = Literal["completed", "failed"]
 type R1SelectorStatus = Literal["selected", "failed"]
 type TelemetryCompleteness = Literal["not_provided"]
 
+_SELECTOR_STATUS_TYPE_ADAPTER = TypeAdapter(R1SelectorStatus)
+_SELECTOR_DIAGNOSTICS_TYPE_ADAPTER = TypeAdapter(tuple[R1SelectorDiagnostic, ...])
+
 
 @dataclass(frozen=True, slots=True)
 class R1LineageInputProvenance:
@@ -58,6 +61,19 @@ class R1SelectorProvenance:
     diagnostics: tuple[R1SelectorDiagnostic, ...]
 
     def __post_init__(self) -> None:
+        try:
+            _SELECTOR_STATUS_TYPE_ADAPTER.validate_python(self.status, strict=True)
+        except ValidationError as error:
+            raise ValueError("status must be selected or failed") from error
+
+        try:
+            _SELECTOR_DIAGNOSTICS_TYPE_ADAPTER.validate_python(
+                self.diagnostics,
+                strict=True,
+            )
+        except ValidationError as error:
+            raise ValueError("diagnostics must contain valid R1 selector diagnostics") from error
+
         for field_name, value in (
             ("policy_id", self.policy_id),
             ("version", self.version),
