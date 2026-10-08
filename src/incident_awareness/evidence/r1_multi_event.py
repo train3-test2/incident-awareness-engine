@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Literal, cast
 from uuid import NAMESPACE_URL, uuid5
 
+from incident_awareness.collection.r1_pair_identity import validate_family_id
 from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.common.models.evidence import Evidence
 
@@ -29,6 +30,12 @@ R1ExtractionDiagnostic = Literal[
     "duplicate_process_guid",
     "missing_or_blank_process_name",
 ]
+R1PolicyLifecycle = Literal["development", "frozen", "production_candidate"]
+R1_POLICY_LIFECYCLES: tuple[R1PolicyLifecycle, ...] = (
+    "development",
+    "frozen",
+    "production_candidate",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +46,8 @@ class ApprovedLineagePolicy:
     version: str
     config_hash: str
     approved_lineage: tuple[str, ...]
+    family_id: str | None = None
+    lifecycle: R1PolicyLifecycle | None = None
 
     def __post_init__(self) -> None:
         provenance = {
@@ -57,6 +66,13 @@ class ApprovedLineagePolicy:
             for process_name in self.approved_lineage
         ):
             raise ValueError("approved_lineage must contain only non-blank strings")
+
+        if (self.family_id is None) != (self.lifecycle is None):
+            raise ValueError("family_id and lifecycle must either both be set or both be omitted")
+        if self.family_id is not None:
+            validate_family_id(self.family_id)
+        if self.lifecycle is not None and self.lifecycle not in R1_POLICY_LIFECYCLES:
+            raise ValueError(f"unsupported R1 approved policy lifecycle: {self.lifecycle}")
 
 
 @dataclass(frozen=True, slots=True)

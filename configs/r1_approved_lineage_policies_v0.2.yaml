@@ -1,0 +1,11 @@
+# remote_management development 검증용 family-bound 정책이며 frozen 정책이 아니다.
+config_version: v0.2
+policies:
+  - policy_id: r1-remote-management-approved-lineage
+    version: v0.2
+    family_id: remote_management
+    lifecycle: development
+    approved_lineage:
+      - wsmprovhost.exe
+      - cmd.exe
+      - powershell.exe
