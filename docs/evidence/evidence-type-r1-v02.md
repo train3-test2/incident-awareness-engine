@@ -162,7 +162,7 @@ downstream에서 artifact를 소비하기 전에는 summary의 `status = complet
 
 `resolve_r1_evidence_provenance(evidences, events)`는 artifact loader가 검증한 Evidence의 `event_ids`를 NormalizedEvent batch에서 해석하는 별도의 provenance 경계다. Event batch의 `event_id` 유일성과 모든 참조 Event의 존재, `Evidence.run_id == NormalizedEvent.run_id`, `Evidence.entity_id == NormalizedEvent.host_id`, `Evidence.timestamp == max(NormalizedEvent.timestamp)`를 검증하고 `Evidence.event_ids`의 의미적 순서를 그대로 보존한 Event tuple을 반환한다. `raw_ref`와 `source_event_id`는 resolve된 NormalizedEvent를 통해 추적하며 Evidence에 복제하지 않는다. SHA-256, count, artifact ordering, R1 type scope, summary lineage/policy provenance 같은 artifact 무결성 검증은 PR #188 loader의 책임으로 유지한다.
 
-파일은 기존 artifact를 덮어쓰지 않으며 summary를 마지막 완료 표식으로 게시한다. 동일한 `output_directory`는 재사용하거나 덮어쓰지 않는다. failed Run을 재시도할 때는 새로운 빈 `output_directory`를 명시적으로 사용하며, 이번 구현은 기존 artifact 자동 삭제, 자동 overwrite, 자동 attempt 번호 생성을 하지 않는다. 실행 시각처럼 재실행마다 달라지는 값은 기록하지 않는다. Pilot·수동 실행의 Event ID 직접 지정 API는 유지한다. 독립적인 [R1 selector v0.1](r1-selector-v0.1.md)은 frozen structural policy로 anchor/terminal을 선택해 기존 batch pipeline에 연결하며 Pair-002 development telemetry 재검증을 완료했다. Production runner/CLI 연결과 selector provenance의 artifact 영속화는 후속 작업이다.
+파일은 기존 artifact를 덮어쓰지 않으며 summary를 마지막 완료 표식으로 게시한다. 동일한 `output_directory`는 재사용하거나 덮어쓰지 않는다. failed Run을 재시도할 때는 새로운 빈 `output_directory`를 명시적으로 사용하며, 이번 구현은 기존 artifact 자동 삭제, 자동 overwrite, 자동 attempt 번호 생성을 하지 않는다. 실행 시각처럼 재실행마다 달라지는 값은 기록하지 않는다. Pilot·수동 실행의 Event ID 직접 지정 API는 유지한다. 독립적인 [R1 selector v0.1](r1-selector-v0.1.md)은 frozen structural policy로 anchor/terminal을 선택해 기존 batch pipeline에 연결하며 Pair-002 development telemetry 재검증을 완료했다. Selector provenance의 artifact 영속화는 완료했으며, production runner/CLI 연결은 후속 작업이다.
 
 ## 6. 미확정 사항
 
