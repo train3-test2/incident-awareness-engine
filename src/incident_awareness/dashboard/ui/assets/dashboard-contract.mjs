@@ -1,5 +1,10 @@
 // Pure Dashboard presentation and query-state helpers.
 
+import {
+    getRuntimeQueryMessage,
+    resolveRuntimeQueryState,
+} from "./operations-contract.mjs";
+
 export const NOT_APPLICABLE = "-";
 
 const RUN_TYPE_LABELS = new Map([
@@ -23,6 +28,7 @@ const RUN_LIST_MESSAGES = new Map([
     ["empty", "표시할 Run이 없습니다."],
     ["error", "Run 목록을 불러오지 못했습니다."],
 ]);
+const PIPELINE_RUNTIME_STATUSES = new Set(["running", "completed", "failed"]);
 
 export function displayValue(value) {
     if (value === null || value === undefined) {
@@ -184,4 +190,73 @@ export function resolveRunListQueryState(previousState, result) {
         };
     }
     throw new RangeError(`Unknown Run List query result kind: ${result.kind}`);
+}
+
+export function resolveRuntimeSummaryQueryState(previousState, result) {
+    if (
+        previousState !== null
+        && (
+            typeof previousState !== "object"
+            || Array.isArray(previousState)
+            || !Array.isArray(previousState.items)
+        )
+    ) {
+        throw new TypeError("Previous Runtime Summary state must contain an items array");
+    }
+    if (result === null || typeof result !== "object" || Array.isArray(result)) {
+        throw new TypeError("Runtime Summary query result must be an object");
+    }
+    if (result.kind === "loading") {
+        return {
+            queryState: "loading",
+            items: [],
+            telemetryAvailable: false,
+            message: getRuntimeQueryMessage("loading"),
+        };
+    }
+
+    const previousItems = previousState === null ? [] : previousState.items;
+    if (result.kind === "success") {
+        const payload = result.payload;
+        if (
+            payload === null
+            || typeof payload !== "object"
+            || Array.isArray(payload)
+            || !Array.isArray(payload.items)
+        ) {
+            throw new TypeError("Runtime Summary payload must contain an items array");
+        }
+        if (
+            payload.items.some(
+                (runtime) => (
+                    runtime === null
+                    || typeof runtime !== "object"
+                    || Array.isArray(runtime)
+                    || typeof runtime.run_id !== "string"
+                    || !PIPELINE_RUNTIME_STATUSES.has(runtime.status)
+                    || typeof runtime.is_stale !== "boolean"
+                ),
+            )
+        ) {
+            throw new TypeError(
+                "Runtime Summary items must include run_id, status, and is_stale",
+            );
+        }
+
+        const state = resolveRuntimeQueryState(
+            previousItems,
+            { kind: "success", items: payload.items },
+        );
+        return {
+            queryState: state.items.length === 0 ? "empty" : "success",
+            ...state,
+        };
+    }
+    if (result.kind === "error") {
+        return {
+            queryState: "error",
+            ...resolveRuntimeQueryState(previousItems, { kind: "error" }),
+        };
+    }
+    throw new RangeError(`Unknown Runtime Summary query result kind: ${result.kind}`);
 }
