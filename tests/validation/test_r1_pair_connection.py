@@ -2,11 +2,13 @@
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
 from incident_awareness.evidence.r1_approved_lineage_policy import (
+    DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH,
     DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
 )
 
@@ -188,6 +190,177 @@ def test_pair_connection_rejects_family_mismatch_before_normalization(sample):
     # When
     with pytest.raises(ValueError, match="does not match approved policy family_id"):
         audit.check_run(pair, rid, "A", output, policy)
+
+    # Then
+    assert source.read_bytes() == original_source
+    assert tuple(output.iterdir()) == ()
+
+
+def test_default_cli_uses_family_bound_policy(
+    sample,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    pair, run_id, _output, _policy, _rows, _write, _source = sample
+    (pair / "index.json").write_text(
+        json.dumps(
+            {
+                "pair_id": "R1-PAIR-TEST",
+                "attack_run_id": run_id,
+                "normal_run_id": run_id,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cli_output = pair / "default-cli-output"
+    selected_policies = []
+
+    def record_policy(_pair, selected_run_id, _prefix, _output, policy):
+        selected_policies.append(policy)
+        return {"run_id": selected_run_id}
+
+    monkeypatch.setattr(audit, "check_run", record_policy)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(SCRIPT), "--pair", str(pair), "--output", str(cli_output)],
+    )
+
+    # When
+    audit.main()
+
+    # Then
+    assert len(selected_policies) == 2
+    assert all(
+        policy.policy_id == "r1-remote-management-approved-lineage"
+        and policy.version == "v0.2"
+        and policy.family_id == "remote_management"
+        and policy.lifecycle == "development"
+        for policy in selected_policies
+    )
+    audit_policy = json.loads((cli_output / "audit-policy.json").read_text(encoding="utf-8"))
+    assert audit_policy["config_hash"] == (
+        "6d4235ccc33fcc2484a679d6b6b9b8972cf67f45ff8de35d02eb402380e7f788"
+    )
+
+
+def test_default_cli_rejects_family_mismatch_before_normalization(
+    sample,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    pair, run_id, _output, _policy, _rows, _write, _source = sample
+    (pair / "index.json").write_text(
+        json.dumps(
+            {
+                "pair_id": "R1-PAIR-TEST",
+                "attack_run_id": run_id,
+                "normal_run_id": run_id,
+            }
+        ),
+        encoding="utf-8",
+    )
+    scenario_path = pair / run_id / "data/operator_trace" / run_id / "scenario.json"
+    scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
+    scenario["family_id"] = "other_family"
+    scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
+    cli_output = pair / "mismatch-cli-output"
+    normalization_calls = []
+
+    def record_normalization(*args, **kwargs):
+        normalization_calls.append((args, kwargs))
+        raise AssertionError("normalization must not run after a family mismatch")
+
+    monkeypatch.setattr(audit, "read_sysmon_jsonl", record_normalization)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(SCRIPT), "--pair", str(pair), "--output", str(cli_output)],
+    )
+
+    # When
+    with pytest.raises(ValueError, match="does not match approved policy family_id"):
+        audit.main()
+
+    # Then
+    assert normalization_calls == []
+    assert cli_output.is_dir()
+    assert tuple(cli_output.iterdir()) == ()
+
+
+def test_explicit_legacy_cli_preserves_historical_policy(
+    sample,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    pair, run_id, _output, _policy, _rows, _write, _source = sample
+    (pair / "index.json").write_text(
+        json.dumps(
+            {
+                "pair_id": "R1-PAIR-TEST",
+                "attack_run_id": run_id,
+                "normal_run_id": run_id,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cli_output = pair / "legacy-cli-output"
+    selected_policies = []
+
+    def record_policy(_pair, selected_run_id, _prefix, _output, policy):
+        selected_policies.append(policy)
+        return {"run_id": selected_run_id}
+
+    monkeypatch.setattr(audit, "check_run", record_policy)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT),
+            "--pair",
+            str(pair),
+            "--output",
+            str(cli_output),
+            "--approved-policy-config",
+            str(DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH),
+            "--approved-policy-id",
+            "r1-v02-development-connection",
+            "--approved-policy-version",
+            "v0.1",
+        ],
+    )
+
+    # When
+    audit.main()
+
+    # Then
+    assert len(selected_policies) == 2
+    assert all(
+        policy.family_id is None and policy.lifecycle is None for policy in selected_policies
+    )
+    assert all(
+        policy.config_hash == "59b5eb5a5637f4527a4725a310aa1bece6a9da8bd7f1257edee03be1b15f0b78"
+        for policy in selected_policies
+    )
+
+
+def test_family_bound_policy_rejects_missing_scenario_family(sample) -> None:
+    # Given
+    pair, run_id, output, _policy, _rows, _write, source = sample
+    policy = audit.load_r1_approved_lineage_policy(
+        "r1-remote-management-approved-lineage",
+        "v0.2",
+        config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+    )
+    scenario_path = pair / run_id / "data/operator_trace" / run_id / "scenario.json"
+    scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
+    del scenario["family_id"]
+    scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
+    original_source = source.read_bytes()
+
+    # When
+    with pytest.raises(ValueError, match="family_id"):
+        audit.check_run(pair, run_id, "A", output, policy)
 
     # Then
     assert source.read_bytes() == original_source
