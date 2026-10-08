@@ -1,6 +1,7 @@
 // Dashboard UI contract tests use Node's built-in test runner only.
 // Run with: node --test tests/dashboard/ui/test_dashboard_contract.mjs
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -476,4 +477,41 @@ test("Runtime Summary state rejects malformed results and payloads", () => {
     for (const invalidCall of invalidCalls) {
         assert.throws(invalidCall);
     }
+});
+
+test("Dashboard connects Runtime Summary through the existing Operations contract", async () => {
+    // Given
+    const scriptPath = new URL(
+        "../../../src/incident_awareness/dashboard/ui/assets/dashboard.js",
+        import.meta.url,
+    );
+
+    // When
+    const script = await readFile(scriptPath, "utf8");
+
+    // Then
+    assert.match(script, /const RUNTIME_ENDPOINT = "\/operations\/runtime\?limit=5";/);
+    assert.match(script, /const RUNTIME_REQUEST_TIMEOUT_MS = 10000;/);
+    assert.match(script, /fetch\(RUNTIME_ENDPOINT/);
+    assert.match(script, /const controller = new AbortController\(\);/);
+    assert.match(
+        script,
+        /setTimeout\(\(\) => controller\.abort\(\), RUNTIME_REQUEST_TIMEOUT_MS\)/,
+    );
+    assert.match(script, /signal: controller\.signal/);
+    assert.match(script, /clearTimeout\(timeoutId\);/);
+    assert.match(script, /return await response\.json\(\);/);
+    assert.match(script, /resolveRuntimeSummaryQueryState\(state, \{ kind: "success", payload \}\)/);
+    assert.match(script, /resolveRuntimeSummaryQueryState\(state, \{ kind: "error" \}\)/);
+    assert.match(script, /getRuntimeStatePresentation\(runtime, telemetryAvailable\)/);
+    assert.match(script, /getStageLabel\(runtime\.current_stage\)/);
+    assert.match(script, /formatRunTimestamp\(runtime\.updated_at\)/);
+    assert.match(script, /presentation\.telemetryLabel/);
+    assert.match(script, /presentation\.livenessLabel/);
+    assert.equal(script.match(/void loadRuntimeSummary\(\);/g)?.length, 1);
+    assert.equal(script.match(/setTimeout\(/g)?.length, 1);
+    assert.doesNotMatch(
+        script,
+        /현재 실행 중|setInterval\(|setTimeout\((?:load|fetch)RuntimeSummary/,
+    );
 });
