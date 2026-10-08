@@ -333,18 +333,22 @@ advisory lock을 확보하고, Pipeline 실행·receipt 기록 또는 skip 처�
 | 삭제 범위 | `s3_object_receipts` 행만 삭제하며 `runs` 및 결과 테이블은 삭제하지 않음 |
 | 실행 주체 | Worker가 아닌 별도 운영 cleanup 작업 |
 
-Receipt cleanup은 S3 Lifecycle과 독립적으로 동작한다. 28일이 지난 receipt identity는 원본
-입력 JSONL이 이미 만료된 상태이므로, 같은 key·ETag의 오래된 S3 Event가 다시 전달되더라도
-재처리 대상으로 복구하지 않는다. 입력을 다시 처리해야 하면 항상 새 `ING-<uuidv4>` object를
+28일은 S3 Lifecycle의 만료 처리 대상이 되는 기준일과 운영 여유를 더한 **cleanup 후보
+선정 기준**일 뿐, 원본이 이미 삭제됐다는 보장 시각이 아니다. S3 Lifecycle 삭제는 비동기로
+지연될 수 있으며, 현재 Worker는 receipt가 없고 원본 다운로드가 가능하면 같은 입력을 다시
+실행한다.
+
+따라서 아래 선행 조건 중 하나가 구현·검증되기 전에는 receipt cleanup을 활성화하지 않는다.
+
+1. cleanup 작업이 28일 경과 후보마다 S3 `HeadObject`를 수행하고, 실제로 `NoSuchKey` 또는
+   해당 object version 부재를 확인한 receipt만 삭제한다.
+2. Worker가 28일 경과 입력을 명시적으로 영구 실패로 거부하여, receipt가 삭제된 뒤에도
+   원본 객체가 남아 있어 재처리되는 일을 막는다.
+
+현재는 두 조건 모두 구현되지 않았으므로 스케줄러·정리 SQL을 운영 환경에서 실행하지 않는다.
+향후 cleanup은 Worker 처리 transaction과 분리하고, 삭제 대상·S3 확인 결과·삭제 건수를
+CloudWatch Logs에 기록해야 한다. 입력을 다시 처리해야 하면 항상 새 `ING-<uuidv4>` object를
 제출한다.
-
-운영 cleanup 작업은 아래 조건으로만 삭제한다. 실제 스케줄러·실행 주체는 별도 Infrastructure
-변경에서 구성하며, Worker 처리 transaction 안에서 이 쿼리를 실행하지 않는다.
-
-```sql
-DELETE FROM s3_object_receipts
-WHERE completed_at < CURRENT_TIMESTAMP - INTERVAL '28 days';
-```
 
 ### 재시도와 영구 실패 처리 정책
 
