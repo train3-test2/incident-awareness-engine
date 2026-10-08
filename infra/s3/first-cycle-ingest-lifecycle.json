@@ -1,0 +1,20 @@
+{
+  "Rules": [
+    {
+      "ID": "expire-first-cycle-sysmon-ingest-after-21-days",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "incoming/first-cycle/sysmon/"
+      },
+      "Expiration": {
+        "Days": 21
+      },
+      "NoncurrentVersionExpiration": {
+        "NoncurrentDays": 21
+      },
+      "AbortIncompleteMultipartUpload": {
+        "DaysAfterInitiation": 1
+      }
+    }
+  ]
+}

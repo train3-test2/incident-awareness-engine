@@ -142,7 +142,43 @@ S3 Event Notification은 prefix `incoming/first-cycle/sysmon/`와 suffix `sysmon
 객체를 로컬의 `telemetry/sysmon-0001.jsonl`로 내려받아 standalone CLI를 호출한다.
 Worker가 생성한 Run·Manifest·결과는 이 `incoming/` prefix에 쓰지 않는다. 결과는
 PostgreSQL과 CloudWatch Logs에 저장하며, 생성 Artifact를 S3에 장기 보관하는 정책은 별도
-계약으로 정의한다.
+Archive prefix와 별도 보관 계약으로 정의한다. 자동 입력 원본의 보관·삭제 정책은 아래와
+같다.
+
+### 자동 입력 Artifact 보관·삭제 정책
+
+자동 입력 원본은 재처리와 장애 분석에 필요한 기간만 보관한다. S3 Lifecycle 규칙은 아래
+정책을 적용한다.
+
+| 항목 | 정책 |
+| --- | --- |
+| 대상 prefix | `incoming/first-cycle/sysmon/` 아래의 현재 객체와 noncurrent 객체 버전 |
+| 보관 기간 | 현재 객체는 생성 후 21일, noncurrent 객체 버전은 noncurrent 전환 후 21일 |
+| 삭제 시점 | S3 Lifecycle이 각 보관 기간 경과 후 비동기로 삭제 |
+| 미완료 multipart upload | 시작 후 1일이 지나면 중단 |
+| 재제출 | 삭제 전후와 관계없이 새 `ING-<uuidv4>` prefix로만 제출 |
+
+21일은 source Queue·DLQ의 최대 보관 기간과 운영 확인 여유를 함께 고려한 기간이다. DLQ
+메시지를 분석하거나 재제출할 때 필요한 원본 JSONL은 이 기간 동안 유지된다.
+
+다음 대상은 이 Lifecycle 규칙의 삭제 범위에 **포함하지 않는다**.
+
+- 수동 실행용 완성 Artifact인 `first-cycle/`
+- PostgreSQL의 Run·Event·Fusion·Detection·Decision 결과
+- CloudWatch Logs, SQS source Queue 및 DLQ 메시지
+- 다른 시나리오·역할의 S3 prefix
+
+입력 JSONL을 장기 보관해야 하는 경우에는 자동 입력 prefix를 재사용하지 않고, 별도의
+Archive prefix와 보관 정책을 사용한다. 구성 파일은
+`infra/s3/first-cycle-ingest-lifecycle.json`이며, 다음 명령으로 적용한다.
+
+```powershell
+aws s3api put-bucket-lifecycle-configuration `
+  --bucket <FIRST_CYCLE_S3_BUCKET> `
+  --lifecycle-configuration file://infra/s3/first-cycle-ingest-lifecycle.json `
+  --profile incident-dev `
+  --region ap-northeast-2
+```
 
 현재 이 절은 자동 처리 Worker가 구현될 때 적용할 입력 계약이다. 현재 제공되는 수동 ECS
 실행은 계속 `first-cycle/<source-run-id>/telemetry/sysmon-0001.jsonl` 경로와
