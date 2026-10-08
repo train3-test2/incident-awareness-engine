@@ -5,6 +5,7 @@
   "cpu": "256",
   "memory": "512",
   "executionRoleArn": "EXECUTION_ROLE_ARN",
+  "taskRoleArn": "TASK_ROLE_ARN",
   "runtimePlatform": {
     "cpuArchitecture": "X86_64",
     "operatingSystemFamily": "LINUX"
@@ -15,17 +16,24 @@
       "image": "IMAGE_URI",
       "essential": true,
       "command": [
-        "uvicorn",
-        "incident_awareness.dashboard.api.app:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8080"
+        "python",
+        "-m",
+        "incident_awareness.dashboard.startup"
       ],
       "portMappings": [
         {
           "containerPort": 8080,
           "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "INCIDENT_AWARENESS_EVALUATION_SNAPSHOT_S3_URI",
+          "value": "EVALUATION_SNAPSHOT_S3_URI"
+        },
+        {
+          "name": "INCIDENT_AWARENESS_EVALUATION_SNAPSHOT_PATH",
+          "value": "/evaluation/current-snapshot.json"
         }
       ],
       "secrets": [

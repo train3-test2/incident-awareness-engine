@@ -17,7 +17,7 @@ COPY infra/postgres/migrations ./infra/postgres/migrations
 
 RUN groupadd --system app \
     && useradd --system --gid app --create-home app \
-    && mkdir /inputs \
-    && chown app:app /inputs
+    && mkdir /inputs /evaluation \
+    && chown app:app /inputs /evaluation
 
 USER app
