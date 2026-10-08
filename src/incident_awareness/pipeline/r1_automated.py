@@ -12,6 +12,7 @@ from incident_awareness.evidence.r1_approved_lineage_policy import (
 from incident_awareness.evidence.r1_selector import R1SelectorPolicy
 from incident_awareness.pipeline.r1_artifacts import (
     R1EvidenceArtifactRun,
+    R1SelectorProvenance,
     run_and_write_r1_evidence_artifacts,
 )
 from incident_awareness.pipeline.r1_evidence import (
@@ -72,11 +73,19 @@ def run_and_write_r1_evidence_artifacts_from_policy(
     lineage_inputs = (
         () if pipeline_result.lineage_input is None else (pipeline_result.lineage_input,)
     )
+    selector_provenance = R1SelectorProvenance(
+        policy_id=selector_policy.policy_id,
+        version=selector_policy.version,
+        config_hash=selector_policy.config_hash,
+        status="selected" if pipeline_result.selector_result.selection is not None else "failed",
+        diagnostics=pipeline_result.selector_result.diagnostics,
+    )
     artifact_run = run_and_write_r1_evidence_artifacts(
         event_batch,
         run_id=run_id,
         output_directory=output_directory,
         lineage_inputs=lineage_inputs,
+        selector_provenance=selector_provenance,
     )
     return R1AutomatedEvidenceArtifactRun(
         pipeline_result=pipeline_result,
