@@ -223,6 +223,27 @@ DLQ의 redrive 허용 정책은 `infra/sqs/first-cycle-ingest-dlq-attributes.jso
 Worker 구현 전에는 DLQ 메시지를 자동으로 삭제하거나 재처리하지 않는다. 운영자가 실패 원인을
 확인한 뒤 수정된 입력을 새 `ING-<uuidv4>`로 다시 업로드하는 방식으로 재제출한다.
 
+### DLQ와 입력 Artifact 보관 관계
+
+SQS 메시지와 S3 입력 JSONL은 서로 다른 리소스이며, DLQ 메시지가 남아 있다고 해서 S3
+객체가 보존되거나 반대로 S3 객체 만료가 DLQ 메시지를 삭제하지 않는다. 각 보관 정책의
+책임은 다음과 같다.
+
+| 리소스 | 보관 기간 | 책임 |
+| --- | --- | --- |
+| source Queue 메시지 | 4일 | 일시적 실패의 자동 재시도 전달 |
+| DLQ 메시지 | 14일 | 영구 실패·반복 실패의 원인 확인과 수동 재제출 판단 |
+| 자동 입력 JSONL | 21일 | DLQ 분석·원본 확인·수정본 재제출에 필요한 원본 보존 |
+
+입력 JSONL의 21일 보관 기간은 DLQ의 14일보다 길다. 따라서 운영자는 DLQ 보관 기간 안에
+원본을 확인하고, 필요한 경우 수정된 파일을 **새** `ING-<uuidv4>` prefix로 재제출해야 한다.
+기존 DLQ 메시지를 redrive하거나 동일 key를 덮어써 재실행하지 않는다.
+
+S3 Lifecycle 만료로 객체가 삭제된 뒤에도 DLQ 메시지가 남아 있을 수 있다. 이 경우 Worker가
+원본을 내려받을 수 없으므로 해당 메시지는 복구 대상으로 사용하지 않고, 원본을 별도 Archive에서
+복원하거나 새 입력 객체로 다시 제출한다. DLQ와 S3 Lifecycle은 서로의 보관 기간을 연장하거나
+삭제하지 않는다.
+
 ### Worker SQS 메시지 입력
 
 S3가 SQS에 직접 전달하는 JSON Event Notification body를 Worker 입력으로 사용한다. SNS
