@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -373,3 +373,20 @@ def test_run_start_requires_utc_datetime() -> None:
 
     # Then
     # A naive boundary never participates in terminal eligibility.
+
+
+def test_run_start_rejects_non_utc_offset() -> None:
+    # Given
+    events = _wmi_events(middle_process_name="cmd.exe")
+    korea_timezone = timezone(timedelta(hours=9))
+
+    # When
+    with pytest.raises(ValueError, match="UTC"):
+        select_r1_lineage(
+            events,
+            policy=_selector_policy(),
+            run_start=_RUN_START.astimezone(korea_timezone),
+        )
+
+    # Then
+    # A non-UTC boundary never participates in terminal eligibility.

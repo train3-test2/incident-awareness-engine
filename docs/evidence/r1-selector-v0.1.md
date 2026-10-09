@@ -44,6 +44,8 @@ Approved lineage policy는 “선택된 lineage가 승인 계보와 같은가”
 
 입력은 하나의 `run_id`와 하나의 `host_id` 범위에 속하는 `NormalizedEvent` iterable이다. 호출자는 evaluation Run의 UTC `run_start`를 runtime metadata로 선택적으로 전달할 수 있다. `run_start`는 selector policy payload가 아니므로 기존 policy ID/version/config hash를 변경하지 않는다. Selector는 iterable을 먼저 materialize하며 다음 R1 Event만 후보 관계에 사용한다.
 
+Terminal과 Evidence eligible Event는 `run_start <= timestamp <= run_end` 범위이며 `timestamp == run_end`를 허용한다. Selector는 `run_start` 기반 context 구분만 담당한다. Caller는 selector 호출 전에 `timestamp > run_end` Event를 제거해야 하며, 이 upper-bound filtering을 Evidence 생성 후 사후 필터링으로 대체하지 않는다.
+
 - `source = sysmon`
 - `source_layer = raw_telemetry`
 - terminal/parent: `event_type = process_create`
@@ -113,6 +115,8 @@ Selector policy와 구현은 다음 값을 입력 또는 조건으로 사용하�
 - `run_r1_evidence_pipeline_with_diagnostics(..., lineage_inputs=...)`
 
 Selector policy provenance와 선택 상태·진단은 `R1SelectorResult`와 artifact summary의 `selector`에 기록한다. Approved policy와 선택된 anchor/terminal은 `lineage_inputs`에 기록하며, pre-Run context를 사용한 경우 같은 항목의 `context_event_ids`에 별도로 보존한다. Context ID가 없는 기존 summary 형식도 loader가 계속 허용한다.
+
+`context_event_ids`는 lineage reconstruction provenance다. `resolve_r1_evidence_provenance()`는 `Evidence.event_ids`만 검증하므로 그 성공은 context provenance 검증을 의미하지 않는다. Role5 evaluation/validation은 extraction summary와 실제 `NormalizedEvent` 입력 batch로 context Event의 존재, 동일 `run_id`, 동일 `host_id`, `timestamp < run_start`를 별도로 확인한다. 이번 PR에서는 새 common validation helper를 제공하지 않는다.
 
 ## 8. Pair-002 development 재검증
 

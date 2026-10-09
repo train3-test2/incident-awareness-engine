@@ -54,6 +54,8 @@ raw collection window != evaluation window
 
 WMI selector 실행에는 evaluation Run의 UTC `run_start`를 runtime metadata로 전달한다. ParentProcessGuid와 ProcessGuid를 따라 terminal에서 부모 방향으로 올라갈 때 `timestamp < run_start`인 ancestor를 사용할 수 있지만, terminal 후보는 반드시 `timestamp >= run_start`여야 한다. Run boundary를 process name, Ground Truth, `run_type` 또는 Attack/Normal label로 추론하지 않는다.
 
+Terminal과 Evidence eligible Event의 evaluation 범위는 `run_start <= timestamp <= run_end`이며 `timestamp == run_end`를 허용한다. Selector는 `run_start`로 pre-Run context를 구분하고, `run_end` upper-bound filtering은 caller가 selector 호출 전에 적용한다. Caller는 `timestamp > run_end` Event를 입력 batch에서 제거해야 하며 Evidence 생성 후 사후 필터링으로 대체하지 않는다.
+
 Pre-Run Event의 책임은 다음으로 제한한다.
 
 - full lineage 복원과 approved lineage 비교를 위한 context로만 사용
@@ -61,6 +63,8 @@ Pre-Run Event의 책임은 다음으로 제한한다.
 - 별도 Evidence를 생성하거나 Evidence count, feature 또는 score에 직접 포함하지 않음
 - Evidence timestamp 계산에서 제외하며 Run 내 직접 근거 Event의 최대 timestamp를 유지
 - `NormalizedEvent.event_id`로 기록하므로 원 Event의 `raw_ref`와 Run manifest를 통해 역추적 가능
+
+`context_event_ids`는 lineage reconstruction provenance이며 직접 Evidence provenance가 아니다. 기존 `resolve_r1_evidence_provenance()`는 `Evidence.event_ids`만 검증하므로 resolver 성공을 context provenance 검증 성공으로 해석하지 않는다. Role5 evaluation/validation 단계는 extraction summary와 실제 `NormalizedEvent` 입력 batch를 함께 받아 각 context Event의 존재, 동일 `run_id`, 동일 `host_id`, `timestamp < run_start`를 별도로 검증한다. 이번 계약에서는 이를 위한 새 common validation helper를 추가하지 않는다.
 
 Normal의 `WmiPrvSE.exe → wscript.exe → powershell.exe`와 관측 차이 후보인 `WmiPrvSE.exe → cmd.exe → powershell.exe` 모두 동일한 GUID 기반 selector를 사용한다. WMI process name 전용 selector 분기, ParentImage fallback과 PID fallback은 사용하지 않는다.
 
