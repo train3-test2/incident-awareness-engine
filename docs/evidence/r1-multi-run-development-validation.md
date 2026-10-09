@@ -241,7 +241,15 @@ causal 평가를 수행했다는 뜻이 아니다.
 
 ### Fail-closed 검증 경계
 
-기존 synthetic selector regression을 이번 branch에서 다시 실행해 duplicate ProcessGuid, truncated lineage, ambiguous terminal candidate와 temporal inversion이 selection 없이 구조화된 diagnostic으로 fail-closed되는 계약을 재확인했다. Pair-003·Pair-004 실제 raw telemetry를 duplicate, truncated, ambiguous 또는 temporal inversion 형태로 변조하는 신규 actual-run 검증은 수행하지 않았다.
+Pair-004 Attack Run에서 실제로 선택된 anchor, intermediate, terminal과 network NormalizedEvent를 최소·비식별화한 테스트용 파생 입력으로 duplicate, truncated와 ambiguous 조건을 검증했다. 이 입력은 `Pair-004 actual telemetry-derived negative regression fixture`이며 새로운 development Pair나 수집 Run, holdout/final 또는 성능 평가 데이터가 아니다. 원본 raw telemetry, NormalizedEvent 결과와 기존 artifact는 수정하지 않았다.
+
+| 파생 조건 | 변형 방법 | selector 결과 | Evidence/artifact 결과 |
+| --- | --- | --- | --- |
+| duplicate | terminal Event를 다른 `event_id`로 복제하되 같은 ProcessGuid 유지 | failed, `duplicate_process_guid`, selection 없음 | Evidence 0건, writer 미호출, `r1_evidence.jsonl` 미게시 |
+| truncated | 선택 계보에서 필요한 intermediate Event 제거 | failed, `truncated_lineage`, selection 없음 | Evidence 0건, writer 미호출, `r1_evidence.jsonl` 미게시 |
+| ambiguous | 같은 intermediate를 부모로 갖는 별도 terminal과 동일 GUID의 후속 network Event 추가 | failed, `ambiguous_terminal_candidate`, selection 없음 | Evidence 0건, writer 미호출, `r1_evidence.jsonl` 미게시 |
+
+검증된 원본 구조의 selector 선택과 Evidence 2건도 같은 fixture의 baseline 회귀로 유지했다. 기존 synthetic selector regression은 temporal inversion을 포함한 나머지 malformed 조건을 계속 담당한다. 이번 검증은 selector 실패 결과를 artifact writer에 전달하지 않는 negative regression 경계이며, selector failure summary와 빈 artifact를 게시하는 기존 writer API의 별도 계약을 변경하지 않는다.
 
 ## 10. Pair-002 baseline replay
 
@@ -308,7 +316,7 @@ policy와 artifact를 새 policy로 rewrite하지 않았고 Pair-004에서만 fo
 | artifact writer/loader | 완료 |
 | provenance resolver | 완료 |
 | original/reverse/shuffle 결정성 | 완료 |
-| duplicate ProcessGuid/truncated/ambiguous/temporal inversion fail-closed | 기존 synthetic selector regression 재확인 완료. Pair-003·Pair-004 실제 telemetry 변조 검증은 미수행 |
+| duplicate ProcessGuid/truncated/ambiguous/temporal inversion fail-closed | Pair-004 actual telemetry-derived negative regression에서 duplicate/truncated/ambiguous 완료. Temporal inversion은 기존 synthetic regression 재확인 범위 |
 | Pair-002 baseline replay | 완료 |
 | pair-specific overfitting 검토 | 완료, 두 current-contract Pair 반복 결과와 데이터 규모 제한 명시 |
 | Role1/Role5 사용 범위 | offline/static 및 dataset 경계 정리 완료 |
@@ -322,8 +330,9 @@ policy와 artifact를 새 policy로 rewrite하지 않았고 Pair-004에서만 fo
 이번 PR에서는 Pair-002 legacy baseline과 Pair-003·Pair-004 current-contract development Pair에 동일 selector와
 approved lineage sequence를 적용한 multi-run development regression 범위를 완료했다. Pair-004는 formal
 frozen v0.3을 명시 선택했다. Actual telemetry에서 확인한 범위는 정상 selector, Evidence, artifact,
-provenance와 결정성이며, malformed fail-closed 조건은 기존 synthetic regression을 재확인한 범위다.
-Pair-003·Pair-004 raw를 가능한 fail-closed 형태로 변조해 전수 검증했다는 의미는 아니다.
+provenance와 결정성이다. Pair-004 actual telemetry-derived negative regression으로 duplicate, truncated와
+ambiguous fail-closed를 추가 확인했고, temporal inversion을 포함한 그 밖의 malformed 조건은 기존 synthetic
+regression 범위다. Pair-003·Pair-004 raw를 가능한 fail-closed 형태로 변조해 전수 검증했다는 의미는 아니다.
 
 #234의 family/lifecycle 계약을 기반으로 최종 평가용 frozen policy identity/version/hash, Role5 approval
 provenance와 holdout 이후 동일 frozen identity를 변경하지 않는 기록을 확정했다. Pair-004 frozen v0.3 actual
