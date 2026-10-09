@@ -9,14 +9,18 @@ from incident_awareness.evidence.r1_approved_lineage_policy import (
     DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
     load_r1_approved_lineage_policy,
 )
+from incident_awareness.evidence.r1_reference_policy import R1WmiActionResult
 from incident_awareness.evidence.r1_selector import R1SelectorPolicy
 from incident_awareness.pipeline import r1_automated
 from incident_awareness.pipeline.r1_artifacts import (
+    R1_COLLECTION_PROVENANCE_FILENAME,
+    load_r1_collection_provenance,
     load_r1_evidence_artifacts,
     run_and_write_r1_evidence_artifacts,
 )
 from incident_awareness.pipeline.r1_automated import (
     run_and_write_r1_evidence_artifacts_from_policy,
+    run_and_write_r1_wmi_collection_artifacts,
     run_r1_evidence_pipeline_from_policy,
 )
 from incident_awareness.pipeline.r1_evidence import (
@@ -36,6 +40,10 @@ _POLICY_VERSION = "v0.1"
 _FAMILY_POLICY_ID = "r1-remote-management-approved-lineage"
 _FAMILY_POLICY_VERSION = "v0.2"
 _FROZEN_POLICY_VERSION = "v0.3"
+_WMI_POLICY_ID = "r1-wmi-management-approved-lineage"
+_WMI_POLICY_VERSION = "v0.1"
+_WMI_REFERENCE_POLICY_ID = "r1-wmi-a01-reference"
+_WMI_REFERENCE_POLICY_VERSION = "wmi-ref-v0.1"
 _PAIR004_SELECTOR_FIXTURE = (
     Path(__file__).parent.parent / "fixtures" / "evidence" / "r1_pair004_selector_events.jsonl"
 )
@@ -125,6 +133,41 @@ def _events(*, middle_process_name: str | None = "cscript.exe") -> tuple[Normali
         ),
         _event(
             event_id="evt-network",
+            event_type="network_connection",
+            timestamp=_BASE_TIME + timedelta(seconds=3),
+            process_guid=_TERMINAL_GUID,
+            process_name="powershell.exe",
+        ),
+    )
+
+
+def _wmi_events() -> tuple[NormalizedEvent, ...]:
+    return (
+        _event(
+            event_id="evt-wmi-context",
+            event_type="process_create",
+            timestamp=_BASE_TIME - timedelta(seconds=1),
+            process_guid=_ANCHOR_GUID,
+            process_name="WmiPrvSE.exe",
+        ),
+        _event(
+            event_id="evt-wmi-reference",
+            event_type="process_create",
+            timestamp=_BASE_TIME + timedelta(seconds=1),
+            process_guid=_MIDDLE_GUID,
+            process_name="cmd.exe",
+            parent_process_guid=_ANCHOR_GUID,
+        ),
+        _event(
+            event_id="evt-wmi-terminal",
+            event_type="process_create",
+            timestamp=_BASE_TIME + timedelta(seconds=2),
+            process_guid=_TERMINAL_GUID,
+            process_name="powershell.exe",
+            parent_process_guid=_MIDDLE_GUID,
+        ),
+        _event(
+            event_id="evt-wmi-network",
             event_type="network_connection",
             timestamp=_BASE_TIME + timedelta(seconds=3),
             process_guid=_TERMINAL_GUID,
@@ -674,6 +717,90 @@ def test_family_bound_policy_requires_scenario_family_before_selector(
 
     # Then
     assert selector_calls == []
+
+
+def test_wmi_collection_path_publishes_reference_provenance_artifact(
+    tmp_path: Path,
+) -> None:
+    # Given
+    events = _wmi_events()
+    output_directory = _output_directory(tmp_path, "wmi-collection")
+    action_result = R1WmiActionResult(
+        action_id="A01",
+        action_type="Win32_Process.Create",
+        invoked_at_utc=_BASE_TIME + timedelta(milliseconds=500),
+        return_value=0,
+        process_id=4200,
+    )
+
+    # When
+    result = run_and_write_r1_wmi_collection_artifacts(
+        events,
+        run_id=_RUN_ID,
+        output_directory=output_directory,
+        selector_policy=_selector_policy(),
+        approved_policy_id=_WMI_POLICY_ID,
+        approved_policy_version=_WMI_POLICY_VERSION,
+        approved_policy_config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+        scenario_family_id="wmi_management",
+        reference_policy_id=_WMI_REFERENCE_POLICY_ID,
+        reference_policy_version=_WMI_REFERENCE_POLICY_VERSION,
+        evaluation_horizon_sec=600,
+        action_result=action_result,
+        action_attributed_event_ids=("evt-wmi-reference",),
+        lineage_process_guids=(_ANCHOR_GUID, _MIDDLE_GUID, _TERMINAL_GUID),
+        run_start=_BASE_TIME,
+    )
+    loaded_provenance = load_r1_collection_provenance(output_directory)
+    loaded_evidence = load_r1_evidence_artifacts(output_directory)
+
+    # Then
+    assert result.collection_provenance_path == (
+        output_directory / R1_COLLECTION_PROVENANCE_FILENAME
+    )
+    assert result.collection_provenance_path.is_file()
+    assert loaded_provenance == result.collection_provenance
+    assert loaded_provenance.run_id == _RUN_ID
+    assert loaded_provenance.reference_policy_id == _WMI_REFERENCE_POLICY_ID
+    assert loaded_provenance.reference_policy_version == _WMI_REFERENCE_POLICY_VERSION
+    assert loaded_provenance.horizon_matches is True
+    assert loaded_evidence == result.evidence_run.artifact_run
+
+
+def test_wmi_collection_reference_failure_publishes_no_artifact(tmp_path: Path) -> None:
+    # Given
+    events = _wmi_events()
+    output_directory = _output_directory(tmp_path, "wmi-reference-failure")
+    failed_action_result = R1WmiActionResult(
+        action_id="A01",
+        action_type="Win32_Process.Create",
+        invoked_at_utc=_BASE_TIME + timedelta(milliseconds=500),
+        return_value=1,
+        process_id=4200,
+    )
+
+    # When
+    with pytest.raises(ValueError, match="WMI A01 did not succeed"):
+        run_and_write_r1_wmi_collection_artifacts(
+            events,
+            run_id=_RUN_ID,
+            output_directory=output_directory,
+            selector_policy=_selector_policy(),
+            approved_policy_id=_WMI_POLICY_ID,
+            approved_policy_version=_WMI_POLICY_VERSION,
+            approved_policy_config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+            scenario_family_id="wmi_management",
+            reference_policy_id=_WMI_REFERENCE_POLICY_ID,
+            reference_policy_version=_WMI_REFERENCE_POLICY_VERSION,
+            evaluation_horizon_sec=600,
+            action_result=failed_action_result,
+            action_attributed_event_ids=("evt-wmi-reference",),
+            lineage_process_guids=(_ANCHOR_GUID, _MIDDLE_GUID, _TERMINAL_GUID),
+            run_start=_BASE_TIME,
+        )
+
+    # Then
+    assert tuple(output_directory.iterdir()) == ()
 
 
 def _second_terminal_events() -> tuple[NormalizedEvent, NormalizedEvent]:
