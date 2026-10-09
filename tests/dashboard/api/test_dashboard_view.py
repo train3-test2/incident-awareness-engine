@@ -108,10 +108,29 @@ def test_dashboard_view_serves_html_shell_without_database_access(
     ) in html
     assert '<a class="dashboard-section-link" href="/operations">Operations 보기</a>' in html
     assert '<details class="dashboard-runs-disclosure">' in html
-    assert "<summary>전체 Runs 목록 펼치기</summary>" in html
+    assert "<summary>Runs 목록 펼치기 — 관측 시작 최근순 최대 20건</summary>" in html
     assert '<details class="dashboard-runs-disclosure" open>' not in html
     assert "Run 목록은 다음 단계에서 표시됩니다." not in html
     assert database_connection_attempts == []
+
+
+def test_dashboard_runs_status_remains_visible_while_run_list_is_collapsed() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    html = client.get("/dashboard").text
+
+    # Then
+    runs_status_index = html.index('id="runs-status"')
+    disclosure_start = html.index('<details class="dashboard-runs-disclosure">')
+    disclosure_end = html.index("</details>", disclosure_start)
+    runs_list_index = html.index('id="runs-list"')
+    disclosure = html[disclosure_start:disclosure_end]
+    assert runs_status_index < disclosure_start
+    assert disclosure_start < runs_list_index < disclosure_end
+    assert 'id="runs-status"' not in disclosure
+    assert '<details class="dashboard-runs-disclosure" open>' not in html
 
 
 def test_operations_view_includes_dashboard_navigation() -> None:

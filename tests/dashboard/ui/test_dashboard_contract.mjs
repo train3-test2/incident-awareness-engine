@@ -663,8 +663,16 @@ test("Dashboard separates compact Recent Runs from detailed Runs without reorder
     assert.match(html, /시스템 처리 시각과는 다릅니다/);
     assert.match(html, /Run ID나 Event timestamp로 추정하지 않습니다/);
     assert.match(html, /<details class="dashboard-runs-disclosure">/);
-    assert.match(html, /<summary>전체 Runs 목록 펼치기<\/summary>/);
+    assert.match(html, /<summary>Runs 목록 펼치기 — 관측 시작 최근순 최대 20건<\/summary>/);
     assert.doesNotMatch(html, /<details class="dashboard-runs-disclosure" open>/);
+    const runsStatusIndex = html.indexOf('id="runs-status"');
+    const disclosureStart = html.indexOf('<details class="dashboard-runs-disclosure">');
+    const disclosureEnd = html.indexOf("</details>", disclosureStart);
+    const runsListIndex = html.indexOf('id="runs-list"');
+    assert.ok(runsStatusIndex < disclosureStart);
+    assert.ok(disclosureStart < runsListIndex && runsListIndex < disclosureEnd);
+    assert.doesNotMatch(html.slice(disclosureStart, disclosureEnd), /id="runs-status"/);
+    assert.match(script, /runsStatus\.textContent = state\.message;/);
     assert.equal(script.match(/void loadRuns\(\);/g)?.length, 1);
     assert.doesNotMatch(script, /\.sort\(|\.toSorted\(|\.reverse\(|\.toReversed\(/);
 });
