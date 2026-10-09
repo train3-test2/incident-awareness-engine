@@ -1,6 +1,6 @@
 # R1 승인 계보 정책 family binding 및 lifecycle 계약 v0.2
 
-> 상태: family-bound development 및 pre-holdout frozen candidate 등록 / formal 승인 대기
+> 상태: family-bound development 및 formal pre-holdout frozen policy 계약 구현 완료
 > availability: `OFFLINE WHOLE-EPISODE ONLY`
 > 비범위: production 배포, WMI policy, selector·Evidence 의미 변경
 
@@ -47,7 +47,7 @@ Loader는 YAML duplicate key, 알 수 없는 필드, config version 불일치, �
 - `frozen`: evaluation 전에 고정한 immutable provenance다. Holdout/final 결과를 본 뒤 같은 identity/version의 내용을 변경하지 않는다.
 - `production_candidate`: production runner 연결 후보다. Frozen evaluation과 실제 production deployment를 같은 상태로 해석하지 않는다.
 
-Policy ID 문자열에서 lifecycle을 추론하지 않는다. `foo`, `prod`, `final-ish` 등 미정의 값은 runtime에서 거부한다. Registry에는 current validation용 `development/v0.2`와 final evaluation freeze candidate인 `frozen/v0.3`을 별도 identity로 등록한다. Candidate row의 존재만으로 별도 governance 승인이 완료되지는 않는다. `production_candidate` policy는 등록하지 않는다.
+Policy ID 문자열에서 lifecycle을 추론하지 않는다. `foo`, `prod`, `final-ish` 등 미정의 값은 runtime에서 거부한다. Registry에는 current validation용 `development/v0.2`와 formal pre-holdout 승인을 받은 final evaluation용 `frozen/v0.3`을 별도 identity로 등록한다. `production_candidate` policy는 등록하지 않는다.
 
 ## 4. Identity, version과 hash
 
@@ -80,7 +80,7 @@ NormalizedEvent batch + scenario family metadata
 
 Mismatch이면 selector를 호출하지 않고 completed artifact도 게시하지 않는다. 기존 automated API의 legacy config 기본값과 lower-level manual API는 historical reproduction을 위해 유지한다.
 
-Raw collection 전용 `tools/validate_r1_run.py`는 Evidence policy를 import하거나 승인 여부를 판단하지 않는다. Role2 validation 경로인 `tools/validation/check_r1_pair_connection.py`의 current-contract CLI 기본값은 v0.2 family-bound development policy다. Frozen v0.3은 별도 승인 metadata가 기록되어 formal freeze 효력이 발생한 뒤 evaluation에서 명시적으로 선택하며 development validation 기본값을 대체하지 않는다. 공용 validator로 scenario family를 비교하고 loader가 계산한 `config_hash`를 audit provenance에 기록한다. Family mismatch는 normalization 전에 거부한다. Historical v0.1 reproduction은 policy config, ID와 version을 CLI에 모두 명시한 경우에만 사용한다. Validation tool은 hash canonicalization이나 governance approval 검증을 재구현하지 않는다. 기존 `dataset_tier`의 scenario 소유 및 operator trace 일치 계약은 변경하지 않는다.
+Raw collection 전용 `tools/validate_r1_run.py`는 Evidence policy를 import하거나 승인 여부를 판단하지 않는다. Role2 validation 경로인 `tools/validation/check_r1_pair_connection.py`의 current-contract CLI 기본값은 v0.2 family-bound development policy다. Frozen v0.3은 formal evaluation에서 명시적으로 선택하며 development validation 기본값을 대체하지 않는다. 공용 validator로 scenario family를 비교하고 loader가 계산한 `config_hash`를 audit provenance에 기록한다. Family mismatch는 normalization 전에 거부한다. Historical v0.1 reproduction은 policy config, ID와 version을 CLI에 모두 명시한 경우에만 사용한다. Validation tool은 hash canonicalization이나 governance approval 검증을 재구현하지 않는다. 기존 `dataset_tier`의 scenario 소유 및 operator trace 일치 계약은 변경하지 않는다.
 
 ```text
 --approved-policy-config configs/r1_approved_lineage_policies_v0.1.yaml
@@ -88,15 +88,15 @@ Raw collection 전용 `tools/validate_r1_run.py`는 Evidence policy를 import하
 --approved-policy-version v0.1
 ```
 
-## 6. Formal freeze candidate와 승인
+## 6. Formal freeze와 승인
 
-[Frozen v0.3 candidate record](r1-approved-lineage-policy-freeze-v0.3.md)는 candidate 준비 시각, 기준 commit, identity와 pre-holdout 불변 원칙을 기록한다. Formal freeze는 `approved_by`, `approver_role`, `approved_at_utc`, `approval_record`, `formal_freeze_effective_at`이 실제 승인 값으로 기록된 뒤에만 유효하다. 승인 후 holdout/final 결과를 확인하더라도 같은 frozen identity/version의 semantic content를 수정하지 않는다. 변경이 필요하면 새 development cycle과 새 policy identity/version으로 별도 평가한다.
+[Frozen v0.3 record](r1-approved-lineage-policy-freeze-v0.3.md)는 candidate 준비 시각, 기준 commit, identity, Role5 승인자·역할·UTC 시각·결정 위치·효력 시각과 pre-holdout 불변 원칙을 기록한다. Holdout/final 결과를 확인하더라도 같은 frozen identity/version의 semantic content를 수정하지 않는다. 변경이 필요하면 새 development cycle과 새 policy identity/version으로 별도 평가한다.
 
 ## 7. Migration과 후속 결정
 
 - Legacy v0.1 policy와 기존 Pair-002·Pair-003 artifact provenance는 rewrite하지 않는다.
 - v0.2도 policy 하나당 단일 `approved_lineage`만 표현한다. 복수 정상 lineage가 필요하면 후속 schema/version에서 계약한다.
 - WMI family에는 별도 family-bound policy가 필요하지만 이번 작업에서 policy나 process-name special case를 등록하지 않는다.
-- #227의 multi-run development 근거로 final evaluation용 `frozen/v0.3` candidate identity/hash와 holdout 이후 변경 금지 원칙을 준비했다. 별도 승인 metadata 기록 전에는 formal freeze와 #227 잔여 조건이 완료되지 않는다. 기존 development와 historical artifact는 rewrite하지 않는다.
+- #227의 multi-run development 근거와 Role5 승인 provenance로 final evaluation용 `frozen/v0.3` identity/hash와 holdout 이후 변경 금지 기록을 확정했다. 기존 development와 historical artifact는 rewrite하지 않는다.
 - #228 production runner는 family-bound policy와 scenario family metadata를 사용해야 한다. 이번 offline high-level API 구현만으로 production 연결 완료를 뜻하지 않는다.
 - `OFFLINE WHOLE-EPISODE ONLY`, Evidence timestamp, selector와 Evidence semantics, `available_at`/watermark 제한은 이 governance 계약과 별개이며 변경하지 않는다.

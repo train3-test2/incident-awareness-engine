@@ -1,4 +1,4 @@
-# remote_management family-bound development 및 frozen candidate 정책 registry다.
+# remote_management family-bound development 및 frozen 정책 registry다.
 config_version: v0.2
 policies:
   - policy_id: r1-remote-management-approved-lineage
