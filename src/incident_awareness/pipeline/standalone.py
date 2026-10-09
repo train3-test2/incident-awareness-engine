@@ -9,6 +9,7 @@ import logging
 import shutil
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -20,6 +21,9 @@ from incident_awareness.collection.collector.sysmon_jsonl import (
     read_sysmon_jsonl,
 )
 from incident_awareness.common.models.event import NORMALIZED_EVENT_SCHEMA_VERSION
+from incident_awareness.common.models.fusion import FusionResult
+from incident_awareness.common.models.pipeline_runtime import PipelineStage
+from incident_awareness.common.models.result import DecisionResult
 from incident_awareness.common.models.run import RunMetadata, RunType, SchemaVersions
 from incident_awareness.decision.fusion.config import FusionConfig, load_fusion_config
 from incident_awareness.integration.fast_hit_handoff import (
@@ -33,7 +37,17 @@ from incident_awareness.pipeline.fusion import run_s0_fusion_with_trace
 from incident_awareness.pipeline.hybrid import combine_parallel_decision
 from incident_awareness.pipeline.persistence import DatabaseConnection, persist_s0_results
 from incident_awareness.pipeline.reporting import PipelineExecutionSummary, build_execution_summary
-from incident_awareness.pipeline.s0_artifacts import load_s0_pipeline_artifacts
+from incident_awareness.pipeline.runner import (
+    _bootstrap_runtime_tracker,
+    _capture_runtime_started_at,
+    _run_stage,
+)
+from incident_awareness.pipeline.runtime_telemetry import (
+    PipelineRuntimeObserver,
+    PipelineRuntimeTracker,
+    PostgresPipelineRuntimeObserver,
+)
+from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts, load_s0_pipeline_artifacts
 from incident_awareness.storage.config import DatabaseConfig
 
 _STANDALONE_MANIFEST_ROOT = "raw"
@@ -91,10 +105,25 @@ class StandalonePreparedRun:
 
 @dataclass(frozen=True, slots=True)
 class StandaloneExecution:
-    """One completed standalone execution and its generated artifact directory."""
+    """One successful standalone stage execution awaiting transaction finalization."""
 
     output_dir: Path
     summary: PipelineExecutionSummary
+    _runtime_tracker: PipelineRuntimeTracker | None = dataclass_field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def complete_runtime(self) -> None:
+        """Publish completion after the caller confirms its business commit."""
+        if self._runtime_tracker is not None:
+            self._runtime_tracker.complete()
+
+    def fail_runtime(self, stage: PipelineStage = PipelineStage.PERSISTENCE) -> None:
+        """Publish a caller-owned transaction failure without replacing its error."""
+        if self._runtime_tracker is not None:
+            self._runtime_tracker.fail(stage)
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,18 +262,121 @@ def run_prepared_standalone_run(
     *,
     connection: DatabaseConnection,
     commit: bool = True,
+    runtime_observer: PipelineRuntimeObserver | None = None,
 ) -> PipelineExecutionSummary:
-    """Run the existing First Cycle stages with standalone Fast semantics."""
+    """Run standalone stages while preserving the existing Summary return contract.
+
+    A direct ``commit=False`` caller receives running/failed telemetry only.  The
+    transaction-owning ``run_standalone_sysmon_jsonl()`` path retains the tracker
+    and publishes its terminal state after the caller confirms the commit.
+    """
+    summary, runtime_tracker = _run_prepared_standalone_stages(
+        prepared,
+        connection=connection,
+        commit=commit,
+        runtime_observer=runtime_observer,
+    )
+    if commit and runtime_tracker is not None:
+        runtime_tracker.complete()
+    return summary
+
+
+def _run_prepared_standalone_stages(
+    prepared: StandalonePreparedRun,
+    *,
+    connection: DatabaseConnection,
+    commit: bool,
+    runtime_observer: PipelineRuntimeObserver | None,
+) -> tuple[PipelineExecutionSummary, PipelineRuntimeTracker | None]:
+    started_at = _capture_runtime_started_at()
+    artifacts = _run_stage(
+        PipelineStage.ARTIFACT_VALIDATION,
+        lambda: _load_ordered_standalone_artifacts(prepared),
+    )
+    runtime_tracker = _bootstrap_runtime_tracker(
+        run_id=artifacts.run_metadata.run_id,
+        entity_id=prepared.inputs.entity_id,
+        input_total=len(artifacts.sysmon_records),
+        started_at=started_at,
+        observer=runtime_observer,
+    )
+    normalized_artifacts = _run_stage(
+        PipelineStage.NORMALIZATION,
+        lambda: normalize_sysmon_and_extract_evidence(
+            artifacts,
+            progress_callback=(
+                runtime_tracker.record_normalization_progress
+                if runtime_tracker is not None
+                else None
+            ),
+        ),
+        runtime_tracker=runtime_tracker,
+    )
+    fusion_output = _run_stage(
+        PipelineStage.FUSION,
+        lambda: run_s0_fusion_with_trace(prepared.inputs, artifacts, normalized_artifacts),
+        runtime_tracker=runtime_tracker,
+    )
+    fast_result, decision_result = _run_stage(
+        PipelineStage.HYBRID,
+        lambda: _build_standalone_decision(
+            prepared,
+            run_id=artifacts.run_metadata.run_id,
+            fusion_result=fusion_output.fusion_result,
+        ),
+        runtime_tracker=runtime_tracker,
+    )
+    _run_stage(
+        PipelineStage.PERSISTENCE,
+        lambda: persist_s0_results(
+            artifacts,
+            normalized_artifacts,
+            fusion_output.fusion_result,
+            fusion_output.stopping_trace,
+            fusion_output.runtime_config_snapshot,
+            fast_result,
+            decision_result,
+            connection=connection,
+            commit=commit,
+        ),
+        runtime_tracker=runtime_tracker,
+    )
+    try:
+        summary = build_execution_summary(
+            artifacts,
+            normalized_artifacts,
+            fusion_output.fusion_result,
+            fast_result,
+            decision_result,
+        )
+    except Exception:
+        if runtime_tracker is not None:
+            if commit:
+                # Persistence already confirmed its commit; a reporting failure must
+                # not relabel the durable Business result as a failed transaction.
+                runtime_tracker.complete()
+            else:
+                runtime_tracker.fail(PipelineStage.PERSISTENCE)
+        raise
+    return summary, runtime_tracker
+
+
+def _load_ordered_standalone_artifacts(prepared: StandalonePreparedRun) -> S0PipelineArtifacts:
     artifacts = load_s0_pipeline_artifacts(prepared.inputs)
-    artifacts = replace(
+    return replace(
         artifacts,
         sysmon_records=_order_standalone_sysmon_records(artifacts.sysmon_records),
     )
-    normalized_artifacts = normalize_sysmon_and_extract_evidence(artifacts)
-    fusion_output = run_s0_fusion_with_trace(prepared.inputs, artifacts, normalized_artifacts)
-    fusion_result = fusion_output.fusion_result
+
+
+def _build_standalone_decision(
+    prepared: StandalonePreparedRun,
+    *,
+    run_id: str,
+    fusion_result: FusionResult,
+) -> tuple[FastDetectionAdapterResult, DecisionResult]:
     fast_result = build_default_standalone_fast_detection(
-        run_id=artifacts.run_metadata.run_id,
+        run_id=run_id,
         entity_id=prepared.inputs.entity_id,
     )
     decision_result = combine_parallel_decision(
@@ -252,24 +384,7 @@ def run_prepared_standalone_run(
         fast_result,
         fusion_result,
     )
-    persist_s0_results(
-        artifacts,
-        normalized_artifacts,
-        fusion_result,
-        fusion_output.stopping_trace,
-        fusion_output.runtime_config_snapshot,
-        fast_result,
-        decision_result,
-        connection=connection,
-        commit=commit,
-    )
-    return build_execution_summary(
-        artifacts,
-        normalized_artifacts,
-        fusion_result,
-        fast_result,
-        decision_result,
-    )
+    return fast_result, decision_result
 
 
 def run_standalone_sysmon_jsonl(
@@ -282,6 +397,7 @@ def run_standalone_sysmon_jsonl(
     target_host: str | None = None,
     entity_id: str | None = None,
     fusion_config_path: Path | None = None,
+    runtime_observer: PipelineRuntimeObserver | None = None,
 ) -> StandaloneExecution:
     """Run one standalone Sysmon JSONL execution in the caller's transaction.
 
@@ -303,16 +419,21 @@ def run_standalone_sysmon_jsonl(
             fusion_config_path=fusion_config_path,
             output_dir_reserved=True,
         )
-        summary = run_prepared_standalone_run(
+        summary, runtime_tracker = _run_prepared_standalone_stages(
             prepared,
             connection=connection,
             commit=False,
+            runtime_observer=runtime_observer,
         )
     except Exception:
         shutil.rmtree(reservation.output_dir, ignore_errors=True)
         raise
 
-    return StandaloneExecution(output_dir=prepared.output_dir, summary=summary)
+    return StandaloneExecution(
+        output_dir=prepared.output_dir,
+        summary=summary,
+        _runtime_tracker=runtime_tracker,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -343,17 +464,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     ).resolve()
     database_config = DatabaseConfig.from_environment()
 
-    with psycopg.connect(database_config.url, autocommit=False) as connection:
-        execution = run_standalone_sysmon_jsonl(
-            sysmon_jsonl_path=sysmon_jsonl_path,
-            output_root=output_root,
-            connection=connection,
-            scenario_id=namespace.scenario_id,
-            run_type=RunType(namespace.run_type),
-            target_host=namespace.target_host,
-            entity_id=namespace.entity_id,
-            fusion_config_path=namespace.fusion_config,
-        )
+    with PostgresPipelineRuntimeObserver() as runtime_observer:
+        execution: StandaloneExecution | None = None
+        try:
+            with psycopg.connect(database_config.url, autocommit=False) as connection:
+                execution = run_standalone_sysmon_jsonl(
+                    sysmon_jsonl_path=sysmon_jsonl_path,
+                    output_root=output_root,
+                    connection=connection,
+                    scenario_id=namespace.scenario_id,
+                    run_type=RunType(namespace.run_type),
+                    target_host=namespace.target_host,
+                    entity_id=namespace.entity_id,
+                    fusion_config_path=namespace.fusion_config,
+                    runtime_observer=runtime_observer,
+                )
+        except Exception:
+            if execution is not None:
+                execution.fail_runtime()
+            raise
+        else:
+            execution.complete_runtime()
 
     _LOGGER.info("Standalone First Cycle output: %s", execution.output_dir)
     print(json.dumps(asdict(execution.summary), sort_keys=True))

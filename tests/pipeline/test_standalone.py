@@ -8,6 +8,7 @@ import pytest
 
 import incident_awareness.pipeline.standalone as standalone_module
 from incident_awareness.collection.collector.sysmon_jsonl import SysmonJsonlRecord
+from incident_awareness.common.models.pipeline_runtime import PipelineRuntimeState, PipelineStage
 from incident_awareness.common.models.run import RunType
 from incident_awareness.normalization.sysmon import SysmonNormalizationContext
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
@@ -232,10 +233,16 @@ def test_standalone_run_persists_fusion_trace_and_runtime_config(
 
     monkeypatch.setattr(standalone_module, "load_s0_pipeline_artifacts", lambda _: artifacts)
 
-    def normalize(ordered_artifacts: S0PipelineArtifacts) -> object:
+    def normalize(
+        ordered_artifacts: S0PipelineArtifacts,
+        *,
+        progress_callback,
+    ) -> object:
         normalized_record_ids.extend(
             record.data["RecordId"] for record in ordered_artifacts.sysmon_records
         )
+        progress_callback(1)
+        progress_callback(2)
         return normalized_artifacts
 
     monkeypatch.setattr(standalone_module, "normalize_sysmon_and_extract_evidence", normalize)
@@ -270,7 +277,16 @@ def test_standalone_run_persists_fusion_trace_and_runtime_config(
     monkeypatch.setattr(standalone_module, "build_execution_summary", lambda *_: summary)
 
     connection = object()
-    assert run_prepared_standalone_run(prepared, connection=connection) is summary
+    snapshots = []
+
+    assert (
+        run_prepared_standalone_run(
+            prepared,
+            connection=connection,
+            runtime_observer=snapshots.append,
+        )
+        is summary
+    )
     assert normalized_record_ids == [2, 1]
     assert [record.data["RecordId"] for record in persisted["args"][0].sysmon_records] == [2, 1]
     assert persisted["args"][1:] == (
@@ -283,6 +299,342 @@ def test_standalone_run_persists_fusion_trace_and_runtime_config(
     )
     assert persisted["connection"] is connection
     assert persisted["commit"] is True
+    assert [snapshot.current_stage for snapshot in snapshots] == [
+        PipelineStage.NORMALIZATION,
+        PipelineStage.NORMALIZATION,
+        PipelineStage.NORMALIZATION,
+        PipelineStage.FUSION,
+        PipelineStage.HYBRID,
+        PipelineStage.PERSISTENCE,
+        None,
+    ]
+    assert [snapshot.normalization_processed_count for snapshot in snapshots] == [
+        0,
+        1,
+        2,
+        2,
+        2,
+        2,
+        2,
+    ]
+    assert all(snapshot.current_stage is not PipelineStage.FAST_HANDOFF for snapshot in snapshots)
+    assert snapshots[-1].status is PipelineRuntimeState.COMPLETED
+
+
+def test_standalone_commit_false_does_not_publish_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    prepared, summary = _configure_runtime_stage_stubs(monkeypatch)
+    snapshots = []
+
+    # When
+    actual = run_prepared_standalone_run(
+        prepared,
+        connection=object(),
+        commit=False,
+        runtime_observer=snapshots.append,
+    )
+
+    # Then
+    assert actual is summary
+    assert snapshots[-1].status is PipelineRuntimeState.RUNNING
+    assert snapshots[-1].current_stage is PipelineStage.PERSISTENCE
+    assert all(snapshot.status is not PipelineRuntimeState.COMPLETED for snapshot in snapshots)
+
+
+def test_standalone_artifact_validation_failure_publishes_no_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    expected_error = ValueError("invalid artifacts")
+    prepared = SimpleNamespace(inputs=SimpleNamespace(entity_id="WIN-01"))
+    snapshots = []
+    monkeypatch.setattr(
+        standalone_module,
+        "load_s0_pipeline_artifacts",
+        lambda _: (_ for _ in ()).throw(expected_error),
+    )
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
+        run_prepared_standalone_run(
+            prepared,
+            connection=object(),
+            runtime_observer=snapshots.append,
+        )
+
+    # Then
+    assert exc_info.value is expected_error
+    assert snapshots == []
+
+
+@pytest.mark.parametrize(
+    ("commit", "expected_state", "expected_failed_stage"),
+    [
+        (True, PipelineRuntimeState.COMPLETED, None),
+        (False, PipelineRuntimeState.FAILED, PipelineStage.PERSISTENCE),
+    ],
+)
+def test_standalone_summary_failure_uses_business_commit_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    commit: bool,
+    expected_state: PipelineRuntimeState,
+    expected_failed_stage: PipelineStage | None,
+) -> None:
+    # Given
+    expected_error = RuntimeError("summary failed")
+    prepared, _ = _configure_runtime_stage_stubs(monkeypatch)
+    persistence_commits: list[bool] = []
+    snapshots = []
+    monkeypatch.setattr(
+        standalone_module,
+        "persist_s0_results",
+        lambda *args, **kwargs: persistence_commits.append(kwargs["commit"]),
+    )
+    monkeypatch.setattr(
+        standalone_module,
+        "build_execution_summary",
+        lambda *args: (_ for _ in ()).throw(expected_error),
+    )
+
+    # When
+    with pytest.raises(RuntimeError) as exc_info:
+        run_prepared_standalone_run(
+            prepared,
+            connection=object(),
+            commit=commit,
+            runtime_observer=snapshots.append,
+        )
+
+    # Then
+    assert exc_info.value is expected_error
+    assert persistence_commits == [commit]
+    assert snapshots[-1].status is expected_state
+    assert snapshots[-1].failed_stage is expected_failed_stage
+
+
+@pytest.mark.parametrize(
+    ("failing_stage", "expected_stage"),
+    [
+        ("normalization", PipelineStage.NORMALIZATION),
+        ("fusion", PipelineStage.FUSION),
+        ("hybrid", PipelineStage.HYBRID),
+        ("persistence", PipelineStage.PERSISTENCE),
+    ],
+)
+def test_standalone_stage_failure_publishes_failed_stage(
+    monkeypatch: pytest.MonkeyPatch,
+    failing_stage: str,
+    expected_stage: PipelineStage,
+) -> None:
+    # Given
+    expected_error = RuntimeError(f"{failing_stage} failed")
+    prepared, _ = _configure_runtime_stage_stubs(
+        monkeypatch,
+        failing_stage=failing_stage,
+        error=expected_error,
+    )
+    snapshots = []
+
+    # When
+    with pytest.raises(RuntimeError) as exc_info:
+        run_prepared_standalone_run(
+            prepared,
+            connection=object(),
+            runtime_observer=snapshots.append,
+        )
+
+    # Then
+    assert exc_info.value is expected_error
+    assert snapshots[-1].status is PipelineRuntimeState.FAILED
+    assert snapshots[-1].failed_stage is expected_stage
+
+
+def test_standalone_observer_failure_does_not_change_business_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    prepared, summary = _configure_runtime_stage_stubs(monkeypatch)
+
+    def failing_observer(status) -> None:
+        raise RuntimeError("telemetry unavailable")
+
+    # When
+    actual = run_prepared_standalone_run(
+        prepared,
+        connection=object(),
+        runtime_observer=failing_observer,
+    )
+
+    # Then
+    assert actual is summary
+
+
+@pytest.mark.parametrize("commit_fails", [False, True], ids=("commit-success", "commit-failure"))
+def test_standalone_cli_finalizes_runtime_after_connection_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    commit_fails: bool,
+) -> None:
+    # Given
+    events: list[str] = []
+    tracker = _RuntimeTrackerSpy(events)
+    execution = standalone_module.StandaloneExecution(
+        output_dir=tmp_path / "output",
+        summary=standalone_module.PipelineExecutionSummary(
+            run_id="RUN-20261009-001",
+            entity_id="WIN-01",
+            normalized_event_count=1,
+            evidence_count=1,
+            fusion_status="detected",
+            detector_status="not_evaluated",
+            decision_path=None,
+        ),
+        _runtime_tracker=tracker,
+    )
+    observer = _ObserverContextSpy(events)
+    connection = _ConnectionContextSpy(events, commit_fails=commit_fails)
+    monkeypatch.setattr(
+        standalone_module.DatabaseConfig,
+        "from_environment",
+        lambda: SimpleNamespace(url="postgresql://test"),
+    )
+    monkeypatch.setattr(standalone_module, "PostgresPipelineRuntimeObserver", lambda: observer)
+    monkeypatch.setattr(standalone_module.psycopg, "connect", lambda *args, **kwargs: connection)
+
+    def run_standalone(**kwargs):
+        events.append("standalone")
+        assert kwargs["runtime_observer"] is observer
+        return execution
+
+    monkeypatch.setattr(standalone_module, "run_standalone_sysmon_jsonl", run_standalone)
+    argv = ["--sysmon-jsonl", str(tmp_path / "source.jsonl")]
+
+    # When
+    if commit_fails:
+        with pytest.raises(RuntimeError, match="commit failed"):
+            standalone_module.main(argv)
+    else:
+        assert standalone_module.main(argv) == 0
+
+    # Then
+    terminal_event = "failed:persistence" if commit_fails else "completed"
+    assert events == [
+        "observer-enter",
+        "connection-enter",
+        "standalone",
+        "connection-exit",
+        terminal_event,
+        "observer-exit",
+    ]
+
+
+def _configure_runtime_stage_stubs(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    failing_stage: str | None = None,
+    error: Exception | None = None,
+):
+    prepared = SimpleNamespace(inputs=SimpleNamespace(entity_id="WIN-01"))
+    artifacts = S0PipelineArtifacts(
+        run_metadata=SimpleNamespace(run_id="RUN-20261009-001"),
+        sysmon_records=(
+            SysmonJsonlRecord(
+                record_no=1,
+                data=_record(
+                    "2026-10-09 00:00:00.000",
+                    time_created="2026-10-09T00:00:00Z",
+                ),
+            ),
+        ),
+        normalization_context=SysmonNormalizationContext(
+            run_id="RUN-20261009-001",
+            raw_log_id="RAW-RUN-20261009-001-SYSMON-001",
+            segment_no=1,
+        ),
+    )
+    normalized = object()
+    fusion_result = object()
+    fast_result = object()
+    decision_result = object()
+    summary = object()
+    expected_error = error or RuntimeError("stage failed")
+    monkeypatch.setattr(standalone_module, "load_s0_pipeline_artifacts", lambda _: artifacts)
+
+    def normalize(value, *, progress_callback):
+        if failing_stage == "normalization":
+            raise expected_error
+        progress_callback(1)
+        return normalized
+
+    def fuse(*args):
+        if failing_stage == "fusion":
+            raise expected_error
+        return SimpleNamespace(
+            fusion_result=fusion_result,
+            stopping_trace=object(),
+            runtime_config_snapshot=object(),
+        )
+
+    def combine(*args):
+        if failing_stage == "hybrid":
+            raise expected_error
+        return decision_result
+
+    def persist(*args, **kwargs):
+        if failing_stage == "persistence":
+            raise expected_error
+
+    monkeypatch.setattr(standalone_module, "normalize_sysmon_and_extract_evidence", normalize)
+    monkeypatch.setattr(standalone_module, "run_s0_fusion_with_trace", fuse)
+    monkeypatch.setattr(
+        standalone_module,
+        "build_default_standalone_fast_detection",
+        lambda **kwargs: fast_result,
+    )
+    monkeypatch.setattr(standalone_module, "combine_parallel_decision", combine)
+    monkeypatch.setattr(standalone_module, "persist_s0_results", persist)
+    monkeypatch.setattr(standalone_module, "build_execution_summary", lambda *args: summary)
+    return prepared, summary
+
+
+class _RuntimeTrackerSpy:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def complete(self) -> None:
+        self._events.append("completed")
+
+    def fail(self, stage: PipelineStage) -> None:
+        self._events.append(f"failed:{stage.value}")
+
+
+class _ObserverContextSpy:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def __enter__(self):
+        self._events.append("observer-enter")
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self._events.append("observer-exit")
+
+
+class _ConnectionContextSpy:
+    def __init__(self, events: list[str], *, commit_fails: bool) -> None:
+        self._events = events
+        self._commit_fails = commit_fails
+
+    def __enter__(self):
+        self._events.append("connection-enter")
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self._events.append("connection-exit")
+        if self._commit_fails:
+            raise RuntimeError("commit failed")
 
 
 class _UnusedIdentifierConnection:
