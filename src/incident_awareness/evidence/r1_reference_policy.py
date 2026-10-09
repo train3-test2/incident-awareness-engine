@@ -109,6 +109,7 @@ class R1ReferencePolicy:
     """검증된 reference policy와 canonical provenance."""
 
     config_path: Path
+    canonical_path: str
     policy_id: str
     version: str
     family_id: str
@@ -139,6 +140,8 @@ class R1WmiActionResult:
 class R1ReferenceSelection:
     """유일하게 선택된 reference와 적용한 policy provenance."""
 
+    run_id: str
+    entity_id: str
     reference_action_id: str
     reference_time: datetime
     reference_source_event_id: str
@@ -247,7 +250,9 @@ def resolve_r1_wmi_reference(
         policy_id=policy.policy_id,
         reference_policy_version=policy.version,
         policy_config_hash=policy.config_hash,
-        policy_config_path=policy.config_path.as_posix(),
+        run_id=selected.run_id,
+        entity_id=selected.host_id,
+        policy_config_path=policy.canonical_path,
         scenario_evaluation_horizon_sec=evaluation_horizon_sec,
         expected_evaluation_horizon_sec=policy.expected_evaluation_horizon_sec,
         horizon_matches=True,
@@ -301,9 +306,19 @@ def _build_policy(config_path: Path, policy_config: _ReferencePolicyConfig) -> R
     ).encode("utf-8")
     return R1ReferencePolicy(
         config_path=config_path.resolve(),
+        canonical_path=_canonical_config_path(config_path),
         config_hash=hashlib.sha256(canonical_payload).hexdigest(),
         **policy_config.model_dump(),
     )
+
+
+def _canonical_config_path(config_path: Path) -> str:
+    resolved_path = config_path.resolve()
+    repository_root = Path(__file__).parents[3].resolve()
+    try:
+        return resolved_path.relative_to(repository_root).as_posix()
+    except ValueError:
+        return resolved_path.as_posix()
 
 
 def _validate_policy_binding(
