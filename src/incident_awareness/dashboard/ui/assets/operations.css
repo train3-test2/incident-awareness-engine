@@ -54,6 +54,11 @@
     overflow-wrap: anywhere;
 }
 
+.runtime-card__title a {
+    color: var(--shell-color-primary);
+    text-underline-offset: 0.18em;
+}
+
 .runtime-card__fields {
     display: grid;
     grid-template-columns: max-content minmax(0, 1fr);

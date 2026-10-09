@@ -125,7 +125,9 @@ function renderSuccess(payload) {
 
     const snapshot = payload.runtime_snapshot;
     if (snapshot === null) {
-        runtimeSnapshotStatus.textContent = "저장된 Historical Runtime Snapshot이 없습니다.";
+        runtimeSnapshotStatus.textContent = (
+            "저장된 Historical Runtime Snapshot이 없어 아래 Runtime 상세를 표시할 수 없습니다."
+        );
         historicalDetectionStatus.textContent = "저장된 Historical Detection Runtime이 없습니다.";
         historicalFusionStatus.textContent = "저장된 Historical Fusion Runtime이 없습니다.";
         historicalDetection.replaceChildren();
@@ -133,7 +135,10 @@ function renderSuccess(payload) {
         return;
     }
 
-    runtimeSnapshotStatus.textContent = "Historical Runtime Snapshot을 불러왔습니다.";
+    runtimeSnapshotStatus.textContent = (
+        "Historical Runtime Snapshot을 불러왔습니다. "
+        + "Detection과 Fusion 상세 값은 아래 Runtime 카드에서 확인할 수 있습니다."
+    );
     historicalDetectionStatus.textContent = "Historical Detection Runtime을 불러왔습니다.";
     historicalFusionStatus.textContent = "Historical Fusion Runtime을 불러왔습니다.";
     renderDetectionRuntime(snapshot.detection_result);

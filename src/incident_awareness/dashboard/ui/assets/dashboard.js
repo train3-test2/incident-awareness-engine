@@ -43,10 +43,7 @@ function createRunField(label, value) {
     return field;
 }
 
-function createRunCard(run) {
-    const card = document.createElement("article");
-    card.classList.add("recent-run-card");
-
+function createRunHeading(run) {
     const heading = document.createElement("h3");
     heading.classList.add("recent-run-card__title");
     if (typeof run.run_id === "string" && run.run_id.trim()) {
@@ -57,6 +54,27 @@ function createRunCard(run) {
     } else {
         heading.textContent = displayValue(run.run_id);
     }
+    return heading;
+}
+
+function createRecentRunCard(run) {
+    const card = document.createElement("article");
+    card.classList.add("recent-run-card", "recent-run-card--compact");
+
+    const fields = document.createElement("dl");
+    fields.classList.add("recent-run-card__fields");
+    fields.append(
+        createRunField("Type", getRunTypeLabel(run.run_type)),
+        createRunField("Observed Start", formatRunTimestamp(run.start_time)),
+    );
+
+    card.append(createRunHeading(run), fields);
+    return card;
+}
+
+function createRunCard(run) {
+    const card = document.createElement("article");
+    card.classList.add("recent-run-card");
 
     const fields = document.createElement("dl");
     fields.classList.add("recent-run-card__fields");
@@ -64,11 +82,11 @@ function createRunCard(run) {
         createRunField("Scenario", displayValue(run.scenario_id)),
         createRunField("Type", getRunTypeLabel(run.run_type)),
         createRunField("Target", displayValue(run.target_host)),
-        createRunField("Start", formatRunTimestamp(run.start_time)),
-        createRunField("End", formatRunTimestamp(run.end_time)),
+        createRunField("Observed Start", formatRunTimestamp(run.start_time)),
+        createRunField("Observed End", formatRunTimestamp(run.end_time)),
     );
 
-    card.append(heading, fields);
+    card.append(createRunHeading(run), fields);
     return card;
 }
 
@@ -122,7 +140,7 @@ function createRuntimeSummaryCard(runtime, telemetryAvailable) {
     fields.classList.add("runtime-summary-card__fields");
     fields.append(
         createRuntimeSummaryField("현재 단계", getStageLabel(runtime.current_stage)),
-        createRuntimeSummaryField("마지막 갱신", formatRunTimestamp(runtime.updated_at)),
+        createRuntimeSummaryField("Runtime 마지막 갱신", formatRunTimestamp(runtime.updated_at)),
         createRuntimeSummaryField("Telemetry", presentation.telemetryLabel),
     );
     if (presentation.livenessLabel !== null) {
@@ -139,7 +157,7 @@ function renderOverviewState(state) {
     totalRunsValue.textContent = displayValue(state.totalRuns);
     overviewStatus.textContent = state.totalMessage;
     recentRunsStatus.textContent = state.message;
-    const cards = state.recentRuns.map((run) => createRunCard(run));
+    const cards = state.recentRuns.map((run) => createRecentRunCard(run));
     recentRunsList.replaceChildren(...cards);
 }
 

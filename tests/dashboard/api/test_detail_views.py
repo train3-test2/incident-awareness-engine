@@ -136,6 +136,9 @@ def test_run_detail_view_serves_html_shell_without_database_access(
         "fusion-engine-navigation",
     ):
         assert f'id="{container_id}"' in html
+    assert 'class="decision-status-guide"' in html
+    assert "평가 안 함은 해당 경로가" in html
+    assert "저장된 사유가 없으면 원인을 추정하지 않습니다." in html
     assert database_connection_attempts == []
 
 
@@ -182,6 +185,8 @@ def test_fusion_engine_view_serves_html_shell_without_database_access(
         "run-detail-back-navigation",
     ):
         assert f'id="{container_id}"' in html
+    assert 'class="decision-status-guide"' in html
+    assert "평가 안 함은 해당 경로가" in html
     assert database_connection_attempts == []
 
 
@@ -223,6 +228,8 @@ def test_historical_decision_view_serves_html_shell_without_database_access(
         "run-detail-back-navigation",
     ):
         assert f'id="{container_id}"' in html
+    assert 'class="decision-status-guide"' in html
+    assert "Snapshot의 Detection과 Fusion 상세 값은 아래 Runtime 카드에 표시됩니다." in html
     assert database_connection_attempts == []
 
 
@@ -884,6 +891,10 @@ def test_fusion_engine_score_trajectory_is_accessible() -> None:
     assert 'svg.setAttribute(\n        "aria-labelledby"' in normalized_script
     assert 'createSvgElement("title")' in script
     assert 'createSvgElement("desc")' in script
+    assert 'document.createElement("details")' in script
+    assert 'document.createElement("summary")' in script
+    assert "`전체 Point ${points.length}개 보기`" in script
+    assert "details.append(summary, wrapper);" in script
     for label in (
         "Score",
         "T_on",
@@ -949,7 +960,8 @@ def test_historical_decision_assets_use_safe_dom_and_pure_contract() -> None:
     assert "decision.t_e" in script
     assert "Math.min(" not in script
     assert "Date.parse(decision.t_e" not in script
-    assert "저장된 Historical Runtime Snapshot이 없습니다." in script
+    assert "저장된 Historical Runtime Snapshot이 없어" in script
+    assert "Detection과 Fusion 상세 값은 아래 Runtime 카드에서 확인할 수 있습니다." in script
     for safe_api in (
         "document.createElement(",
         ".textContent =",

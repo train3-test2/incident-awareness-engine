@@ -178,7 +178,12 @@ function createChartLegend(model) {
     return legend;
 }
 
-function createTraceTable(points) {
+export function createTraceTable(points) {
+    const details = document.createElement("details");
+    details.classList.add("fusion-trace-details");
+    const summary = document.createElement("summary");
+    summary.textContent = `전체 Point ${points.length}개 보기`;
+
     const wrapper = document.createElement("div");
     wrapper.classList.add("fusion-trace-table-wrapper");
     const table = document.createElement("table");
@@ -217,7 +222,8 @@ function createTraceTable(points) {
     }
     table.append(head, body);
     wrapper.append(table);
-    return wrapper;
+    details.append(summary, wrapper);
+    return details;
 }
 
 function createScoreTrajectoryChart(model) {

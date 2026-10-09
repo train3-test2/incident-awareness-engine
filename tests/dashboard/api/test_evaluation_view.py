@@ -209,7 +209,13 @@ def test_evaluation_stage_two_renders_semantic_tables_without_reordering() -> No
         assert f'document.createElement("{element}")' in script
     assert 'header.setAttribute("scope", "col")' in script
     assert "evaluation-table-scroll" in script
+    assert "scroll.tabIndex = 0;" in script
+    assert 'scroll.setAttribute("role", "region")' in script
+    assert 'scroll.setAttribute("aria-label", `${captionText} 표`)' in script
     assert "overflow-x: auto" in stylesheet
+    assert "white-space: nowrap" in stylesheet
+    assert "position: sticky" in stylesheet
+    assert ".evaluation-table-scroll:focus-visible" in stylesheet
     assert "TTSD는 검출된 Attack Run 기준이며 Run Recall과 함께 해석해야 합니다." in script
     assert "FA/BH는 관측된 Benign Run 시간과 함께 해석해야 합니다." in script
     assert "Runtime의 최종 경로 선택과는 별개입니다." in script
