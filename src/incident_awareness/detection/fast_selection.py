@@ -25,10 +25,16 @@ from incident_awareness.integration.fast_hit_handoff import (
 
 
 class FastSelectionPolicy(BaseModel):
-    """An operator-provided set/config binding, not approval inferred from hits."""
+    """Validate config binding and retain caller-provided set provenance.
+
+    detector_set_version is a caller-provided provenance assertion: this module
+    does not compare it with RunMetadata or an approved set-to-config registry,
+    and does not verify detector-set approval or freeze status.
+    """
 
     model_config = ConfigDict(extra="forbid")
     policy_version: Literal["fast-selection-v1"]
+    # Syntax-checked and audited only; semantic set binding is not verified here.
     detector_set_version: Identifier
     detector_config_version: Identifier
     config_sha256: Sha256
