@@ -353,11 +353,30 @@ def test_operations_script_builds_runtime_cards_with_dom_api() -> None:
     assert "term.textContent = label;" in field_body
     assert "description.textContent = value;" in field_body
     assert 'document.createElement("article")' in card_body
+    assert 'if (runtime.status === "completed" && runtime.run_id.trim()) {' in card_body
+    assert "link.href = buildRunDetailViewPath(runtime.run_id);" in card_body
+    assert "link.textContent = runtime.run_id;" in card_body
     assert "heading.textContent = displayValue(runtime.run_id);" in card_body
     assert 'document.createElement("span")' in card_body
     assert 'badge.classList.add("status-badge")' in card_body
     assert "badge.textContent = presentation.statusLabel;" in card_body
     assert "header.append(heading, badge);" in card_body
+
+
+def test_operations_links_only_completed_runtime_runs_to_run_detail() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/operations.js").text
+    card_body = _block_body(script, "function createRuntimeCard(runtime, telemetryAvailable) {")
+
+    # Then
+    assert 'import { buildRunDetailViewPath } from "./run-detail-contract.mjs";' in script
+    assert 'if (runtime.status === "completed" && runtime.run_id.trim()) {' in card_body
+    assert "link.href = buildRunDetailViewPath(runtime.run_id);" in card_body
+    assert card_body.count("buildRunDetailViewPath") == 1
+    assert "if (runtime.run_id.trim()) {" not in card_body
 
 
 def test_operations_script_renders_cards_from_presentation_contract() -> None:

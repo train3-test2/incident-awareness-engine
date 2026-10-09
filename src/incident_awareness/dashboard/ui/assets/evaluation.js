@@ -85,6 +85,9 @@ function createEmptyMessage(message) {
 function createTable(captionText, columns, rows, emptyMessage) {
     const scroll = document.createElement("div");
     scroll.classList.add("evaluation-table-scroll");
+    scroll.tabIndex = 0;
+    scroll.setAttribute("role", "region");
+    scroll.setAttribute("aria-label", `${captionText} 표`);
 
     const table = document.createElement("table");
     table.classList.add("evaluation-table");

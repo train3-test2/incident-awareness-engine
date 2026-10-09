@@ -28,6 +28,14 @@
             <h1 class="page-title">운영 View</h1>
             <p class="page-description">침해사고 인지 시스템 실행 및 사건 조회</p>
         </header>
+        <aside class="dashboard-time-note" role="note" aria-label="Run 시각 안내">
+            <strong>Run 시각 안내</strong>
+            <p>
+                Run의 Start와 End는 원본 데이터의 관측 구간입니다. 목록은 API가 제공하는 관측 시작
+                시각 순서를 그대로 따르며, 시스템 처리 시각과는 다릅니다. 처리 시각이 저장되지 않은
+                Run은 Run ID나 Event timestamp로 추정하지 않습니다.
+            </p>
+        </aside>
         <div class="dashboard-grid">
             <section class="section-card dashboard-section dashboard-section--summary" aria-labelledby="overview-heading">
                 <div class="section-header">
@@ -45,12 +53,12 @@
             <section class="section-card dashboard-section" aria-labelledby="recent-runs-heading">
                 <div class="section-header">
                     <h2 id="recent-runs-heading" class="section-heading">Recent Runs</h2>
-                    <p class="section-description">최근 실행 순서를 그대로 표시합니다.</p>
+                    <p class="section-description">관측 시작 시각이 최근인 Run을 간략히 표시합니다.</p>
                 </div>
                 <div id="recent-runs-status" class="status-message dashboard-status" role="status" aria-live="polite">
                     Recent Runs를 불러오는 중입니다.
                 </div>
-                <div id="recent-runs-list" class="run-card-list"></div>
+                <div id="recent-runs-list" class="run-card-list run-card-list--compact"></div>
             </section>
             <section class="section-card dashboard-section dashboard-section--wide" aria-labelledby="runtime-summary-heading">
                 <div class="section-header dashboard-section-header">
@@ -68,12 +76,15 @@
             <section class="section-card dashboard-section dashboard-section--wide" aria-labelledby="runs-heading">
                 <div class="section-header">
                     <h2 id="runs-heading" class="section-heading">Runs</h2>
-                    <p class="section-description">조회 가능한 실행과 상세 화면 연결입니다.</p>
+                    <p class="section-description">관측 구간과 실행 메타데이터를 확인하고 상세 화면으로 이동합니다.</p>
                 </div>
-                <div id="runs-status" class="status-message dashboard-status" role="status" aria-live="polite">
-                    Run 목록을 불러오는 중입니다.
-                </div>
-                <div id="runs-list" class="run-card-list"></div>
+                <details class="dashboard-runs-disclosure">
+                    <summary>전체 Runs 목록 펼치기</summary>
+                    <div id="runs-status" class="status-message dashboard-status" role="status" aria-live="polite">
+                        Run 목록을 불러오는 중입니다.
+                    </div>
+                    <div id="runs-list" class="run-card-list"></div>
+                </details>
             </section>
         </div>
     </main>

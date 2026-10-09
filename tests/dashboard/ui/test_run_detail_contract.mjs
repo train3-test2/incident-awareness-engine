@@ -121,6 +121,48 @@ test("Run Detail status presentation maps known values with a safe fallback", ()
     assert.deepEqual(labels, ["탐지", "미탐", "평가 안 함", "future_status", "-"]);
 });
 
+test("Representative persisted statuses keep not-evaluated distinct from miss", () => {
+    // Given
+    const runs = [
+        {
+            runId: "RUN-STATE-NOT-EVALUATED",
+            fastStatus: "not_evaluated",
+            fusionStatus: "not_evaluated",
+            stoppingTraceCount: 0,
+        },
+        {
+            runId: "RUN-STATE-FUSION-MISS",
+            fastStatus: "not_evaluated",
+            fusionStatus: "miss",
+            stoppingTraceCount: 67,
+        },
+    ];
+
+    // When
+    const presentations = runs.map((run) => ({
+        runId: run.runId,
+        fastStatus: getStatusLabel(run.fastStatus),
+        fusionStatus: getStatusLabel(run.fusionStatus),
+        stoppingTraceCount: run.stoppingTraceCount,
+    }));
+
+    // Then
+    assert.deepEqual(presentations, [
+        {
+            runId: "RUN-STATE-NOT-EVALUATED",
+            fastStatus: "평가 안 함",
+            fusionStatus: "평가 안 함",
+            stoppingTraceCount: 0,
+        },
+        {
+            runId: "RUN-STATE-FUSION-MISS",
+            fastStatus: "평가 안 함",
+            fusionStatus: "미탐",
+            stoppingTraceCount: 67,
+        },
+    ]);
+});
+
 test("Run Detail decision path presentation preserves the persisted vocabulary", () => {
     // Given
     const paths = ["fast", "fusion", "fast_and_fusion", "none", null, "future_path"];

@@ -242,6 +242,12 @@
 .evaluation-table-scroll {
     max-width: 100%;
     overflow-x: auto;
+    scrollbar-gutter: stable;
+}
+
+.evaluation-table-scroll:focus-visible {
+    outline: 0.125rem solid var(--shell-color-primary);
+    outline-offset: 0.125rem;
 }
 
 .evaluation-table {
@@ -263,6 +269,7 @@
     border-bottom: 1px solid var(--shell-color-border);
     text-align: left;
     vertical-align: top;
+    white-space: nowrap;
 }
 
 .evaluation-table th {
@@ -273,7 +280,20 @@
 }
 
 .evaluation-table td.identifier {
-    overflow-wrap: anywhere;
+    overflow-wrap: normal;
+    word-break: normal;
+}
+
+.evaluation-table th:first-child,
+.evaluation-table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background-color: var(--shell-color-surface-subtle);
+}
+
+.evaluation-table td:first-child {
+    background-color: var(--shell-color-surface);
 }
 
 .evaluation-table__empty {

@@ -7,6 +7,7 @@ import {
     getStageLabel,
     resolveRuntimeQueryState,
 } from "./operations-contract.mjs";
+import { buildRunDetailViewPath } from "./run-detail-contract.mjs";
 
 const RUNTIME_ENDPOINT = "/operations/runtime";
 const POLL_INTERVAL_MS = 5000;
@@ -51,7 +52,7 @@ function createField(label, value) {
     return field;
 }
 
-function createRuntimeCard(runtime, telemetryAvailable) {
+export function createRuntimeCard(runtime, telemetryAvailable) {
     const presentation = getRuntimeStatePresentation(runtime, telemetryAvailable);
     const progress = getRuntimeProgressPresentation(runtime);
 
@@ -63,7 +64,14 @@ function createRuntimeCard(runtime, telemetryAvailable) {
 
     const heading = document.createElement("h3");
     heading.classList.add("runtime-card__title");
-    heading.textContent = displayValue(runtime.run_id);
+    if (runtime.status === "completed" && runtime.run_id.trim()) {
+        const link = document.createElement("a");
+        link.href = buildRunDetailViewPath(runtime.run_id);
+        link.textContent = runtime.run_id;
+        heading.append(link);
+    } else {
+        heading.textContent = displayValue(runtime.run_id);
+    }
 
     const badge = document.createElement("span");
     badge.classList.add("status-badge");

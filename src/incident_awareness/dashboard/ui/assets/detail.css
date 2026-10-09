@@ -6,6 +6,23 @@
     margin: calc(-1 * var(--shell-space-2)) 0 var(--shell-space-4);
 }
 
+.decision-status-guide {
+    margin-bottom: var(--shell-space-4);
+    padding: var(--shell-space-3) var(--shell-space-4);
+    color: var(--shell-color-muted);
+    background-color: var(--shell-color-primary-soft);
+    border: 1px solid var(--shell-color-border);
+    border-radius: var(--shell-radius-medium);
+}
+
+.decision-status-guide strong {
+    color: var(--shell-color-text);
+}
+
+.decision-status-guide p {
+    margin: var(--shell-space-1) 0 0;
+}
+
 .detail-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -130,7 +130,28 @@
 
 .fusion-trace-table-wrapper {
     max-width: 100%;
+    margin-top: var(--shell-space-3);
     overflow-x: auto;
+}
+
+.fusion-trace-details {
+    margin-top: var(--shell-space-3);
+}
+
+.fusion-trace-details summary {
+    width: fit-content;
+    padding: var(--shell-space-2) var(--shell-space-3);
+    color: var(--shell-color-primary);
+    font-weight: 700;
+    cursor: pointer;
+    background-color: var(--shell-color-surface);
+    border: 1px solid var(--shell-color-border-strong);
+    border-radius: var(--shell-radius-small);
+}
+
+.fusion-trace-details summary:hover {
+    color: var(--shell-color-primary-strong);
+    background-color: var(--shell-color-primary-soft);
 }
 
 .fusion-trace-table {

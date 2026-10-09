@@ -1,6 +1,7 @@
 // Operations View UI contract: runs the real presentation module under Node's built-in test runner.
 // Run with: node --test tests/dashboard/ui/test_operations_contract.mjs
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -33,6 +34,35 @@ function presentationText(presentation) {
     return [presentation.statusLabel, presentation.telemetryLabel, presentation.livenessLabel]
         .filter((label) => label !== null)
         .join(" ");
+}
+
+function createFakeElement(tagName) {
+    let text = "";
+    return {
+        tagName: tagName.toUpperCase(),
+        children: [],
+        attributes: new Map(),
+        classList: {
+            values: new Set(),
+            add(...values) {
+                for (const value of values) {
+                    this.values.add(value);
+                }
+            },
+        },
+        append(...children) {
+            this.children.push(...children);
+        },
+        setAttribute(name, value) {
+            this.attributes.set(name, String(value));
+        },
+        get textContent() {
+            return text;
+        },
+        set textContent(value) {
+            text = String(value);
+        },
+    };
 }
 
 test("fresh running reports recent telemetry without claiming liveness", () => {
@@ -256,5 +286,94 @@ test("query state rejects invalid previous items, success items, and result kind
     // When / Then
     for (const invalidCall of invalidCalls) {
         assert.throws(invalidCall);
+    }
+});
+
+test("Operations links only completed Runtime items with the shared Run Detail path", async () => {
+    // Given
+    const scriptPath = new URL(
+        "../../../src/incident_awareness/dashboard/ui/assets/operations.js",
+        import.meta.url,
+    );
+
+    // When
+    const script = await readFile(scriptPath, "utf8");
+    const cardSource = script.slice(
+        script.indexOf("function createRuntimeCard"),
+        script.indexOf("function renderRuntimeItems"),
+    );
+
+    // Then
+    assert.match(
+        script,
+        /import \{ buildRunDetailViewPath \} from "\.\/run-detail-contract\.mjs";/,
+    );
+    assert.match(
+        cardSource,
+        /if \(runtime\.status === "completed" && runtime\.run_id\.trim\(\)\) \{/,
+    );
+    assert.match(cardSource, /link\.href = buildRunDetailViewPath\(runtime\.run_id\);/);
+    assert.equal(cardSource.match(/buildRunDetailViewPath/g)?.length, 1);
+});
+
+test("Operations DOM renderer links completed Runs and leaves running Runs as text", async () => {
+    // Given
+    const originalDocument = globalThis.document;
+    globalThis.document = {
+        createElement: createFakeElement,
+        getElementById() {
+            return null;
+        },
+    };
+    const moduleUrl = new URL(
+        "../../../src/incident_awareness/dashboard/ui/assets/operations.js",
+        import.meta.url,
+    );
+
+    try {
+        const operationsContractUrl = new URL(
+            "../../../src/incident_awareness/dashboard/ui/assets/operations-contract.mjs",
+            import.meta.url,
+        );
+        const runDetailContractUrl = new URL(
+            "../../../src/incident_awareness/dashboard/ui/assets/run-detail-contract.mjs",
+            import.meta.url,
+        );
+        const moduleSource = (await readFile(moduleUrl, "utf8"))
+            .replace("./operations-contract.mjs", operationsContractUrl.href)
+            .replace("./run-detail-contract.mjs", runDetailContractUrl.href);
+        const moduleDataUrl = `data:text/javascript;charset=utf-8,${encodeURIComponent(
+            moduleSource,
+        )}`;
+        const { createRuntimeCard } = await import(moduleDataUrl);
+        const completed = runtime({
+            run_id: "RUN 251/completed",
+            status: "completed",
+            current_stage: null,
+            remaining_count: 0,
+        });
+        const running = runtime({ run_id: "RUN-251-running" });
+
+        // When
+        const completedCard = createRuntimeCard(completed, true);
+        const runningCard = createRuntimeCard(running, true);
+        const completedHeading = completedCard.children[0].children[0];
+        const runningHeading = runningCard.children[0].children[0];
+
+        // Then
+        assert.equal(completedHeading.children.length, 1);
+        assert.equal(
+            completedHeading.children[0].href,
+            "/dashboard/runs/RUN%20251%2Fcompleted",
+        );
+        assert.equal(completedHeading.children[0].textContent, "RUN 251/completed");
+        assert.equal(runningHeading.children.length, 0);
+        assert.equal(runningHeading.textContent, "RUN-251-running");
+    } finally {
+        if (originalDocument === undefined) {
+            delete globalThis.document;
+        } else {
+            globalThis.document = originalDocument;
+        }
     }
 });

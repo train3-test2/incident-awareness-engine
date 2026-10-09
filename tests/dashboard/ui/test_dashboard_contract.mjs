@@ -637,3 +637,34 @@ test("Dashboard links only completed Runtime items to Run Detail", async () => {
     assert.equal(cardSource.match(/buildRunDetailViewPath/g)?.length, 1);
     assert.doesNotMatch(cardSource, /if \(runtime\.run_id\.trim\(\)\) \{/);
 });
+
+test("Dashboard separates compact Recent Runs from detailed Runs without reordering", async () => {
+    // Given
+    const scriptPath = new URL(
+        "../../../src/incident_awareness/dashboard/ui/assets/dashboard.js",
+        import.meta.url,
+    );
+    const htmlPath = new URL(
+        "../../../src/incident_awareness/dashboard/ui/dashboard.html",
+        import.meta.url,
+    );
+
+    // When
+    const [script, html] = await Promise.all([
+        readFile(scriptPath, "utf8"),
+        readFile(htmlPath, "utf8"),
+    ]);
+
+    // Then
+    assert.match(script, /state\.recentRuns\.map\(\(run\) => createRecentRunCard\(run\)\)/);
+    assert.match(script, /state\.items\.map\(\(run\) => createRunCard\(run\)\)/);
+    assert.match(script, /createRunField\("Observed Start"/);
+    assert.match(script, /createRunField\("Observed End"/);
+    assert.match(html, /시스템 처리 시각과는 다릅니다/);
+    assert.match(html, /Run ID나 Event timestamp로 추정하지 않습니다/);
+    assert.match(html, /<details class="dashboard-runs-disclosure">/);
+    assert.match(html, /<summary>전체 Runs 목록 펼치기<\/summary>/);
+    assert.doesNotMatch(html, /<details class="dashboard-runs-disclosure" open>/);
+    assert.equal(script.match(/void loadRuns\(\);/g)?.length, 1);
+    assert.doesNotMatch(script, /\.sort\(|\.toSorted\(|\.reverse\(|\.toReversed\(/);
+});

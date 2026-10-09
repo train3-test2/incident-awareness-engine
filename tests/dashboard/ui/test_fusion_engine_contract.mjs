@@ -51,6 +51,25 @@ function makeRuntimeConfig() {
     };
 }
 
+function makeSyntheticPolicyConsistentPoints(count = 67) {
+    return Array.from({ length: count }, (_, index) => {
+        const reachesThreshold = index >= 40;
+        const activatesPolicy = index >= 41;
+        let persistenceCount = null;
+        if (index === 40) {
+            persistenceCount = 1;
+        } else if (index === 41) {
+            persistenceCount = 2;
+        }
+        return {
+            timestamp: new Date(Date.UTC(2026, 9, 6, 0, 0, index)).toISOString(),
+            score: reachesThreshold ? 0.85 : 0.3,
+            persistence_count: persistenceCount,
+            policy_state: activatesPolicy ? "on" : "off",
+        };
+    });
+}
+
 function assertFiniteGeometry(value) {
     if (typeof value === "number") {
         assert.equal(Number.isFinite(value), true);
@@ -67,6 +86,35 @@ function assertFiniteGeometry(value) {
             assertFiniteGeometry(item);
         }
     }
+}
+
+function createFakeElement(tagName) {
+    let text = "";
+    return {
+        tagName: tagName.toUpperCase(),
+        children: [],
+        attributes: new Map(),
+        classList: {
+            values: new Set(),
+            add(...values) {
+                for (const value of values) {
+                    this.values.add(value);
+                }
+            },
+        },
+        append(...children) {
+            this.children.push(...children);
+        },
+        setAttribute(name, value) {
+            this.attributes.set(name, String(value));
+        },
+        get textContent() {
+            return text;
+        },
+        set textContent(value) {
+            text = String(value);
+        },
+    };
 }
 
 function makePayload() {
@@ -367,6 +415,119 @@ test("Score trajectory handles empty points without invalid geometry", () => {
     // Then
     assert.deepEqual(model.points, []);
     assertFiniteGeometry(model);
+});
+
+test("Synthetic zero-point and 67-point traces preserve every point in order", () => {
+    // Given
+    const emptyTrace = { run_id: "RUN-SYNTHETIC-EMPTY", points: [] };
+    const points = makeSyntheticPolicyConsistentPoints();
+    const populatedTrace = { run_id: "RUN-SYNTHETIC-067", points };
+
+    // When
+    const emptyModel = buildScoreTrajectoryModel(emptyTrace, null, CHART_DIMENSIONS);
+    const populatedModel = buildScoreTrajectoryModel(
+        populatedTrace,
+        makeRuntimeConfig(),
+        CHART_DIMENSIONS,
+    );
+
+    // Then
+    assert.equal(emptyModel.points.length, 0);
+    assert.equal(populatedModel.points.length, 67);
+    assert.deepEqual(
+        populatedModel.points.map((point) => point.timestamp),
+        points.map((point) => point.timestamp),
+    );
+    assert.deepEqual(
+        populatedModel.points.map((point) => point.persistence_count),
+        points.map((point) => point.persistence_count),
+    );
+    assert.equal(points[40].policy_state, "off");
+    assert.equal(points[40].persistence_count, 1);
+    assert.equal(points[41].policy_state, "on");
+    assert.equal(points[41].persistence_count, 2);
+});
+
+test("Fusion Point table is collapsed without dropping stored point rows", async () => {
+    // Given
+    const scriptPath = new URL(
+        "../../../src/incident_awareness/dashboard/ui/assets/fusion-engine.js",
+        import.meta.url,
+    );
+
+    // When
+    const script = await readFile(scriptPath, "utf8");
+    const tableSource = script.slice(
+        script.indexOf("function createTraceTable"),
+        script.indexOf("function createScoreTrajectoryChart"),
+    );
+
+    // Then
+    assert.match(tableSource, /document\.createElement\("details"\)/);
+    assert.match(tableSource, /document\.createElement\("summary"\)/);
+    assert.match(tableSource, /for \(const point of points\)/);
+    assert.match(tableSource, /전체 Point \$\{points\.length\}개 보기/);
+    assert.match(tableSource, /details\.append\(summary, wrapper\)/);
+});
+
+test("Fusion details DOM starts closed and contains all 67 synthetic rows", async () => {
+    // Given
+    const originalDocument = globalThis.document;
+    globalThis.document = {
+        createElement: createFakeElement,
+        getElementById() {
+            return null;
+        },
+    };
+    const moduleUrl = new URL(
+        "../../../src/incident_awareness/dashboard/ui/assets/fusion-engine.js",
+        import.meta.url,
+    );
+    const points = makeSyntheticPolicyConsistentPoints();
+
+    try {
+        const fusionContractUrl = new URL(
+            "../../../src/incident_awareness/dashboard/ui/assets/fusion-engine-contract.mjs",
+            import.meta.url,
+        );
+        const runDetailContractUrl = new URL(
+            "../../../src/incident_awareness/dashboard/ui/assets/run-detail-contract.mjs",
+            import.meta.url,
+        );
+        const moduleSource = (await readFile(moduleUrl, "utf8"))
+            .replace("./fusion-engine-contract.mjs", fusionContractUrl.href)
+            .replaceAll("./run-detail-contract.mjs", runDetailContractUrl.href);
+        const moduleDataUrl = `data:text/javascript;charset=utf-8,${encodeURIComponent(
+            moduleSource,
+        )}`;
+        const { createTraceTable } = await import(moduleDataUrl);
+
+        // When
+        const details = createTraceTable(points);
+        const summary = details.children[0];
+        const table = details.children[1].children[0];
+        const rows = table.children[1].children;
+
+        // Then
+        assert.equal(details.tagName, "DETAILS");
+        assert.equal(details.attributes.has("open"), false);
+        assert.equal(summary.textContent, "전체 Point 67개 보기");
+        assert.equal(rows.length, 67);
+        assert.deepEqual(
+            rows.map((row) => row.children[1].textContent),
+            points.map((point) => String(point.score)),
+        );
+        assert.equal(rows[40].children[2].textContent, "Policy OFF");
+        assert.equal(rows[40].children[3].textContent, "1");
+        assert.equal(rows[41].children[2].textContent, "Policy ON");
+        assert.equal(rows[41].children[3].textContent, "2");
+    } finally {
+        if (originalDocument === undefined) {
+            delete globalThis.document;
+        } else {
+            globalThis.document = originalDocument;
+        }
+    }
 });
 
 test("Score trajectory preserves policy state and nullable persistence count", () => {
