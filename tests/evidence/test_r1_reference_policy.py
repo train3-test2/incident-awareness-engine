@@ -18,6 +18,11 @@ from incident_awareness.evidence.r1_reference_policy import (
     resolve_r1_wmi_reference,
     validate_normal_reference_fields,
 )
+from incident_awareness.pipeline.r1_artifacts import (
+    R1_COLLECTION_PROVENANCE_FILENAME,
+    load_r1_collection_provenance,
+    write_r1_collection_provenance,
+)
 
 _POLICY_ID = "r1-wmi-a01-reference"
 _POLICY_VERSION = "wmi-ref-v0.1"
@@ -271,15 +276,115 @@ def test_selects_single_a01_attributed_lineage_event() -> None:
 
     # Then
     assert selection.reference_action_id == "A01"
+    assert selection.run_id == reference_event.run_id
+    assert selection.entity_id == reference_event.host_id
     assert selection.reference_time == _REFERENCE_TIME
     assert selection.reference_source_event_id == "42001"
     assert selection.reference_event_id == "evt-reference"
     assert selection.policy_id == _POLICY_ID
     assert selection.reference_policy_version == _POLICY_VERSION
     assert selection.policy_config_hash == _ACTUAL_POLICY_HASH
+    assert selection.policy_config_path == "configs/r1_reference_policies_v0.1.yaml"
     assert selection.scenario_evaluation_horizon_sec == 600
     assert selection.expected_evaluation_horizon_sec == 600
     assert selection.horizon_matches is True
+
+
+def test_writes_and_loads_reference_policy_runtime_provenance(tmp_path: Path) -> None:
+    # Given
+    reference_event = _reference_event()
+    selection = _resolve((reference_event,))
+
+    # When
+    written, provenance_path = write_r1_collection_provenance(
+        selection,
+        run_id=reference_event.run_id,
+        output_directory=tmp_path,
+    )
+    loaded = load_r1_collection_provenance(tmp_path)
+    payload = json.loads(provenance_path.read_text(encoding="utf-8"))
+
+    # Then
+    assert provenance_path == tmp_path / R1_COLLECTION_PROVENANCE_FILENAME
+    assert loaded == written
+    assert payload["reference_policy_canonical_path"] == ("configs/r1_reference_policies_v0.1.yaml")
+    assert payload["reference_policy_id"] == _POLICY_ID
+    assert payload["reference_policy_version"] == _POLICY_VERSION
+    assert payload["reference_policy_config_hash"] == _ACTUAL_POLICY_HASH
+    assert payload["loader_selected_policy_identity"] == {
+        "config_hash": _ACTUAL_POLICY_HASH,
+        "policy_id": _POLICY_ID,
+        "version": _POLICY_VERSION,
+    }
+    assert payload["scenario_evaluation_horizon_sec"] == 600
+    assert payload["policy_expected_evaluation_horizon_sec"] == 600
+    assert payload["horizon_matches"] is True
+
+
+def test_collection_provenance_serialization_is_deterministic(tmp_path: Path) -> None:
+    # Given
+    selection = _resolve((_reference_event(),))
+    first_directory = tmp_path / "first"
+    second_directory = tmp_path / "second"
+    first_directory.mkdir()
+    second_directory.mkdir()
+
+    # When
+    _, first_path = write_r1_collection_provenance(
+        selection,
+        run_id=selection.run_id,
+        output_directory=first_directory,
+    )
+    _, second_path = write_r1_collection_provenance(
+        selection,
+        run_id=selection.run_id,
+        output_directory=second_directory,
+    )
+
+    # Then
+    assert first_path.read_bytes() == second_path.read_bytes()
+
+
+def test_collection_provenance_does_not_overwrite_existing_artifact(tmp_path: Path) -> None:
+    # Given
+    selection = _resolve((_reference_event(),))
+    _, provenance_path = write_r1_collection_provenance(
+        selection,
+        run_id=selection.run_id,
+        output_directory=tmp_path,
+    )
+    original_content = provenance_path.read_bytes()
+
+    # When
+    with pytest.raises(FileExistsError, match=R1_COLLECTION_PROVENANCE_FILENAME):
+        write_r1_collection_provenance(
+            selection,
+            run_id=selection.run_id,
+            output_directory=tmp_path,
+        )
+
+    # Then
+    assert provenance_path.read_bytes() == original_content
+
+
+def test_collection_provenance_loader_rejects_unknown_fields(tmp_path: Path) -> None:
+    # Given
+    selection = _resolve((_reference_event(),))
+    _, provenance_path = write_r1_collection_provenance(
+        selection,
+        run_id=selection.run_id,
+        output_directory=tmp_path,
+    )
+    payload = json.loads(provenance_path.read_text(encoding="utf-8"))
+    payload["unknown"] = "value"
+    provenance_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    # When
+    with pytest.raises(ValueError, match="does not match the writer contract"):
+        load_r1_collection_provenance(tmp_path)
+
+    # Then
+    assert payload["unknown"] == "value"
 
 
 def test_process_name_alone_does_not_select_reference() -> None:
