@@ -149,6 +149,8 @@ def extract_remote_session_process_lineage_deviation(
     anchor_event: NormalizedEvent,
     terminal_event: NormalizedEvent,
     approved_policy: ApprovedLineagePolicy,
+    *,
+    context_event_ids: Iterable[str] = (),
 ) -> list[Evidence]:
     """동결된 정책과 다른 complete 프로세스 계보 Evidence를 추출한다."""
     result = extract_remote_session_process_lineage_deviation_with_diagnostics(
@@ -156,6 +158,7 @@ def extract_remote_session_process_lineage_deviation(
         anchor_event,
         terminal_event,
         approved_policy,
+        context_event_ids=context_event_ids,
     )
     return list(result.evidences)
 
@@ -165,6 +168,8 @@ def extract_remote_session_process_lineage_deviation_with_diagnostics(
     anchor_event: NormalizedEvent,
     terminal_event: NormalizedEvent,
     approved_policy: ApprovedLineagePolicy,
+    *,
+    context_event_ids: Iterable[str] = (),
 ) -> R1LineageExtractionResult:
     """lineage Evidence와 공격 판정이 아닌 fail-closed 사유를 반환한다."""
     if not isinstance(anchor_event, NormalizedEvent) or not isinstance(
@@ -174,6 +179,8 @@ def extract_remote_session_process_lineage_deviation_with_diagnostics(
         return R1LineageExtractionResult(evidences=(), diagnostics=())
     if not isinstance(approved_policy, ApprovedLineagePolicy):
         raise TypeError("approved_policy must be an ApprovedLineagePolicy")
+    context_event_id_batch = tuple(context_event_ids)
+    _validate_context_event_ids(context_event_id_batch)
 
     event_list = tuple(events)
     if not all(isinstance(event, NormalizedEvent) for event in event_list):
@@ -213,12 +220,13 @@ def extract_remote_session_process_lineage_deviation_with_diagnostics(
             diagnostics=("missing_or_blank_process_name",),
         )
 
+    evidence_events = _evidence_events(correlation.events, context_event_id_batch)
     approved_lineage = tuple(name.casefold() for name in approved_policy.approved_lineage)
     if observed_lineage == approved_lineage:
         return R1LineageExtractionResult(evidences=(), diagnostics=())
 
-    event_ids = [event.event_id for event in correlation.events]
-    timestamp = max(event.timestamp for event in correlation.events)
+    event_ids = [event.event_id for event in evidence_events]
+    timestamp = max(event.timestamp for event in evidence_events)
 
     return R1LineageExtractionResult(
         evidences=(
@@ -429,6 +437,30 @@ def _canonical_process_lineage(
         return None
 
     return tuple(cast(str, process_name).casefold() for process_name in process_names)
+
+
+def _validate_context_event_ids(context_event_ids: tuple[str, ...]) -> None:
+    if any(not isinstance(event_id, str) or not event_id.strip() for event_id in context_event_ids):
+        raise ValueError("context_event_ids must contain only non-blank strings")
+    if len(context_event_ids) != len(set(context_event_ids)):
+        raise ValueError("context_event_ids must contain unique Event IDs")
+
+
+def _evidence_events(
+    lineage_events: tuple[NormalizedEvent, ...],
+    context_event_ids: tuple[str, ...],
+) -> tuple[NormalizedEvent, ...]:
+    context_event_id_set = set(context_event_ids)
+    lineage_event_ids = {event.event_id for event in lineage_events}
+    if not context_event_id_set <= lineage_event_ids:
+        raise ValueError("context_event_ids must reference Events in the reconstructed lineage")
+
+    evidence_events = tuple(
+        event for event in lineage_events if event.event_id not in context_event_id_set
+    )
+    if not evidence_events:
+        raise ValueError("lineage deviation Evidence requires at least one Run Event")
+    return evidence_events
 
 
 def _deterministic_evidence_id(*, run_id: str, event_ids: list[str]) -> str:

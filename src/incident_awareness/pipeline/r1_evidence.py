@@ -30,6 +30,7 @@ class R1LineageInput:
     anchor_event_id: str
     terminal_event_id: str
     approved_policy: ApprovedLineagePolicy
+    context_event_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for field_name, value in (
@@ -43,6 +44,19 @@ class R1LineageInput:
 
         if not isinstance(self.approved_policy, ApprovedLineagePolicy):
             raise TypeError("approved_policy must be an ApprovedLineagePolicy")
+        if not isinstance(self.context_event_ids, tuple):
+            raise TypeError("context_event_ids must be a tuple")
+        if any(
+            not isinstance(event_id, str) or not event_id.strip()
+            for event_id in self.context_event_ids
+        ):
+            raise ValueError("context_event_ids must contain only non-blank strings")
+        if len(self.context_event_ids) != len(set(self.context_event_ids)):
+            raise ValueError("context_event_ids must contain unique Event IDs")
+        if self.context_event_ids and self.context_event_ids[0] != self.anchor_event_id:
+            raise ValueError("context_event_ids must start with anchor_event_id")
+        if self.terminal_event_id in self.context_event_ids:
+            raise ValueError("terminal_event_id must not be a context Event")
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +118,7 @@ def run_r1_evidence_pipeline_with_diagnostics(
                 anchor_event,
                 terminal_event,
                 lineage_input.approved_policy,
+                context_event_ids=lineage_input.context_event_ids,
             )
         )
         evidences.extend(lineage_result.evidences)
@@ -129,6 +144,7 @@ def run_r1_evidence_pipeline_with_selector(
     *,
     selector_policy: R1SelectorPolicy,
     approved_policy: ApprovedLineagePolicy,
+    run_start: datetime | None = None,
 ) -> R1SelectedEvidencePipelineResult:
     """결정적 selector 결과를 기존 명시적 lineage 입력 경로에 연결한다."""
     if not isinstance(approved_policy, ApprovedLineagePolicy):
@@ -142,6 +158,7 @@ def run_r1_evidence_pipeline_with_selector(
     selector_result = select_r1_lineage(
         event_batch,
         policy=selector_policy,
+        run_start=run_start,
     )
     selection = selector_result.selection
     if selection is None:
@@ -156,6 +173,7 @@ def run_r1_evidence_pipeline_with_selector(
         anchor_event_id=selection.anchor_event_id,
         terminal_event_id=selection.terminal_event_id,
         approved_policy=approved_policy,
+        context_event_ids=selection.context_event_ids,
     )
     extraction_result = run_r1_evidence_pipeline_with_diagnostics(
         event_batch,
