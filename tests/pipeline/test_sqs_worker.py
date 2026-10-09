@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 from botocore.exceptions import ClientError
 
+from incident_awareness.common.models.pipeline_runtime import PipelineStage
+from incident_awareness.pipeline.reporting import PipelineExecutionSummary
 from incident_awareness.pipeline.sqs_worker import (
     PermanentWorkerError,
     RetryableWorkerError,
@@ -16,6 +18,7 @@ from incident_awareness.pipeline.sqs_worker import (
     parse_s3_sysmon_inputs,
     run_worker,
 )
+from incident_awareness.pipeline.standalone import StandaloneExecution
 
 _BUCKET = "incident-awareness-first-cycle-998301375101-ap-northeast-2-an"
 _INGEST_ID = "ING-550e8400-e29b-41d4-a716-446655440000"
@@ -159,6 +162,7 @@ def test_worker_logs_failed_status_and_retains_message_when_standalone_execution
 ) -> None:
     caplog.set_level(logging.INFO, logger="incident_awareness.pipeline.sqs_worker")
     sqs = _FakeSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}])
+    observer = _ObserverContextSpy()
 
     run_worker(
         queue_url="https://example.test/queue",
@@ -166,10 +170,12 @@ def test_worker_logs_failed_status_and_retains_message_when_standalone_execution
         sqs_client=sqs,
         s3_client=_FakeS3(),
         run_standalone=_failing_standalone,
+        runtime_observer_factory=lambda: observer,
         once=True,
     )
 
     assert sqs.deleted_receipts == []
+    assert observer.closed is True
     statuses = [
         json.loads(record.getMessage())
         for record in caplog.records
@@ -258,6 +264,12 @@ def test_worker_skips_a_successfully_receipted_s3_object_version(
     caplog.set_level(logging.INFO, logger="incident_awareness.pipeline.sqs_worker")
     receipts = _FakeReceiptStore()
     calls: list[tuple[Path, Path]] = []
+    observers: list[_ObserverContextSpy] = []
+
+    def observer_factory() -> "_ObserverContextSpy":
+        observer = _ObserverContextSpy()
+        observers.append(observer)
+        return observer
 
     run_worker(
         queue_url="https://example.test/queue",
@@ -266,6 +278,7 @@ def test_worker_skips_a_successfully_receipted_s3_object_version(
         s3_client=_FakeS3(),
         run_standalone=_successful_standalone(calls),
         receipt_store=receipts,
+        runtime_observer_factory=observer_factory,
         once=True,
     )
     run_worker(
@@ -275,6 +288,7 @@ def test_worker_skips_a_successfully_receipted_s3_object_version(
         s3_client=_FakeS3(),
         run_standalone=_successful_standalone(calls),
         receipt_store=receipts,
+        runtime_observer_factory=observer_factory,
         once=True,
     )
 
@@ -282,7 +296,315 @@ def test_worker_skips_a_successfully_receipted_s3_object_version(
     assert receipts.successful_run_ids == {(_BUCKET, _KEY, "opaque-etag"): "RUN-20261005-001"}
     assert receipts.acquired_inputs == [(_BUCKET, _KEY, "opaque-etag")] * 2
     assert receipts.released_executions == 1
+    assert len(observers) == 1
+    assert observers[0].closed is True
     assert any('"status": "skipped"' in record.getMessage() for record in caplog.records)
+
+
+def test_worker_completes_after_receipt_commit_and_closes_per_run_observer() -> None:
+    # Given
+    first_record = _s3_event(e_tag="first-version")["Records"][0]
+    second_record = _s3_event(e_tag="second-version")["Records"][0]
+    sqs = _FakeSqs(
+        [
+            {
+                "Body": json.dumps({"Records": [first_record, second_record]}),
+                "ReceiptHandle": "receipt-1",
+            }
+        ]
+    )
+    events: list[str] = []
+    receipts = _OrderedReceiptStore(events)
+    observers: list[_ObserverContextSpy] = []
+    trackers: list[_RuntimeTrackerSpy] = []
+
+    def observer_factory() -> "_ObserverContextSpy":
+        observer = _ObserverContextSpy()
+        observers.append(observer)
+        return observer
+
+    def run_standalone(
+        sysmon_jsonl_path: Path,
+        output_root: Path,
+        runtime_observer: object | None,
+    ) -> StandaloneExecution:
+        assert runtime_observer is observers[-1]
+        tracker = _RuntimeTrackerSpy(events)
+        trackers.append(tracker)
+        return _execution(output_root, tracker=tracker)
+
+    # When
+    run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=sqs,
+        s3_client=_FakeS3(),
+        run_standalone=run_standalone,
+        receipt_store=receipts,
+        runtime_observer_factory=observer_factory,
+        once=True,
+    )
+
+    # Then
+    assert len(observers) == 2
+    assert all(observer.closed for observer in observers)
+    assert len(trackers) == 2
+    assert events == [
+        "receipt-commit",
+        "runtime-completed",
+        "receipt-commit",
+        "runtime-completed",
+    ]
+    assert sqs.deleted_receipts == ["receipt-1"]
+
+
+def test_worker_without_receipt_does_not_publish_unconfirmed_completion() -> None:
+    # Given
+    sqs = _FakeSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}])
+    events: list[str] = []
+    tracker = _RuntimeTrackerSpy(events)
+    observer = _ObserverContextSpy()
+
+    def run_standalone(
+        sysmon_jsonl_path: Path,
+        output_root: Path,
+        runtime_observer: object | None,
+    ) -> StandaloneExecution:
+        assert runtime_observer is observer
+        return _execution(output_root, tracker=tracker)
+
+    # When
+    run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=sqs,
+        s3_client=_FakeS3(),
+        run_standalone=run_standalone,
+        runtime_observer_factory=lambda: observer,
+        once=True,
+    )
+
+    # Then
+    assert events == []
+    assert observer.closed is True
+    assert sqs.deleted_receipts == ["receipt-1"]
+
+
+def test_worker_receipt_commit_failure_publishes_failed_and_retains_message() -> None:
+    # Given
+    sqs = _FakeSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}])
+    events: list[str] = []
+    tracker = _RuntimeTrackerSpy(events)
+    observer = _ObserverContextSpy()
+    receipts = _FailingReceiptStore()
+
+    def run_standalone(
+        sysmon_jsonl_path: Path,
+        output_root: Path,
+        runtime_observer: object | None,
+    ) -> StandaloneExecution:
+        assert runtime_observer is observer
+        return _execution(output_root, tracker=tracker)
+
+    # When
+    run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=sqs,
+        s3_client=_FakeS3(),
+        run_standalone=run_standalone,
+        receipt_store=receipts,
+        runtime_observer_factory=lambda: observer,
+        once=True,
+    )
+
+    # Then
+    assert events == ["runtime-failed:persistence"]
+    assert receipts.rollbacks == 1
+    assert observer.closed is True
+    assert sqs.deleted_receipts == []
+
+
+def test_worker_observer_factory_failure_does_not_change_business_success() -> None:
+    # Given
+    sqs = _FakeSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}])
+    calls: list[tuple[Path, Path]] = []
+
+    def fail_observer_creation():
+        raise RuntimeError("telemetry unavailable")
+
+    # When
+    run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=sqs,
+        s3_client=_FakeS3(),
+        run_standalone=_successful_standalone(calls),
+        receipt_store=_FakeReceiptStore(),
+        runtime_observer_factory=fail_observer_creation,
+        once=True,
+    )
+
+    # Then
+    assert len(calls) == 1
+    assert sqs.deleted_receipts == ["receipt-1"]
+
+
+def test_worker_uses_fresh_observer_after_prior_run_telemetry_failure() -> None:
+    # Given
+    first_record = _s3_event(e_tag="first-version")["Records"][0]
+    second_record = _s3_event(e_tag="second-version")["Records"][0]
+    sqs = _FakeSqs(
+        [
+            {
+                "Body": json.dumps({"Records": [first_record, second_record]}),
+                "ReceiptHandle": "receipt-1",
+            }
+        ]
+    )
+    available_observers = iter((_ObserverContextSpy(fail=True), _ObserverContextSpy()))
+    observers: list[_ObserverContextSpy] = []
+
+    def observer_factory() -> "_ObserverContextSpy":
+        observer = next(available_observers)
+        observers.append(observer)
+        return observer
+
+    def run_standalone(
+        sysmon_jsonl_path: Path,
+        output_root: Path,
+        runtime_observer: object | None,
+    ) -> StandaloneExecution:
+        try:
+            runtime_observer(object())
+        except RuntimeError:
+            pass
+        return _successful_run_id(sysmon_jsonl_path, output_root)
+
+    # When
+    run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=sqs,
+        s3_client=_FakeS3(),
+        run_standalone=run_standalone,
+        receipt_store=_FakeReceiptStore(),
+        runtime_observer_factory=observer_factory,
+        once=True,
+    )
+
+    # Then
+    assert len(observers) == 2
+    assert observers[0] is not observers[1]
+    assert [observer.calls for observer in observers] == [1, 1]
+    assert all(observer.closed for observer in observers)
+    assert sqs.deleted_receipts == ["receipt-1"]
+
+
+def test_worker_delete_failure_does_not_change_committed_runtime_completion() -> None:
+    # Given
+    sqs = _DeleteFailingSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}])
+    events: list[str] = []
+    tracker = _RuntimeTrackerSpy(events)
+    observer = _ObserverContextSpy()
+    receipts = _OrderedReceiptStore(events)
+
+    def run_standalone(
+        sysmon_jsonl_path: Path,
+        output_root: Path,
+        runtime_observer: object | None,
+    ) -> StandaloneExecution:
+        return _execution(output_root, tracker=tracker)
+
+    # When
+    with pytest.raises(RuntimeError, match="delete failed"):
+        run_worker(
+            queue_url="https://example.test/queue",
+            expected_bucket=_BUCKET,
+            sqs_client=sqs,
+            s3_client=_FakeS3(),
+            run_standalone=run_standalone,
+            receipt_store=receipts,
+            runtime_observer_factory=lambda: observer,
+            once=True,
+        )
+
+    # Then
+    assert events == ["receipt-commit", "runtime-completed"]
+    assert receipts.rollbacks == 0
+    assert observer.closed is True
+
+
+def test_worker_redelivery_skips_first_runtime_after_later_object_failure() -> None:
+    # Given
+    first_record = _s3_event(e_tag="first-version")["Records"][0]
+    second_record = _s3_event(e_tag="second-version")["Records"][0]
+    message_body = json.dumps({"Records": [first_record, second_record]})
+    first_sqs = _FakeSqs([{"Body": message_body, "ReceiptHandle": "receipt-1"}])
+    second_sqs = _FakeSqs([{"Body": message_body, "ReceiptHandle": "receipt-2"}])
+    receipts = _FakeReceiptStore()
+    first_runtime_events: list[str] = []
+    retried_runtime_events: list[str] = []
+    observers: list[_ObserverContextSpy] = []
+    standalone_calls = 0
+
+    def observer_factory() -> "_ObserverContextSpy":
+        observer = _ObserverContextSpy()
+        observers.append(observer)
+        return observer
+
+    def run_standalone(
+        sysmon_jsonl_path: Path,
+        output_root: Path,
+        runtime_observer: object | None,
+    ) -> StandaloneExecution:
+        nonlocal standalone_calls
+        standalone_calls += 1
+        if standalone_calls == 2:
+            raise OSError("second object failed")
+        tracker_events = first_runtime_events if standalone_calls == 1 else retried_runtime_events
+        return _execution(output_root, tracker=_RuntimeTrackerSpy(tracker_events))
+
+    # When
+    run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=first_sqs,
+        s3_client=_FakeS3(),
+        run_standalone=run_standalone,
+        receipt_store=receipts,
+        runtime_observer_factory=observer_factory,
+        once=True,
+    )
+    run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=second_sqs,
+        s3_client=_FakeS3(),
+        run_standalone=run_standalone,
+        receipt_store=receipts,
+        runtime_observer_factory=observer_factory,
+        once=True,
+    )
+
+    # Then
+    first_identity = (_BUCKET, _KEY, "first-version")
+    second_identity = (_BUCKET, _KEY, "second-version")
+    assert first_sqs.deleted_receipts == []
+    assert second_sqs.deleted_receipts == ["receipt-2"]
+    assert standalone_calls == 3
+    assert receipts.acquired_inputs == [
+        first_identity,
+        second_identity,
+        first_identity,
+        second_identity,
+    ]
+    assert set(receipts.successful_run_ids) == {first_identity, second_identity}
+    assert receipts.released_executions == 1
+    assert first_runtime_events == ["runtime-completed"]
+    assert retried_runtime_events == ["runtime-completed"]
+    assert len(observers) == 3
+    assert all(observer.closed for observer in observers)
 
 
 def test_postgres_receipt_store_acquires_an_object_lock_before_lookup() -> None:
@@ -360,6 +682,11 @@ class _FakeSqs:
         self.deleted_receipts.append(ReceiptHandle)
 
 
+class _DeleteFailingSqs(_FakeSqs):
+    def delete_message(self, *, QueueUrl: str, ReceiptHandle: str) -> None:
+        raise RuntimeError("delete failed")
+
+
 class _FakeS3:
     def __init__(self) -> None:
         self.downloads: list[tuple[str, str]] = []
@@ -426,21 +753,91 @@ class _FakeReceiptStore:
         self.rollbacks += 1
 
 
-def _successful_standalone(calls: list[tuple[Path, Path]]) -> Callable[[Path, Path], str]:
-    def run(sysmon_jsonl_path: Path, output_root: Path) -> str:
+class _OrderedReceiptStore(_FakeReceiptStore):
+    def __init__(self, events: list[str]) -> None:
+        super().__init__()
+        self._events = events
+
+    def save_success(self, input_object: S3SysmonInput, *, run_id: str) -> None:
+        super().save_success(input_object, run_id=run_id)
+        self._events.append("receipt-commit")
+
+
+class _FailingReceiptStore(_FakeReceiptStore):
+    def save_success(self, input_object: S3SysmonInput, *, run_id: str) -> None:
+        raise RuntimeError("receipt commit failed; transaction outcome may be unknown")
+
+
+class _ObserverContextSpy:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.closed = False
+        self.calls = 0
+        self._fail = fail
+
+    def __call__(self, status: object) -> None:
+        self.calls += 1
+        if self._fail:
+            raise RuntimeError("telemetry unavailable")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.closed = True
+
+
+class _RuntimeTrackerSpy:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def complete(self) -> None:
+        self._events.append("runtime-completed")
+
+    def fail(self, stage: PipelineStage) -> None:
+        self._events.append(f"runtime-failed:{stage.value}")
+
+
+def _execution(output_root: Path, *, tracker: _RuntimeTrackerSpy) -> StandaloneExecution:
+    execution = _successful_run_id(Path("sysmon.jsonl"), output_root)
+    return StandaloneExecution(
+        output_dir=execution.output_dir,
+        summary=execution.summary,
+        _runtime_tracker=tracker,
+    )
+
+
+def _successful_standalone(
+    calls: list[tuple[Path, Path]],
+) -> Callable[[Path, Path, object | None], StandaloneExecution]:
+    def run(
+        sysmon_jsonl_path: Path,
+        output_root: Path,
+        runtime_observer: object | None,
+    ) -> StandaloneExecution:
         calls.append((sysmon_jsonl_path, output_root))
         return _successful_run_id(sysmon_jsonl_path, output_root)
 
     return run
 
 
-def _successful_run_id(_: Path, __: Path) -> str:
-    return "RUN-20261005-001"
+def _successful_run_id(_: Path, output_root: Path, __: object | None = None) -> StandaloneExecution:
+    return StandaloneExecution(
+        output_dir=output_root,
+        summary=PipelineExecutionSummary(
+            run_id="RUN-20261005-001",
+            entity_id="WIN-01",
+            normalized_event_count=1,
+            evidence_count=1,
+            fusion_status="detected",
+            detector_status="not_evaluated",
+            decision_path=None,
+        ),
+    )
 
 
-def _failing_standalone(_: Path, __: Path) -> str:
+def _failing_standalone(_: Path, __: Path, ___: object | None) -> StandaloneExecution:
     raise OSError("standalone First Cycle failed")
 
 
-def _reject_invalid_sysmon_jsonl(_: Path, __: Path) -> str:
+def _reject_invalid_sysmon_jsonl(_: Path, __: Path, ___: object | None) -> StandaloneExecution:
     raise ValueError("standalone Sysmon JSONL EventData.UtcTime must be in non-decreasing order")
