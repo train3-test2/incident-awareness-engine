@@ -2,6 +2,7 @@
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from incident_awareness.common.models.event import NormalizedEvent
@@ -61,6 +62,7 @@ class R1LineageSelection:
     selector_policy_id: str
     selector_policy_version: str
     selector_policy_config_hash: str
+    context_event_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,10 +77,12 @@ def select_r1_lineage(
     events: Iterable[NormalizedEvent],
     *,
     policy: R1SelectorPolicy,
+    run_start: datetime | None = None,
 ) -> R1SelectorResult:
     """이름이나 label 없이 유일한 R1 구조 lineage를 선택한다."""
     if not isinstance(policy, R1SelectorPolicy):
         raise TypeError("policy must be an R1SelectorPolicy")
+    run_start = _normalize_run_start(run_start)
 
     event_batch = tuple(events)
     if not event_batch:
@@ -116,6 +120,7 @@ def select_r1_lineage(
     terminal_candidates, has_temporal_inversion = _terminal_candidates(
         process_events,
         network_events,
+        run_start=run_start,
     )
     if has_temporal_inversion:
         return _failed("temporal_inversion")
@@ -133,7 +138,13 @@ def select_r1_lineage(
     if diagnostic is not None:
         return _failed(diagnostic)
 
-    anchor_event = lineage[-1]
+    semantic_lineage = tuple(reversed(lineage))
+    anchor_event = semantic_lineage[0]
+    context_event_ids = (
+        ()
+        if run_start is None
+        else tuple(event.event_id for event in semantic_lineage if event.timestamp < run_start)
+    )
     return R1SelectorResult(
         selection=R1LineageSelection(
             run_id=terminal_event.run_id,
@@ -143,6 +154,7 @@ def select_r1_lineage(
             selector_policy_id=policy.policy_id,
             selector_policy_version=policy.version,
             selector_policy_config_hash=policy.config_hash,
+            context_event_ids=context_event_ids,
         ),
         diagnostics=(),
     )
@@ -151,6 +163,8 @@ def select_r1_lineage(
 def _terminal_candidates(
     process_events: tuple[NormalizedEvent, ...],
     network_events: tuple[NormalizedEvent, ...],
+    *,
+    run_start: datetime | None,
 ) -> tuple[tuple[NormalizedEvent, ...], bool]:
     networks_by_guid: dict[str, list[NormalizedEvent]] = {}
     for network_event in network_events:
@@ -161,6 +175,9 @@ def _terminal_candidates(
     terminal_candidates: list[NormalizedEvent] = []
     has_temporal_inversion = False
     for process_event in process_events:
+        # Run 이전 Event는 계보 복원에만 사용하고 terminal 후보에서는 제외한다.
+        if run_start is not None and process_event.timestamp < run_start:
+            continue
         process_guid = _process_guid(process_event)
         if process_guid is None:
             continue
@@ -231,6 +248,18 @@ def _is_network_connection(event: NormalizedEvent) -> bool:
 
 def _process_guid(event: NormalizedEvent) -> str | None:
     return event.process.process_guid if event.process is not None else None
+
+
+def _normalize_run_start(run_start: datetime | None) -> datetime | None:
+    if run_start is None:
+        return None
+    if not isinstance(run_start, datetime):
+        raise TypeError("run_start must be a datetime or None")
+    if run_start.tzinfo is None or run_start.utcoffset() is None:
+        raise ValueError("run_start must include timezone information")
+    if run_start.utcoffset() != timedelta(0):
+        raise ValueError("run_start must be UTC")
+    return run_start.astimezone(UTC)
 
 
 def _failed(diagnostic: R1SelectorDiagnostic) -> R1SelectorResult:

@@ -2,6 +2,7 @@
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from incident_awareness.common.models.event import NormalizedEvent
@@ -39,6 +40,7 @@ def run_r1_evidence_pipeline_from_policy(
     approved_policy_version: str,
     approved_policy_config_path: Path = DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH,
     scenario_family_id: str | None = None,
+    run_start: datetime | None = None,
 ) -> R1SelectedEvidencePipelineResult:
     """관리 config의 approved policy를 selector 기반 Evidence 경로에 주입한다."""
     event_batch = tuple(events)
@@ -52,6 +54,7 @@ def run_r1_evidence_pipeline_from_policy(
         event_batch,
         selector_policy=selector_policy,
         approved_policy=approved_policy,
+        run_start=run_start,
     )
 
 
@@ -65,6 +68,7 @@ def run_and_write_r1_evidence_artifacts_from_policy(
     approved_policy_version: str,
     approved_policy_config_path: Path = DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH,
     scenario_family_id: str | None = None,
+    run_start: datetime | None = None,
 ) -> R1AutomatedEvidenceArtifactRun:
     """자동 선택 Evidence를 기존 R1 artifact contract로 게시한다."""
     event_batch = tuple(events)
@@ -75,6 +79,7 @@ def run_and_write_r1_evidence_artifacts_from_policy(
         approved_policy_version=approved_policy_version,
         approved_policy_config_path=approved_policy_config_path,
         scenario_family_id=scenario_family_id,
+        run_start=run_start,
     )
     lineage_inputs = (
         () if pipeline_result.lineage_input is None else (pipeline_result.lineage_input,)

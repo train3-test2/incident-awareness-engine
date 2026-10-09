@@ -48,6 +48,7 @@ class R1LineageInputProvenance:
     policy_id: str
     policy_version: str
     policy_config_hash: str
+    context_event_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +124,7 @@ _SUMMARY_FIELD_NAMES = frozenset(field.name for field in fields(R1ExtractionSumm
 _LINEAGE_PROVENANCE_FIELD_NAMES = frozenset(
     field.name for field in fields(R1LineageInputProvenance)
 )
+_LEGACY_LINEAGE_PROVENANCE_FIELD_NAMES = _LINEAGE_PROVENANCE_FIELD_NAMES - {"context_event_ids"}
 _SELECTOR_PROVENANCE_FIELD_NAMES = frozenset(field.name for field in fields(R1SelectorProvenance))
 _LEGACY_SUMMARY_FIELD_NAMES = _SUMMARY_FIELD_NAMES - {"selector"}
 _SUMMARY_TYPE_ADAPTER = TypeAdapter(R1ExtractionSummary)
@@ -306,6 +308,7 @@ def _lineage_input_provenance(
                 policy_id=policy.policy_id,
                 policy_version=policy.version,
                 policy_config_hash=policy.config_hash,
+                context_event_ids=lineage_input.context_event_ids,
             )
         )
 
@@ -332,6 +335,11 @@ def _serialize_summary(summary: R1ExtractionSummary) -> bytes:
                 "policy_id": item.policy_id,
                 "policy_version": item.policy_version,
                 "policy_config_hash": item.policy_config_hash,
+                **(
+                    {"context_event_ids": list(item.context_event_ids)}
+                    if item.context_event_ids
+                    else {}
+                ),
             }
             for item in summary.lineage_inputs
         ]
@@ -429,10 +437,26 @@ def _validate_summary_payload(payload: object) -> None:
     if not isinstance(lineage_inputs, list):
         raise TypeError("lineage_inputs must be an array or null")
     for item in lineage_inputs:
-        if not isinstance(item, dict) or set(item) != _LINEAGE_PROVENANCE_FIELD_NAMES:
+        if not isinstance(item, dict) or set(item) not in (
+            _LEGACY_LINEAGE_PROVENANCE_FIELD_NAMES,
+            _LINEAGE_PROVENANCE_FIELD_NAMES,
+        ):
             raise TypeError("lineage_inputs items must match the provenance contract")
-        if any(not isinstance(value, str) or not value.strip() for value in item.values()):
+        item.setdefault("context_event_ids", [])
+        string_values = (
+            item["anchor_event_id"],
+            item["terminal_event_id"],
+            item["policy_id"],
+            item["policy_version"],
+            item["policy_config_hash"],
+        )
+        if any(not isinstance(value, str) or not value.strip() for value in string_values):
             raise TypeError("lineage_inputs provenance values must be non-blank strings")
+        context_event_ids = item["context_event_ids"]
+        if not isinstance(context_event_ids, list) or any(
+            not isinstance(event_id, str) or not event_id.strip() for event_id in context_event_ids
+        ):
+            raise TypeError("context_event_ids must be an array of non-blank strings")
 
 
 def _validate_summary_contract(summary: R1ExtractionSummary) -> None:
@@ -448,6 +472,17 @@ def _validate_summary_contract(summary: R1ExtractionSummary) -> None:
         sorted(summary.lineage_inputs, key=_lineage_provenance_key)
     ):
         raise ValueError("lineage_inputs must use the writer's canonical ordering")
+    if summary.lineage_inputs is not None:
+        for provenance in summary.lineage_inputs:
+            if len(provenance.context_event_ids) != len(set(provenance.context_event_ids)):
+                raise ValueError("context_event_ids must contain unique Event IDs")
+            if (
+                provenance.context_event_ids
+                and provenance.context_event_ids[0] != provenance.anchor_event_id
+            ):
+                raise ValueError("context_event_ids must start with anchor_event_id")
+            if provenance.terminal_event_id in provenance.context_event_ids:
+                raise ValueError("terminal_event_id must not be a context Event")
 
     if summary.selector is not None:
         if summary.selector.status == "selected":
@@ -564,9 +599,16 @@ def _matches_lineage_deviation_provenance(
     evidence: Evidence,
     provenance: R1LineageInputProvenance,
 ) -> bool:
+    matches_lineage_boundary = evidence.event_ids[-1] == provenance.terminal_event_id and (
+        (
+            provenance.anchor_event_id in provenance.context_event_ids
+            and set(evidence.event_ids).isdisjoint(provenance.context_event_ids)
+        )
+        if provenance.context_event_ids
+        else evidence.event_ids[0] == provenance.anchor_event_id
+    )
     return (
-        evidence.event_ids[0] == provenance.anchor_event_id
-        and evidence.event_ids[-1] == provenance.terminal_event_id
+        matches_lineage_boundary
         and evidence.features.get("policy_id") == provenance.policy_id
         and evidence.features.get("version") == provenance.policy_version
         and evidence.features.get("config_hash") == provenance.policy_config_hash
@@ -575,13 +617,14 @@ def _matches_lineage_deviation_provenance(
 
 def _lineage_provenance_key(
     provenance: R1LineageInputProvenance,
-) -> tuple[str, str, str, str, str]:
+) -> tuple[str, str, str, str, str, tuple[str, ...]]:
     return (
         provenance.anchor_event_id,
         provenance.terminal_event_id,
         provenance.policy_id,
         provenance.policy_version,
         provenance.policy_config_hash,
+        provenance.context_event_ids,
     )
 
 
