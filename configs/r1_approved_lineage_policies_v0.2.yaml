@@ -1,4 +1,4 @@
-# remote_management family-bound development 및 frozen 정책 registry다.
+# family-bound development 및 frozen 정책 registry다.
 config_version: v0.2
 policies:
   - policy_id: r1-remote-management-approved-lineage
@@ -16,4 +16,12 @@ policies:
     approved_lineage:
       - wsmprovhost.exe
       - cmd.exe
+      - powershell.exe
+  - policy_id: r1-wmi-management-approved-lineage
+    version: v0.1
+    family_id: wmi_management
+    lifecycle: development
+    approved_lineage:
+      - WmiPrvSE.exe
+      - wscript.exe
       - powershell.exe

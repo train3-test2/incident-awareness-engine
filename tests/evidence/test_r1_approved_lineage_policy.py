@@ -38,6 +38,10 @@ _FAMILY_POLICY_VERSION = "v0.2"
 _FAMILY_POLICY_HASH = "6d4235ccc33fcc2484a679d6b6b9b8972cf67f45ff8de35d02eb402380e7f788"
 _FROZEN_POLICY_VERSION = "v0.3"
 _FROZEN_POLICY_HASH = "b3d1d28a909b494f660d3e8164a994a3d818a98dadcd10336560b4bec38680d2"
+_WMI_POLICY_ID = "r1-wmi-management-approved-lineage"
+_WMI_POLICY_VERSION = "v0.1"
+_WMI_POLICY_HASH = "f5ca732ab6987bbca9d2d44fa51eb30c0a13ba980545b4cbf7c64c7ccf2b5a9a"
+_WMI_APPROVED_LINEAGE = ("WmiPrvSE.exe", "wscript.exe", "powershell.exe")
 
 
 def _policy_payload(
@@ -193,6 +197,41 @@ def _r1_events() -> tuple[NormalizedEvent, ...]:
     )
 
 
+def _wmi_events(middle_process_name: str) -> tuple[NormalizedEvent, ...]:
+    return (
+        _event(
+            event_id="evt-anchor",
+            event_type="process_create",
+            timestamp=_BASE_TIME,
+            process_guid=_ANCHOR_GUID,
+            process_name="WmiPrvSE.exe",
+        ),
+        _event(
+            event_id="evt-middle",
+            event_type="process_create",
+            timestamp=_BASE_TIME + timedelta(seconds=1),
+            process_guid=_MIDDLE_GUID,
+            process_name=middle_process_name,
+            parent_process_guid=_ANCHOR_GUID,
+        ),
+        _event(
+            event_id="evt-terminal",
+            event_type="process_create",
+            timestamp=_BASE_TIME + timedelta(seconds=2),
+            process_guid=_TERMINAL_GUID,
+            process_name="powershell.exe",
+            parent_process_guid=_MIDDLE_GUID,
+        ),
+        _event(
+            event_id="evt-network",
+            event_type="network_connection",
+            timestamp=_BASE_TIME + timedelta(seconds=3),
+            process_guid=_TERMINAL_GUID,
+            process_name="powershell.exe",
+        ),
+    )
+
+
 def _selector_policy(*, lineage_event_count: int = 3) -> R1SelectorPolicy:
     return R1SelectorPolicy(
         policy_id="r1-structural-lineage-selector",
@@ -235,6 +274,26 @@ def test_loads_repository_managed_family_bound_development_policy() -> None:
     assert policy.lifecycle == "development"
     assert policy.approved_lineage == _APPROVED_LINEAGE
     assert policy.config_hash == _FAMILY_POLICY_HASH
+
+
+def test_loads_repository_managed_wmi_development_policy() -> None:
+    # Given
+    config_path = DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH
+
+    # When
+    policy = load_r1_approved_lineage_policy(
+        _WMI_POLICY_ID,
+        _WMI_POLICY_VERSION,
+        config_path=config_path,
+    )
+
+    # Then
+    assert policy.policy_id == _WMI_POLICY_ID
+    assert policy.version == _WMI_POLICY_VERSION
+    assert policy.family_id == "wmi_management"
+    assert policy.lifecycle == "development"
+    assert policy.approved_lineage == _WMI_APPROVED_LINEAGE
+    assert policy.config_hash == _WMI_POLICY_HASH
 
 
 def test_loads_repository_managed_frozen_evaluation_policy() -> None:
@@ -600,6 +659,38 @@ def test_loaded_policy_is_compatible_with_selector_pipeline() -> None:
     }
 
 
+def test_wmi_policy_compares_approved_and_observed_lineages_after_selection() -> None:
+    # Given
+    policy = load_r1_approved_lineage_policy(
+        _WMI_POLICY_ID,
+        _WMI_POLICY_VERSION,
+        config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+    )
+
+    # When
+    approved_result = run_r1_evidence_pipeline_with_selector(
+        _wmi_events("wscript.exe"),
+        selector_policy=_selector_policy(),
+        approved_policy=policy,
+    )
+    different_result = run_r1_evidence_pipeline_with_selector(
+        _wmi_events("cmd.exe"),
+        selector_policy=_selector_policy(),
+        approved_policy=policy,
+    )
+
+    # Then
+    assert approved_result.selector_result.diagnostics == ()
+    assert different_result.selector_result.diagnostics == ()
+    assert {evidence.evidence_type for evidence in approved_result.evidences} == {
+        "remote_process_network_follow_on",
+    }
+    assert {evidence.evidence_type for evidence in different_result.evidences} == {
+        "remote_process_network_follow_on",
+        "remote_session_process_lineage_deviation",
+    }
+
+
 def test_selector_pipeline_preserves_depth_mismatch_failure() -> None:
     # Given
     policy = load_r1_approved_lineage_policy(_POLICY_ID, _POLICY_VERSION)
@@ -681,6 +772,43 @@ config_version: v0.2
     # Then
     assert first == second
     assert first.config_hash == _FAMILY_POLICY_HASH
+
+
+def test_semantically_identical_wmi_configs_have_the_managed_hash(tmp_path: Path) -> None:
+    # Given
+    first_path = tmp_path / "first-wmi-v0.2.yaml"
+    second_path = tmp_path / "second-wmi-v0.2.yaml"
+    _write_registry(
+        first_path,
+        config_version="v0.2",
+        policies=[
+            _family_policy_payload(
+                policy_id=_WMI_POLICY_ID,
+                version=_WMI_POLICY_VERSION,
+                family_id="wmi_management",
+                approved_lineage=_WMI_APPROVED_LINEAGE,
+            )
+        ],
+    )
+    second_path.write_text(
+        """policies:
+  - approved_lineage: [WmiPrvSE.exe, wscript.exe, powershell.exe]
+    lifecycle: development
+    family_id: wmi_management
+    version: v0.1
+    policy_id: r1-wmi-management-approved-lineage
+config_version: v0.2
+""",
+        encoding="utf-8",
+    )
+
+    # When
+    first = load_r1_approved_lineage_policies(first_path)[0]
+    second = load_r1_approved_lineage_policies(second_path)[0]
+
+    # Then
+    assert first == second
+    assert first.config_hash == _WMI_POLICY_HASH
 
 
 def test_semantically_identical_frozen_configs_have_the_managed_hash(tmp_path: Path) -> None:
@@ -841,6 +969,36 @@ def test_frozen_policy_rejects_duplicate_semantic_identity(tmp_path: Path) -> No
     assert config_path.is_file()
 
 
+def test_wmi_policy_rejects_duplicate_semantic_identity(tmp_path: Path) -> None:
+    # Given
+    config_path = tmp_path / "duplicate-wmi-policy-v0.2.yaml"
+    _write_registry(
+        config_path,
+        config_version="v0.2",
+        policies=[
+            _family_policy_payload(
+                policy_id=_WMI_POLICY_ID,
+                version=_WMI_POLICY_VERSION,
+                family_id="wmi_management",
+                approved_lineage=_WMI_APPROVED_LINEAGE,
+            ),
+            _family_policy_payload(
+                policy_id=_WMI_POLICY_ID,
+                version=_WMI_POLICY_VERSION,
+                family_id="wmi_management",
+                approved_lineage=("WmiPrvSE.exe", "powershell.exe"),
+            ),
+        ],
+    )
+
+    # When
+    with pytest.raises(ValueError, match="identities must be unique"):
+        load_r1_approved_lineage_policies(config_path)
+
+    # Then
+    assert config_path.is_file()
+
+
 @pytest.mark.parametrize(
     ("changed_field", "changed_value"),
     [
@@ -899,6 +1057,48 @@ def test_family_binding_rejects_mismatched_scenario_family() -> None:
 
     # Then
     assert policy.family_id == "remote_management"
+
+
+def test_wmi_family_binding_accepts_matching_scenario_family() -> None:
+    # Given
+    policy = load_r1_approved_lineage_policy(
+        _WMI_POLICY_ID,
+        _WMI_POLICY_VERSION,
+        config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+    )
+
+    # When
+    result = validate_r1_policy_family_binding("wmi_management", policy)
+
+    # Then
+    assert result is None
+
+
+@pytest.mark.parametrize(
+    ("scenario_family_id", "policy_id", "policy_version"),
+    [
+        ("remote_management", _WMI_POLICY_ID, _WMI_POLICY_VERSION),
+        ("wmi_management", _FAMILY_POLICY_ID, _FAMILY_POLICY_VERSION),
+    ],
+)
+def test_wmi_and_remote_management_family_mismatches_fail_closed(
+    scenario_family_id: str,
+    policy_id: str,
+    policy_version: str,
+) -> None:
+    # Given
+    policy = load_r1_approved_lineage_policy(
+        policy_id,
+        policy_version,
+        config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+    )
+
+    # When
+    with pytest.raises(ValueError, match="does not match approved policy family_id"):
+        validate_r1_policy_family_binding(scenario_family_id, policy)
+
+    # Then
+    assert policy.family_id != scenario_family_id
 
 
 def test_frozen_policy_accepts_matching_scenario_family() -> None:

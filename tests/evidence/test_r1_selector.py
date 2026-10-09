@@ -222,6 +222,30 @@ def test_process_names_do_not_change_selection() -> None:
     assert first == second
 
 
+@pytest.mark.parametrize(
+    "process_names",
+    [
+        ("WmiPrvSE.exe", "wscript.exe", "powershell.exe"),
+        ("WmiPrvSE.exe", "cmd.exe", "powershell.exe"),
+    ],
+    ids=["approved_lineage", "different_observed_lineage"],
+)
+def test_selector_structurally_selects_wmi_family_lineages(
+    process_names: tuple[str, str, str],
+) -> None:
+    # Given
+    events = _events(process_names=process_names)
+
+    # When
+    result = select_r1_lineage(events, policy=_policy())
+
+    # Then
+    assert result.diagnostics == ()
+    assert result.selection is not None
+    assert result.selection.anchor_event_id == "evt-anchor"
+    assert result.selection.terminal_event_id == "evt-terminal"
+
+
 def test_pid_values_do_not_change_selection() -> None:
     # Given
     first_events = _events(pids=(100, 200, 300))
