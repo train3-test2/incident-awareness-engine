@@ -202,7 +202,7 @@ def test_pair004_derived_fixture_preserves_verified_selection() -> None:
     }
 
 
-def test_pair004_derived_duplicate_guid_fails_closed_without_artifact(
+def test_pair004_derived_duplicate_guid_publishes_failed_selector_summary(
     tmp_path: Path,
 ) -> None:
     # Given
@@ -211,38 +211,80 @@ def test_pair004_derived_duplicate_guid_fails_closed_without_artifact(
         events[2],
         event_id="evt-pair004-derived-terminal-duplicate",
     )
-    evidence_path = tmp_path / "r1_evidence.jsonl"
+    output_directory = _output_directory(tmp_path, "pair004-duplicate")
 
     # When
-    result = _run_pair004_derived_selector((*events, duplicate_terminal))
+    result = run_and_write_r1_evidence_artifacts_from_policy(
+        (*events, duplicate_terminal),
+        run_id=events[0].run_id,
+        output_directory=output_directory,
+        selector_policy=_selector_policy(),
+        approved_policy_id=_FAMILY_POLICY_ID,
+        approved_policy_version=_FROZEN_POLICY_VERSION,
+        approved_policy_config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+        scenario_family_id="remote_management",
+    )
+    loaded = load_r1_evidence_artifacts(output_directory)
 
     # Then
-    assert result.selector_result.selection is None
-    assert result.selector_result.diagnostics == ("duplicate_process_guid",)
-    assert result.lineage_input is None
-    assert result.evidences == ()
-    assert not evidence_path.exists()
+    assert result.pipeline_result.selector_result.selection is None
+    assert result.pipeline_result.selector_result.diagnostics == ("duplicate_process_guid",)
+    assert result.pipeline_result.lineage_input is None
+    assert result.pipeline_result.evidences == ()
+    assert result.artifact_run.evidences == ()
+    assert result.artifact_run.evidence_path.is_file()
+    assert result.artifact_run.evidence_path.read_bytes() == b""
+    assert result.artifact_run.summary_path.is_file()
+    assert result.artifact_run.summary.status == "completed"
+    assert result.artifact_run.summary.evidence_count == 0
+    assert result.artifact_run.summary.lineage_inputs == ()
+    assert result.artifact_run.summary.selector is not None
+    assert result.artifact_run.summary.selector.status == "failed"
+    assert result.artifact_run.summary.selector.diagnostics == ("duplicate_process_guid",)
+    assert loaded.evidences == ()
+    assert loaded.summary == result.artifact_run.summary
 
 
-def test_pair004_derived_truncated_lineage_fails_closed_without_artifact(
+def test_pair004_derived_truncated_lineage_publishes_failed_selector_summary(
     tmp_path: Path,
 ) -> None:
     # Given
     anchor, _, terminal, network = _pair004_selector_events()
-    evidence_path = tmp_path / "r1_evidence.jsonl"
+    output_directory = _output_directory(tmp_path, "pair004-truncated")
 
     # When
-    result = _run_pair004_derived_selector((anchor, terminal, network))
+    result = run_and_write_r1_evidence_artifacts_from_policy(
+        (anchor, terminal, network),
+        run_id=anchor.run_id,
+        output_directory=output_directory,
+        selector_policy=_selector_policy(),
+        approved_policy_id=_FAMILY_POLICY_ID,
+        approved_policy_version=_FROZEN_POLICY_VERSION,
+        approved_policy_config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+        scenario_family_id="remote_management",
+    )
+    loaded = load_r1_evidence_artifacts(output_directory)
 
     # Then
-    assert result.selector_result.selection is None
-    assert result.selector_result.diagnostics == ("truncated_lineage",)
-    assert result.lineage_input is None
-    assert result.evidences == ()
-    assert not evidence_path.exists()
+    assert result.pipeline_result.selector_result.selection is None
+    assert result.pipeline_result.selector_result.diagnostics == ("truncated_lineage",)
+    assert result.pipeline_result.lineage_input is None
+    assert result.pipeline_result.evidences == ()
+    assert result.artifact_run.evidences == ()
+    assert result.artifact_run.evidence_path.is_file()
+    assert result.artifact_run.evidence_path.read_bytes() == b""
+    assert result.artifact_run.summary_path.is_file()
+    assert result.artifact_run.summary.status == "completed"
+    assert result.artifact_run.summary.evidence_count == 0
+    assert result.artifact_run.summary.lineage_inputs == ()
+    assert result.artifact_run.summary.selector is not None
+    assert result.artifact_run.summary.selector.status == "failed"
+    assert result.artifact_run.summary.selector.diagnostics == ("truncated_lineage",)
+    assert loaded.evidences == ()
+    assert loaded.summary == result.artifact_run.summary
 
 
-def test_pair004_derived_ambiguous_terminal_fails_closed_without_artifact(
+def test_pair004_derived_ambiguous_terminal_publishes_failed_selector_summary(
     tmp_path: Path,
 ) -> None:
     # Given
@@ -258,17 +300,38 @@ def test_pair004_derived_ambiguous_terminal_fails_closed_without_artifact(
         event_id="evt-pair004-derived-network-ambiguous",
         process_guid=second_terminal_guid,
     )
-    evidence_path = tmp_path / "r1_evidence.jsonl"
+    output_directory = _output_directory(tmp_path, "pair004-ambiguous")
 
     # When
-    result = _run_pair004_derived_selector((*events, second_terminal, second_network))
+    result = run_and_write_r1_evidence_artifacts_from_policy(
+        (*events, second_terminal, second_network),
+        run_id=events[0].run_id,
+        output_directory=output_directory,
+        selector_policy=_selector_policy(),
+        approved_policy_id=_FAMILY_POLICY_ID,
+        approved_policy_version=_FROZEN_POLICY_VERSION,
+        approved_policy_config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+        scenario_family_id="remote_management",
+    )
+    loaded = load_r1_evidence_artifacts(output_directory)
 
     # Then
-    assert result.selector_result.selection is None
-    assert result.selector_result.diagnostics == ("ambiguous_terminal_candidate",)
-    assert result.lineage_input is None
-    assert result.evidences == ()
-    assert not evidence_path.exists()
+    assert result.pipeline_result.selector_result.selection is None
+    assert result.pipeline_result.selector_result.diagnostics == ("ambiguous_terminal_candidate",)
+    assert result.pipeline_result.lineage_input is None
+    assert result.pipeline_result.evidences == ()
+    assert result.artifact_run.evidences == ()
+    assert result.artifact_run.evidence_path.is_file()
+    assert result.artifact_run.evidence_path.read_bytes() == b""
+    assert result.artifact_run.summary_path.is_file()
+    assert result.artifact_run.summary.status == "completed"
+    assert result.artifact_run.summary.evidence_count == 0
+    assert result.artifact_run.summary.lineage_inputs == ()
+    assert result.artifact_run.summary.selector is not None
+    assert result.artifact_run.summary.selector.status == "failed"
+    assert result.artifact_run.summary.selector.diagnostics == ("ambiguous_terminal_candidate",)
+    assert loaded.evidences == ()
+    assert loaded.summary == result.artifact_run.summary
 
 
 def test_runs_selector_with_loaded_policy_and_matches_manual_path() -> None:

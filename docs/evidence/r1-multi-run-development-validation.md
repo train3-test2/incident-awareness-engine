@@ -245,11 +245,11 @@ Pair-004 Attack Run에서 실제로 선택된 anchor, intermediate, terminal과 
 
 | 파생 조건 | 변형 방법 | selector 결과 | Evidence/artifact 결과 |
 | --- | --- | --- | --- |
-| duplicate | terminal Event를 다른 `event_id`로 복제하되 같은 ProcessGuid 유지 | failed, `duplicate_process_guid`, selection 없음 | Evidence 0건, writer 미호출, `r1_evidence.jsonl` 미게시 |
-| truncated | 선택 계보에서 필요한 intermediate Event 제거 | failed, `truncated_lineage`, selection 없음 | Evidence 0건, writer 미호출, `r1_evidence.jsonl` 미게시 |
-| ambiguous | 같은 intermediate를 부모로 갖는 별도 terminal과 동일 GUID의 후속 network Event 추가 | failed, `ambiguous_terminal_candidate`, selection 없음 | Evidence 0건, writer 미호출, `r1_evidence.jsonl` 미게시 |
+| duplicate | terminal Event를 다른 `event_id`로 복제하되 같은 ProcessGuid 유지 | failed, `duplicate_process_guid`, selection 없음 | Evidence 0건, 빈 `r1_evidence.jsonl`과 failed selector summary 게시 |
+| truncated | 선택 계보에서 필요한 intermediate Event 제거 | failed, `truncated_lineage`, selection 없음 | Evidence 0건, 빈 `r1_evidence.jsonl`과 failed selector summary 게시 |
+| ambiguous | 같은 intermediate를 부모로 갖는 별도 terminal과 동일 GUID의 후속 network Event 추가 | failed, `ambiguous_terminal_candidate`, selection 없음 | Evidence 0건, 빈 `r1_evidence.jsonl`과 failed selector summary 게시 |
 
-검증된 원본 구조의 selector 선택과 Evidence 2건도 같은 fixture의 baseline 회귀로 유지했다. 기존 synthetic selector regression은 temporal inversion을 포함한 나머지 malformed 조건을 계속 담당한다. 이번 검증은 selector 실패 결과를 artifact writer에 전달하지 않는 negative regression 경계이며, selector failure summary와 빈 artifact를 게시하는 기존 writer API의 별도 계약을 변경하지 않는다.
+검증된 원본 구조의 selector 선택과 Evidence 2건도 같은 fixture의 baseline 회귀로 유지했다. 기존 synthetic selector regression은 temporal inversion을 포함한 나머지 malformed 조건을 계속 담당한다. 세 파생 조건에서는 유효 Evidence가 생성되지 않았으며, 기존 selector-failure artifact 계약에 따라 빈 Evidence artifact와 failed selector summary를 게시하고 loader로 다시 검증했다.
 
 ## 10. Pair-002 baseline replay
 
