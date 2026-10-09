@@ -52,4 +52,16 @@ WmiPrvSE.exe
 raw collection window != evaluation window
 ```
 
-이번 policy 등록은 raw collector, evaluation window, Temporal Replay, `available_at`/watermark 또는 TTSD를 변경하지 않는다. 선행 context의 Role5 평가 포함 방식은 별도 합의가 필요하다.
+WMI selector 실행에는 evaluation Run의 UTC `run_start`를 runtime metadata로 전달한다. ParentProcessGuid와 ProcessGuid를 따라 terminal에서 부모 방향으로 올라갈 때 `timestamp < run_start`인 ancestor를 사용할 수 있지만, terminal 후보는 반드시 `timestamp >= run_start`여야 한다. Run boundary를 process name, Ground Truth, `run_type` 또는 Attack/Normal label로 추론하지 않는다.
+
+Pre-Run Event의 책임은 다음으로 제한한다.
+
+- full lineage 복원과 approved lineage 비교를 위한 context로만 사용
+- `Evidence.event_ids`에서 제외하고 artifact summary의 `context_event_ids`에 별도 기록
+- 별도 Evidence를 생성하거나 Evidence count, feature 또는 score에 직접 포함하지 않음
+- Evidence timestamp 계산에서 제외하며 Run 내 직접 근거 Event의 최대 timestamp를 유지
+- `NormalizedEvent.event_id`로 기록하므로 원 Event의 `raw_ref`와 Run manifest를 통해 역추적 가능
+
+Normal의 `WmiPrvSE.exe → wscript.exe → powershell.exe`와 관측 차이 후보인 `WmiPrvSE.exe → cmd.exe → powershell.exe` 모두 동일한 GUID 기반 selector를 사용한다. WMI process name 전용 selector 분기, ParentImage fallback과 PID fallback은 사용하지 않는다.
+
+이번 계약은 boot-to-end input을 허용하는 `OFFLINE WHOLE-EPISODE ONLY` 입력 계약이다. Raw collection window와 evaluation window를 구분하지만 `available_at`, watermark, Temporal Replay, TTSD 또는 online/causal 의미를 정의하지 않는다.
