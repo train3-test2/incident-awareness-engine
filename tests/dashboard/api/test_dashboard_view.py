@@ -19,38 +19,60 @@ DASHBOARD_VIEW_PATHS = (
 DASHBOARD_CONTRACT_FUNCTIONS = (
     "displayValue",
     "buildPipelineStagePresentation",
+    "canRefreshSelectedAnalysis",
+    "createSelectedRuntimeTracking",
+    "findSelectedRuntime",
     "formatRunTimestamp",
     "getDecisionVersionConsistency",
     "getLatestRuntimeReport",
     "getOverviewQueryMessage",
     "getRunTypeLabel",
+    "getSelectedAnalysisScope",
     "getSelectedAnalysisSource",
     "getSelectedAnalysisState",
+    "getSelectedAnalysisTargetHost",
+    "getSelectedRuntimeOutsideQueryLabel",
+    "getSelectedRuntimeRecheckMessage",
     "getStoppingTraceAvailability",
+    "isRunSelectionTarget",
+    "recordSelectedRuntimeRecheck",
     "resolveInitialRunSelection",
     "resolveOverviewQueryState",
     "resolveRunSelectionFocus",
     "resolveRunListQueryState",
     "resolveRuntimeSummaryQueryState",
+    "resolveSelectedRuntimeTracking",
     "shouldApplySelectedRunResponse",
+    "shouldRecheckSelectedRuntimeAnalysis",
     "shouldRefreshSelectedRunAnalysis",
     "shouldUpdateSelectedRunFailureState",
 )
 DASHBOARD_SCRIPT_CONTRACT_FUNCTIONS = (
     "buildPipelineStagePresentation",
+    "canRefreshSelectedAnalysis",
+    "createSelectedRuntimeTracking",
     "displayValue",
+    "findSelectedRuntime",
     "formatRunTimestamp",
     "getDecisionVersionConsistency",
     "getLatestRuntimeReport",
+    "getSelectedAnalysisScope",
     "getSelectedAnalysisSource",
     "getSelectedAnalysisState",
+    "getSelectedAnalysisTargetHost",
+    "getSelectedRuntimeOutsideQueryLabel",
+    "getSelectedRuntimeRecheckMessage",
     "getStoppingTraceAvailability",
+    "isRunSelectionTarget",
+    "recordSelectedRuntimeRecheck",
     "resolveInitialRunSelection",
     "resolveOverviewQueryState",
     "resolveRunSelectionFocus",
     "resolveRunListQueryState",
     "resolveRuntimeSummaryQueryState",
+    "resolveSelectedRuntimeTracking",
     "shouldApplySelectedRunResponse",
+    "shouldRecheckSelectedRuntimeAnalysis",
     "shouldRefreshSelectedRunAnalysis",
     "shouldUpdateSelectedRunFailureState",
 )
@@ -126,6 +148,8 @@ def test_dashboard_view_serves_html_shell_without_database_access(
         "runtime-summary-status",
         "runtime-summary-list",
         "selected-run-id",
+        "selected-run-scope",
+        "selected-run-refresh",
         "selected-run-status",
         "selected-run-summary",
         "selected-run-chart-status",
@@ -356,7 +380,7 @@ def test_dashboard_script_keeps_overview_runs_and_runtime_state_independent() ->
     assert "async function loadOverview()" in script
     assert "async function loadRuns()" in script
     assert "async function pollRuntimeSummary()" in script
-    assert "async function selectRun(runId)" in script
+    assert "async function selectRun(runId, runtimeEntityId = null)" in script
     assert "renderOverviewState(overviewState);" in script
     assert "renderRunListState(runListState);" in script
     assert "renderRuntimeState(runtimeState);" in script
@@ -425,7 +449,8 @@ def test_dashboard_runtime_rows_select_every_report_and_detail_links_remain_avai
     )[0]
 
     # Then
-    assert "createSelectionButton(runtime.run_id)" in row_source
+    assert "createSelectionButton(runtime.run_id, runtime.entity_id)" in row_source
+    assert "createTableCell(runtime.entity_id)" in row_source
     assert 'runtime.status === "completed"' not in row_source
     assert "selectedRunDetailLink.href = buildRunDetailViewPath(runId);" in script
     assert "selectedRunFusionLink.href = buildFusionEngineViewPath(runId);" in script

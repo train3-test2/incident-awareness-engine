@@ -1,18 +1,29 @@
 import {
     buildPipelineStagePresentation,
+    canRefreshSelectedAnalysis,
+    createSelectedRuntimeTracking,
     displayValue,
+    findSelectedRuntime,
     formatRunTimestamp,
     getDecisionVersionConsistency,
     getLatestRuntimeReport,
+    getSelectedAnalysisScope,
     getSelectedAnalysisSource,
     getSelectedAnalysisState,
+    getSelectedAnalysisTargetHost,
+    getSelectedRuntimeOutsideQueryLabel,
+    getSelectedRuntimeRecheckMessage,
     getStoppingTraceAvailability,
+    isRunSelectionTarget,
+    recordSelectedRuntimeRecheck,
     resolveInitialRunSelection,
     resolveOverviewQueryState,
     resolveRunSelectionFocus,
     resolveRunListQueryState,
     resolveRuntimeSummaryQueryState,
+    resolveSelectedRuntimeTracking,
     shouldApplySelectedRunResponse,
+    shouldRecheckSelectedRuntimeAnalysis,
     shouldRefreshSelectedRunAnalysis,
     shouldUpdateSelectedRunFailureState,
 } from "./dashboard-contract.mjs";
@@ -58,6 +69,7 @@ const pipelineStageList = document.getElementById("pipeline-stage-list");
 const runtimeSummaryStatus = document.getElementById("runtime-summary-status");
 const runtimeSummaryList = document.getElementById("runtime-summary-list");
 const selectedRunIdElement = document.getElementById("selected-run-id");
+const selectedRunScope = document.getElementById("selected-run-scope");
 const selectedRunStatus = document.getElementById("selected-run-status");
 const selectedRunDetailStatus = document.getElementById("selected-run-detail-status");
 const selectedRunSummary = document.getElementById("selected-run-summary");
@@ -65,6 +77,7 @@ const selectedRunChartStatus = document.getElementById("selected-run-chart-statu
 const selectedRunChart = document.getElementById("selected-run-chart");
 const selectedRunDetailLink = document.getElementById("selected-run-detail-link");
 const selectedRunFusionLink = document.getElementById("selected-run-fusion-link");
+const selectedRunRefreshButton = document.getElementById("selected-run-refresh");
 const runsStatus = document.getElementById("runs-status");
 const runsList = document.getElementById("runs-list");
 
@@ -72,6 +85,12 @@ let overviewState = resolveOverviewQueryState(null, { kind: "loading" });
 let runListState = resolveRunListQueryState(null, { kind: "loading" });
 let runtimeState = resolveRuntimeSummaryQueryState(null, { kind: "loading" });
 let selectedRunId = null;
+let selectedRuntimeEntityId = null;
+let selectedRuntimeTracking = createSelectedRuntimeTracking(null);
+let selectedAnalysisQueryStates = null;
+let selectedAnalysisState = null;
+let selectedAnalysisTargetHost = null;
+let selectedAnalysisPendingVersion = null;
 let selectedRequestVersion = 0;
 let runtimeInitialQuerySettled = false;
 let runtimePollTimeoutId = null;
@@ -86,15 +105,31 @@ function createStatusBadge(presentation) {
     return badge;
 }
 
-function createSelectionButton(runId) {
+function isSelectedTarget(runId, runtimeEntityId) {
+    return isRunSelectionTarget(
+        selectedRunId,
+        selectedRuntimeEntityId,
+        runId,
+        runtimeEntityId,
+    );
+}
+
+function createSelectionButton(runId, runtimeEntityId = null) {
     const button = document.createElement("button");
     button.type = "button";
     button.classList.add("dashboard-run-selector");
     button.textContent = runId;
     button.dataset.runId = runId;
-    button.setAttribute("aria-pressed", String(runId === selectedRunId));
+    if (runtimeEntityId !== null) {
+        button.dataset.entityId = runtimeEntityId;
+        button.setAttribute("aria-label", `Run ${runId}, Entity ${runtimeEntityId}`);
+    }
+    button.setAttribute(
+        "aria-pressed",
+        String(isSelectedTarget(runId, runtimeEntityId)),
+    );
     button.addEventListener("click", () => {
-        void selectRun(runId);
+        void selectRun(runId, runtimeEntityId);
     });
     return button;
 }
@@ -106,6 +141,7 @@ function replaceSelectionRows(list, rows, table, runtimeItems, runItems) {
         : null;
     const focusTarget = resolveRunSelectionFocus(
         focusedElement?.dataset.runId ?? null,
+        focusedElement?.dataset.entityId ?? null,
         focusedElement === null ? null : table,
         runtimeItems,
         runItems,
@@ -116,7 +152,12 @@ function replaceSelectionRows(list, rows, table, runtimeItems, runItems) {
     }
     const replacement = Array.from(
         list.querySelectorAll(".dashboard-run-selector"),
-    ).find((button) => button.dataset.runId === focusTarget.runId);
+    ).find(
+        (button) => (
+            button.dataset.runId === focusTarget.runId
+            && (button.dataset.entityId ?? null) === focusTarget.entityId
+        ),
+    );
     replacement?.focus({ preventScroll: true });
 }
 
@@ -137,7 +178,7 @@ function createRuntimeRow(runtime, telemetryAvailable) {
     const presentation = getRuntimeStatePresentation(runtime, telemetryAvailable);
     const progress = getRuntimeProgressPresentation(runtime);
     const row = document.createElement("tr");
-    if (runtime.run_id === selectedRunId) {
+    if (isSelectedTarget(runtime.run_id, runtime.entity_id)) {
         row.classList.add("dashboard-table__row--selected");
     }
 
@@ -148,7 +189,11 @@ function createRuntimeRow(runtime, telemetryAvailable) {
     progressValue.append(remaining);
 
     row.append(
-        createTableCell(createSelectionButton(runtime.run_id), "dashboard-table__run"),
+        createTableCell(
+            createSelectionButton(runtime.run_id, runtime.entity_id),
+            "dashboard-table__run",
+        ),
+        createTableCell(runtime.entity_id),
         createTableCell(createStatusBadge(presentation)),
         createTableCell(getStageLabel(runtime.current_stage)),
         createTableCell(formatRunTimestamp(runtime.updated_at)),
@@ -159,7 +204,7 @@ function createRuntimeRow(runtime, telemetryAvailable) {
 
 function createRunRow(run) {
     const row = document.createElement("tr");
-    if (run.run_id === selectedRunId) {
+    if (isSelectedTarget(run.run_id, null)) {
         row.classList.add("dashboard-table__row--selected");
     }
 
@@ -183,10 +228,44 @@ function renderOverviewState(state) {
 }
 
 function getSelectedRuntime() {
-    if (selectedRunId === null) {
-        return null;
+    return selectedRuntimeTracking.outsideQuery ? null : selectedRuntimeTracking.report;
+}
+
+function renderSelectedScope() {
+    selectedRunScope.textContent = getSelectedAnalysisScope(
+        selectedRunId,
+        selectedRuntimeEntityId,
+        selectedAnalysisTargetHost,
+    ).message;
+}
+
+function getPipelineStageContext(runtime) {
+    if (selectedRunId !== null && selectedRuntimeEntityId === null) {
+        return (
+            "Run 목록 선택은 Entity를 지정하지 않아 Runtime 단계를 표시하지 않습니다. "
+            + "Runtime 표에서 Run과 Entity를 선택하세요."
+        );
     }
-    return runtimeState.items.find((runtime) => runtime.run_id === selectedRunId) ?? null;
+    if (selectedRuntimeTracking.outsideQuery) {
+        return `${selectedRunId} · ${selectedRuntimeEntityId} · `
+            + getSelectedRuntimeOutsideQueryLabel(selectedRuntimeTracking);
+    }
+    if (runtime === null) {
+        return "선택한 Run의 Runtime 보고가 없어 단계 완료 여부를 확인할 수 없습니다.";
+    }
+    const statusLabel = getRuntimeStatePresentation(
+        runtime,
+        runtimeState.telemetryAvailable,
+    ).statusLabel;
+    const inQuery = findSelectedRuntime(
+        runtimeState.items,
+        selectedRunId,
+        selectedRuntimeEntityId,
+    ) !== null;
+    return inQuery
+        ? `${runtime.run_id} · ${runtime.entity_id} · ${statusLabel}`
+        : `${runtime.run_id} · ${runtime.entity_id} · 마지막 확인 ${statusLabel} `
+            + "· 최근 5건 조회 범위 밖";
 }
 
 function renderPipelineStages() {
@@ -195,12 +274,7 @@ function renderPipelineStages() {
         runtime,
         runtimeState.telemetryAvailable,
     );
-    pipelineStageContext.textContent = runtime === null
-        ? "선택한 Run의 Runtime 보고가 없어 단계 완료 여부를 확인할 수 없습니다."
-        : `${runtime.run_id} · ${getRuntimeStatePresentation(
-            runtime,
-            runtimeState.telemetryAvailable,
-        ).statusLabel}`;
+    pipelineStageContext.textContent = getPipelineStageContext(runtime);
 
     const items = stages.map((stage, index) => {
         const item = document.createElement("li");
@@ -296,6 +370,14 @@ function renderSelectedRunFailureState() {
     }
 }
 
+function renderSelectedRefreshControl() {
+    selectedRunRefreshButton.hidden = selectedRunId === null;
+    selectedRunRefreshButton.disabled = !canRefreshSelectedAnalysis(
+        selectedRunId,
+        selectedAnalysisPendingVersion !== null,
+    );
+}
+
 function renderSelectedLinks(runId, detailAvailable, fusionAvailable) {
     selectedRunDetailLink.href = buildRunDetailViewPath(runId);
     selectedRunFusionLink.href = buildFusionEngineViewPath(runId);
@@ -376,6 +458,7 @@ function renderSelectedAnalysis(detailState, fusionState) {
         decision !== null || fusionResult !== null || stoppingTrace !== null,
         decisionConsistency,
     );
+    selectedAnalysisState = analysisState;
     if (analysisState === "version_mismatch") {
         selectedRunStatus.textContent = (
             "Run Detail과 Fusion Engine의 Decision 버전이 달라 결과를 결합하지 않았습니다."
@@ -409,7 +492,10 @@ function renderSelectedAnalysis(detailState, fusionState) {
             "마지막 Runtime 보고는 실행 중이며 결과 저장을 기다리는 중입니다."
         );
     } else if (analysisState === "missing") {
-        selectedRunStatus.textContent = "선택한 Run에 저장된 상세 결과가 없습니다.";
+        selectedRunStatus.textContent = (
+            getSelectedRuntimeRecheckMessage(selectedRuntimeTracking)
+            ?? "선택한 Run에 저장된 상세 결과가 없습니다."
+        );
     } else {
         selectedRunStatus.textContent = analysisSource === "run_detail"
             ? "Decision ID를 비교할 수 없어 Run Detail 출처의 결과만 표시합니다."
@@ -538,42 +624,76 @@ async function loadFusionEngineState(runId) {
 
 async function loadSelectedRunAnalysis(runId, loadingMessage) {
     const requestVersion = ++selectedRequestVersion;
+    selectedAnalysisPendingVersion = requestVersion;
+    selectedAnalysisState = "loading";
+    renderSelectedRefreshControl();
     clearSelectedAnalysis();
     selectedRunStatus.textContent = loadingMessage;
 
-    let [detailState, fusionState] = await Promise.all([
-        loadRunDetailState(runId),
-        loadFusionEngineState(runId),
-    ]);
-    if (!shouldApplySelectedRunResponse(requestVersion, selectedRequestVersion)) {
-        return;
-    }
-    const firstDetailPayload = detailState.queryState === "success"
-        ? detailState.payload
-        : null;
-    const firstFusionPayload = fusionState.queryState === "success"
-        ? fusionState.payload
-        : null;
-    if (getDecisionVersionConsistency(firstDetailPayload, firstFusionPayload) === "mismatch") {
-        [detailState, fusionState] = await Promise.all([
+    try {
+        let [detailState, fusionState] = await Promise.all([
             loadRunDetailState(runId),
             loadFusionEngineState(runId),
         ]);
         if (!shouldApplySelectedRunResponse(requestVersion, selectedRequestVersion)) {
             return;
         }
+        const firstDetailPayload = detailState.queryState === "success"
+            ? detailState.payload
+            : null;
+        const firstFusionPayload = fusionState.queryState === "success"
+            ? fusionState.payload
+            : null;
+        if (getDecisionVersionConsistency(firstDetailPayload, firstFusionPayload) === "mismatch") {
+            [detailState, fusionState] = await Promise.all([
+                loadRunDetailState(runId),
+                loadFusionEngineState(runId),
+            ]);
+            if (!shouldApplySelectedRunResponse(requestVersion, selectedRequestVersion)) {
+                return;
+            }
+        }
+        selectedAnalysisQueryStates = { detailState, fusionState };
+        selectedAnalysisTargetHost = getSelectedAnalysisTargetHost(
+            detailState.queryState === "success" ? detailState.payload : null,
+            fusionState.queryState === "success" ? fusionState.payload : null,
+        );
+        renderSelectedScope();
+        renderSelectedLinks(
+            runId,
+            detailState.queryState === "success",
+            fusionState.queryState === "success",
+        );
+        renderSelectedAnalysis(detailState, fusionState);
+    } finally {
+        if (selectedAnalysisPendingVersion === requestVersion) {
+            selectedAnalysisPendingVersion = null;
+        }
+        renderSelectedRefreshControl();
     }
-    renderSelectedLinks(
-        runId,
-        detailState.queryState === "success",
-        fusionState.queryState === "success",
-    );
-    renderSelectedAnalysis(detailState, fusionState);
 }
 
-async function selectRun(runId) {
+function rerenderSelectedAnalysis() {
+    if (selectedAnalysisQueryStates === null || selectedAnalysisPendingVersion !== null) {
+        return;
+    }
+    renderSelectedAnalysis(
+        selectedAnalysisQueryStates.detailState,
+        selectedAnalysisQueryStates.fusionState,
+    );
+}
+
+async function selectRun(runId, runtimeEntityId = null) {
     selectedRunId = runId;
+    selectedRuntimeEntityId = runtimeEntityId;
+    selectedRuntimeTracking = createSelectedRuntimeTracking(
+        findSelectedRuntime(runtimeState.items, runId, runtimeEntityId),
+    );
+    selectedAnalysisQueryStates = null;
+    selectedAnalysisState = null;
+    selectedAnalysisTargetHost = null;
     selectedRunIdElement.textContent = runId;
+    renderSelectedScope();
     renderSelectedLinks(runId, false, false);
     renderSelectionRows();
     await loadSelectedRunAnalysis(
@@ -582,19 +702,48 @@ async function selectRun(runId) {
     );
 }
 
+function recheckSelectedRuntimeAnalysis() {
+    if (
+        selectedRunId === null
+        || !shouldRecheckSelectedRuntimeAnalysis(
+            selectedRuntimeTracking,
+            selectedAnalysisPendingVersion !== null,
+            selectedAnalysisState === "available",
+        )
+    ) {
+        return;
+    }
+    selectedRuntimeTracking = recordSelectedRuntimeRecheck(selectedRuntimeTracking);
+    void loadSelectedRunAnalysis(
+        selectedRunId,
+        "조회 범위를 벗어난 Runtime의 저장 분석 결과를 다시 확인하는 중입니다.",
+    );
+}
+
+function refreshSelectedRunAnalysis() {
+    if (!canRefreshSelectedAnalysis(selectedRunId, selectedAnalysisPendingVersion !== null)) {
+        return;
+    }
+    void loadSelectedRunAnalysis(
+        selectedRunId,
+        "선택한 Run의 저장 분석 결과를 다시 조회하는 중입니다.",
+    );
+}
+
 function selectDefaultRunIfReady() {
     if (selectedRunId !== null) {
         return;
     }
-    const runId = resolveInitialRunSelection(
+    const selection = resolveInitialRunSelection(
         selectedRunId,
+        selectedRuntimeEntityId,
         runtimeInitialQuerySettled,
         runtimeState.telemetryAvailable,
         runtimeState.items,
         runListState.items,
     );
-    if (runId !== null) {
-        void selectRun(runId);
+    if (selection !== null) {
+        void selectRun(selection.runId, selection.entityId);
     }
 }
 
@@ -648,29 +797,42 @@ async function fetchRuntimeSummary() {
 }
 
 async function pollRuntimeSummary() {
-    const previousRuntimeItems = runtimeState.items;
     let refreshCompletedSelection = false;
     let updateFailedSelection = false;
+    let selectedRuntimeResult = { kind: "error" };
     try {
         const payload = await fetchRuntimeSummary();
         const nextRuntimeState = resolveRuntimeSummaryQueryState(
             runtimeState,
             { kind: "success", payload },
         );
+        const previousSelectedRuntimeItems = selectedRuntimeTracking.report === null
+            ? []
+            : [selectedRuntimeTracking.report];
         refreshCompletedSelection = shouldRefreshSelectedRunAnalysis(
             selectedRunId,
-            previousRuntimeItems,
+            selectedRuntimeEntityId,
+            previousSelectedRuntimeItems,
             nextRuntimeState.items,
         );
         updateFailedSelection = shouldUpdateSelectedRunFailureState(
             selectedRunId,
-            previousRuntimeItems,
+            selectedRuntimeEntityId,
+            previousSelectedRuntimeItems,
             nextRuntimeState.items,
         );
+        selectedRuntimeResult = { kind: "success", items: nextRuntimeState.items };
         runtimeState = nextRuntimeState;
     } catch {
         runtimeState = resolveRuntimeSummaryQueryState(runtimeState, { kind: "error" });
     }
+    const previousRecheckMessage = getSelectedRuntimeRecheckMessage(selectedRuntimeTracking);
+    selectedRuntimeTracking = resolveSelectedRuntimeTracking(
+        selectedRuntimeTracking,
+        selectedRunId,
+        selectedRuntimeEntityId,
+        selectedRuntimeResult,
+    );
     runtimeInitialQuerySettled = true;
     selectDefaultRunIfReady();
     renderRuntimeState(runtimeState);
@@ -681,6 +843,11 @@ async function pollRuntimeSummary() {
             selectedRunId,
             "완료 보고를 확인해 저장된 분석 결과를 다시 불러오는 중입니다.",
         );
+    } else {
+        if (getSelectedRuntimeRecheckMessage(selectedRuntimeTracking) !== previousRecheckMessage) {
+            rerenderSelectedAnalysis();
+        }
+        recheckSelectedRuntimeAnalysis();
     }
     runtimePollTimeoutId = setTimeout(
         () => void pollRuntimeSummary(),
@@ -692,6 +859,7 @@ if (dashboardView !== null) {
     renderOverviewState(overviewState);
     renderRunListState(runListState);
     renderRuntimeState(runtimeState);
+    selectedRunRefreshButton.addEventListener("click", refreshSelectedRunAnalysis);
     void loadOverview();
     void loadRuns();
     void pollRuntimeSummary();

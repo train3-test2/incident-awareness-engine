@@ -30,6 +30,26 @@
     text-underline-offset: 0.18em;
 }
 
+.dashboard-analysis-refresh {
+    flex: 0 0 auto;
+    padding: 0;
+    color: var(--shell-color-primary);
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: 700;
+    text-decoration: underline;
+    text-underline-offset: 0.18em;
+    cursor: pointer;
+    background: none;
+    border: 0;
+}
+
+.dashboard-analysis-refresh:disabled {
+    color: var(--shell-color-muted);
+    text-decoration: none;
+    cursor: progress;
+}
+
 .dashboard-time-note {
     margin-top: var(--shell-space-2);
     color: var(--shell-color-muted);

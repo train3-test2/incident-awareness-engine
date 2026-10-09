@@ -98,7 +98,8 @@
                     <div>
                         <h2 id="runtime-summary-heading" class="section-heading">최근 Runtime 실행 현황</h2>
                         <p class="section-description">
-                            API 순서의 최근 보고 최대 5건입니다. 행을 선택하면 아래 저장 분석 결과를 조회합니다.
+                            API 순서의 최근 보고 최대 5건입니다. 행은 Run ID와 Entity ID 조합으로 선택하며,
+                            아래 저장 분석 결과는 run_id 기준으로 조회합니다.
                         </p>
                     </div>
                 </div>
@@ -110,6 +111,7 @@
                         <thead>
                             <tr>
                                 <th scope="col">Run ID</th>
+                                <th scope="col">Entity ID</th>
                                 <th scope="col">상태</th>
                                 <th scope="col">현재 단계</th>
                                 <th scope="col">마지막 보고</th>
@@ -131,8 +133,12 @@
                         <p class="section-description">
                             저장된 Run Detail과 Fusion Engine 결과입니다. 실시간 점수 화면이 아닙니다.
                         </p>
+                        <p id="selected-run-scope" class="section-description">
+                            Runtime 또는 Run 목록에서 항목을 선택하면 조회 범위를 표시합니다.
+                        </p>
                     </div>
                     <div class="dashboard-analysis-links">
+                        <button id="selected-run-refresh" class="dashboard-analysis-refresh" type="button" hidden>결과 다시 조회</button>
                         <a id="selected-run-detail-link" href="/dashboard" hidden>Run Detail</a>
                         <a id="selected-run-fusion-link" href="/dashboard" hidden>Fusion Engine 상세</a>
                     </div>
