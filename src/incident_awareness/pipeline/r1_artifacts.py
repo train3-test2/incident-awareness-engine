@@ -9,7 +9,18 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Literal
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.common.models.evidence import Evidence
@@ -21,6 +32,7 @@ from incident_awareness.evidence.r1_multi_event import (
     REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION,
     R1ExtractionDiagnostic,
 )
+from incident_awareness.evidence.r1_reference_policy import R1ReferenceSelection
 from incident_awareness.evidence.r1_selector import R1SelectorDiagnostic
 from incident_awareness.pipeline.r1_evidence import (
     R1LineageInput,
@@ -30,6 +42,7 @@ from incident_awareness.pipeline.r1_evidence import (
 
 R1_EVIDENCE_FILENAME = "r1_evidence.jsonl"
 R1_EXTRACTION_SUMMARY_FILENAME = "r1_extraction_summary.json"
+R1_COLLECTION_PROVENANCE_FILENAME = "r1_collection_provenance.json"
 
 type R1ExtractionStatus = Literal["completed", "failed"]
 type R1SelectorStatus = Literal["selected", "failed"]
@@ -37,6 +50,71 @@ type TelemetryCompleteness = Literal["not_provided"]
 
 _SELECTOR_STATUS_TYPE_ADAPTER = TypeAdapter(R1SelectorStatus)
 _SELECTOR_DIAGNOSTICS_TYPE_ADAPTER = TypeAdapter(tuple[R1SelectorDiagnostic, ...])
+
+
+class R1ReferencePolicyIdentity(BaseModel):
+    """Loader가 선택한 reference policy identity."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    policy_id: StrictStr
+    version: StrictStr
+    config_hash: StrictStr
+
+    @field_validator("policy_id", "version", "config_hash")
+    @classmethod
+    def validate_non_blank(cls, value: str) -> str:
+        if not value.strip() or value != value.strip():
+            raise ValueError("reference policy identity values must be non-blank and unpadded")
+        return value
+
+
+class R1CollectionProvenance(BaseModel):
+    """Run 단위 reference policy 선택과 horizon binding provenance."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    run_id: StrictStr
+    reference_policy_canonical_path: StrictStr
+    reference_policy_id: StrictStr
+    reference_policy_version: StrictStr
+    reference_policy_config_hash: StrictStr
+    loader_selected_policy_identity: R1ReferencePolicyIdentity
+    scenario_evaluation_horizon_sec: StrictInt = Field(gt=0)
+    policy_expected_evaluation_horizon_sec: StrictInt = Field(gt=0)
+    horizon_matches: StrictBool
+
+    @field_validator(
+        "run_id",
+        "reference_policy_canonical_path",
+        "reference_policy_id",
+        "reference_policy_version",
+        "reference_policy_config_hash",
+    )
+    @classmethod
+    def validate_non_blank(cls, value: str) -> str:
+        if not value.strip() or value != value.strip():
+            raise ValueError("collection provenance string values must be non-blank and unpadded")
+        return value
+
+    @model_validator(mode="after")
+    def validate_contract(self) -> "R1CollectionProvenance":
+        _validate_run_id(self.run_id)
+        identity = self.loader_selected_policy_identity
+        if (
+            identity.policy_id != self.reference_policy_id
+            or identity.version != self.reference_policy_version
+            or identity.config_hash != self.reference_policy_config_hash
+        ):
+            raise ValueError("loader-selected policy identity must match reference policy fields")
+        horizons_match = (
+            self.scenario_evaluation_horizon_sec == self.policy_expected_evaluation_horizon_sec
+        )
+        if self.horizon_matches is not horizons_match:
+            raise ValueError("horizon_matches must describe the recorded horizon values")
+        if not self.horizon_matches:
+            raise ValueError("mismatched evaluation horizons must fail before artifact publication")
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +328,57 @@ def load_r1_extraction_summary(output_directory: Path) -> R1ExtractionSummary:
     return _read_summary(summary_path)
 
 
+def write_r1_collection_provenance(
+    selection: R1ReferenceSelection,
+    *,
+    run_id: str,
+    output_directory: Path,
+) -> tuple[R1CollectionProvenance, Path]:
+    """검증된 reference 선택을 immutable Run provenance artifact로 게시한다."""
+    if not isinstance(selection, R1ReferenceSelection):
+        raise TypeError("selection must be an R1ReferenceSelection")
+    _validate_run_id(run_id)
+    if selection.run_id != run_id:
+        raise ValueError("reference selection run_id must match the requested run_id")
+
+    provenance = R1CollectionProvenance(
+        run_id=run_id,
+        reference_policy_canonical_path=selection.policy_config_path,
+        reference_policy_id=selection.policy_id,
+        reference_policy_version=selection.reference_policy_version,
+        reference_policy_config_hash=selection.policy_config_hash,
+        loader_selected_policy_identity=R1ReferencePolicyIdentity(
+            policy_id=selection.policy_id,
+            version=selection.reference_policy_version,
+            config_hash=selection.policy_config_hash,
+        ),
+        scenario_evaluation_horizon_sec=selection.scenario_evaluation_horizon_sec,
+        policy_expected_evaluation_horizon_sec=selection.expected_evaluation_horizon_sec,
+        horizon_matches=selection.horizon_matches,
+    )
+    provenance_path = _collection_provenance_path(output_directory)
+    if provenance_path.exists():
+        raise FileExistsError(f"R1 artifact files must not already exist: {provenance_path.name}")
+    _publish_files(((provenance_path, _serialize_collection_provenance(provenance)),))
+    return provenance, provenance_path
+
+
+def load_r1_collection_provenance(output_directory: Path) -> R1CollectionProvenance:
+    """Run 단위 reference policy provenance artifact를 strict validation으로 읽는다."""
+    provenance_path = _collection_provenance_path(output_directory)
+    try:
+        payload = json.loads(provenance_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"R1 collection provenance is not valid JSON: {provenance_path}"
+        ) from error
+
+    try:
+        return R1CollectionProvenance.model_validate(payload, strict=True)
+    except ValidationError as error:
+        raise ValueError("R1 collection provenance does not match the writer contract") from error
+
+
 def _validate_run_id(run_id: str) -> None:
     if not isinstance(run_id, str):
         raise TypeError("run_id must be a string")
@@ -276,6 +405,14 @@ def _artifact_paths(output_directory: Path) -> tuple[Path, Path]:
     evidence_path = output_directory / R1_EVIDENCE_FILENAME
     summary_path = output_directory / R1_EXTRACTION_SUMMARY_FILENAME
     return evidence_path, summary_path
+
+
+def _collection_provenance_path(output_directory: Path) -> Path:
+    if not isinstance(output_directory, Path):
+        raise TypeError("output_directory must be a Path")
+    if not output_directory.is_dir():
+        raise ValueError(f"output_directory must be an existing directory: {output_directory}")
+    return output_directory / R1_COLLECTION_PROVENANCE_FILENAME
 
 
 def _validate_event_run_scope(
@@ -369,6 +506,19 @@ def _serialize_summary(summary: R1ExtractionSummary) -> bytes:
     return (
         json.dumps(
             payload,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _serialize_collection_provenance(provenance: R1CollectionProvenance) -> bytes:
+    return (
+        json.dumps(
+            provenance.model_dump(mode="json"),
             ensure_ascii=False,
             indent=2,
             sort_keys=True,
@@ -667,13 +817,17 @@ def _publish_files(files: tuple[tuple[Path, bytes], ...]) -> None:
 
 
 __all__ = [
+    "R1_COLLECTION_PROVENANCE_FILENAME",
     "R1_EVIDENCE_FILENAME",
     "R1_EXTRACTION_SUMMARY_FILENAME",
+    "R1CollectionProvenance",
     "R1EvidenceArtifactRun",
     "R1ExtractionSummary",
     "R1LineageInputProvenance",
     "R1SelectorProvenance",
+    "load_r1_collection_provenance",
     "load_r1_evidence_artifacts",
     "load_r1_extraction_summary",
     "run_and_write_r1_evidence_artifacts",
+    "write_r1_collection_provenance",
 ]
