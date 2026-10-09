@@ -21,6 +21,7 @@ from incident_awareness.pipeline.r1_automated import (
 )
 from incident_awareness.pipeline.r1_evidence import (
     R1LineageInput,
+    R1SelectedEvidencePipelineResult,
     run_r1_evidence_pipeline_with_selector,
 )
 
@@ -34,6 +35,10 @@ _POLICY_ID = "r1-v02-development-connection"
 _POLICY_VERSION = "v0.1"
 _FAMILY_POLICY_ID = "r1-remote-management-approved-lineage"
 _FAMILY_POLICY_VERSION = "v0.2"
+_FROZEN_POLICY_VERSION = "v0.3"
+_PAIR004_SELECTOR_FIXTURE = (
+    Path(__file__).parent.parent / "fixtures" / "evidence" / "r1_pair004_selector_events.jsonl"
+)
 
 
 def _event(
@@ -141,6 +146,192 @@ def _output_directory(tmp_path: Path, name: str) -> Path:
     output_directory = tmp_path / name
     output_directory.mkdir()
     return output_directory
+
+
+def _pair004_selector_events() -> tuple[NormalizedEvent, ...]:
+    return tuple(
+        NormalizedEvent.model_validate(json.loads(line))
+        for line in _PAIR004_SELECTOR_FIXTURE.read_text(encoding="utf-8").splitlines()
+    )
+
+
+def _derived_pair004_event(
+    event: NormalizedEvent,
+    *,
+    event_id: str,
+    process_guid: str | None = None,
+) -> NormalizedEvent:
+    payload = event.model_dump(mode="json")
+    payload["event_id"] = event_id
+    payload["source_event_id"] = f"derived-{event_id}"
+    payload["raw_ref"]["source_record_id"] = f"derived-{event_id}"
+    payload["raw_ref"]["record_no"] += 1000
+    if process_guid is not None:
+        payload["process"]["process_guid"] = process_guid
+    return NormalizedEvent.model_validate(payload)
+
+
+def _run_pair004_derived_selector(
+    events: tuple[NormalizedEvent, ...],
+) -> R1SelectedEvidencePipelineResult:
+    return run_r1_evidence_pipeline_from_policy(
+        events,
+        selector_policy=_selector_policy(),
+        approved_policy_id=_FAMILY_POLICY_ID,
+        approved_policy_version=_FROZEN_POLICY_VERSION,
+        approved_policy_config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+        scenario_family_id="remote_management",
+    )
+
+
+def test_pair004_derived_fixture_preserves_verified_selection() -> None:
+    # Given
+    events = _pair004_selector_events()
+
+    # When
+    result = _run_pair004_derived_selector(events)
+
+    # Then
+    assert result.selector_result.selection is not None
+    assert result.selector_result.selection.anchor_event_id == events[0].event_id
+    assert result.selector_result.selection.terminal_event_id == events[2].event_id
+    assert result.selector_result.diagnostics == ()
+    assert {evidence.evidence_type for evidence in result.evidences} == {
+        "remote_process_network_follow_on",
+        "remote_session_process_lineage_deviation",
+    }
+
+
+def test_pair004_derived_duplicate_guid_publishes_failed_selector_summary(
+    tmp_path: Path,
+) -> None:
+    # Given
+    events = _pair004_selector_events()
+    duplicate_terminal = _derived_pair004_event(
+        events[2],
+        event_id="evt-pair004-derived-terminal-duplicate",
+    )
+    output_directory = _output_directory(tmp_path, "pair004-duplicate")
+
+    # When
+    result = run_and_write_r1_evidence_artifacts_from_policy(
+        (*events, duplicate_terminal),
+        run_id=events[0].run_id,
+        output_directory=output_directory,
+        selector_policy=_selector_policy(),
+        approved_policy_id=_FAMILY_POLICY_ID,
+        approved_policy_version=_FROZEN_POLICY_VERSION,
+        approved_policy_config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+        scenario_family_id="remote_management",
+    )
+    loaded = load_r1_evidence_artifacts(output_directory)
+
+    # Then
+    assert result.pipeline_result.selector_result.selection is None
+    assert result.pipeline_result.selector_result.diagnostics == ("duplicate_process_guid",)
+    assert result.pipeline_result.lineage_input is None
+    assert result.pipeline_result.evidences == ()
+    assert result.artifact_run.evidences == ()
+    assert result.artifact_run.evidence_path.is_file()
+    assert result.artifact_run.evidence_path.read_bytes() == b""
+    assert result.artifact_run.summary_path.is_file()
+    assert result.artifact_run.summary.status == "completed"
+    assert result.artifact_run.summary.evidence_count == 0
+    assert result.artifact_run.summary.lineage_inputs == ()
+    assert result.artifact_run.summary.selector is not None
+    assert result.artifact_run.summary.selector.status == "failed"
+    assert result.artifact_run.summary.selector.diagnostics == ("duplicate_process_guid",)
+    assert loaded.evidences == ()
+    assert loaded.summary == result.artifact_run.summary
+
+
+def test_pair004_derived_truncated_lineage_publishes_failed_selector_summary(
+    tmp_path: Path,
+) -> None:
+    # Given
+    anchor, _, terminal, network = _pair004_selector_events()
+    output_directory = _output_directory(tmp_path, "pair004-truncated")
+
+    # When
+    result = run_and_write_r1_evidence_artifacts_from_policy(
+        (anchor, terminal, network),
+        run_id=anchor.run_id,
+        output_directory=output_directory,
+        selector_policy=_selector_policy(),
+        approved_policy_id=_FAMILY_POLICY_ID,
+        approved_policy_version=_FROZEN_POLICY_VERSION,
+        approved_policy_config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+        scenario_family_id="remote_management",
+    )
+    loaded = load_r1_evidence_artifacts(output_directory)
+
+    # Then
+    assert result.pipeline_result.selector_result.selection is None
+    assert result.pipeline_result.selector_result.diagnostics == ("truncated_lineage",)
+    assert result.pipeline_result.lineage_input is None
+    assert result.pipeline_result.evidences == ()
+    assert result.artifact_run.evidences == ()
+    assert result.artifact_run.evidence_path.is_file()
+    assert result.artifact_run.evidence_path.read_bytes() == b""
+    assert result.artifact_run.summary_path.is_file()
+    assert result.artifact_run.summary.status == "completed"
+    assert result.artifact_run.summary.evidence_count == 0
+    assert result.artifact_run.summary.lineage_inputs == ()
+    assert result.artifact_run.summary.selector is not None
+    assert result.artifact_run.summary.selector.status == "failed"
+    assert result.artifact_run.summary.selector.diagnostics == ("truncated_lineage",)
+    assert loaded.evidences == ()
+    assert loaded.summary == result.artifact_run.summary
+
+
+def test_pair004_derived_ambiguous_terminal_publishes_failed_selector_summary(
+    tmp_path: Path,
+) -> None:
+    # Given
+    events = _pair004_selector_events()
+    second_terminal_guid = "{2bf90845-ce86-6ac7-9901-000000000800}"
+    second_terminal = _derived_pair004_event(
+        events[2],
+        event_id="evt-pair004-derived-terminal-ambiguous",
+        process_guid=second_terminal_guid,
+    )
+    second_network = _derived_pair004_event(
+        events[3],
+        event_id="evt-pair004-derived-network-ambiguous",
+        process_guid=second_terminal_guid,
+    )
+    output_directory = _output_directory(tmp_path, "pair004-ambiguous")
+
+    # When
+    result = run_and_write_r1_evidence_artifacts_from_policy(
+        (*events, second_terminal, second_network),
+        run_id=events[0].run_id,
+        output_directory=output_directory,
+        selector_policy=_selector_policy(),
+        approved_policy_id=_FAMILY_POLICY_ID,
+        approved_policy_version=_FROZEN_POLICY_VERSION,
+        approved_policy_config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+        scenario_family_id="remote_management",
+    )
+    loaded = load_r1_evidence_artifacts(output_directory)
+
+    # Then
+    assert result.pipeline_result.selector_result.selection is None
+    assert result.pipeline_result.selector_result.diagnostics == ("ambiguous_terminal_candidate",)
+    assert result.pipeline_result.lineage_input is None
+    assert result.pipeline_result.evidences == ()
+    assert result.artifact_run.evidences == ()
+    assert result.artifact_run.evidence_path.is_file()
+    assert result.artifact_run.evidence_path.read_bytes() == b""
+    assert result.artifact_run.summary_path.is_file()
+    assert result.artifact_run.summary.status == "completed"
+    assert result.artifact_run.summary.evidence_count == 0
+    assert result.artifact_run.summary.lineage_inputs == ()
+    assert result.artifact_run.summary.selector is not None
+    assert result.artifact_run.summary.selector.status == "failed"
+    assert result.artifact_run.summary.selector.diagnostics == ("ambiguous_terminal_candidate",)
+    assert loaded.evidences == ()
+    assert loaded.summary == result.artifact_run.summary
 
 
 def test_runs_selector_with_loaded_policy_and_matches_manual_path() -> None:

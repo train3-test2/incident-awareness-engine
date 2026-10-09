@@ -1,15 +1,16 @@
 # R1 다중 Run development Evidence 검증
 
-> 상태: PASS / Issue #227 development regression 범위
+> 상태: PASS / Issue #227 development regression 및 formal freeze 근거
 > 검증일: 2026-10-09
 > availability: `OFFLINE WHOLE-EPISODE ONLY`
 
 ## 1. 목적과 범위
 
-동일한 selector와 approved lineage policy를 Pair별 조정 없이 다음 두 Pair에 적용해 R1 Evidence 경로의 반복 가능성을 검증한다.
+동일한 selector와 approved lineage sequence를 Pair별 조정 없이 다음 세 Pair에 적용해 R1 Evidence 경로의 반복 가능성을 검증한다.
 
 - Pair-002: 이전 Run-level tier 계약으로 수집한 legacy development/tuning baseline
 - Pair-003: 현재 Pair-owned tier 계약으로 수집한 development Pair
+- Pair-004: 현재 Pair-owned tier 계약으로 수집한 development Pair이며 formal freeze 이후 frozen v0.3으로 검증
 
 검증 경로는 다음과 같다.
 
@@ -35,6 +36,11 @@ Ground Truth, `run_type`, Attack/Normal label, Pair별 RecordId나 Event ID, pro
 | Pair-003 collection source commit | `816c3c2f80b2e664206ed277a9abc5d33ddec9dd` |
 | Pair-003 runner bundle SHA-256 | `c9b575af86c78e163a5db7aca67e8d1e11e057bd10ba2e61a888c63336af132f` |
 | Pair-003 rendered scenario SHA-256 | `8b0964c613868611914a1bc032d66a7ba6e9e08ef540b6c8dc80ac7a155f3a9c` |
+| Pair-004 validation branch | `feature/evidence-engineering/r1-evaluation-policy-freeze` |
+| Pair-004 collection source commit | `cc314bdf988697cbd7a24010680d3f7f2e514f5f` |
+| Pair-004 Evidence execution commit | `115c1128880df2c6c1db0f837c6b1b3d43d0bf4e` |
+| Pair-004 runner bundle SHA-256 | `126f6b3cbeb97e6c60685ab2eab23d6b74761aca9834ad561619c341f01b9474` |
+| Pair-004 rendered scenario SHA-256 | `765bab35de812b38f8ab81cc6b2d169a4afb088daae7500f786dc440ca49170d` |
 | NormalizedEvent schema | v0.3 |
 | R1 extractor | `r1-v0.1` |
 
@@ -179,9 +185,71 @@ Evidence.event_ids
 - `r1_extraction_summary.json` bytes/SHA-256
 - provenance resolver 결과
 
+## 9-1. Pair-004 frozen v0.3 검증
+
+Pair-004는 `remote_management / V02 / repetition 4`, `dataset_tier = development`인 current-contract
+Pair다. 렌더링된 scenario 최상위 tier와 두 operator trace tier가 일치했고, 기존 Run validator로 contract,
+manifest, planned lineage를 검증해 두 Run 모두 PASS했다. Google Drive의 Pair 폴더에는 외부 Pair ZIP 하나가
+아니라 두 Run ZIP이 보존돼 있었다. Run ZIP과 `SHA256SUMS.txt`의 35개 항목을 raw bytes로 재계산해 불일치가
+없음을 확인했다.
+
+| Run | Run ZIP SHA-256 | raw SHA-256 | raw/normalized 수 | EID 1 | EID 3 | normalized SHA-256 |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| Attack `RUN-20261008-917` | `c8e331b85c8f2ed886b6bf73ee8372f7e34a3ae2c9e9e8601cb13ca93e0bc82c` | `1d80e6159d002a8fe58f5d03b632de946cc3311f903215e0ff1561957639cd5a` | 126 / 126 | 95 | 31 | `ae9a55d7e0b3efdd9ee1113023d7539f6c00be56b149a7bf8a01c55e38116d3a` |
+| Normal `RUN-20261008-918` | `2e7152db7f5b35b6641f75e0d3a7d483276e710e875bf8345485198c4e036fa7` | `d8df6048a95a61b5b98054a4792444def08e441220ef7329d55870a974179173` | 172 / 172 | 148 | 24 | `889d7bfd398423c1b627403b93e85971250923c16c32509fd6ac001b716724d9` |
+
+Evidence 실행은 selector `r1-structural-lineage-selector/v0.1`과 config hash
+`669520854868ae24182f502a2c118e66fce9a0fc464283232990182fa848072d`, frozen policy
+`r1-remote-management-approved-lineage/v0.3`과 config hash
+`b3d1d28a909b494f660d3e8164a994a3d818a98dadcd10336560b4bec38680d2`를 repository loader에서
+읽어 사용했다. `scenario_family_id = remote_management`를 명시했고 development 기본값 v0.2는 변경하지 않았다.
+
+Run contract는 §3의 `tools/validate_r1_run.py` 명령으로 검증했다. Evidence E2E는 `PYTHONPATH=src`와 event
+vocabulary 경로를 설정한 뒤 `uv run python -`에서
+`run_and_write_r1_evidence_artifacts_from_policy(..., approved_policy_version="v0.3",
+scenario_family_id="remote_management")`를 호출했다. 원본·역순·shuffle 모두 같은 public API를 사용했다.
+
+| Run | selector | diagnostics | anchor → intermediate → terminal source RecordId |
+| --- | --- | --- | --- |
+| Attack `RUN-20261008-917` | `selected` | selector `[]`, extraction `[]` | `1326 → 1395 → 1397` |
+| Normal `RUN-20261008-918` | `selected` | selector `[]`, extraction `[]` | `1317 → 1366 → 1368` |
+
+RecordId는 selector 실행 후 resolved Event를 raw telemetry로 역추적한 provenance이며 선택 조건으로 사용하지
+않았다. Ground Truth, `run_type`, Attack/Normal label, Pair ID, endpoint, process name과 PID도 selector 또는
+Evidence 실행 조건으로 사용하지 않았다.
+
+| Run | Evidence | evidence ID | timestamp |
+| --- | --- | --- | --- |
+| Attack | `remote_session_process_lineage_deviation` | `E-eb221dfc-1e4b-5670-b210-9abbc1a84db7` | `2026-10-08T17:10:30.538Z` |
+| Attack | `remote_process_network_follow_on` | `E-27bf7412-d2d9-5731-86f0-b22c6d09eb4f` | `2026-10-08T17:13:30.899Z` |
+| Normal | `remote_process_network_follow_on` | `E-67528b87-032a-5f39-98f9-62d7af29a0e0` | `2026-10-08T17:39:11.912Z` |
+
+Artifact는 저장소 밖
+`<external-validation-root>/115c1128880df2c6c1db0f837c6b1b3d43d0bf4e/R1-PAIR-20261008-004/<run-id>/`에
+보존했다.
+
+| Run | `r1_evidence.jsonl` SHA-256 | `r1_extraction_summary.json` SHA-256 | loader | provenance resolver |
+| --- | --- | --- | --- | --- |
+| Attack | `000d34d0dd1e15152131974c69437db5a9c50c3026b03b9e509e33af7e8305a9` | `6643b86d127a47ee80c4f96de3d6831e700a399b4398c99275c78662206ad80d` | PASS | PASS |
+| Normal | `32ec20bd0c2241f5134d07e3802e9042b8932dbe3021ecceda259976deea1403` | `c64d1ef32e5784ba8b4dda53d3e59dd157599148424eafdceeb6ed07155efd4e` | PASS | PASS |
+
+두 Run 모두 원본 순서, 역순과 seed `20261008` 고정 shuffle에서 selector selection과 diagnostics, Evidence
+content/ID, Evidence JSONL bytes, summary bytes와 provenance resolver 결과가 같았다. Evidence의
+`event_ids`는 lineage anchor→terminal 또는 EID 1→EID 3 의미 순서를 유지했고 `timestamp`는 참조 Event의
+최대 timestamp와 일치했다. 이 결과는 `OFFLINE WHOLE-EPISODE ONLY`이며 Temporal Replay, TTSD, online 또는
+causal 평가를 수행했다는 뜻이 아니다.
+
 ### Fail-closed 검증 경계
 
-기존 synthetic selector regression을 이번 branch에서 다시 실행해 duplicate ProcessGuid, truncated lineage, ambiguous terminal candidate와 temporal inversion이 selection 없이 구조화된 diagnostic으로 fail-closed되는 계약을 재확인했다. Pair-003 실제 raw telemetry를 duplicate, truncated, ambiguous 또는 temporal inversion 형태로 변조하는 신규 actual-run 검증은 수행하지 않았다.
+Pair-004 Attack Run에서 실제로 선택된 anchor, intermediate, terminal과 network NormalizedEvent를 최소·비식별화한 테스트용 파생 입력으로 duplicate, truncated와 ambiguous 조건을 검증했다. 이 입력은 `Pair-004 actual telemetry-derived negative regression fixture`이며 새로운 development Pair나 수집 Run, holdout/final 또는 성능 평가 데이터가 아니다. 원본 raw telemetry, NormalizedEvent 결과와 기존 artifact는 수정하지 않았다.
+
+| 파생 조건 | 변형 방법 | selector 결과 | Evidence/artifact 결과 |
+| --- | --- | --- | --- |
+| duplicate | terminal Event를 다른 `event_id`로 복제하되 같은 ProcessGuid 유지 | failed, `duplicate_process_guid`, selection 없음 | Evidence 0건, 빈 `r1_evidence.jsonl`과 failed selector summary 게시 |
+| truncated | 선택 계보에서 필요한 intermediate Event 제거 | failed, `truncated_lineage`, selection 없음 | Evidence 0건, 빈 `r1_evidence.jsonl`과 failed selector summary 게시 |
+| ambiguous | 같은 intermediate를 부모로 갖는 별도 terminal과 동일 GUID의 후속 network Event 추가 | failed, `ambiguous_terminal_candidate`, selection 없음 | Evidence 0건, 빈 `r1_evidence.jsonl`과 failed selector summary 게시 |
+
+검증된 원본 구조의 selector 선택과 Evidence 2건도 같은 fixture의 baseline 회귀로 유지했다. 기존 synthetic selector regression은 temporal inversion을 포함한 나머지 malformed 조건을 계속 담당한다. 세 파생 조건에서는 유효 Evidence가 생성되지 않았으며, 기존 selector-failure artifact 계약에 따라 빈 Evidence artifact와 failed selector summary를 게시하고 loader로 다시 검증했다.
 
 ## 10. Pair-002 baseline replay
 
@@ -196,31 +264,34 @@ Pair-002는 current-contract development 수량에 포함하지 않고 legacy de
 
 ## 11. Multi-run 분석과 policy 안정성
 
-Pair-002와 Pair-003에서 다음 결과가 반복됐다.
+Pair-002, Pair-003과 Pair-004에서 다음 결과가 반복됐다.
 
 - 같은 selector policy가 Pair별 RecordId, process name 또는 endpoint 조건 없이 유일한 3-Event lineage를 선택했다.
-- 같은 approved policy가 Normal lineage를 승인 계보로, Attack lineage를 deviation으로 비교했다.
+- 같은 approved lineage sequence가 Normal lineage를 승인 계보로, Attack lineage를 deviation으로 비교했다. Pair-004는 formal frozen v0.3 identity를 명시적으로 사용했다.
 - Normal과 Attack 모두 network follow-on을 생성했다. 따라서 network follow-on은 단독 공격 신호가 아니다.
 - 모든 Run에서 selector/extraction diagnostics가 비어 있었다.
-- 입력 순서를 바꿔도 Pair-003 selector, Evidence, artifact와 provenance가 동일했다.
+- 입력 순서를 바꿔도 Pair-003과 Pair-004 selector, Evidence, artifact와 provenance가 동일했다.
 
-이는 동일-family development 반복에서 selector/policy 안정성 근거를 강화한다. 다만 current Pair-owned tier 계약으로 수집한 Pair는 Pair-003 한 개뿐이고 Pair-002는 legacy baseline이다. 후속 v0.2 계약은 explicit family binding과 lifecycle 허용값을 제공하지만, 이 검증에 사용한 v0.1 policy와 historical artifact를 새 policy로 rewrite하지 않는다. Development frozen candidate 근거는 강화됐지만 production/final evaluation policy로 승격하거나 여러 family에 일반화하지 않으며, 추가 current-contract development Pair 검증과 formal freeze 승인이 필요하다.
+이는 동일-family development 반복에서 selector/policy 안정성 근거를 강화한다. 실제 검증이 끝난 current
+Pair-owned tier 입력은 Pair-003과 Pair-004 두 개이며 Pair-002는 legacy baseline이다. Historical v0.1
+policy와 artifact를 새 policy로 rewrite하지 않았고 Pair-004에서만 formal frozen v0.3을 명시 선택했다.
+이는 production 성능 승인, 충분한 최종 성능 표본 확보 또는 다른 family 일반화를 의미하지 않는다.
 
 ## 12. Role1·Role5 사용 범위
 
 ### Role1
 
-- Pair-003의 completed artifact는 offline whole-episode connection check, static Evidence feature 분석 후보와 artifact/interface 연결 확인에만 사용할 수 있다.
+- Pair-003과 Pair-004의 completed artifact는 offline whole-episode connection check, static Evidence feature 분석 후보와 artifact/interface 연결 확인에만 사용할 수 있다.
 - selector와 approved policy identity, diagnostics, Evidence type/count와 artifact hash를 함께 전달해야 한다.
 - Fusion score, weight, window, threshold tuning, 모델 선택과 causal temporal evaluation은 아직 승인된 사용 범위가 아니다. Role1의 별도 승인과 #231 `available_at`/watermark 계약 이후에 판단한다.
 - Pair-002는 legacy 비교 baseline으로만 사용하고 current-contract development 수량에는 포함하지 않는다.
 
 ### Role5
 
-- Pair-003는 current-contract `development` Pair다.
+- Pair-003과 Pair-004는 current-contract `development` Pair다.
 - 실제 train/validation/test split 배정은 Role5 split manifest와 dataset 승인 절차를 별도로 거쳐야 한다.
 - Pair-002는 training, validation, test, holdout과 final evaluation에서 제외한다.
-- Pair-003도 holdout 또는 final evaluation 결과로 사용하지 않는다.
+- Pair-003과 Pair-004도 holdout 또는 final evaluation 결과로 사용하지 않는다.
 
 ## 13. Availability 제한
 
@@ -236,26 +307,35 @@ Pair-002와 Pair-003에서 다음 결과가 반복됐다.
 
 | 항목 | 상태 |
 | --- | --- |
-| 추가 current-contract development Pair 확보 | 완료: Pair-003 |
+| 추가 current-contract development Pair 확보 | 완료: Pair-003, Pair-004 |
 | ZIP/manifest/raw integrity | 완료 |
 | 동일 selector 적용 | 완료 |
-| 동일 approved policy 적용 | 완료 |
+| 동일 approved lineage semantics 적용 | 완료. Pair-004는 별도 frozen v0.3 identity를 명시 선택 |
 | label/RecordId 비의존 실행 | 완료 |
 | Run별 selector와 Evidence 결과 | 완료 |
 | artifact writer/loader | 완료 |
 | provenance resolver | 완료 |
 | original/reverse/shuffle 결정성 | 완료 |
-| duplicate ProcessGuid/truncated/ambiguous/temporal inversion fail-closed | 기존 synthetic selector regression 재확인 완료. Pair-003 실제 telemetry 변조 검증은 미수행 |
+| duplicate ProcessGuid/truncated/ambiguous/temporal inversion fail-closed | Pair-004 actual telemetry-derived negative regression에서 duplicate/truncated/ambiguous 완료. Temporal inversion은 기존 synthetic regression 재확인 범위 |
 | Pair-002 baseline replay | 완료 |
-| pair-specific overfitting 검토 | 완료, current-contract Pair 수 제한 명시 |
+| pair-specific overfitting 검토 | 완료, 두 current-contract Pair 반복 결과와 데이터 규모 제한 명시 |
 | Role1/Role5 사용 범위 | offline/static 및 dataset 경계 정리 완료 |
-| policy stability 평가 | 완료: frozen candidate 근거 강화 |
+| policy stability 평가 | 완료: frozen identity 발급·승인 및 Pair-004 v0.3 반복 근거 확정. 데이터 규모 제한 유지 |
 | formal family-bound lifecycle 계약 | 완료: v0.2 family binding과 lifecycle validation 제공 |
-| 최종 평가용 ApprovedLineagePolicy version/hash formal freeze | 미완료: 별도 승인과 새 frozen identity/version 발급 필요 |
-| holdout 이후 policy 변경 금지 lifecycle 기록 | 미완료: frozen lifecycle 확정 후 적용 |
+| 최종 평가용 ApprovedLineagePolicy version/hash formal freeze | 완료: `r1-remote-management-approved-lineage/v0.3`, hash `b3d1d28a909b494f660d3e8164a994a3d818a98dadcd10336560b4bec38680d2`, Role5 approval provenance 기록 |
+| holdout 이후 policy 변경 금지 lifecycle 기록 | 완료: [pre-holdout freeze record](r1-approved-lineage-policy-freeze-v0.3.md)에 동일 frozen identity/version의 in-place 변경 금지 기록 |
 | production runner/CLI 연결 | 후속 #228 |
 | online availability/TTSD | 후속 #231/#232 |
 
-이번 PR에서는 Pair-002 legacy baseline과 Pair-003 current-contract development Pair에 동일 selector와 policy를 적용한 multi-run development regression 범위를 완료했다. Actual telemetry에서 확인한 범위는 정상 selector, Evidence, artifact, provenance와 결정성이며, malformed fail-closed 조건은 기존 synthetic regression을 재확인한 범위다. Pair-003 raw를 가능한 fail-closed 형태로 변조해 전수 검증했다는 의미는 아니다.
+이번 PR에서는 Pair-002 legacy baseline과 Pair-003·Pair-004 current-contract development Pair에 동일 selector와
+approved lineage sequence를 적용한 multi-run development regression 범위를 완료했다. Pair-004는 formal
+frozen v0.3을 명시 선택했다. Actual telemetry에서 확인한 범위는 정상 selector, Evidence, artifact,
+provenance와 결정성이다. Pair-004 actual telemetry-derived negative regression으로 duplicate, truncated와
+ambiguous fail-closed를 추가 확인했고, temporal inversion을 포함한 그 밖의 malformed 조건은 기존 synthetic
+regression 범위다. Pair-003·Pair-004 raw를 가능한 fail-closed 형태로 변조해 전수 검증했다는 의미는 아니다.
 
-#227 Issue 전체는 아직 완료되지 않았다. v0.2 family/lifecycle 계약은 formal freeze를 안전하게 발급할 기반만 제공하며, 최종 평가용 ApprovedLineagePolicy version/hash 발급과 holdout 이후 policy를 변경하지 않도록 하는 frozen lifecycle 기록은 별도 승인으로 남는다. 따라서 #227은 Open 상태로 유지하고, production, holdout, final evaluation, online availability 또는 formal policy freeze 완료를 이번 PR에서 주장하지 않는다.
+#234의 family/lifecycle 계약을 기반으로 최종 평가용 frozen policy identity/version/hash, Role5 approval
+provenance와 holdout 이후 동일 frozen identity를 변경하지 않는 기록을 확정했다. Pair-004 frozen v0.3 actual
+telemetry 검증도 완료했으므로 #227의 이 PR 범위 완료 조건은 충족됐고 PR #245에서 `Closes #227`을 복구할 수
+있다. Holdout 또는 final evaluation은 열람하거나 실행하지 않았으며, production runner #228,
+`available_at`/watermark #231과 Temporal Replay/TTSD #232는 별도 후속 범위다.

@@ -36,6 +36,8 @@ _APPROVED_LINEAGE = ("wsmprovhost.exe", "cmd.exe", "powershell.exe")
 _FAMILY_POLICY_ID = "r1-remote-management-approved-lineage"
 _FAMILY_POLICY_VERSION = "v0.2"
 _FAMILY_POLICY_HASH = "6d4235ccc33fcc2484a679d6b6b9b8972cf67f45ff8de35d02eb402380e7f788"
+_FROZEN_POLICY_VERSION = "v0.3"
+_FROZEN_POLICY_HASH = "b3d1d28a909b494f660d3e8164a994a3d818a98dadcd10336560b4bec38680d2"
 
 
 def _policy_payload(
@@ -233,6 +235,39 @@ def test_loads_repository_managed_family_bound_development_policy() -> None:
     assert policy.lifecycle == "development"
     assert policy.approved_lineage == _APPROVED_LINEAGE
     assert policy.config_hash == _FAMILY_POLICY_HASH
+
+
+def test_loads_repository_managed_frozen_evaluation_policy() -> None:
+    # Given
+    config_path = DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH
+
+    # When
+    legacy = load_r1_approved_lineage_policy(_POLICY_ID, _POLICY_VERSION)
+    development = load_r1_approved_lineage_policy(
+        _FAMILY_POLICY_ID,
+        _FAMILY_POLICY_VERSION,
+        config_path=config_path,
+    )
+    frozen = load_r1_approved_lineage_policy(
+        _FAMILY_POLICY_ID,
+        _FROZEN_POLICY_VERSION,
+        config_path=config_path,
+    )
+
+    # Then
+    assert legacy.config_hash == _POLICY_HASH
+    assert development.config_hash == _FAMILY_POLICY_HASH
+    assert frozen.policy_id == _FAMILY_POLICY_ID
+    assert frozen.version == _FROZEN_POLICY_VERSION
+    assert frozen.family_id == "remote_management"
+    assert frozen.lifecycle == "frozen"
+    assert frozen.approved_lineage == _APPROVED_LINEAGE
+    assert frozen.config_hash == _FROZEN_POLICY_HASH
+    assert (frozen.policy_id, frozen.version) != (
+        development.policy_id,
+        development.version,
+    )
+    assert frozen.config_hash != development.config_hash
 
 
 def test_semantically_identical_configs_have_the_same_hash(tmp_path: Path) -> None:
@@ -648,6 +683,40 @@ config_version: v0.2
     assert first.config_hash == _FAMILY_POLICY_HASH
 
 
+def test_semantically_identical_frozen_configs_have_the_managed_hash(tmp_path: Path) -> None:
+    # Given
+    first_path = tmp_path / "first-frozen-v0.2.yaml"
+    second_path = tmp_path / "second-frozen-v0.2.yaml"
+    frozen_policy = _family_policy_payload(
+        version=_FROZEN_POLICY_VERSION,
+        lifecycle="frozen",
+    )
+    _write_registry(
+        first_path,
+        config_version="v0.2",
+        policies=[frozen_policy],
+    )
+    second_path.write_text(
+        """policies:
+  - approved_lineage: [wsmprovhost.exe, cmd.exe, powershell.exe]
+    lifecycle: frozen
+    family_id: remote_management
+    policy_id: r1-remote-management-approved-lineage
+    version: v0.3
+config_version: v0.2
+""",
+        encoding="utf-8",
+    )
+
+    # When
+    first = load_r1_approved_lineage_policies(first_path)[0]
+    second = load_r1_approved_lineage_policies(second_path)[0]
+
+    # Then
+    assert first == second
+    assert first.config_hash == _FROZEN_POLICY_HASH
+
+
 @pytest.mark.parametrize("missing_field", ["family_id", "lifecycle"])
 def test_family_bound_policy_rejects_missing_contract_fields(
     tmp_path: Path,
@@ -745,6 +814,33 @@ def test_family_bound_policy_rejects_duplicate_identity(tmp_path: Path) -> None:
     assert config_path.is_file()
 
 
+def test_frozen_policy_rejects_duplicate_semantic_identity(tmp_path: Path) -> None:
+    # Given
+    config_path = tmp_path / "duplicate-frozen-policy-v0.2.yaml"
+    _write_registry(
+        config_path,
+        config_version="v0.2",
+        policies=[
+            _family_policy_payload(
+                version=_FROZEN_POLICY_VERSION,
+                lifecycle="frozen",
+            ),
+            _family_policy_payload(
+                version=_FROZEN_POLICY_VERSION,
+                lifecycle="frozen",
+                approved_lineage=("wsmprovhost.exe", "powershell.exe"),
+            ),
+        ],
+    )
+
+    # When
+    with pytest.raises(ValueError, match="identities must be unique"):
+        load_r1_approved_lineage_policies(config_path)
+
+    # Then
+    assert config_path.is_file()
+
+
 @pytest.mark.parametrize(
     ("changed_field", "changed_value"),
     [
@@ -803,6 +899,38 @@ def test_family_binding_rejects_mismatched_scenario_family() -> None:
 
     # Then
     assert policy.family_id == "remote_management"
+
+
+def test_frozen_policy_accepts_matching_scenario_family() -> None:
+    # Given
+    policy = load_r1_approved_lineage_policy(
+        _FAMILY_POLICY_ID,
+        _FROZEN_POLICY_VERSION,
+        config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+    )
+
+    # When
+    result = validate_r1_policy_family_binding("remote_management", policy)
+
+    # Then
+    assert result is None
+    assert policy.lifecycle == "frozen"
+
+
+def test_frozen_policy_rejects_mismatched_scenario_family() -> None:
+    # Given
+    policy = load_r1_approved_lineage_policy(
+        _FAMILY_POLICY_ID,
+        _FROZEN_POLICY_VERSION,
+        config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+    )
+
+    # When
+    with pytest.raises(ValueError, match="does not match approved policy family_id"):
+        validate_r1_policy_family_binding("other_family", policy)
+
+    # Then
+    assert policy.lifecycle == "frozen"
 
 
 def test_family_binding_rejects_legacy_unbound_policy() -> None:
