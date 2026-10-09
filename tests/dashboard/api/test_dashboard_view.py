@@ -11,28 +11,51 @@ JAVASCRIPT_MEDIA_TYPES = {"application/javascript", "text/javascript"}
 DASHBOARD_VIEW_PATHS = (
     "/dashboard",
     "/dashboard-assets/dashboard-shell.css",
+    "/dashboard-assets/fusion-engine.css",
     "/dashboard-assets/dashboard.css",
     "/dashboard-assets/dashboard.js",
     "/dashboard-assets/dashboard-contract.mjs",
 )
 DASHBOARD_CONTRACT_FUNCTIONS = (
     "displayValue",
+    "buildPipelineStagePresentation",
     "formatRunTimestamp",
+    "getDecisionVersionConsistency",
+    "getLatestRuntimeReport",
     "getOverviewQueryMessage",
     "getRunTypeLabel",
+    "getSelectedAnalysisSource",
+    "getSelectedAnalysisState",
+    "getStoppingTraceAvailability",
+    "resolveInitialRunSelection",
     "resolveOverviewQueryState",
+    "resolveRunSelectionFocus",
     "resolveRunListQueryState",
     "resolveRuntimeSummaryQueryState",
+    "shouldApplySelectedRunResponse",
+    "shouldRefreshSelectedRunAnalysis",
+    "shouldUpdateSelectedRunFailureState",
 )
 DASHBOARD_SCRIPT_CONTRACT_FUNCTIONS = (
+    "buildPipelineStagePresentation",
     "displayValue",
     "formatRunTimestamp",
-    "getRunTypeLabel",
+    "getDecisionVersionConsistency",
+    "getLatestRuntimeReport",
+    "getSelectedAnalysisSource",
+    "getSelectedAnalysisState",
+    "getStoppingTraceAvailability",
+    "resolveInitialRunSelection",
     "resolveOverviewQueryState",
+    "resolveRunSelectionFocus",
     "resolveRunListQueryState",
     "resolveRuntimeSummaryQueryState",
+    "shouldApplySelectedRunResponse",
+    "shouldRefreshSelectedRunAnalysis",
+    "shouldUpdateSelectedRunFailureState",
 )
 OPERATIONS_SCRIPT_CONTRACT_FUNCTIONS = (
+    "getRuntimeProgressPresentation",
     "getRuntimeStatePresentation",
     "getStageLabel",
 )
@@ -79,42 +102,48 @@ def test_dashboard_view_serves_html_shell_without_database_access(
     html = response.text
     assert "Incident Awareness Dashboard" in html
     assert 'href="/dashboard-assets/dashboard-shell.css"' in html
+    assert 'href="/dashboard-assets/fusion-engine.css"' in html
     assert 'href="/dashboard-assets/dashboard.css"' in html
     assert '<script type="module" src="/dashboard-assets/dashboard.js"></script>' in html
     assert 'href="/dashboard" aria-current="page"' in html
     assert 'href="/operations"' in html
     assert "Detection Hub" in html
     assert "운영 View" in html
-    assert "침해사고 인지 시스템 실행 및 사건 조회" in html
-    assert "Run의 Start와 End는 원본 데이터의 관측 구간입니다." in html
-    assert "시스템 처리 시각과는 다릅니다." in html
-    assert "Run ID나 Event timestamp로 추정하지 않습니다." in html
-    for section in ("Overview", "Total Runs", "Recent Runs", "Pipeline Runtime Summary", "Runs"):
+    assert "저장된 Runtime 보고와 Run 분석 결과" in html
+    assert "Run 시각은 원본 관측 구간" in html
+    assert "Runtime updated_at은 마지막 저장 보고 시각" in html
+    assert "최근 Runtime 조회 결과는" in html
+    assert "전체 실행 통계가 아닙니다" in html
+    for section in ("운영 상태", "Pipeline 실행 단계", "최근 Runtime 실행 현황", "최근 Run 목록"):
         assert section in html
     for status_id in (
         "total-runs-value",
         "overview-status",
-        "recent-runs-status",
-        "recent-runs-list",
+        "latest-runtime-state",
+        "latest-runtime-updated",
+        "runtime-top-status",
+        "pipeline-stage-list",
         "runtime-summary-status",
         "runtime-summary-list",
+        "selected-run-id",
+        "selected-run-status",
+        "selected-run-summary",
+        "selected-run-chart-status",
+        "selected-run-chart",
         "runs-status",
         "runs-list",
     ):
         assert f'id="{status_id}"' in html
-    assert (
-        "페이지를 열 때 한 번 조회하며, 최근 보고된 Runtime 항목을 API 순서대로 "
-        "최대 5건 표시합니다."
-    ) in html
-    assert '<a class="dashboard-section-link" href="/operations">Operations 보기</a>' in html
-    assert '<details class="dashboard-runs-disclosure">' in html
-    assert "<summary>Runs 목록 펼치기 — 관측 시작 최근순 최대 20건</summary>" in html
-    assert '<details class="dashboard-runs-disclosure" open>' not in html
-    assert "Run 목록은 다음 단계에서 표시됩니다." not in html
+    assert "조회 완료 후 약 5초 간격으로 Runtime 상태 갱신" in html
+    assert "조회 범위 내 최신 Runtime 상태" in html
+    assert "조회 범위 내 최신 Runtime 보고" in html
+    assert '<table class="dashboard-table runtime-table">' in html
+    assert '<table class="dashboard-table runs-table">' in html
+    assert "Run Type" not in html
     assert database_connection_attempts == []
 
 
-def test_dashboard_runs_status_remains_visible_while_run_list_is_collapsed() -> None:
+def test_dashboard_run_status_and_table_are_visible_without_disclosure() -> None:
     # Given
     client = TestClient(create_app())
 
@@ -123,14 +152,15 @@ def test_dashboard_runs_status_remains_visible_while_run_list_is_collapsed() -> 
 
     # Then
     runs_status_index = html.index('id="runs-status"')
-    disclosure_start = html.index('<details class="dashboard-runs-disclosure">')
-    disclosure_end = html.index("</details>", disclosure_start)
+    table_start = html.index('<table class="dashboard-table runs-table">')
+    table_end = html.index("</table>", table_start)
     runs_list_index = html.index('id="runs-list"')
-    disclosure = html[disclosure_start:disclosure_end]
-    assert runs_status_index < disclosure_start
-    assert disclosure_start < runs_list_index < disclosure_end
-    assert 'id="runs-status"' not in disclosure
-    assert '<details class="dashboard-runs-disclosure" open>' not in html
+    table = html[table_start:table_end]
+    assert runs_status_index < table_start
+    assert table_start < runs_list_index < table_end
+    assert 'id="runs-status"' not in table
+    assert '<details class="dashboard-time-note">' in html
+    assert "<summary>표시 기준 및 상태 안내</summary>" in html
 
 
 def test_operations_view_includes_dashboard_navigation() -> None:
@@ -151,28 +181,33 @@ def test_dashboard_assets_serve_stylesheet_script_and_contract_module() -> None:
 
     # When
     shell_stylesheet = client.get("/dashboard-assets/dashboard-shell.css")
+    chart_stylesheet = client.get("/dashboard-assets/fusion-engine.css")
     stylesheet = client.get("/dashboard-assets/dashboard.css")
     script = client.get("/dashboard-assets/dashboard.js")
     contract = client.get("/dashboard-assets/dashboard-contract.mjs")
+    chart = client.get("/dashboard-assets/fusion-score-chart.mjs")
 
     # Then
-    for response in (shell_stylesheet, stylesheet):
+    for response in (shell_stylesheet, chart_stylesheet, stylesheet):
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/css")
     assert ".app-navigation" in shell_stylesheet.text
     assert "--shell-color-primary" in shell_stylesheet.text
-    assert ".run-card-list" in stylesheet.text
+    assert ".dashboard-table" in stylesheet.text
     assert script.status_code == 200
     assert contract.status_code == 200
-    for response in (script, contract):
+    assert chart.status_code == 200
+    for response in (script, contract, chart):
         media_type = response.headers["content-type"].split(";", maxsplit=1)[0].strip()
         assert media_type in JAVASCRIPT_MEDIA_TYPES
     assert '} from "./dashboard-contract.mjs";' in script.text
+    assert 'from "./fusion-score-chart.mjs";' in script.text
+    assert "export function createScoreTrajectoryChart(" in chart.text
     for contract_function in DASHBOARD_CONTRACT_FUNCTIONS:
         assert f"export function {contract_function}(" in contract.text
 
 
-def test_dashboard_run_cards_link_to_encoded_run_detail_view_paths() -> None:
+def test_dashboard_run_rows_link_to_encoded_run_detail_view_paths() -> None:
     # Given
     client = TestClient(create_app())
 
@@ -181,17 +216,16 @@ def test_dashboard_run_cards_link_to_encoded_run_detail_view_paths() -> None:
     contract = client.get("/dashboard-assets/run-detail-contract.mjs").text
 
     # Then
-    assert 'import { buildRunDetailViewPath } from "./run-detail-contract.mjs";' in script
-    assert 'const link = document.createElement("a");' in script
-    assert "link.href = buildRunDetailViewPath(run.run_id);" in script
-    assert "link.textContent = run.run_id;" in script
-    assert "state.recentRuns.map((run) => createRecentRunCard(run))" in script
-    assert "state.items.map((run) => createRunCard(run))" in script
+    assert "buildRunDetailViewPath," in script
+    assert 'const detailLink = document.createElement("a");' in script
+    assert "detailLink.href = buildRunDetailViewPath(run.run_id);" in script
+    assert 'detailLink.textContent = "Run Detail";' in script
+    assert "state.items.map((run) => createRunRow(run))" in script
     assert 'encodeURIComponent(requireIdentifier(runId, "runId"))' in contract
     assert "`/dashboard/runs/${run.run_id}`" not in script
 
 
-def test_dashboard_script_fetches_three_independent_apis_once_without_polling() -> None:
+def test_dashboard_script_fetches_independent_apis_and_polls_only_runtime() -> None:
     # Given
     client = TestClient(create_app())
 
@@ -201,33 +235,34 @@ def test_dashboard_script_fetches_three_independent_apis_once_without_polling() 
     # Then
     assert 'document.getElementById("dashboard-view")' in script
     assert 'const OVERVIEW_ENDPOINT = "/overview";' in script
-    assert 'const RUNS_ENDPOINT = "/runs";' in script
+    assert 'const RUNS_ENDPOINT = "/runs?limit=20";' in script
     assert 'const RUNTIME_ENDPOINT = "/operations/runtime?limit=5";' in script
+    assert "const RUNTIME_POLL_INTERVAL_MS = 5000;" in script
     assert "const RUNTIME_REQUEST_TIMEOUT_MS = 10000;" in script
-    assert "fetch(OVERVIEW_ENDPOINT" in script
-    assert "fetch(RUNS_ENDPOINT" in script
+    assert "fetchJson(OVERVIEW_ENDPOINT" in script
+    assert "fetchJson(RUNS_ENDPOINT" in script
     assert "fetch(RUNTIME_ENDPOINT" in script
-    assert script.count('Accept: "application/json"') == 3
-    assert script.count('cache: "no-store"') == 3
+    assert "fetch(buildRunDetailApiPath(runId)" in script
+    assert "fetch(buildFusionEngineApiPath(runId)" in script
+    assert script.count('Accept: "application/json"') == 4
+    assert script.count('cache: "no-store"') == 4
     assert script.count("void loadOverview();") == 1
     assert script.count("void loadRuns();") == 1
-    assert script.count("void loadRuntimeSummary();") == 1
+    assert script.count("void pollRuntimeSummary();") == 1
     assert 'document.getElementById("runs-status")' in script
     assert 'document.getElementById("runs-list")' in script
     assert 'document.getElementById("runtime-summary-status")' in script
     assert 'document.getElementById("runtime-summary-list")' in script
     assert "setInterval(" not in script
-    assert script.count("setTimeout(") == 1
+    assert script.count("setTimeout(") == 2
     assert "setTimeout(() => controller.abort(), RUNTIME_REQUEST_TIMEOUT_MS)" in script
+    assert "runtimePollTimeoutId = setTimeout(" in script
+    assert "() => void pollRuntimeSummary()" in script
     assert "clearTimeout(timeoutId);" in script
     assert "signal: controller.signal" in script
-    for repeated_request in (
-        "setTimeout(loadRuntimeSummary",
-        "setTimeout(fetchRuntimeSummary",
-        "setInterval(loadRuntimeSummary",
-        "setInterval(fetchRuntimeSummary",
-    ):
-        assert repeated_request not in script
+    assert script.index("const payload = await fetchRuntimeSummary();") < script.index(
+        "runtimePollTimeoutId = setTimeout("
+    )
 
 
 def test_dashboard_view_uses_shared_shell_and_responsive_layout() -> None:
@@ -250,11 +285,20 @@ def test_dashboard_view_uses_shared_shell_and_responsive_layout() -> None:
     assert 'class="app-page dashboard-page"' in html
     assert "@media (max-width: 48rem)" in shell
     assert "@media (max-width: 30rem)" in shell
-    assert "@media (max-width: 40rem)" in stylesheet
+    assert "@media (max-width: 70rem)" in stylesheet
+    assert "@media (max-width: 48rem)" in stylesheet
+    assert "@media (max-width: 30rem)" in stylesheet
     assert "overflow-wrap: anywhere" in stylesheet
-    assert ".runtime-summary-card__header" in stylesheet
-    assert "word-break: break-word" in stylesheet
+    assert ".dashboard-workbench" in stylesheet
+    assert ".dashboard-analysis-grid" in stylesheet
+    assert "grid-template-columns: repeat(6, minmax(9rem, 1fr))" in stylesheet
+    assert ".dashboard-table-wrapper" in stylesheet
+    assert "overflow-x: auto" in stylesheet
     assert "width: min(100%, var(--shell-page-width))" in shell
+    assert ".app-page.dashboard-page" in stylesheet
+    assert "width: 100%" in stylesheet
+    assert "max-width: 101rem" in stylesheet
+    assert "@media (max-width: 82rem)" in stylesheet
 
 
 def test_dashboard_script_uses_contract_and_safe_dom_rendering() -> None:
@@ -288,16 +332,14 @@ def test_dashboard_script_uses_contract_and_safe_dom_rendering() -> None:
         "new Function",
     ):
         assert forbidden_api not in script
-    assert 'createRunField("Scenario"' in script
-    assert 'createRunField("Type"' in script
-    assert 'createRunField("Target"' in script
-    assert 'createRunField("Observed Start"' in script
-    assert 'createRunField("Observed End"' in script
+    assert "displayValue(run.scenario_id)" in script
+    assert "displayValue(run.target_host)" in script
+    assert "formatRunTimestamp(run.start_time)" in script
+    assert "run.run_type" not in script
     assert 'document.createElement("a")' in script
-    assert 'createRuntimeSummaryField("현재 단계"' in script
-    assert 'createRuntimeSummaryField("Runtime 마지막 갱신"' in script
-    assert 'createRuntimeSummaryField("Telemetry"' in script
-    assert 'createRuntimeSummaryField("현재 실행 여부"' in script
+    assert 'document.createElement("button")' in script
+    assert 'document.createElement("tr")' in script
+    assert "getRuntimeProgressPresentation(runtime)" in script
     assert "getRuntimeStatePresentation(runtime, telemetryAvailable)" in script
     assert "getStageLabel(runtime.current_stage)" in script
     assert "formatRunTimestamp(runtime.updated_at)" in script
@@ -313,15 +355,18 @@ def test_dashboard_script_keeps_overview_runs_and_runtime_state_independent() ->
     # Then
     assert "async function loadOverview()" in script
     assert "async function loadRuns()" in script
-    assert "async function loadRuntimeSummary()" in script
-    assert "renderOverviewState(state);" in script
-    assert "renderRunListState(state);" in script
-    assert "renderRuntimeSummaryState(state);" in script
+    assert "async function pollRuntimeSummary()" in script
+    assert "async function selectRun(runId)" in script
+    assert "renderOverviewState(overviewState);" in script
+    assert "renderRunListState(runListState);" in script
+    assert "renderRuntimeState(runtimeState);" in script
     assert "overviewStatus.textContent = state.totalMessage;" in script
-    assert "recentRunsStatus.textContent = state.message;" in script
     assert "runsStatus.textContent = state.message;" in script
     assert "runtimeSummaryStatus.textContent = state.message;" in script
-    assert script.count("catch {") == 3
+    assert "async function loadRunDetailState(runId)" in script
+    assert "async function loadFusionEngineState(runId)" in script
+    assert 'resolveRunDetailQueryState(loading, { kind: "error" })' in script
+    assert 'resolveFusionEngineQueryState(loading, { kind: "error" })' in script
 
 
 def test_dashboard_runtime_summary_preserves_order_and_operations_state_meaning() -> None:
@@ -336,15 +381,15 @@ def test_dashboard_runtime_summary_preserves_order_and_operations_state_meaning(
     assert '} from "./operations-contract.mjs";' in script
     assert '} from "./operations-contract.mjs";' in contract
     assert "state.items.map(" in script
-    assert "createRuntimeSummaryCard(runtime, state.telemetryAvailable)" in script
+    assert "createRuntimeRow(runtime, state.telemetryAvailable)" in script
     assert "status-badge--${modifier}" in script
-    assert "runtime-summary-card--${modifier}" in script
     assert "presentation.telemetryLabel" in script
-    assert "presentation.livenessLabel" in script
+    assert "buildPipelineStagePresentation(" in script
     assert "현재 실행 중" not in script
     assert "setInterval(" not in script
-    assert script.count("setTimeout(") == 1
+    assert script.count("setTimeout(") == 2
     assert "setTimeout(() => controller.abort(), RUNTIME_REQUEST_TIMEOUT_MS)" in script
+    assert "() => void pollRuntimeSummary()" in script
     assert "clearTimeout(timeoutId);" in script
 
 
@@ -359,7 +404,8 @@ def test_dashboard_runtime_summary_requires_api_presentation_fields() -> None:
     assert (
         'const PIPELINE_RUNTIME_STATUSES = new Set(["running", "completed", "failed"]);' in contract
     )
-    assert "const PIPELINE_RUNTIME_STAGES = new Set([" in contract
+    assert "export const PIPELINE_STAGE_ORDER = Object.freeze([" in contract
+    assert "const PIPELINE_RUNTIME_STAGES = new Set(PIPELINE_STAGE_ORDER);" in contract
     assert '!Object.hasOwn(runtime, "current_stage")' in contract
     assert "runtime.current_stage !== null" in contract
     assert "!PIPELINE_RUNTIME_STAGES.has(runtime.current_stage)" in contract
@@ -367,23 +413,24 @@ def test_dashboard_runtime_summary_requires_api_presentation_fields() -> None:
     assert 'typeof runtime.is_stale !== "boolean"' in contract
 
 
-def test_dashboard_runtime_summary_links_only_completed_runs_to_run_detail() -> None:
+def test_dashboard_runtime_rows_select_every_report_and_detail_links_remain_available() -> None:
     # Given
     client = TestClient(create_app())
 
     # When
     script = client.get("/dashboard-assets/dashboard.js").text
-    card_source = script.split("function createRuntimeSummaryCard", maxsplit=1)[1].split(
-        "function renderOverviewState",
+    row_source = script.split("function createRuntimeRow", maxsplit=1)[1].split(
+        "function createRunRow",
         maxsplit=1,
     )[0]
 
     # Then
-    assert 'if (runtime.status === "completed" && runtime.run_id.trim()) {' in card_source
-    assert "link.href = buildRunDetailViewPath(runtime.run_id);" in card_source
-    assert "heading.textContent = runtime.run_id;" in card_source
-    assert card_source.count("buildRunDetailViewPath") == 1
-    assert "if (runtime.run_id.trim()) {" not in card_source
+    assert "createSelectionButton(runtime.run_id)" in row_source
+    assert 'runtime.status === "completed"' not in row_source
+    assert "selectedRunDetailLink.href = buildRunDetailViewPath(runId);" in script
+    assert "selectedRunFusionLink.href = buildFusionEngineViewPath(runId);" in script
+    assert "selectedRunDetailLink.hidden = !detailAvailable;" in script
+    assert "selectedRunFusionLink.hidden = !fusionAvailable;" in script
 
 
 def test_dashboard_contract_has_no_dom_network_or_timer_access() -> None:

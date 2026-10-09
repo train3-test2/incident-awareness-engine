@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Incident Awareness Dashboard</title>
     <link rel="stylesheet" href="/dashboard-assets/dashboard-shell.css">
+    <link rel="stylesheet" href="/dashboard-assets/fusion-engine.css">
     <link rel="stylesheet" href="/dashboard-assets/dashboard.css">
     <script type="module" src="/dashboard-assets/dashboard.js"></script>
 </head>
@@ -23,70 +24,166 @@
         </div>
     </header>
     <main id="dashboard-view" class="app-page dashboard-page">
-        <header class="page-header">
-            <p class="page-eyebrow">Operations overview</p>
-            <h1 class="page-title">운영 View</h1>
-            <p class="page-description">침해사고 인지 시스템 실행 및 사건 조회</p>
+        <header class="page-header dashboard-page-header">
+            <div>
+                <p class="page-eyebrow">Operations control</p>
+                <h1 class="page-title">운영 View</h1>
+                <p class="page-description">
+                    저장된 Runtime 보고와 Run 분석 결과를 한 화면에서 확인합니다.
+                </p>
+            </div>
+            <a class="dashboard-header-link" href="/operations">Operations 상세 보기</a>
         </header>
-        <aside class="dashboard-time-note" role="note" aria-label="Run 시각 안내">
-            <strong>Run 시각 안내</strong>
-            <p>
-                Run의 Start와 End는 원본 데이터의 관측 구간입니다. 목록은 API가 제공하는 관측 시작
-                시각 순서를 그대로 따르며, 시스템 처리 시각과는 다릅니다. 처리 시각이 저장되지 않은
-                Run은 Run ID나 Event timestamp로 추정하지 않습니다.
-            </p>
-        </aside>
-        <div class="dashboard-grid">
-            <section class="section-card dashboard-section dashboard-section--summary" aria-labelledby="overview-heading">
-                <div class="section-header">
-                    <h2 id="overview-heading" class="section-heading">Overview</h2>
-                    <p class="section-description">저장된 First Cycle 실행 현황입니다.</p>
+
+        <section class="section-card dashboard-section dashboard-command" aria-labelledby="command-heading">
+            <div class="section-header dashboard-section-header">
+                <div>
+                    <h2 id="command-heading" class="section-heading">운영 상태</h2>
+                    <p class="section-description">
+                        Overview와 선택한 Runtime의 저장 상태를 서로 독립적으로 표시합니다.
+                    </p>
                 </div>
-                <div class="dashboard-metric">
-                    <p class="dashboard-metric-label">Total Runs</p>
-                    <p id="total-runs-value" class="dashboard-metric-value">-</p>
+                <span class="dashboard-data-note">조회 완료 후 약 5초 간격으로 Runtime 상태 갱신</span>
+            </div>
+            <div class="dashboard-kpi-grid">
+                <article class="dashboard-kpi">
+                    <p class="dashboard-kpi__label">전체 Run</p>
+                    <p id="total-runs-value" class="dashboard-kpi__value">-</p>
+                </article>
+                <article class="dashboard-kpi">
+                    <p class="dashboard-kpi__label">조회 범위 내 최신 Runtime 상태</p>
+                    <p id="latest-runtime-state" class="dashboard-kpi__value dashboard-kpi__value--status">-</p>
+                </article>
+                <article class="dashboard-kpi">
+                    <p class="dashboard-kpi__label">조회 범위 내 최신 Runtime 보고</p>
+                    <p id="latest-runtime-updated" class="dashboard-kpi__value dashboard-kpi__value--time">-</p>
+                </article>
+            </div>
+            <div class="dashboard-status-stack">
+                <div>
+                    <div id="overview-status" class="status-message dashboard-status" role="status" aria-live="polite">
+                        전체 Run을 불러오는 중입니다.
+                    </div>
                 </div>
-                <div id="overview-status" class="status-message dashboard-status" role="status" aria-live="polite">
-                    Total Runs를 불러오는 중입니다.
+                <div>
+                    <div id="runtime-top-status" class="status-message dashboard-status" role="status" aria-live="polite">
+                        Runtime 정보를 불러오는 중입니다.
+                    </div>
                 </div>
-            </section>
-            <section class="section-card dashboard-section" aria-labelledby="recent-runs-heading">
-                <div class="section-header">
-                    <h2 id="recent-runs-heading" class="section-heading">Recent Runs</h2>
-                    <p class="section-description">관측 시작 시각이 최근인 Run을 간략히 표시합니다.</p>
+            </div>
+            <details class="dashboard-time-note">
+                <summary>표시 기준 및 상태 안내</summary>
+                <p>
+                    Run 시각은 원본 관측 구간이며 Runtime updated_at은 마지막 저장 보고 시각입니다.
+                    Running과 오래된 보고는 현재 실행 여부를 보장하지 않고, 최근 Runtime 조회 결과는
+                    전체 실행 통계가 아닙니다. 상태는 색상뿐 아니라 텍스트로도 함께 표시합니다.
+                </p>
+            </details>
+            <div class="dashboard-stage-panel">
+                <div class="dashboard-stage-panel__header">
+                    <div>
+                        <h3>Pipeline 실행 단계</h3>
+                        <p id="pipeline-stage-context">Runtime을 선택하면 마지막 보고 단계를 표시합니다.</p>
+                    </div>
                 </div>
-                <div id="recent-runs-status" class="status-message dashboard-status" role="status" aria-live="polite">
-                    Recent Runs를 불러오는 중입니다.
+                <div class="dashboard-stage-scroll">
+                    <ol id="pipeline-stage-list" class="pipeline-stage-list"></ol>
                 </div>
-                <div id="recent-runs-list" class="run-card-list run-card-list--compact"></div>
-            </section>
-            <section class="section-card dashboard-section dashboard-section--wide" aria-labelledby="runtime-summary-heading">
+            </div>
+        </section>
+
+        <div class="dashboard-workbench">
+            <section class="section-card dashboard-section dashboard-runtime-section" aria-labelledby="runtime-summary-heading">
                 <div class="section-header dashboard-section-header">
                     <div>
-                        <h2 id="runtime-summary-heading" class="section-heading">Pipeline Runtime Summary</h2>
-                        <p class="section-description">페이지를 열 때 한 번 조회하며, 최근 보고된 Runtime 항목을 API 순서대로 최대 5건 표시합니다.</p>
+                        <h2 id="runtime-summary-heading" class="section-heading">최근 Runtime 실행 현황</h2>
+                        <p class="section-description">
+                            API 순서의 최근 보고 최대 5건입니다. 행을 선택하면 아래 저장 분석 결과를 조회합니다.
+                        </p>
                     </div>
-                    <a class="dashboard-section-link" href="/operations">Operations 보기</a>
                 </div>
                 <div id="runtime-summary-status" class="status-message dashboard-status" role="status" aria-live="polite">
                     Runtime 정보를 불러오는 중입니다.
                 </div>
-                <div id="runtime-summary-list" class="runtime-summary-list"></div>
+                <div class="dashboard-table-wrapper">
+                    <table class="dashboard-table runtime-table">
+                        <thead>
+                            <tr>
+                                <th scope="col">Run ID</th>
+                                <th scope="col">상태</th>
+                                <th scope="col">현재 단계</th>
+                                <th scope="col">마지막 보고</th>
+                                <th scope="col">저장된 진행</th>
+                            </tr>
+                        </thead>
+                        <tbody id="runtime-summary-list"></tbody>
+                    </table>
+                </div>
             </section>
-            <section class="section-card dashboard-section dashboard-section--wide" aria-labelledby="runs-heading">
-                <div class="section-header">
-                    <h2 id="runs-heading" class="section-heading">Runs</h2>
-                    <p class="section-description">관측 구간과 실행 메타데이터를 확인하고 상세 화면으로 이동합니다.</p>
+
+            <section class="section-card dashboard-section dashboard-analysis" aria-labelledby="selected-run-heading">
+                <div class="section-header dashboard-section-header">
+                    <div>
+                        <p class="dashboard-section-kicker">Selected Run</p>
+                        <h2 id="selected-run-heading" class="section-heading">
+                            <span id="selected-run-id">선택된 Run 없음</span>
+                        </h2>
+                        <p class="section-description">
+                            저장된 Run Detail과 Fusion Engine 결과입니다. 실시간 점수 화면이 아닙니다.
+                        </p>
+                    </div>
+                    <div class="dashboard-analysis-links">
+                        <a id="selected-run-detail-link" href="/dashboard" hidden>Run Detail</a>
+                        <a id="selected-run-fusion-link" href="/dashboard" hidden>Fusion Engine 상세</a>
+                    </div>
                 </div>
-                <div id="runs-status" class="status-message dashboard-status" role="status" aria-live="polite">
-                    Run 목록을 불러오는 중입니다.
+                <div id="selected-run-status" class="status-message dashboard-status" role="status" aria-live="polite">
+                    Runtime 또는 Run 목록에서 분석할 Run을 선택하세요.
                 </div>
-                <details class="dashboard-runs-disclosure">
-                    <summary>Runs 목록 펼치기 — 관측 시작 최근순 최대 20건</summary>
-                    <div id="runs-list" class="run-card-list"></div>
-                </details>
+                <div class="dashboard-analysis-grid">
+                    <div>
+                        <dl id="selected-run-summary" class="dashboard-analysis-summary"></dl>
+                        <div id="selected-run-detail-status" class="status-message dashboard-status" role="status"></div>
+                    </div>
+                    <div class="dashboard-analysis-chart">
+                        <div class="dashboard-chart-heading">
+                            <h3>Fusion Score Trajectory</h3>
+                            <p>저장된 Stopping Trace와 Runtime Config threshold 기준선</p>
+                        </div>
+                        <div id="selected-run-chart-status" class="status-message dashboard-status" role="status"></div>
+                        <div id="selected-run-chart"></div>
+                    </div>
+                </div>
             </section>
         </div>
+
+        <section class="section-card dashboard-section" aria-labelledby="runs-heading">
+            <div class="section-header dashboard-section-header">
+                <div>
+                    <h2 id="runs-heading" class="section-heading">최근 Run 목록</h2>
+                    <p class="section-description">
+                        API의 관측 시작 시각 최근순을 그대로 유지하며 최대 20건을 표시합니다.
+                    </p>
+                </div>
+            </div>
+            <div id="runs-status" class="status-message dashboard-status" role="status" aria-live="polite">
+                Run 목록을 불러오는 중입니다.
+            </div>
+            <div class="dashboard-table-wrapper">
+                <table class="dashboard-table runs-table">
+                    <thead>
+                        <tr>
+                            <th scope="col">Run ID</th>
+                            <th scope="col">Scenario</th>
+                            <th scope="col">Target Host</th>
+                            <th scope="col">관측 시작</th>
+                            <th scope="col">상세</th>
+                        </tr>
+                    </thead>
+                    <tbody id="runs-list"></tbody>
+                </table>
+            </div>
+        </section>
     </main>
 </body>
 </html>

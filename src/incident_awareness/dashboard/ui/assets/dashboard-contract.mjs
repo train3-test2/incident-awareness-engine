@@ -2,6 +2,7 @@
 
 import {
     getRuntimeQueryMessage,
+    getStageLabel,
     resolveRuntimeQueryState,
 } from "./operations-contract.mjs";
 
@@ -29,13 +30,22 @@ const RUN_LIST_MESSAGES = new Map([
     ["error", "Run 목록을 불러오지 못했습니다."],
 ]);
 const PIPELINE_RUNTIME_STATUSES = new Set(["running", "completed", "failed"]);
-const PIPELINE_RUNTIME_STAGES = new Set([
+export const PIPELINE_STAGE_ORDER = Object.freeze([
     "artifact_validation",
     "normalization",
     "fusion",
     "fast_handoff",
     "hybrid",
     "persistence",
+]);
+const PIPELINE_RUNTIME_STAGES = new Set(PIPELINE_STAGE_ORDER);
+
+const PIPELINE_STAGE_STATE_LABELS = new Map([
+    ["completed", "완료"],
+    ["current", "현재 단계 (마지막 보고)"],
+    ["stale", "오래된 현재 단계 보고"],
+    ["failed", "실패"],
+    ["unknown", "완료 여부 확인 불가"],
 ]);
 
 export function displayValue(value) {
@@ -274,4 +284,256 @@ export function resolveRuntimeSummaryQueryState(previousState, result) {
         };
     }
     throw new RangeError(`Unknown Runtime Summary query result kind: ${result.kind}`);
+}
+
+export function buildPipelineStagePresentation(runtime, telemetryAvailable) {
+    if (runtime !== null && (typeof runtime !== "object" || Array.isArray(runtime))) {
+        throw new TypeError("Selected Runtime must be an object or null");
+    }
+    if (typeof telemetryAvailable !== "boolean") {
+        throw new TypeError("Runtime telemetry availability must be a boolean");
+    }
+
+    return PIPELINE_STAGE_ORDER.map((stage) => {
+        let state = "unknown";
+        if (runtime?.status === "completed") {
+            state = "completed";
+        } else if (runtime?.status === "failed" && runtime.failed_stage === stage) {
+            state = "failed";
+        } else if (runtime?.status === "running" && runtime.current_stage === stage) {
+            if (!telemetryAvailable) {
+                state = "unknown";
+            } else {
+                state = runtime.is_stale ? "stale" : "current";
+            }
+        }
+        return {
+            stage,
+            stageLabel: getStageLabel(stage),
+            state,
+            stateLabel: PIPELINE_STAGE_STATE_LABELS.get(state),
+        };
+    });
+}
+
+export function getStoppingTraceAvailability(stoppingTrace) {
+    if (stoppingTrace === null) {
+        return "missing";
+    }
+    if (
+        typeof stoppingTrace !== "object"
+        || Array.isArray(stoppingTrace)
+        || !Array.isArray(stoppingTrace.points)
+    ) {
+        throw new TypeError("Stopping Trace must be null or contain a points array");
+    }
+    return stoppingTrace.points.length === 0 ? "empty" : "available";
+}
+
+export function shouldApplySelectedRunResponse(responseVersion, activeVersion) {
+    if (!Number.isInteger(responseVersion) || !Number.isInteger(activeVersion)) {
+        throw new TypeError("Selection request versions must be integers");
+    }
+    return responseVersion === activeVersion;
+}
+
+export function resolveInitialRunSelection(
+    currentRunId,
+    runtimeQuerySettled,
+    telemetryAvailable,
+    runtimeItems,
+    runItems,
+) {
+    if (currentRunId !== null && typeof currentRunId !== "string") {
+        throw new TypeError("Current selected Run ID must be a string or null");
+    }
+    if (typeof runtimeQuerySettled !== "boolean") {
+        throw new TypeError("Runtime query settled state must be a boolean");
+    }
+    if (typeof telemetryAvailable !== "boolean") {
+        throw new TypeError("Runtime telemetry availability must be a boolean");
+    }
+    if (!Array.isArray(runtimeItems) || !Array.isArray(runItems)) {
+        throw new TypeError("Runtime and Run items must be arrays");
+    }
+    if (currentRunId !== null || !runtimeQuerySettled) {
+        return currentRunId;
+    }
+
+    const hasRunId = (item) => (
+        typeof item?.run_id === "string" && Boolean(item.run_id.trim())
+    );
+    const currentRunning = runtimeItems.find(
+        (runtime) => (
+            runtime.status === "running"
+            && runtime.is_stale === false
+            && hasRunId(runtime)
+        ),
+    );
+    const completed = runtimeItems.find(
+        (runtime) => runtime.status === "completed" && hasRunId(runtime),
+    );
+    const staleRunning = runtimeItems.find(
+        (runtime) => (
+            runtime.status === "running"
+            && runtime.is_stale === true
+            && hasRunId(runtime)
+        ),
+    );
+    const runtimeCandidate = telemetryAvailable
+        ? currentRunning ?? completed ?? staleRunning
+        : null;
+    const candidate = runtimeCandidate ?? runItems.find(hasRunId) ?? null;
+    return candidate?.run_id ?? null;
+}
+
+export function resolveRunSelectionFocus(
+    focusedRunId,
+    focusedTable,
+    runtimeItems,
+    runItems,
+) {
+    if (focusedRunId === null && focusedTable === null) {
+        return null;
+    }
+    if (typeof focusedRunId !== "string" || !focusedRunId) {
+        throw new TypeError("Focused Run ID must be a non-empty string or null");
+    }
+    if (focusedTable !== "runtime" && focusedTable !== "runs") {
+        throw new TypeError("Focused Run table must be runtime, runs, or null");
+    }
+    if (!Array.isArray(runtimeItems) || !Array.isArray(runItems)) {
+        throw new TypeError("Runtime and Run items must be arrays");
+    }
+
+    const items = focusedTable === "runtime" ? runtimeItems : runItems;
+    return items.some((item) => item?.run_id === focusedRunId)
+        ? { runId: focusedRunId, table: focusedTable }
+        : null;
+}
+
+export function getLatestRuntimeReport(runtimeItems) {
+    if (!Array.isArray(runtimeItems)) {
+        throw new TypeError("Runtime items must be an array");
+    }
+    return runtimeItems.reduce((latest, candidate) => {
+        if (latest === null) {
+            return candidate;
+        }
+        const latestTimestamp = Date.parse(latest.updated_at);
+        const candidateTimestamp = Date.parse(candidate.updated_at);
+        if (
+            Number.isFinite(candidateTimestamp)
+            && (!Number.isFinite(latestTimestamp) || candidateTimestamp > latestTimestamp)
+        ) {
+            return candidate;
+        }
+        return latest;
+    }, null);
+}
+
+function getSelectedRunStatusTransition(
+    selectedRunId,
+    previousRuntimeItems,
+    nextRuntimeItems,
+) {
+    if (selectedRunId !== null && typeof selectedRunId !== "string") {
+        throw new TypeError("Selected Run ID must be a string or null");
+    }
+    if (!Array.isArray(previousRuntimeItems) || !Array.isArray(nextRuntimeItems)) {
+        throw new TypeError("Previous and next Runtime items must be arrays");
+    }
+    if (selectedRunId === null) {
+        return null;
+    }
+    const previous = previousRuntimeItems.find(
+        (runtime) => runtime.run_id === selectedRunId,
+    );
+    const next = nextRuntimeItems.find((runtime) => runtime.run_id === selectedRunId);
+    return previous?.status === "running" ? next?.status ?? null : null;
+}
+
+export function shouldRefreshSelectedRunAnalysis(
+    selectedRunId,
+    previousRuntimeItems,
+    nextRuntimeItems,
+) {
+    return getSelectedRunStatusTransition(
+        selectedRunId,
+        previousRuntimeItems,
+        nextRuntimeItems,
+    ) === "completed";
+}
+
+export function shouldUpdateSelectedRunFailureState(
+    selectedRunId,
+    previousRuntimeItems,
+    nextRuntimeItems,
+) {
+    return getSelectedRunStatusTransition(
+        selectedRunId,
+        previousRuntimeItems,
+        nextRuntimeItems,
+    ) === "failed";
+}
+
+export function getDecisionVersionConsistency(runDetailPayload, fusionEnginePayload) {
+    const detailDecisionId = runDetailPayload?.current_decision?.decision?.decision_id;
+    const fusionDecisionId = fusionEnginePayload?.current_decision?.decision_id;
+    if (typeof detailDecisionId !== "string" || typeof fusionDecisionId !== "string") {
+        return "unavailable";
+    }
+    return detailDecisionId === fusionDecisionId ? "match" : "mismatch";
+}
+
+export function getSelectedAnalysisSource(runDetailPayload, fusionEnginePayload) {
+    const consistency = getDecisionVersionConsistency(
+        runDetailPayload,
+        fusionEnginePayload,
+    );
+    if (consistency === "match") {
+        return "matched";
+    }
+    if (typeof runDetailPayload?.current_decision?.decision?.decision_id === "string") {
+        return "run_detail";
+    }
+    if (typeof fusionEnginePayload?.current_decision?.decision_id === "string") {
+        return "fusion_engine";
+    }
+    if (
+        fusionEnginePayload?.fusion_result != null
+        || fusionEnginePayload?.stopping_trace != null
+    ) {
+        return "fusion_engine_without_decision";
+    }
+    return "none";
+}
+
+export function getSelectedAnalysisState(
+    detailQueryState,
+    fusionQueryState,
+    runtimeStatus,
+    hasStoredAnalysis,
+    decisionConsistency,
+) {
+    if (typeof hasStoredAnalysis !== "boolean") {
+        throw new TypeError("Stored analysis availability must be a boolean");
+    }
+    if (decisionConsistency === "mismatch") {
+        return "version_mismatch";
+    }
+    if (detailQueryState === "error" || fusionQueryState === "error") {
+        return "error";
+    }
+    if (
+        detailQueryState === "not_found"
+        && fusionQueryState === "not_found"
+        && runtimeStatus === "running"
+    ) {
+        return "waiting";
+    }
+    if (!hasStoredAnalysis) {
+        return runtimeStatus === "running" ? "waiting" : "missing";
+    }
+    return "available";
 }

@@ -6,12 +6,23 @@ import test from "node:test";
 
 import {
     NOT_APPLICABLE,
+    buildPipelineStagePresentation,
     formatRunTimestamp,
+    getDecisionVersionConsistency,
+    getLatestRuntimeReport,
     getOverviewQueryMessage,
     getRunTypeLabel,
+    getSelectedAnalysisSource,
+    getSelectedAnalysisState,
+    getStoppingTraceAvailability,
+    resolveInitialRunSelection,
     resolveOverviewQueryState,
+    resolveRunSelectionFocus,
     resolveRunListQueryState,
     resolveRuntimeSummaryQueryState,
+    shouldApplySelectedRunResponse,
+    shouldRefreshSelectedRunAnalysis,
+    shouldUpdateSelectedRunFailureState,
 } from "../../../src/incident_awareness/dashboard/ui/assets/dashboard-contract.mjs";
 import {
     getRuntimeStatePresentation,
@@ -390,6 +401,31 @@ test("Runtime Summary success preserves API order and empty state", () => {
     assert.deepEqual(payload, payloadSnapshot);
 });
 
+test("Latest Runtime report uses updated_at without reordering the API response", () => {
+    // Given
+    const runtimeItems = [
+        {
+            run_id: "RUN-RUNNING-OLDER",
+            status: "running",
+            updated_at: "2026-10-10T01:00:00.000Z",
+        },
+        {
+            run_id: "RUN-COMPLETED-NEWER",
+            status: "completed",
+            updated_at: "2026-10-10T01:05:00.000Z",
+        },
+    ];
+    const originalOrder = runtimeItems.map((runtime) => runtime.run_id);
+
+    // When
+    const latest = getLatestRuntimeReport(runtimeItems);
+
+    // Then
+    assert.strictEqual(latest, runtimeItems[1]);
+    assert.deepEqual(runtimeItems.map((runtime) => runtime.run_id), originalOrder);
+    assert.equal(getLatestRuntimeReport([]), null);
+});
+
 test("Runtime Summary accepts null current_stage for terminal states", () => {
     // Given
     const payload = {
@@ -576,7 +612,381 @@ test("Runtime Summary state rejects malformed results and payloads", () => {
     }
 });
 
-test("Dashboard connects Runtime Summary through the existing Operations contract", async () => {
+test("Pipeline stages highlight only states justified by persisted Runtime data", () => {
+    // Given
+    const running = {
+        status: "running",
+        current_stage: "fusion",
+        is_stale: false,
+    };
+    const stale = { ...running, is_stale: true };
+    const failed = {
+        status: "failed",
+        current_stage: null,
+        failed_stage: "hybrid",
+        is_stale: false,
+    };
+    const completed = {
+        status: "completed",
+        current_stage: null,
+        is_stale: false,
+    };
+
+    // When
+    const runningStages = buildPipelineStagePresentation(running, true);
+    const staleStages = buildPipelineStagePresentation(stale, true);
+    const unavailableStages = buildPipelineStagePresentation(running, false);
+    const failedStages = buildPipelineStagePresentation(failed, true);
+    const completedStages = buildPipelineStagePresentation(completed, true);
+
+    // Then
+    assert.deepEqual(
+        runningStages.map((stage) => stage.state),
+        ["unknown", "unknown", "current", "unknown", "unknown", "unknown"],
+    );
+    assert.equal(staleStages[2].state, "stale");
+    assert.equal(unavailableStages[2].state, "unknown");
+    assert.equal(failedStages[4].state, "failed");
+    assert.equal(failedStages.filter((stage) => stage.state === "completed").length, 0);
+    assert.equal(completedStages.every((stage) => stage.state === "completed"), true);
+});
+
+test("Pipeline stages remain unknown when the selected Run has no Runtime report", () => {
+    // Given
+    const runtime = null;
+
+    // When
+    const stages = buildPipelineStagePresentation(runtime, true);
+
+    // Then
+    assert.equal(stages.length, 6);
+    assert.equal(stages.every((stage) => stage.state === "unknown"), true);
+    assert.deepEqual(
+        stages.map((stage) => stage.stage),
+        [
+            "artifact_validation",
+            "normalization",
+            "fusion",
+            "fast_handoff",
+            "hybrid",
+            "persistence",
+        ],
+    );
+});
+
+test("Stopping Trace availability distinguishes missing, empty, and stored points", () => {
+    // Given
+    const emptyTrace = { points: [] };
+    const populatedTrace = { points: [{ score: 0.5 }] };
+
+    // When
+    const missing = getStoppingTraceAvailability(null);
+    const empty = getStoppingTraceAvailability(emptyTrace);
+    const available = getStoppingTraceAvailability(populatedTrace);
+
+    // Then
+    assert.equal(missing, "missing");
+    assert.equal(empty, "empty");
+    assert.equal(available, "available");
+    assert.throws(() => getStoppingTraceAvailability({ points: null }), TypeError);
+});
+
+test("Selected Run request versions reject a delayed response from an earlier selection", () => {
+    // Given
+    const firstSelectionVersion = 1;
+    const currentSelectionVersion = 2;
+
+    // When
+    const applyDelayed = shouldApplySelectedRunResponse(
+        firstSelectionVersion,
+        currentSelectionVersion,
+    );
+    const applyCurrent = shouldApplySelectedRunResponse(
+        currentSelectionVersion,
+        currentSelectionVersion,
+    );
+
+    // Then
+    assert.equal(applyDelayed, false);
+    assert.equal(applyCurrent, true);
+});
+
+test("Initial Run selection waits for Runtime and follows status priority", () => {
+    // Given
+    const runs = [
+        { run_id: "RUN-LIST-NEWEST" },
+        { run_id: "RUN-LIST-OLDER" },
+    ];
+    const runtimes = [
+        { run_id: "RUN-COMPLETED-NEWEST", status: "completed", is_stale: false },
+        { run_id: "RUN-RUNNING-NEWEST", status: "running", is_stale: false },
+        { run_id: "RUN-RUNNING-OLDER", status: "running", is_stale: false },
+    ];
+
+    // When
+    const overviewFirst = resolveInitialRunSelection(null, false, false, [], []);
+    const runsFirst = resolveInitialRunSelection(null, false, false, [], runs);
+    const runtimeFirst = resolveInitialRunSelection(null, true, true, runtimes, []);
+    const runsThenRuntime = resolveInitialRunSelection(null, true, true, runtimes, runs);
+    const completedOnly = resolveInitialRunSelection(
+        null,
+        true,
+        true,
+        runtimes.filter((runtime) => runtime.status === "completed"),
+        runs,
+    );
+    const runFallback = resolveInitialRunSelection(null, true, true, [], runs);
+
+    // Then
+    assert.equal(overviewFirst, null);
+    assert.equal(runsFirst, null);
+    assert.equal(runtimeFirst, "RUN-RUNNING-NEWEST");
+    assert.equal(runsThenRuntime, "RUN-RUNNING-NEWEST");
+    assert.equal(completedOnly, "RUN-COMPLETED-NEWEST");
+    assert.equal(runFallback, "RUN-LIST-NEWEST");
+});
+
+test("Automatic selection never replaces an existing user selection", () => {
+    // Given
+    const selectedRunId = "RUN-USER-SELECTED";
+    const runtimes = [
+        { run_id: "RUN-NEW-RUNTIME", status: "running", is_stale: false },
+    ];
+    const runs = [{ run_id: "RUN-NEW-LIST", status: "completed" }];
+
+    // When
+    const selectionAfterPolling = resolveInitialRunSelection(
+        selectedRunId,
+        true,
+        true,
+        runtimes,
+        runs,
+    );
+
+    // Then
+    assert.equal(selectionAfterPolling, selectedRunId);
+});
+
+test("Initial Run selection deprioritizes stale Running Runtime", () => {
+    // Given
+    const currentRunning = {
+        run_id: "RUN-CURRENT",
+        status: "running",
+        is_stale: false,
+    };
+    const completed = {
+        run_id: "RUN-COMPLETED",
+        status: "completed",
+        is_stale: false,
+    };
+    const staleRunning = {
+        run_id: "RUN-STALE",
+        status: "running",
+        is_stale: true,
+    };
+    const runs = [{ run_id: "RUN-STORED" }];
+
+    // When
+    const currentBeforeCompleted = resolveInitialRunSelection(
+        null,
+        true,
+        true,
+        [completed, currentRunning, staleRunning],
+        runs,
+    );
+    const completedBeforeStale = resolveInitialRunSelection(
+        null,
+        true,
+        true,
+        [staleRunning, completed],
+        runs,
+    );
+    const staleOnly = resolveInitialRunSelection(
+        null,
+        true,
+        true,
+        [staleRunning],
+        runs,
+    );
+    const unavailableTelemetry = resolveInitialRunSelection(
+        null,
+        true,
+        false,
+        [currentRunning],
+        runs,
+    );
+
+    // Then
+    assert.equal(currentBeforeCompleted, "RUN-CURRENT");
+    assert.equal(completedBeforeStale, "RUN-COMPLETED");
+    assert.equal(staleOnly, "RUN-STALE");
+    assert.equal(unavailableTelemetry, "RUN-STORED");
+});
+
+test("Run selection focus is restored only within its original table", () => {
+    // Given
+    const runtimeItems = [{ run_id: "RUN-RUNTIME", status: "running" }];
+    const updatedRuntimeItems = [{ run_id: "RUN-RUNTIME", status: "completed" }];
+    const runItems = [{ run_id: "RUN-STORED" }];
+
+    // When
+    const afterKeyboardSelection = resolveRunSelectionFocus(
+        "RUN-STORED",
+        "runs",
+        runtimeItems,
+        runItems,
+    );
+    const afterRuntimePolling = resolveRunSelectionFocus(
+        "RUN-RUNTIME",
+        "runtime",
+        updatedRuntimeItems,
+        runItems,
+    );
+    const outsideTable = resolveRunSelectionFocus(
+        null,
+        null,
+        updatedRuntimeItems,
+        runItems,
+    );
+
+    // Then
+    assert.deepEqual(afterKeyboardSelection, { runId: "RUN-STORED", table: "runs" });
+    assert.deepEqual(afterRuntimePolling, { runId: "RUN-RUNTIME", table: "runtime" });
+    assert.equal(outsideTable, null);
+});
+
+test("Selected analysis handles completed and failed terminal transitions once", () => {
+    // Given
+    const selectedRunId = "RUN-SELECTED";
+    const running = [{ run_id: selectedRunId, status: "running" }];
+    const completed = [{ run_id: selectedRunId, status: "completed" }];
+    const failed = [{ run_id: selectedRunId, status: "failed" }];
+    const otherCompleted = [{ run_id: "RUN-OTHER", status: "completed" }];
+
+    // When
+    const transition = shouldRefreshSelectedRunAnalysis(
+        selectedRunId,
+        running,
+        completed,
+    );
+    const repeatedCompletedPoll = shouldRefreshSelectedRunAnalysis(
+        selectedRunId,
+        completed,
+        completed,
+    );
+    const differentSelection = shouldRefreshSelectedRunAnalysis(
+        selectedRunId,
+        running,
+        otherCompleted,
+    );
+    const failedDoesNotReload = shouldRefreshSelectedRunAnalysis(
+        selectedRunId,
+        running,
+        failed,
+    );
+    const failedTransition = shouldUpdateSelectedRunFailureState(
+        selectedRunId,
+        running,
+        failed,
+    );
+    const repeatedFailedPoll = shouldUpdateSelectedRunFailureState(
+        selectedRunId,
+        failed,
+        failed,
+    );
+    const completedDoesNotUseFailureState = shouldUpdateSelectedRunFailureState(
+        selectedRunId,
+        running,
+        completed,
+    );
+
+    // Then
+    assert.equal(transition, true);
+    assert.equal(repeatedCompletedPoll, false);
+    assert.equal(differentSelection, false);
+    assert.equal(failedDoesNotReload, false);
+    assert.equal(failedTransition, true);
+    assert.equal(repeatedFailedPoll, false);
+    assert.equal(completedDoesNotUseFailureState, false);
+});
+
+test("Running 404 waits for persistence and completed results become available", () => {
+    // Given
+    const initialDetailState = "not_found";
+    const initialFusionState = "not_found";
+    const refreshedDetailState = "success";
+    const refreshedFusionState = "success";
+
+    // When
+    const waiting = getSelectedAnalysisState(
+        initialDetailState,
+        initialFusionState,
+        "running",
+        false,
+        "unavailable",
+    );
+    const available = getSelectedAnalysisState(
+        refreshedDetailState,
+        refreshedFusionState,
+        "completed",
+        true,
+        "match",
+    );
+    const queryError = getSelectedAnalysisState(
+        "error",
+        initialFusionState,
+        "running",
+        false,
+        "unavailable",
+    );
+
+    // Then
+    assert.equal(waiting, "waiting");
+    assert.equal(available, "available");
+    assert.equal(queryError, "error");
+});
+
+test("Decision version consistency prevents mixed Run Detail and Fusion results", () => {
+    // Given
+    const runDetail = {
+        current_decision: { decision: { decision_id: "DEC-DETAIL" } },
+    };
+    const matchingFusion = { current_decision: { decision_id: "DEC-DETAIL" } };
+    const mismatchingFusion = { current_decision: { decision_id: "DEC-FUSION" } };
+    const fusionWithoutDecision = {
+        current_decision: null,
+        fusion_result: { fusion_status: "miss" },
+        stopping_trace: { points: [{ score: 0.2 }] },
+    };
+    const runDetailWithoutDecision = { current_decision: null };
+
+    // When
+    const matching = getDecisionVersionConsistency(runDetail, matchingFusion);
+    const mismatching = getDecisionVersionConsistency(runDetail, mismatchingFusion);
+    const unavailable = getDecisionVersionConsistency(runDetail, fusionWithoutDecision);
+    const matchingSource = getSelectedAnalysisSource(runDetail, matchingFusion);
+    const mismatchingSource = getSelectedAnalysisSource(runDetail, mismatchingFusion);
+    const unavailableSource = getSelectedAnalysisSource(runDetail, fusionWithoutDecision);
+    const traceWithoutDecisionSource = getSelectedAnalysisSource(
+        runDetailWithoutDecision,
+        fusionWithoutDecision,
+    );
+    const detailFailureSource = getSelectedAnalysisSource(null, matchingFusion);
+    const fusionFailureSource = getSelectedAnalysisSource(runDetail, null);
+
+    // Then
+    assert.equal(matching, "match");
+    assert.equal(mismatching, "mismatch");
+    assert.equal(unavailable, "unavailable");
+    assert.equal(matchingSource, "matched");
+    assert.equal(mismatchingSource, "run_detail");
+    assert.equal(unavailableSource, "run_detail");
+    assert.equal(traceWithoutDecisionSource, "fusion_engine_without_decision");
+    assert.equal(detailFailureSource, "fusion_engine");
+    assert.equal(fusionFailureSource, "run_detail");
+});
+
+test("Dashboard polls Runtime after each completed request without overlap", async () => {
     // Given
     const scriptPath = new URL(
         "../../../src/incident_awareness/dashboard/ui/assets/dashboard.js",
@@ -585,9 +995,14 @@ test("Dashboard connects Runtime Summary through the existing Operations contrac
 
     // When
     const script = await readFile(scriptPath, "utf8");
+    const failureRenderer = script.slice(
+        script.indexOf("function renderSelectedRunFailureState"),
+        script.indexOf("function renderSelectedLinks"),
+    );
 
     // Then
     assert.match(script, /const RUNTIME_ENDPOINT = "\/operations\/runtime\?limit=5";/);
+    assert.match(script, /const RUNTIME_POLL_INTERVAL_MS = 5000;/);
     assert.match(script, /const RUNTIME_REQUEST_TIMEOUT_MS = 10000;/);
     assert.match(script, /fetch\(RUNTIME_ENDPOINT/);
     assert.match(script, /const controller = new AbortController\(\);/);
@@ -598,22 +1013,35 @@ test("Dashboard connects Runtime Summary through the existing Operations contrac
     assert.match(script, /signal: controller\.signal/);
     assert.match(script, /clearTimeout\(timeoutId\);/);
     assert.match(script, /return await response\.json\(\);/);
-    assert.match(script, /resolveRuntimeSummaryQueryState\(state, \{ kind: "success", payload \}\)/);
-    assert.match(script, /resolveRuntimeSummaryQueryState\(state, \{ kind: "error" \}\)/);
-    assert.match(script, /getRuntimeStatePresentation\(runtime, telemetryAvailable\)/);
+    assert.match(script, /resolveRuntimeSummaryQueryState\(/);
+    assert.match(script, /\{ kind: "success", payload \}/);
+    assert.match(script, /\{ kind: "error" \}/);
+    assert.match(script, /async function pollRuntimeSummary\(\)/);
+    assert.match(script, /const payload = await fetchRuntimeSummary\(\);/);
+    assert.match(script, /shouldRefreshSelectedRunAnalysis\(/);
+    assert.match(script, /shouldUpdateSelectedRunFailureState\(/);
+    assert.match(script, /refreshCompletedSelection/);
+    assert.match(script, /updateFailedSelection/);
+    assert.match(script, /renderSelectedRunFailureState\(\)/);
+    assert.match(script, /상세 결과 자동 재조회는 수행하지 않습니다/);
+    assert.doesNotMatch(failureRenderer, /loadSelectedRunAnalysis|fetch/);
+    assert.match(script, /void loadSelectedRunAnalysis\(/);
+    assert.match(
+        script,
+        /완료 보고를 확인해 저장된 분석 결과를 다시 불러오는 중입니다/,
+    );
+    assert.match(script, /runtimePollTimeoutId = setTimeout\(/);
+    assert.match(script, /\(\) => void pollRuntimeSummary\(\)/);
+    assert.match(script, /RUNTIME_POLL_INTERVAL_MS/);
     assert.match(script, /getStageLabel\(runtime\.current_stage\)/);
+    assert.match(script, /getLatestRuntimeReport\(state\.items\)/);
     assert.match(script, /formatRunTimestamp\(runtime\.updated_at\)/);
     assert.match(script, /presentation\.telemetryLabel/);
-    assert.match(script, /presentation\.livenessLabel/);
-    assert.equal(script.match(/void loadRuntimeSummary\(\);/g)?.length, 1);
-    assert.equal(script.match(/setTimeout\(/g)?.length, 1);
-    assert.doesNotMatch(
-        script,
-        /현재 실행 중|setInterval\(|setTimeout\((?:load|fetch)RuntimeSummary/,
-    );
+    assert.equal(script.match(/void pollRuntimeSummary\(\)/g)?.length, 2);
+    assert.doesNotMatch(script, /현재 실행 중|setInterval\(/);
 });
 
-test("Dashboard links only completed Runtime items to Run Detail", async () => {
+test("Dashboard selection loads both detail APIs and discards delayed responses", async () => {
     // Given
     const scriptPath = new URL(
         "../../../src/incident_awareness/dashboard/ui/assets/dashboard.js",
@@ -622,23 +1050,59 @@ test("Dashboard links only completed Runtime items to Run Detail", async () => {
 
     // When
     const script = await readFile(scriptPath, "utf8");
-    const cardSource = script.slice(
-        script.indexOf("function createRuntimeSummaryCard"),
-        script.indexOf("function renderOverviewState"),
+    const analysisLoader = script.slice(
+        script.indexOf("async function loadSelectedRunAnalysis"),
+        script.indexOf("async function selectRun"),
     );
 
     // Then
-    assert.match(
-        cardSource,
-        /if \(runtime\.status === "completed" && runtime\.run_id\.trim\(\)\) \{/,
-    );
-    assert.match(cardSource, /link\.href = buildRunDetailViewPath\(runtime\.run_id\);/);
-    assert.match(cardSource, /else \{\s+heading\.textContent = runtime\.run_id;/);
-    assert.equal(cardSource.match(/buildRunDetailViewPath/g)?.length, 1);
-    assert.doesNotMatch(cardSource, /if \(runtime\.run_id\.trim\(\)\) \{/);
+    assert.match(script, /async function selectRun\(runId\)/);
+    assert.match(script, /buildRunDetailApiPath\(runId\)/);
+    assert.match(script, /buildFusionEngineApiPath\(runId\)/);
+    assert.match(script, /Promise\.all\(\[/);
+    assert.match(script, /shouldApplySelectedRunResponse\(/);
+    assert.match(script, /resolveInitialRunSelection\(/);
+    assert.match(script, /buildRunDetailViewPath\(runId\)/);
+    assert.match(script, /buildFusionEngineViewPath\(runId\)/);
+    assert.match(script, /selectedRunDetailLink\.hidden = !detailAvailable/);
+    assert.match(script, /selectedRunFusionLink\.hidden = !fusionAvailable/);
+    assert.match(script, /getDecisionVersionConsistency\(/);
+    assert.match(script, /getSelectedAnalysisSource\(/);
+    assert.match(script, /analysisState === "version_mismatch"/);
+    assert.match(script, /Decision 버전이 달라 결과를 결합하지 않았습니다/);
+    assert.match(script, /Decision ID를 비교할 수 없어 Run Detail 출처의 결과만 표시합니다/);
+    assert.match(script, /Decision ID를 비교할 수 없어 Fusion Engine 출처의 결과만 표시합니다/);
+    assert.match(script, /Fusion Engine Decision ID를 확인할 수 없어 Trace를 결합하지 않았습니다/);
+    assert.match(script, /Decision 없는 Fusion Engine 저장 결과를 단일 출처로 표시합니다/);
+    assert.equal(analysisLoader.match(/Promise\.all\(\[/g)?.length, 2);
+    assert.doesNotMatch(analysisLoader, /while \(|for \(/);
+    assert.match(script, /getStoppingTraceAvailability\(stoppingTrace\)/);
+    assert.match(script, /buildScoreTrajectoryModel\(/);
+    assert.match(script, /createScoreTrajectoryChart\(model\)/);
+    assert.match(script, /fusionResult\?\.fusion_status === "not_evaluated"/);
+    assert.match(script, /Stopping Trace가 비어 있습니다/);
+    assert.match(script, /결과 저장을 기다리는 중입니다/);
 });
 
-test("Dashboard separates compact Recent Runs from detailed Runs without reordering", async () => {
+test("Dashboard restores Run selector focus without moving external focus", async () => {
+    // Given
+    const scriptPath = new URL(
+        "../../../src/incident_awareness/dashboard/ui/assets/dashboard.js",
+        import.meta.url,
+    );
+
+    // When
+    const script = await readFile(scriptPath, "utf8");
+
+    // Then
+    assert.match(script, /list\.contains\(document\.activeElement\)/);
+    assert.match(script, /button\.dataset\.runId = runId/);
+    assert.match(script, /resolveRunSelectionFocus\(/);
+    assert.match(script, /replacement\?\.focus\(\{ preventScroll: true \}\)/);
+    assert.match(script, /button\.setAttribute\("aria-pressed", String\(runId === selectedRunId\)\)/);
+});
+
+test("Dashboard renders dense Runtime and Run tables without exposing Run Type", async () => {
     // Given
     const scriptPath = new URL(
         "../../../src/incident_awareness/dashboard/ui/assets/dashboard.js",
@@ -648,30 +1112,42 @@ test("Dashboard separates compact Recent Runs from detailed Runs without reorder
         "../../../src/incident_awareness/dashboard/ui/dashboard.html",
         import.meta.url,
     );
+    const stylesheetPath = new URL(
+        "../../../src/incident_awareness/dashboard/ui/assets/dashboard.css",
+        import.meta.url,
+    );
 
     // When
-    const [script, html] = await Promise.all([
+    const [script, html, stylesheet] = await Promise.all([
         readFile(scriptPath, "utf8"),
         readFile(htmlPath, "utf8"),
+        readFile(stylesheetPath, "utf8"),
     ]);
 
     // Then
-    assert.match(script, /state\.recentRuns\.map\(\(run\) => createRecentRunCard\(run\)\)/);
-    assert.match(script, /state\.items\.map\(\(run\) => createRunCard\(run\)\)/);
-    assert.match(script, /createRunField\("Observed Start"/);
-    assert.match(script, /createRunField\("Observed End"/);
-    assert.match(html, /시스템 처리 시각과는 다릅니다/);
-    assert.match(html, /Run ID나 Event timestamp로 추정하지 않습니다/);
-    assert.match(html, /<details class="dashboard-runs-disclosure">/);
-    assert.match(html, /<summary>Runs 목록 펼치기 — 관측 시작 최근순 최대 20건<\/summary>/);
-    assert.doesNotMatch(html, /<details class="dashboard-runs-disclosure" open>/);
-    const runsStatusIndex = html.indexOf('id="runs-status"');
-    const disclosureStart = html.indexOf('<details class="dashboard-runs-disclosure">');
-    const disclosureEnd = html.indexOf("</details>", disclosureStart);
-    const runsListIndex = html.indexOf('id="runs-list"');
-    assert.ok(runsStatusIndex < disclosureStart);
-    assert.ok(disclosureStart < runsListIndex && runsListIndex < disclosureEnd);
-    assert.doesNotMatch(html.slice(disclosureStart, disclosureEnd), /id="runs-status"/);
+    assert.match(script, /const RUNS_ENDPOINT = "\/runs\?limit=20";/);
+    assert.match(script, /state\.items\.map\(\(run\) => createRunRow\(run\)\)/);
+    assert.match(script, /displayValue\(run\.scenario_id\)/);
+    assert.match(script, /displayValue\(run\.target_host\)/);
+    assert.match(script, /formatRunTimestamp\(run\.start_time\)/);
+    assert.match(script, /buildRunDetailViewPath\(run\.run_id\)/);
+    assert.doesNotMatch(script, /run\.run_type|getRunTypeLabel/);
+    assert.match(html, /<table class="dashboard-table runtime-table">/);
+    assert.match(html, /<table class="dashboard-table runs-table">/);
+    assert.match(html, /API의 관측 시작 시각 최근순을 그대로 유지하며 최대 20건/);
+    assert.match(html, /최근 Runtime 조회 결과는\s+전체 실행 통계가 아닙니다/);
+    assert.match(html, /조회 완료 후 약 5초 간격으로 Runtime 상태 갱신/);
+    assert.match(html, /조회 범위 내 최신 Runtime 상태/);
+    assert.match(html, /조회 범위 내 최신 Runtime 보고/);
+    assert.match(html, /<details class="dashboard-time-note">/);
+    assert.match(html, /<summary>표시 기준 및 상태 안내<\/summary>/);
+    assert.match(html, /class="dashboard-workbench"/);
+    assert.match(html, /class="dashboard-stage-scroll"/);
+    assert.match(stylesheet, /\.app-page\.dashboard-page\s*{[^}]*width: 100%;/s);
+    assert.match(stylesheet, /\.app-page\.dashboard-page\s*{[^}]*max-width: 101rem;/s);
+    assert.match(stylesheet, /grid-template-columns: repeat\(6, minmax\(9rem, 1fr\)\)/);
+    assert.match(stylesheet, /@media \(max-width: 82rem\)/);
+    assert.doesNotMatch(html, />Type<|>Run Type</);
     assert.match(script, /runsStatus\.textContent = state\.message;/);
     assert.equal(script.match(/void loadRuns\(\);/g)?.length, 1);
     assert.doesNotMatch(script, /\.sort\(|\.toSorted\(|\.reverse\(|\.toReversed\(/);

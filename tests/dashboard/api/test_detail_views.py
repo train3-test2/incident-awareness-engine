@@ -31,6 +31,7 @@ DETAIL_VIEW_PATHS = (
     "/dashboard-assets/fusion-engine.css",
     "/dashboard-assets/fusion-engine.js",
     "/dashboard-assets/fusion-engine-contract.mjs",
+    "/dashboard-assets/fusion-score-chart.mjs",
     "/dashboard-assets/decision-detail.js",
     "/dashboard-assets/decision-detail-contract.mjs",
     "/dashboard-assets/event-timeline.js",
@@ -399,6 +400,7 @@ def test_detail_scripts_and_contracts_are_served_with_javascript_media_type() ->
         client.get("/dashboard-assets/run-detail-contract.mjs"),
         client.get("/dashboard-assets/fusion-engine.js"),
         client.get("/dashboard-assets/fusion-engine-contract.mjs"),
+        client.get("/dashboard-assets/fusion-score-chart.mjs"),
         client.get("/dashboard-assets/decision-detail.js"),
         client.get("/dashboard-assets/decision-detail-contract.mjs"),
         client.get("/dashboard-assets/event-timeline.js"),
@@ -766,6 +768,7 @@ def test_fusion_engine_assets_use_authoritative_runtime_data_and_safe_dom() -> N
     # When
     script = client.get("/dashboard-assets/fusion-engine.js").text
     contract = client.get("/dashboard-assets/fusion-engine-contract.mjs").text
+    chart = client.get("/dashboard-assets/fusion-score-chart.mjs").text
 
     # Then
     for fusion_field in (
@@ -827,10 +830,11 @@ def test_fusion_engine_assets_use_authoritative_runtime_data_and_safe_dom() -> N
         "point.policy_state",
         "point.persistence_count",
     ):
-        assert trace_point_field in script
+        assert trace_point_field in chart
     assert "buildScoreTrajectoryModel(" in script
-    assert "document.createElementNS(SVG_NAMESPACE" in script
-    assert 'const SVG_NAMESPACE = "http://www.w3.org/2000/svg"' in script
+    assert "createScoreTrajectoryChart(model)" in script
+    assert "document.createElementNS(SVG_NAMESPACE" in chart
+    assert 'const SVG_NAMESPACE = "http://www.w3.org/2000/svg"' in chart
     assert "config.stopping.threshold_on" in script
     assert "config.stopping.threshold_off" in script
     assert "payload.current_decision" in script
@@ -845,7 +849,7 @@ def test_fusion_engine_assets_use_authoritative_runtime_data_and_safe_dom() -> N
         ".classList.add(",
     ):
         assert safe_api in script
-    for source in (script, contract):
+    for source in (script, contract, chart):
         for forbidden_api in (
             "innerHTML",
             "outerHTML",
@@ -879,7 +883,8 @@ def test_fusion_engine_score_trajectory_is_accessible() -> None:
     html = client.get(f"/dashboard/runs/{RUN_ID}/fusion-engine").text
     script = client.get("/dashboard-assets/fusion-engine.js").text
     contract = client.get("/dashboard-assets/fusion-engine-contract.mjs").text
-    normalized_script = script.replace("\r\n", "\n")
+    chart = client.get("/dashboard-assets/fusion-score-chart.mjs").text
+    normalized_chart = chart.replace("\r\n", "\n")
 
     # Then
     assert 'id="fusion-score-trajectory-heading"' in html
@@ -887,14 +892,14 @@ def test_fusion_engine_score_trajectory_is_accessible() -> None:
     assert 'id="fusion-score-trajectory-status"' in html
     assert 'role="status"' in html
     assert 'aria-live="polite"' in html
-    assert 'svg.setAttribute("role", "img")' in script
-    assert 'svg.setAttribute(\n        "aria-labelledby"' in normalized_script
-    assert 'createSvgElement("title")' in script
-    assert 'createSvgElement("desc")' in script
-    assert 'document.createElement("details")' in script
-    assert 'document.createElement("summary")' in script
-    assert "`전체 Point ${points.length}개 보기`" in script
-    assert "details.append(summary, wrapper);" in script
+    assert 'svg.setAttribute("role", "img")' in chart
+    assert 'svg.setAttribute(\n        "aria-labelledby"' in normalized_chart
+    assert 'createSvgElement("title")' in chart
+    assert 'createSvgElement("desc")' in chart
+    assert 'document.createElement("details")' in chart
+    assert 'document.createElement("summary")' in chart
+    assert "`전체 Point ${points.length}개 보기`" in chart
+    assert "details.append(summary, wrapper);" in chart
     for label in (
         "Score",
         "T_on",
@@ -905,7 +910,7 @@ def test_fusion_engine_score_trajectory_is_accessible() -> None:
         "Policy State",
         "Persistence Count",
     ):
-        assert label in script or label in contract
+        assert label in script or label in contract or label in chart
 
 
 def test_historical_decision_script_fetches_snapshot_json_once_without_fallback() -> None:
@@ -1093,7 +1098,7 @@ def test_detail_view_files_reference_no_external_resources_or_secrets(path: str)
     # Then
     assert response.status_code == 200
     for forbidden_marker in ("://", "@import", "DATABASE_URL", "password", "Traceback"):
-        if path == "/dashboard-assets/fusion-engine.js" and forbidden_marker == "://":
+        if path == "/dashboard-assets/fusion-score-chart.mjs" and forbidden_marker == "://":
             assert response.text.count("://") == 1
             assert '"http://www.w3.org/2000/svg"' in response.text
         else:
