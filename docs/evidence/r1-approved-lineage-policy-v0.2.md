@@ -2,7 +2,7 @@
 
 > 상태: family-bound development 및 formal pre-holdout frozen policy 계약 구현 완료
 > availability: `OFFLINE WHOLE-EPISODE ONLY`
-> 비범위: production 배포, WMI policy, selector·Evidence 의미 변경
+> 비범위: production 배포, selector·Evidence 의미 변경
 
 ## 1. 목적과 v0.1 호환성
 
@@ -33,6 +33,14 @@ policies:
       - wsmprovhost.exe
       - cmd.exe
       - powershell.exe
+  - policy_id: r1-wmi-management-approved-lineage
+    version: v0.1
+    family_id: wmi_management
+    lifecycle: development
+    approved_lineage:
+      - WmiPrvSE.exe
+      - wscript.exe
+      - powershell.exe
 ```
 
 `family_id`는 rendered scenario의 canonical family naming과 같은 규칙을 사용한다. 비어 있거나 앞뒤 공백을 포함하거나 Run label을 노출하는 값은 허용하지 않는다. `variation_id`는 이번 binding 대상이 아니다.
@@ -61,7 +69,7 @@ v0.2 `config_hash` 입력은 다음 object다.
 - `lifecycle`
 - `approved_lineage`
 
-이 object를 key 정렬, 공백 없는 JSON separators와 ASCII escaping으로 canonical serialization하고 UTF-8 bytes의 SHA-256 lowercase hex를 계산한다. YAML 표현, key 순서와 comment는 hash에 포함되지 않는다. Family-bound development `v0.2` hash는 `6d4235ccc33fcc2484a679d6b6b9b8972cf67f45ff8de35d02eb402380e7f788`, frozen `v0.3` hash는 `b3d1d28a909b494f660d3e8164a994a3d818a98dadcd10336560b4bec38680d2`다. v0.1은 기존 세 필드 hash basis를 계속 사용한다.
+이 object를 key 정렬, 공백 없는 JSON separators와 ASCII escaping으로 canonical serialization하고 UTF-8 bytes의 SHA-256 lowercase hex를 계산한다. YAML 표현, key 순서와 comment는 hash에 포함되지 않는다. `remote_management` development `v0.2` hash는 `6d4235ccc33fcc2484a679d6b6b9b8972cf67f45ff8de35d02eb402380e7f788`, frozen `v0.3` hash는 `b3d1d28a909b494f660d3e8164a994a3d818a98dadcd10336560b4bec38680d2`다. `wmi_management` development `v0.1` hash는 `f5ca732ab6987bbca9d2d44fa51eb30c0a13ba980545b4cbf7c64c7ccf2b5a9a`다. Legacy v0.1 registry는 기존 세 필드 hash basis를 계속 사용한다.
 
 ## 5. Family binding과 실행 경계
 
@@ -96,7 +104,7 @@ Raw collection 전용 `tools/validate_r1_run.py`는 Evidence policy를 import하
 
 - Legacy v0.1 policy와 기존 Pair-002·Pair-003 artifact provenance는 rewrite하지 않는다.
 - v0.2도 policy 하나당 단일 `approved_lineage`만 표현한다. 복수 정상 lineage가 필요하면 후속 schema/version에서 계약한다.
-- WMI family에는 별도 family-bound policy가 필요하지만 이번 작업에서 policy나 process-name special case를 등록하지 않는다.
+- WMI family의 별도 development policy는 [WMI development policy v0.1](r1-approved-lineage-policy-wmi-v0.1.md)에 정의한다. Selector에는 process-name special case를 추가하지 않는다.
 - #227의 multi-run development 근거와 Role5 승인 provenance로 final evaluation용 `frozen/v0.3` identity/hash와 holdout 이후 변경 금지 기록을 확정했다. 기존 development와 historical artifact는 rewrite하지 않는다.
 - #228 production runner는 family-bound policy와 scenario family metadata를 사용해야 한다. 이번 offline high-level API 구현만으로 production 연결 완료를 뜻하지 않는다.
 - `OFFLINE WHOLE-EPISODE ONLY`, Evidence timestamp, selector와 Evidence semantics, `available_at`/watermark 제한은 이 governance 계약과 별개이며 변경하지 않는다.

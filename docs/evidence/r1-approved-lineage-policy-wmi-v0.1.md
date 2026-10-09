@@ -1,0 +1,55 @@
+# R1 WMI 승인 계보 development policy v0.1
+
+> 상태: development policy 등록 완료 / Pilot telemetry 검증 전
+> availability: `OFFLINE WHOLE-EPISODE ONLY`
+> 비범위: formal freeze, production policy, collection 구현, 성능 평가
+
+## 1. Identity와 승인 계보
+
+| 항목 | 값 |
+| --- | --- |
+| policy ID | `r1-wmi-management-approved-lineage` |
+| version | `v0.1` |
+| family ID | `wmi_management` |
+| lifecycle | `development` |
+| config hash | `f5ca732ab6987bbca9d2d44fa51eb30c0a13ba980545b4cbf7c64c7ccf2b5a9a` |
+
+승인 계보는 다음과 같다.
+
+```text
+WmiPrvSE.exe
+→ wscript.exe
+→ powershell.exe
+```
+
+이 identity는 WMI family의 첫 family-bound development policy이므로 독립적인 policy ID와 최초 version `v0.1`을 사용한다. Registry schema의 `config_version: v0.2` 및 `remote_management` policy version sequence와는 별개다.
+
+## 2. Evidence 의미와 selector 경계
+
+Development에서 관측할 계보 후보는 다음과 같다.
+
+```text
+WmiPrvSE.exe
+→ cmd.exe
+→ powershell.exe
+```
+
+이 관측 계보는 참고 및 검증 조건이며 approved policy에 공격 규칙으로 저장하지 않는다. `cmd.exe` 같은 개별 process name은 공격 indicator가 아니다. 기존 selector는 ProcessGuid와 ParentProcessGuid로 3-EID1 lineage를 구조적으로 선택하며 process name, ParentImage 또는 PID fallback을 선택 조건으로 사용하지 않는다.
+
+선택된 runtime lineage와 사전에 등록한 approved lineage가 다를 때 기존 `remote_session_process_lineage_deviation` 의미를 사용한다. Ground Truth, `run_type`, Attack/Normal label은 policy 선택이나 Evidence 조건으로 사용하지 않는다.
+
+## 3. Family binding과 lifecycle
+
+이 policy는 `family_id=wmi_management`에서만 유효하다. `remote_management`와의 양방향 mismatch는 기존 `validate_r1_policy_family_binding()`에서 selector 실행 전에 fail-closed한다.
+
+현재 lifecycle은 `development`다. Formal freeze, `production_candidate`, production policy로 해석하지 않는다. WMI Pilot/development telemetry는 아직 수집·검증하지 않았으며 lifecycle 승격은 별도 identity/version과 승인이 필요하다.
+
+## 4. Raw collection과 evaluation window
+
+`WmiPrvSE.exe`의 ancestor EID1이 Run 시작 전에 존재할 수 있으므로 raw collection window는 lineage provenance에 필요한 선행 EID1을 포함할 수 있어야 한다. 이 선행 context Event는 evaluation window 밖에 있을 수 있다.
+
+```text
+raw collection window != evaluation window
+```
+
+이번 policy 등록은 raw collector, evaluation window, Temporal Replay, `available_at`/watermark 또는 TTSD를 변경하지 않는다. 선행 context의 Role5 평가 포함 방식은 별도 합의가 필요하다.
