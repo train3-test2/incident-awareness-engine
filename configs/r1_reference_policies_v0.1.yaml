@@ -1,0 +1,14 @@
+config_version: v0.1
+policies:
+  - policy_id: r1-wmi-a01-reference
+    version: wmi-ref-v0.1
+    family_id: wmi_management
+    reference_action_id: A01
+    action_type: Win32_Process.Create
+    success_return_value: 0
+    require_process_id: true
+    reference_source: sysmon
+    reference_source_layer: raw_telemetry
+    reference_event_type: process_create
+    reference_process_name: cmd.exe
+    expected_evaluation_horizon_sec: 600
