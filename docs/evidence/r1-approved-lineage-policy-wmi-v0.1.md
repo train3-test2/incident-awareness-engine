@@ -69,3 +69,31 @@ Pre-Run Event의 책임은 다음으로 제한한다.
 Normal의 `WmiPrvSE.exe → wscript.exe → powershell.exe`와 관측 차이 후보인 `WmiPrvSE.exe → cmd.exe → powershell.exe` 모두 동일한 GUID 기반 selector를 사용한다. WMI process name 전용 selector 분기, ParentImage fallback과 PID fallback은 사용하지 않는다.
 
 이번 계약은 boot-to-end input을 허용하는 `OFFLINE WHOLE-EPISODE ONLY` 입력 계약이다. Raw collection window와 evaluation window를 구분하지만 `available_at`, watermark, Temporal Replay, TTSD 또는 online/causal 의미를 정의하지 않는다.
+
+## 5. Reference policy와 runtime provenance 소유 경계
+
+WMI A01 reference policy의 canonical config는
+`configs/r1_reference_policies_v0.1.yaml`이다. Loader가 선택하는 identity는 다음과 같다.
+
+| 항목 | 값 |
+| --- | --- |
+| policy ID | `r1-wmi-a01-reference` |
+| version | `wmi-ref-v0.1` |
+| family ID | `wmi_management` |
+| actual config hash | `4144a6e2857fad7e834d819d5393eb03343398df83e5727470e9b97a24e495ba` |
+
+Config hash는 선택된 policy object의 `policy_id`, `version`, `family_id`, A01 action·성공 조건,
+reference Event 조건과 `expected_evaluation_horizon_sec`를 모두 포함한다. 이 object를 key 정렬,
+공백 없는 JSON separators와 ASCII escaping으로 canonical serialization하고 UTF-8 bytes의 SHA-256
+lowercase hex를 계산한다. YAML key 순서, 표현 형식과 comment는 hash에 포함되지 않는다.
+
+Run 단위 runtime provenance의 영속 artifact는 `r1_collection_provenance.json`이다. 이 artifact는
+canonical config path, policy ID/version/hash, loader가 선택한 policy identity, scenario의
+`evaluation_horizon_sec`, policy의 `expected_evaluation_horizon_sec`와 두 값의 일치 결과를 기록한다.
+Writer는 기존 R1 artifact와 동일하게 기존 파일을 덮어쓰지 않고 원자적으로 게시하며, 같은 output
+directory에서 재실행할 때는 새 빈 directory를 사용한다. Loader는 unknown/missing field와 identity 또는
+horizon binding 불일치를 fail-closed한다.
+
+`RunMetadata`에는 `reference_policy_version`만 유지한다. Canonical path/hash, loader identity와 horizon
+binding 결과는 `r1_collection_provenance.json`이 소유한다. 이미 동결된 `run_metadata.json`은 provenance를
+추가하기 위해 사후 수정하지 않는다.
