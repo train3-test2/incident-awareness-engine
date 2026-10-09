@@ -876,8 +876,9 @@ Rule hit
 - Fast set 비교 결과: 같은 범위에서 채택된 set의 qualifying hit 중 최초 시각을 선택한다.
   이때 결과의 detector/Rule metadata는 선택한 hit와 대응해야 한다.
 - 서로 다른 set/configuration의 실행은 별도 비교 결과로 유지한다.
-- 동시각 hit가 여러 개이면 최초 시각 자체는 같지만 대표 hit 선택과 출력 건수는
-  Fast Adapter 계약에서 역할 3·5가 확정한다. 이 문서에서 임의의 tie-break를 만들지 않는다.
+- 역할5 selection v1 경로는 `(timestamp, rule_id, hit_id)` 사전순으로 대표 hit 하나를 선택한다.
+  적용 범위·시각 source·set/config 입력 계약은 [Fast selection v1](role5-fast-selection.md)을 따른다.
+  기존 외부 selection 호출까지 자동으로 이 규칙이 적용되는 것은 아니다.
 
 위 구분을 실제 `DetectionResult` 출력 단위 및 set 결과 집계 위치에 연결하는 규칙은
 역할 3·5의 Adapter 연동에서 확인하고 R1 provisional freeze 전에 고정한다.
