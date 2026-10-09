@@ -8,7 +8,11 @@ from urllib.parse import unquote, urlparse
 
 import psycopg
 import pytest
+from fastapi.testclient import TestClient
 
+from incident_awareness.dashboard.api.app import create_app
+from incident_awareness.dashboard.api.dependencies import get_database_connection
+from incident_awareness.pipeline.runtime_telemetry import PostgresPipelineRuntimeObserver
 from incident_awareness.pipeline.standalone import (
     prepare_standalone_run,
     run_prepared_standalone_run,
@@ -64,7 +68,15 @@ def test_generated_standalone_artifacts_flow_through_pipeline_and_postgres(
         connection.execute("DELETE FROM runs WHERE run_id = %s", (RUN_ID,))
         connection.commit()
         try:
-            summary = run_prepared_standalone_run(prepared, connection=connection)
+            with PostgresPipelineRuntimeObserver(
+                database_config_factory=lambda: DatabaseConfig(database_url),
+                progress_write_interval_seconds=0.0,
+            ) as runtime_observer:
+                summary = run_prepared_standalone_run(
+                    prepared,
+                    connection=connection,
+                    runtime_observer=runtime_observer,
+                )
 
             assert _table_count(connection, "runs") == 1
             assert _table_count(connection, "events") == 3
@@ -76,7 +88,36 @@ def test_generated_standalone_artifacts_flow_through_pipeline_and_postgres(
             assert summary.fusion_status == "detected"
             assert summary.detector_status == "not_evaluated"
             assert summary.decision_path is None
+
+            app = create_app()
+
+            def get_test_database_connection():
+                api_connection = psycopg.connect(database_url)
+                try:
+                    yield api_connection
+                finally:
+                    api_connection.close()
+
+            app.dependency_overrides[get_database_connection] = get_test_database_connection
+            with TestClient(app) as client:
+                response = client.get("/operations/runtime?status=completed")
+
+            assert response.status_code == 200
+            runtime_items = [item for item in response.json()["items"] if item["run_id"] == RUN_ID]
+            assert len(runtime_items) == 1
+            runtime_item = runtime_items[0]
+            assert runtime_item["entity_id"] == ENTITY_ID
+            assert runtime_item["status"] == "completed"
+            assert runtime_item["current_stage"] is None
+            assert runtime_item["input_total"] == 3
+            assert runtime_item["normalization_processed_count"] == 3
+            assert runtime_item["remaining_count"] == 0
+            assert runtime_item["failed_stage"] is None
         finally:
+            connection.execute(
+                "DELETE FROM pipeline_runtime_status WHERE run_id = %s",
+                (RUN_ID,),
+            )
             connection.execute("DELETE FROM runs WHERE run_id = %s", (RUN_ID,))
             connection.commit()
 
@@ -92,6 +133,7 @@ def _require_first_cycle_schema(connection: psycopg.Connection[tuple[object, ...
         "runs",
         "fusion_stopping_traces",
         "fusion_runtime_config_snapshots",
+        "pipeline_runtime_status",
     )
     missing_tables = [
         table_name

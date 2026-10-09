@@ -10,6 +10,7 @@ import os
 import re
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -21,7 +22,11 @@ from botocore.client import BaseClient
 from botocore.exceptions import BotoCoreError, ClientError
 from psycopg import OperationalError
 
-from incident_awareness.pipeline.standalone import run_standalone_sysmon_jsonl
+from incident_awareness.pipeline.runtime_telemetry import (
+    PipelineRuntimeObserver,
+    PostgresPipelineRuntimeObserver,
+)
+from incident_awareness.pipeline.standalone import StandaloneExecution, run_standalone_sysmon_jsonl
 from incident_awareness.storage.config import DatabaseConfig
 from incident_awareness.storage.repositories.s3_object_receipt_repository import (
     S3ObjectReceiptRepository,
@@ -153,13 +158,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     database_config = DatabaseConfig.from_environment()
     with psycopg.connect(database_config.url, autocommit=False) as connection:
 
-        def run_standalone(sysmon_jsonl_path: Path, output_root: Path) -> str:
-            execution = run_standalone_sysmon_jsonl(
+        def run_standalone(
+            sysmon_jsonl_path: Path,
+            output_root: Path,
+            runtime_observer: PipelineRuntimeObserver | None,
+        ) -> StandaloneExecution:
+            return run_standalone_sysmon_jsonl(
                 sysmon_jsonl_path=sysmon_jsonl_path,
                 output_root=output_root,
                 connection=connection,
+                runtime_observer=runtime_observer,
             )
-            return execution.summary.run_id
 
         return run_worker(
             queue_url=_required_environment(_QUEUE_URL_ENV),
@@ -168,6 +177,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             s3_client=boto3.client("s3"),
             run_standalone=run_standalone,
             receipt_store=_PostgresSuccessfulReceiptStore(connection),
+            runtime_observer_factory=PostgresPipelineRuntimeObserver,
             once=namespace.once,
         )
 
@@ -178,11 +188,21 @@ def run_worker(
     expected_bucket: str,
     sqs_client: BaseClient,
     s3_client: BaseClient,
-    run_standalone: Callable[[Path, Path], str],
+    run_standalone: Callable[
+        [Path, Path, PipelineRuntimeObserver | None],
+        StandaloneExecution,
+    ],
     receipt_store: SuccessfulReceiptStore | None = None,
+    runtime_observer_factory: Callable[[], PostgresPipelineRuntimeObserver] | None = None,
     once: bool = False,
 ) -> int:
-    """Poll one SQS message at a time and delete only successful messages."""
+    """Poll one SQS message at a time and delete only successful messages.
+
+    When a receipt store is present, its successful return confirms the Worker-owned
+    Business and Receipt commit and allows Runtime completion.  Without a receipt
+    store, the callback owns transaction and Runtime finalization; the Worker cannot
+    infer either from a successful return.
+    """
     while True:
         response = sqs_client.receive_message(
             QueueUrl=queue_url,
@@ -202,6 +222,7 @@ def run_worker(
                     s3_client=s3_client,
                     run_standalone=run_standalone,
                     receipt_store=receipt_store,
+                    runtime_observer_factory=runtime_observer_factory,
                 )
             except PermanentWorkerError:
                 _rollback_receipt_store(receipt_store)
@@ -235,8 +256,12 @@ def _process_message(
     *,
     expected_bucket: str,
     s3_client: BaseClient,
-    run_standalone: Callable[[Path, Path], str],
+    run_standalone: Callable[
+        [Path, Path, PipelineRuntimeObserver | None],
+        StandaloneExecution,
+    ],
     receipt_store: SuccessfulReceiptStore | None = None,
+    runtime_observer_factory: Callable[[], PostgresPipelineRuntimeObserver] | None = None,
 ) -> None:
     if not isinstance(message, Mapping):
         raise ValueError("SQS message must be a JSON object")  # noqa: TRY004
@@ -264,20 +289,44 @@ def _process_message(
             _log_input_status("started", input_uri=input_uri)
             try:
                 _download_sysmon_jsonl(s3_client, input_object, sysmon_jsonl_path)
-                try:
-                    run_id = run_standalone(sysmon_jsonl_path, input_dir / "output")
-                except ValueError as error:
-                    raise PermanentWorkerError(str(error)) from error
-                except (OperationalError, OSError) as error:
-                    raise RetryableWorkerError(str(error)) from error
-                if not run_id.strip():
-                    raise RetryableWorkerError("standalone First Cycle returned a blank run_id")
+                runtime_observer = _create_runtime_observer(runtime_observer_factory)
+                runtime_context = (
+                    runtime_observer if runtime_observer is not None else nullcontext(None)
+                )
+                with runtime_context as active_runtime_observer:
+                    execution: StandaloneExecution | None = None
+                    try:
+                        try:
+                            execution = run_standalone(
+                                sysmon_jsonl_path,
+                                input_dir / "output",
+                                active_runtime_observer,
+                            )
+                        except ValueError as error:
+                            raise PermanentWorkerError(str(error)) from error
+                        except (OperationalError, OSError) as error:
+                            raise RetryableWorkerError(str(error)) from error
+                        run_id = execution.summary.run_id
+                        if not run_id.strip():
+                            raise RetryableWorkerError(
+                                "standalone First Cycle returned a blank run_id"
+                            )
+                        if receipt_store is not None:
+                            receipt_store.save_success(input_object, run_id=run_id)
+                    except Exception:
+                        if execution is not None:
+                            # A commit exception can have an indeterminate server outcome.  This
+                            # marks telemetry as not-confirmed; the existing retry/receipt lookup
+                            # policy, rather than this status, resolves any later redelivery.
+                            execution.fail_runtime()
+                        raise
+                    else:
+                        if receipt_store is not None:
+                            execution.complete_runtime()
             except Exception:
                 _log_input_status("failed", input_uri=input_uri)
                 raise
             else:
-                if receipt_store is not None:
-                    receipt_store.save_success(input_object, run_id=run_id)
                 _log_input_status("succeeded", input_uri=input_uri, run_id=run_id)
 
 
@@ -351,6 +400,18 @@ def _log_input_status(status: str, *, input_uri: str, run_id: str | None = None)
 def _rollback_receipt_store(receipt_store: SuccessfulReceiptStore | None) -> None:
     if receipt_store is not None:
         receipt_store.rollback()
+
+
+def _create_runtime_observer(
+    factory: Callable[[], PostgresPipelineRuntimeObserver] | None,
+) -> PostgresPipelineRuntimeObserver | None:
+    if factory is None:
+        return None
+    try:
+        return factory()
+    except Exception:
+        _LOGGER.exception("Pipeline Runtime observer creation failed; continuing without telemetry")
+        return None
 
 
 def _message_string(message: Mapping[str, object], name: str) -> str:

@@ -22,6 +22,7 @@ DASHBOARD_CONTRACT_FUNCTIONS = (
     "getRunTypeLabel",
     "resolveOverviewQueryState",
     "resolveRunListQueryState",
+    "resolveRuntimeSummaryQueryState",
 )
 DASHBOARD_SCRIPT_CONTRACT_FUNCTIONS = (
     "displayValue",
@@ -29,6 +30,11 @@ DASHBOARD_SCRIPT_CONTRACT_FUNCTIONS = (
     "getRunTypeLabel",
     "resolveOverviewQueryState",
     "resolveRunListQueryState",
+    "resolveRuntimeSummaryQueryState",
+)
+OPERATIONS_SCRIPT_CONTRACT_FUNCTIONS = (
+    "getRuntimeStatePresentation",
+    "getStageLabel",
 )
 
 
@@ -80,17 +86,24 @@ def test_dashboard_view_serves_html_shell_without_database_access(
     assert "Detection Hub" in html
     assert "운영 View" in html
     assert "침해사고 인지 시스템 실행 및 사건 조회" in html
-    for section in ("Overview", "Total Runs", "Recent Runs", "Runs"):
+    for section in ("Overview", "Total Runs", "Recent Runs", "Pipeline Runtime Summary", "Runs"):
         assert section in html
     for status_id in (
         "total-runs-value",
         "overview-status",
         "recent-runs-status",
         "recent-runs-list",
+        "runtime-summary-status",
+        "runtime-summary-list",
         "runs-status",
         "runs-list",
     ):
         assert f'id="{status_id}"' in html
+    assert (
+        "페이지를 열 때 한 번 조회하며, 최근 보고된 Runtime 항목을 API 순서대로 "
+        "최대 5건 표시합니다."
+    ) in html
+    assert '<a class="dashboard-section-link" href="/operations">Operations 보기</a>' in html
     assert "Run 목록은 다음 단계에서 표시됩니다." not in html
     assert database_connection_attempts == []
 
@@ -153,7 +166,7 @@ def test_dashboard_run_cards_link_to_encoded_run_detail_view_paths() -> None:
     assert "`/dashboard/runs/${run.run_id}`" not in script
 
 
-def test_dashboard_script_fetches_overview_and_runs_once_without_polling() -> None:
+def test_dashboard_script_fetches_three_independent_apis_once_without_polling() -> None:
     # Given
     client = TestClient(create_app())
 
@@ -164,16 +177,32 @@ def test_dashboard_script_fetches_overview_and_runs_once_without_polling() -> No
     assert 'document.getElementById("dashboard-view")' in script
     assert 'const OVERVIEW_ENDPOINT = "/overview";' in script
     assert 'const RUNS_ENDPOINT = "/runs";' in script
+    assert 'const RUNTIME_ENDPOINT = "/operations/runtime?limit=5";' in script
+    assert "const RUNTIME_REQUEST_TIMEOUT_MS = 10000;" in script
     assert "fetch(OVERVIEW_ENDPOINT" in script
     assert "fetch(RUNS_ENDPOINT" in script
-    assert script.count('Accept: "application/json"') == 2
-    assert script.count('cache: "no-store"') == 2
+    assert "fetch(RUNTIME_ENDPOINT" in script
+    assert script.count('Accept: "application/json"') == 3
+    assert script.count('cache: "no-store"') == 3
     assert script.count("void loadOverview();") == 1
     assert script.count("void loadRuns();") == 1
+    assert script.count("void loadRuntimeSummary();") == 1
     assert 'document.getElementById("runs-status")' in script
     assert 'document.getElementById("runs-list")' in script
-    for polling_api in ("setInterval(", "setTimeout(", "AbortController"):
-        assert polling_api not in script
+    assert 'document.getElementById("runtime-summary-status")' in script
+    assert 'document.getElementById("runtime-summary-list")' in script
+    assert "setInterval(" not in script
+    assert script.count("setTimeout(") == 1
+    assert "setTimeout(() => controller.abort(), RUNTIME_REQUEST_TIMEOUT_MS)" in script
+    assert "clearTimeout(timeoutId);" in script
+    assert "signal: controller.signal" in script
+    for repeated_request in (
+        "setTimeout(loadRuntimeSummary",
+        "setTimeout(fetchRuntimeSummary",
+        "setInterval(loadRuntimeSummary",
+        "setInterval(fetchRuntimeSummary",
+    ):
+        assert repeated_request not in script
 
 
 def test_dashboard_view_uses_shared_shell_and_responsive_layout() -> None:
@@ -198,6 +227,8 @@ def test_dashboard_view_uses_shared_shell_and_responsive_layout() -> None:
     assert "@media (max-width: 30rem)" in shell
     assert "@media (max-width: 40rem)" in stylesheet
     assert "overflow-wrap: anywhere" in stylesheet
+    assert ".runtime-summary-card__header" in stylesheet
+    assert "word-break: break-word" in stylesheet
     assert "width: min(100%, var(--shell-page-width))" in shell
 
 
@@ -210,6 +241,9 @@ def test_dashboard_script_uses_contract_and_safe_dom_rendering() -> None:
 
     # Then
     for contract_function in DASHBOARD_SCRIPT_CONTRACT_FUNCTIONS:
+        assert f"{contract_function}," in script
+        assert f"function {contract_function}(" not in script
+    for contract_function in OPERATIONS_SCRIPT_CONTRACT_FUNCTIONS:
         assert f"{contract_function}," in script
         assert f"function {contract_function}(" not in script
     for safe_api in (
@@ -235,9 +269,16 @@ def test_dashboard_script_uses_contract_and_safe_dom_rendering() -> None:
     assert 'createRunField("Start"' in script
     assert 'createRunField("End"' in script
     assert 'document.createElement("a")' in script
+    assert 'createRuntimeSummaryField("현재 단계"' in script
+    assert 'createRuntimeSummaryField("마지막 갱신"' in script
+    assert 'createRuntimeSummaryField("Telemetry"' in script
+    assert 'createRuntimeSummaryField("현재 실행 여부"' in script
+    assert "getRuntimeStatePresentation(runtime, telemetryAvailable)" in script
+    assert "getStageLabel(runtime.current_stage)" in script
+    assert "formatRunTimestamp(runtime.updated_at)" in script
 
 
-def test_dashboard_script_keeps_overview_and_runs_state_independent() -> None:
+def test_dashboard_script_keeps_overview_runs_and_runtime_state_independent() -> None:
     # Given
     client = TestClient(create_app())
 
@@ -247,12 +288,77 @@ def test_dashboard_script_keeps_overview_and_runs_state_independent() -> None:
     # Then
     assert "async function loadOverview()" in script
     assert "async function loadRuns()" in script
+    assert "async function loadRuntimeSummary()" in script
     assert "renderOverviewState(state);" in script
     assert "renderRunListState(state);" in script
+    assert "renderRuntimeSummaryState(state);" in script
     assert "overviewStatus.textContent = state.totalMessage;" in script
     assert "recentRunsStatus.textContent = state.message;" in script
     assert "runsStatus.textContent = state.message;" in script
-    assert script.count("catch {") == 2
+    assert "runtimeSummaryStatus.textContent = state.message;" in script
+    assert script.count("catch {") == 3
+
+
+def test_dashboard_runtime_summary_preserves_order_and_operations_state_meaning() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/dashboard.js").text
+    contract = client.get("/dashboard-assets/dashboard-contract.mjs").text
+
+    # Then
+    assert '} from "./operations-contract.mjs";' in script
+    assert '} from "./operations-contract.mjs";' in contract
+    assert "state.items.map(" in script
+    assert "createRuntimeSummaryCard(runtime, state.telemetryAvailable)" in script
+    assert "status-badge--${modifier}" in script
+    assert "runtime-summary-card--${modifier}" in script
+    assert "presentation.telemetryLabel" in script
+    assert "presentation.livenessLabel" in script
+    assert "현재 실행 중" not in script
+    assert "setInterval(" not in script
+    assert script.count("setTimeout(") == 1
+    assert "setTimeout(() => controller.abort(), RUNTIME_REQUEST_TIMEOUT_MS)" in script
+    assert "clearTimeout(timeoutId);" in script
+
+
+def test_dashboard_runtime_summary_requires_api_presentation_fields() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    contract = client.get("/dashboard-assets/dashboard-contract.mjs").text
+
+    # Then
+    assert (
+        'const PIPELINE_RUNTIME_STATUSES = new Set(["running", "completed", "failed"]);' in contract
+    )
+    assert "const PIPELINE_RUNTIME_STAGES = new Set([" in contract
+    assert '!Object.hasOwn(runtime, "current_stage")' in contract
+    assert "runtime.current_stage !== null" in contract
+    assert "!PIPELINE_RUNTIME_STAGES.has(runtime.current_stage)" in contract
+    assert 'typeof runtime.updated_at !== "string"' in contract
+    assert 'typeof runtime.is_stale !== "boolean"' in contract
+
+
+def test_dashboard_runtime_summary_links_only_completed_runs_to_run_detail() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    script = client.get("/dashboard-assets/dashboard.js").text
+    card_source = script.split("function createRuntimeSummaryCard", maxsplit=1)[1].split(
+        "function renderOverviewState",
+        maxsplit=1,
+    )[0]
+
+    # Then
+    assert 'if (runtime.status === "completed" && runtime.run_id.trim()) {' in card_source
+    assert "link.href = buildRunDetailViewPath(runtime.run_id);" in card_source
+    assert "heading.textContent = runtime.run_id;" in card_source
+    assert card_source.count("buildRunDetailViewPath") == 1
+    assert "if (runtime.run_id.trim()) {" not in card_source
 
 
 def test_dashboard_contract_has_no_dom_network_or_timer_access() -> None:
@@ -339,7 +445,7 @@ def test_api_docs_keep_json_apis_and_hide_dashboard_views() -> None:
     # Then
     assert openapi_response.status_code == 200
     paths = set(openapi_response.json()["paths"])
-    assert {"/overview", "/runs"} <= paths
+    assert {"/overview", "/runs", "/operations/runtime"} <= paths
     assert "/dashboard" not in paths
     assert "/operations" not in paths
     assert not any(path.startswith("/dashboard-assets") for path in paths)

@@ -1,6 +1,7 @@
 // Dashboard UI contract tests use Node's built-in test runner only.
 // Run with: node --test tests/dashboard/ui/test_dashboard_contract.mjs
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -10,7 +11,11 @@ import {
     getRunTypeLabel,
     resolveOverviewQueryState,
     resolveRunListQueryState,
+    resolveRuntimeSummaryQueryState,
 } from "../../../src/incident_awareness/dashboard/ui/assets/dashboard-contract.mjs";
+import {
+    getRuntimeStatePresentation,
+} from "../../../src/incident_awareness/dashboard/ui/assets/operations-contract.mjs";
 
 test("Run Type presentation maps the persisted vocabulary with a safe fallback", () => {
     // Given
@@ -322,4 +327,313 @@ test("Run List query state rejects malformed results and payloads", () => {
             TypeError,
         );
     }
+});
+
+test("Runtime Summary loading is independent and exposes no inferred Runtime data", () => {
+    // Given
+    const previousState = null;
+
+    // When
+    const state = resolveRuntimeSummaryQueryState(previousState, { kind: "loading" });
+
+    // Then
+    assert.deepEqual(state, {
+        queryState: "loading",
+        items: [],
+        telemetryAvailable: false,
+        message: "Runtime 정보를 불러오는 중입니다.",
+    });
+});
+
+test("Runtime Summary success preserves API order and empty state", () => {
+    // Given
+    const loading = resolveRuntimeSummaryQueryState(null, { kind: "loading" });
+    const payload = {
+        items: [
+            {
+                run_id: "RUN-2",
+                status: "completed",
+                current_stage: null,
+                updated_at: "2026-10-09T00:02:00.000Z",
+                is_stale: false,
+            },
+            {
+                run_id: "RUN-1",
+                status: "running",
+                current_stage: "fusion",
+                updated_at: "2026-10-09T00:01:00.000Z",
+                is_stale: true,
+            },
+        ],
+    };
+    const payloadSnapshot = structuredClone(payload);
+
+    // When
+    const success = resolveRuntimeSummaryQueryState(loading, { kind: "success", payload });
+    const empty = resolveRuntimeSummaryQueryState(success, {
+        kind: "success",
+        payload: { items: [] },
+    });
+
+    // Then
+    assert.equal(success.queryState, "success");
+    assert.strictEqual(success.items, payload.items);
+    assert.deepEqual(success.items.map((runtime) => runtime.run_id), ["RUN-2", "RUN-1"]);
+    assert.equal(success.telemetryAvailable, true);
+    assert.equal(success.message, "Runtime 2건을 불러왔습니다.");
+    assert.deepEqual(empty, {
+        queryState: "empty",
+        items: [],
+        telemetryAvailable: true,
+        message: "표시할 Runtime 정보가 없습니다.",
+    });
+    assert.deepEqual(payload, payloadSnapshot);
+});
+
+test("Runtime Summary accepts null current_stage for terminal states", () => {
+    // Given
+    const payload = {
+        items: [
+            {
+                run_id: "RUN-COMPLETED",
+                status: "completed",
+                current_stage: null,
+                updated_at: "2026-10-09T00:02:00.000Z",
+                is_stale: false,
+            },
+            {
+                run_id: "RUN-FAILED",
+                status: "failed",
+                current_stage: null,
+                updated_at: "2026-10-09T00:03:00.000Z",
+                is_stale: false,
+            },
+        ],
+    };
+
+    // When
+    const state = resolveRuntimeSummaryQueryState(null, { kind: "success", payload });
+
+    // Then
+    assert.equal(state.queryState, "success");
+    assert.deepEqual(state.items.map((runtime) => runtime.current_stage), [null, null]);
+});
+
+test("Runtime Summary stale Running success preserves the Operations display contract", () => {
+    // Given
+    const staleRunning = {
+        run_id: "RUN-1",
+        status: "running",
+        current_stage: "fusion",
+        updated_at: "2026-10-09T00:01:00.000Z",
+        is_stale: true,
+    };
+
+    // When
+    const state = resolveRuntimeSummaryQueryState(null, {
+        kind: "success",
+        payload: { items: [staleRunning] },
+    });
+    const presentation = getRuntimeStatePresentation(
+        state.items[0],
+        state.telemetryAvailable,
+    );
+
+    // Then
+    assert.equal(state.queryState, "success");
+    assert.equal(state.telemetryAvailable, true);
+    assert.deepEqual(presentation, {
+        modifiers: ["running", "stale"],
+        statusLabel: "실행 중(마지막 보고)",
+        telemetryLabel: "오래됨",
+        livenessLabel: "확인 불가",
+    });
+    assert.doesNotMatch(JSON.stringify(presentation), /현재 실행 중/);
+});
+
+test("Runtime Summary error retains only its own last data without claiming liveness", () => {
+    // Given
+    const staleRunning = {
+        run_id: "RUN-1",
+        status: "running",
+        current_stage: "fusion",
+        updated_at: "2026-10-09T00:01:00.000Z",
+        is_stale: true,
+    };
+    const success = resolveRuntimeSummaryQueryState(null, {
+        kind: "success",
+        payload: { items: [staleRunning] },
+    });
+
+    // When
+    const failedQuery = resolveRuntimeSummaryQueryState(success, { kind: "error" });
+    const presentation = getRuntimeStatePresentation(
+        failedQuery.items[0],
+        failedQuery.telemetryAvailable,
+    );
+
+    // Then
+    assert.equal(failedQuery.queryState, "error");
+    assert.strictEqual(failedQuery.items, success.items);
+    assert.equal(failedQuery.message, "Runtime 정보를 불러오지 못했습니다.");
+    assert.equal(failedQuery.telemetryAvailable, false);
+    assert.equal(presentation.statusLabel, "실행 중(마지막 보고)");
+    assert.equal(presentation.telemetryLabel, "확인 불가 (조회 실패)");
+    assert.equal(presentation.livenessLabel, "확인 불가");
+    assert.doesNotMatch(JSON.stringify(presentation), /현재 실행 중/);
+});
+
+test("Runtime Summary state rejects malformed results and payloads", () => {
+    // Given
+    const loading = resolveRuntimeSummaryQueryState(null, { kind: "loading" });
+    const validRuntime = {
+        run_id: "RUN-1",
+        status: "running",
+        current_stage: "fusion",
+        updated_at: "2026-10-09T00:01:00.000Z",
+        is_stale: false,
+    };
+    const invalidCalls = [
+        () => resolveRuntimeSummaryQueryState([], { kind: "error" }),
+        () => resolveRuntimeSummaryQueryState({}, { kind: "error" }),
+        () => resolveRuntimeSummaryQueryState(loading, null),
+        () => resolveRuntimeSummaryQueryState(loading, { kind: "success", payload: null }),
+        () => resolveRuntimeSummaryQueryState(loading, {
+            kind: "success",
+            payload: { items: null },
+        }),
+        () => resolveRuntimeSummaryQueryState(loading, {
+            kind: "success",
+            payload: { items: [null] },
+        }),
+        () => resolveRuntimeSummaryQueryState(loading, {
+            kind: "success",
+            payload: {
+                items: [{
+                    run_id: "RUN-1",
+                    status: "running",
+                    current_stage: "fusion",
+                    updated_at: "2026-10-09T00:01:00.000Z",
+                }],
+            },
+        }),
+        () => resolveRuntimeSummaryQueryState(loading, {
+            kind: "success",
+            payload: { items: [{ ...validRuntime, is_stale: null }] },
+        }),
+        () => resolveRuntimeSummaryQueryState(loading, {
+            kind: "success",
+            payload: { items: [{ ...validRuntime, is_stale: "false" }] },
+        }),
+        () => resolveRuntimeSummaryQueryState(loading, {
+            kind: "success",
+            payload: { items: [{ ...validRuntime, run_id: null }] },
+        }),
+        () => resolveRuntimeSummaryQueryState(loading, {
+            kind: "success",
+            payload: { items: [{ ...validRuntime, status: null }] },
+        }),
+        () => resolveRuntimeSummaryQueryState(loading, {
+            kind: "success",
+            payload: { items: [{ ...validRuntime, status: "queued" }] },
+        }),
+        () => resolveRuntimeSummaryQueryState(loading, {
+            kind: "success",
+            payload: {
+                items: [{
+                    run_id: "RUN-1",
+                    status: "running",
+                    updated_at: "2026-10-09T00:01:00.000Z",
+                    is_stale: false,
+                }],
+            },
+        }),
+        () => resolveRuntimeSummaryQueryState(loading, {
+            kind: "success",
+            payload: { items: [{ ...validRuntime, current_stage: 1 }] },
+        }),
+        () => resolveRuntimeSummaryQueryState(loading, {
+            kind: "success",
+            payload: {
+                items: [{
+                    run_id: "RUN-1",
+                    status: "running",
+                    current_stage: "fusion",
+                    is_stale: false,
+                }],
+            },
+        }),
+        () => resolveRuntimeSummaryQueryState(loading, {
+            kind: "success",
+            payload: { items: [{ ...validRuntime, updated_at: null }] },
+        }),
+        () => resolveRuntimeSummaryQueryState(loading, { kind: "refreshing" }),
+    ];
+
+    // When / Then
+    for (const invalidCall of invalidCalls) {
+        assert.throws(invalidCall);
+    }
+});
+
+test("Dashboard connects Runtime Summary through the existing Operations contract", async () => {
+    // Given
+    const scriptPath = new URL(
+        "../../../src/incident_awareness/dashboard/ui/assets/dashboard.js",
+        import.meta.url,
+    );
+
+    // When
+    const script = await readFile(scriptPath, "utf8");
+
+    // Then
+    assert.match(script, /const RUNTIME_ENDPOINT = "\/operations\/runtime\?limit=5";/);
+    assert.match(script, /const RUNTIME_REQUEST_TIMEOUT_MS = 10000;/);
+    assert.match(script, /fetch\(RUNTIME_ENDPOINT/);
+    assert.match(script, /const controller = new AbortController\(\);/);
+    assert.match(
+        script,
+        /setTimeout\(\(\) => controller\.abort\(\), RUNTIME_REQUEST_TIMEOUT_MS\)/,
+    );
+    assert.match(script, /signal: controller\.signal/);
+    assert.match(script, /clearTimeout\(timeoutId\);/);
+    assert.match(script, /return await response\.json\(\);/);
+    assert.match(script, /resolveRuntimeSummaryQueryState\(state, \{ kind: "success", payload \}\)/);
+    assert.match(script, /resolveRuntimeSummaryQueryState\(state, \{ kind: "error" \}\)/);
+    assert.match(script, /getRuntimeStatePresentation\(runtime, telemetryAvailable\)/);
+    assert.match(script, /getStageLabel\(runtime\.current_stage\)/);
+    assert.match(script, /formatRunTimestamp\(runtime\.updated_at\)/);
+    assert.match(script, /presentation\.telemetryLabel/);
+    assert.match(script, /presentation\.livenessLabel/);
+    assert.equal(script.match(/void loadRuntimeSummary\(\);/g)?.length, 1);
+    assert.equal(script.match(/setTimeout\(/g)?.length, 1);
+    assert.doesNotMatch(
+        script,
+        /현재 실행 중|setInterval\(|setTimeout\((?:load|fetch)RuntimeSummary/,
+    );
+});
+
+test("Dashboard links only completed Runtime items to Run Detail", async () => {
+    // Given
+    const scriptPath = new URL(
+        "../../../src/incident_awareness/dashboard/ui/assets/dashboard.js",
+        import.meta.url,
+    );
+
+    // When
+    const script = await readFile(scriptPath, "utf8");
+    const cardSource = script.slice(
+        script.indexOf("function createRuntimeSummaryCard"),
+        script.indexOf("function renderOverviewState"),
+    );
+
+    // Then
+    assert.match(
+        cardSource,
+        /if \(runtime\.status === "completed" && runtime\.run_id\.trim\(\)\) \{/,
+    );
+    assert.match(cardSource, /link\.href = buildRunDetailViewPath\(runtime\.run_id\);/);
+    assert.match(cardSource, /else \{\s+heading\.textContent = runtime\.run_id;/);
+    assert.equal(cardSource.match(/buildRunDetailViewPath/g)?.length, 1);
+    assert.doesNotMatch(cardSource, /if \(runtime\.run_id\.trim\(\)\) \{/);
 });
