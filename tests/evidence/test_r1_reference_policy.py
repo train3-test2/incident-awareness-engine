@@ -28,7 +28,7 @@ from incident_awareness.pipeline.r1_artifacts import (
 
 _POLICY_ID = "r1-wmi-a01-reference"
 _POLICY_VERSION = "wmi-ref-v0.1"
-_ACTUAL_POLICY_HASH = "c381fe4aa8e6445dcb9e88fac4307a042c6e438e022a8400d7475ab3a32e9e67"
+_ACTUAL_POLICY_HASH = "47bb9b8f8121c88ad9d12f6a1585aa3ec7ea6eb636ea71b4dca5a321f09fc0d7"
 _REFERENCE_TIME = datetime(2026, 10, 10, 1, 0, 1, tzinfo=UTC)
 _REFERENCE_GUID = "{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}"
 _CONTEXT_GUID = "{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}"
@@ -52,7 +52,8 @@ def _policy_payload(**overrides: object) -> dict[str, object]:
         "version": _POLICY_VERSION,
         "family_id": "wmi_management",
         "reference_action_id": "A01",
-        "action_type": "Win32_Process.Create",
+        "action_type": "wmi_process_create",
+        "invocation_method": "Win32_Process.Create",
         "success_return_value": 0,
         "require_process_id": True,
         "reference_source": "sysmon",
@@ -153,7 +154,8 @@ def _context_event(
 def _action_result(
     *,
     action_id: str = "A01",
-    action_type: str = "Win32_Process.Create",
+    action_type: str = "wmi_process_create",
+    invocation_method: str = "Win32_Process.Create",
     invoked_at_utc: datetime = _REFERENCE_TIME - timedelta(milliseconds=1),
     return_value: int = 0,
     process_id: int | None = 4100,
@@ -161,6 +163,7 @@ def _action_result(
     return R1WmiActionResult(
         action_id=action_id,
         action_type=action_type,
+        invocation_method=invocation_method,
         invoked_at_utc=invoked_at_utc,
         return_value=return_value,
         process_id=process_id,
@@ -221,7 +224,8 @@ def test_semantically_identical_config_has_same_canonical_hash(tmp_path: Path) -
     reference_source: sysmon
     require_process_id: true
     success_return_value: 0
-    action_type: Win32_Process.Create
+    action_type: wmi_process_create
+    invocation_method: Win32_Process.Create
     reference_action_id: A01
     family_id: wmi_management
     version: wmi-ref-v0.1
@@ -544,6 +548,26 @@ def test_rejects_failed_or_processless_a01(action_result: R1WmiActionResult) -> 
 
     # Then
     assert action_result.action_id == "A01"
+
+
+@pytest.mark.parametrize(
+    ("action_result", "message"),
+    [
+        (_action_result(action_type="Win32_Process.Create"), "action_type"),
+        (_action_result(action_type="process_create"), "action_type"),
+        (_action_result(invocation_method="PowerShell.InvokeMethod"), "invocation_method"),
+    ],
+)
+def test_rejects_noncanonical_action_type_or_invocation_method(
+    action_result: R1WmiActionResult,
+    message: str,
+) -> None:
+    # Given
+    reference_event = _reference_event()
+
+    # When / Then
+    with pytest.raises(ValueError, match=message):
+        _resolve((reference_event,), action_result=action_result)
 
 
 def test_rejects_reference_event_before_candidate_window() -> None:

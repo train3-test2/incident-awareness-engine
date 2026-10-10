@@ -80,10 +80,13 @@ WMI A01 reference policy의 canonical config는
 | policy ID | `r1-wmi-a01-reference` |
 | version | `wmi-ref-v0.1` |
 | family ID | `wmi_management` |
+| canonical action type | `wmi_process_create` |
+| invocation method | `Win32_Process.Create` |
 | candidate window | A01 `invoked_at_utc` 기준 양끝 포함 ±2초 |
-| actual config hash | `c381fe4aa8e6445dcb9e88fac4307a042c6e438e022a8400d7475ab3a32e9e67` |
+| actual config hash | `47bb9b8f8121c88ad9d12f6a1585aa3ec7ea6eb636ea71b4dca5a321f09fc0d7` |
 
-Config hash는 선택된 policy object의 `policy_id`, `version`, `family_id`, A01 action·성공 조건,
+Config hash는 선택된 policy object의 `policy_id`, `version`, `family_id`, canonical
+`action_type=wmi_process_create`, `invocation_method=Win32_Process.Create`, A01 성공 조건,
 reference Event 조건, `candidate_window_sec=2`와 `expected_evaluation_horizon_sec`를 모두 포함한다. 이 object를 key 정렬,
 공백 없는 JSON separators와 ASCII escaping으로 canonical serialization하고 UTF-8 bytes의 SHA-256
 lowercase hex를 계산한다. YAML key 순서, 표현 형식과 comment는 hash에 포함되지 않는다.

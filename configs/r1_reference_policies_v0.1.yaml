@@ -4,7 +4,8 @@ policies:
     version: wmi-ref-v0.1
     family_id: wmi_management
     reference_action_id: A01
-    action_type: Win32_Process.Create
+    action_type: wmi_process_create
+    invocation_method: Win32_Process.Create
     success_return_value: 0
     require_process_id: true
     reference_source: sysmon

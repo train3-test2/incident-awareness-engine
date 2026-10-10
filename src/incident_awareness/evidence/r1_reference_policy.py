@@ -66,7 +66,8 @@ class _ReferencePolicyConfig(BaseModel):
     version: StrictStr
     family_id: StrictStr
     reference_action_id: StrictStr
-    action_type: Literal["Win32_Process.Create"]
+    action_type: Literal["wmi_process_create"]
+    invocation_method: Literal["Win32_Process.Create"]
     success_return_value: Literal[0]
     require_process_id: StrictBool
     reference_source: Literal["sysmon"]
@@ -117,6 +118,7 @@ class R1ReferencePolicy:
     config_hash: str
     reference_action_id: str
     action_type: str
+    invocation_method: str
     success_return_value: int
     require_process_id: bool
     reference_source: str
@@ -133,6 +135,7 @@ class R1WmiActionResult:
 
     action_id: str
     action_type: str
+    invocation_method: str
     invoked_at_utc: datetime
     return_value: int
     process_id: int | None
@@ -364,6 +367,8 @@ def _validate_action_result(
         raise ValueError("WMI action result does not match reference_action_id")
     if action_result.action_type != policy.action_type:
         raise ValueError("WMI action result does not match policy action_type")
+    if action_result.invocation_method != policy.invocation_method:
+        raise ValueError("WMI action result does not match policy invocation_method")
     if not isinstance(action_result.invoked_at_utc, datetime):
         raise TypeError("WMI A01 invocation time must be a datetime")
     if (

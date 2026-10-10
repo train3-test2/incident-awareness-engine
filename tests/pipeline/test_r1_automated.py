@@ -727,7 +727,8 @@ def test_wmi_collection_path_publishes_reference_provenance_artifact(
     output_directory = _output_directory(tmp_path, "wmi-collection")
     action_result = R1WmiActionResult(
         action_id="A01",
-        action_type="Win32_Process.Create",
+        action_type="wmi_process_create",
+        invocation_method="Win32_Process.Create",
         invoked_at_utc=_BASE_TIME + timedelta(milliseconds=500),
         return_value=0,
         process_id=4200,
@@ -777,7 +778,8 @@ def test_wmi_collection_reference_failure_publishes_no_artifact(tmp_path: Path) 
     output_directory = _output_directory(tmp_path, "wmi-reference-failure")
     failed_action_result = R1WmiActionResult(
         action_id="A01",
-        action_type="Win32_Process.Create",
+        action_type="wmi_process_create",
+        invocation_method="Win32_Process.Create",
         invoked_at_utc=_BASE_TIME + timedelta(milliseconds=500),
         return_value=1,
         process_id=4200,
