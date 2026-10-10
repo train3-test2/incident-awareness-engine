@@ -142,12 +142,14 @@ def _reference_event(
 
 def _context_event(
     *,
+    event_id: str = "evt-context",
+    process_guid: str = _CONTEXT_GUID,
     run_id: str = "RUN-20261010-001",
     host_id: str = "TARGET-A",
 ) -> NormalizedEvent:
     return _reference_event(
-        event_id="evt-context",
-        process_guid=_CONTEXT_GUID,
+        event_id=event_id,
+        process_guid=process_guid,
         process_name="WmiPrvSE.exe",
         pid=4000,
         parent_process_guid="{CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC}",
@@ -180,20 +182,28 @@ def _resolve(
     events: tuple[NormalizedEvent, ...],
     *,
     action_result: R1WmiActionResult | None = None,
+    a01_started_at_utc: datetime | None = None,
+    context_event: NormalizedEvent | None = None,
     action_attributed_event_ids: tuple[str, ...] = ("evt-reference",),
     lineage_process_guids: tuple[str, ...] = (_CONTEXT_GUID, _REFERENCE_GUID),
+    expected_run_id: str = "RUN-20261010-001",
+    target_host: str = "TARGET-A",
     family_id: str = "wmi_management",
     reference_policy_version: str = _POLICY_VERSION,
     evaluation_horizon_sec: int = 600,
 ):
     policy = load_r1_reference_policy(_POLICY_ID, _POLICY_VERSION)
+    selected_action_result = action_result or _action_result()
     return resolve_r1_wmi_reference(
-        (_context_event(), *events),
+        (context_event or _context_event(), *events),
         policy=policy,
+        expected_run_id=expected_run_id,
+        target_host=target_host,
         scenario_family_id=family_id,
         reference_policy_version=reference_policy_version,
         evaluation_horizon_sec=evaluation_horizon_sec,
-        action_result=action_result or _action_result(),
+        action_result=selected_action_result,
+        a01_started_at_utc=a01_started_at_utc or selected_action_result.invoked_at_utc,
         action_attributed_event_ids=action_attributed_event_ids,
         lineage_process_guids=lineage_process_guids,
     )
@@ -334,6 +344,7 @@ def test_selects_single_a01_attributed_lineage_event() -> None:
     assert selection.reference_action_id == "A01"
     assert selection.run_id == reference_event.run_id
     assert selection.entity_id == reference_event.host_id
+    assert selection.target_host == reference_event.host_id
     assert selection.reference_time == _REFERENCE_TIME
     assert selection.reference_source_event_id == "42001"
     assert selection.reference_event_id == "evt-reference"
@@ -364,6 +375,7 @@ def test_writes_and_loads_reference_policy_runtime_provenance(tmp_path: Path) ->
     assert provenance_path == tmp_path / R1_COLLECTION_PROVENANCE_FILENAME
     assert loaded == written
     assert payload["reference_policy_canonical_path"] == ("configs/r1_reference_policies_v0.1.yaml")
+    assert payload["selected_target_host"] == reference_event.host_id
     assert payload["reference_policy_id"] == _POLICY_ID
     assert payload["reference_policy_version"] == _POLICY_VERSION
     assert payload["reference_policy_config_hash"] == _ACTUAL_POLICY_HASH
@@ -451,6 +463,26 @@ def test_collection_provenance_loader_rejects_unknown_fields(tmp_path: Path) -> 
 
     # Then
     assert payload["unknown"] == "value"
+
+
+def test_collection_provenance_loader_requires_selected_target_host(tmp_path: Path) -> None:
+    # Given
+    selection = _resolve((_reference_event(),))
+    _, provenance_path = write_r1_collection_provenance(
+        selection,
+        run_id=selection.run_id,
+        output_directory=tmp_path,
+    )
+    payload = json.loads(provenance_path.read_text(encoding="utf-8"))
+    del payload["selected_target_host"]
+    provenance_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    # When
+    with pytest.raises(ValueError, match="does not match the writer contract"):
+        load_r1_collection_provenance(tmp_path)
+
+    # Then
+    assert "selected_target_host" not in payload
 
 
 @pytest.mark.parametrize(
@@ -554,6 +586,106 @@ def test_reference_requires_a01_pid_and_same_scope_wmi_parent(
         _resolve((reference_event,))
 
 
+@pytest.mark.parametrize(
+    ("expected_run_id", "target_host"),
+    [
+        ("RUN-20261010-002", "TARGET-A"),
+        ("RUN-20261010-001", "TARGET-B"),
+    ],
+)
+def test_reference_fails_closed_when_expected_identity_does_not_match(
+    expected_run_id: str,
+    target_host: str,
+) -> None:
+    # Given
+    reference_event = _reference_event()
+
+    # When
+    with pytest.raises(ValueError, match="candidate count must be exactly 1, found 0"):
+        _resolve(
+            (reference_event,),
+            expected_run_id=expected_run_id,
+            target_host=target_host,
+        )
+
+    # Then
+    assert reference_event.run_id == "RUN-20261010-001"
+    assert reference_event.host_id == "TARGET-A"
+
+
+@pytest.mark.parametrize(
+    ("other_run_id", "other_host_id"),
+    [
+        ("RUN-20261010-002", "TARGET-A"),
+        ("RUN-20261010-001", "TARGET-B"),
+    ],
+)
+def test_reference_rejects_candidate_and_context_outside_expected_scope(
+    other_run_id: str,
+    other_host_id: str,
+) -> None:
+    # Given
+    context = _context_event(run_id=other_run_id, host_id=other_host_id)
+    reference_event = _reference_event(run_id=other_run_id, host_id=other_host_id)
+
+    # When
+    with pytest.raises(ValueError, match="candidate count must be exactly 1, found 0"):
+        _resolve((reference_event,), context_event=context)
+
+    # Then
+    assert reference_event.run_id == context.run_id
+    assert reference_event.host_id == context.host_id
+
+
+def test_reference_rejects_context_on_another_host() -> None:
+    # Given
+    context = _context_event(host_id="TARGET-B")
+    reference_event = _reference_event()
+
+    # When
+    with pytest.raises(ValueError, match="candidate count must be exactly 1, found 0"):
+        _resolve((reference_event,), context_event=context)
+
+    # Then
+    assert reference_event.host_id != context.host_id
+
+
+def test_reference_selects_only_expected_host_pair_from_mixed_batch() -> None:
+    # Given
+    other_context_guid = "{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}"
+    other_reference_guid = "{EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE}"
+    target_reference = _reference_event()
+    other_context = _context_event(
+        event_id="evt-other-context",
+        process_guid=other_context_guid,
+        host_id="TARGET-B",
+    )
+    other_reference = _reference_event(
+        event_id="evt-other-reference",
+        process_guid=other_reference_guid,
+        parent_process_guid=other_context_guid,
+        host_id="TARGET-B",
+        source_event_id="42002",
+        source_record_id="42002",
+    )
+
+    # When
+    selection = _resolve(
+        (target_reference, other_context, other_reference),
+        action_attributed_event_ids=(target_reference.event_id, other_reference.event_id),
+        lineage_process_guids=(
+            _CONTEXT_GUID,
+            _REFERENCE_GUID,
+            other_context_guid,
+            other_reference_guid,
+        ),
+    )
+
+    # Then
+    assert selection.reference_event_id == target_reference.event_id
+    assert selection.target_host == "TARGET-A"
+
+
 @pytest.mark.parametrize("offset_seconds", [0, 2])
 def test_reference_candidate_window_includes_boundaries(offset_seconds: int) -> None:
     # Given
@@ -574,6 +706,23 @@ def test_reference_candidate_window_rejects_outside(offset_seconds: int) -> None
     # When / Then
     with pytest.raises(ValueError, match="candidate count must be exactly 1, found 0"):
         _resolve((event,), action_result=_action_result(invoked_at_utc=_REFERENCE_TIME))
+
+
+def test_reference_rejects_mismatched_action_and_execution_anchor_times() -> None:
+    # Given
+    reference_event = _reference_event()
+    action_result = _action_result(invoked_at_utc=_REFERENCE_TIME)
+
+    # When
+    with pytest.raises(ValueError, match="must match the A01 execution record start time"):
+        _resolve(
+            (reference_event,),
+            action_result=action_result,
+            a01_started_at_utc=_REFERENCE_TIME + timedelta(milliseconds=1),
+        )
+
+    # Then
+    assert action_result.invoked_at_utc == _REFERENCE_TIME
 
 
 def test_candidate_cardinality_is_evaluated_after_time_filtering() -> None:

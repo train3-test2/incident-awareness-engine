@@ -741,6 +741,7 @@ def test_wmi_collection_path_publishes_reference_provenance_artifact(
     result = run_and_write_r1_wmi_collection_artifacts(
         events,
         run_id=_RUN_ID,
+        target_host=_HOST_ID,
         output_directory=output_directory,
         selector_policy=_selector_policy(),
         approved_policy_id=_WMI_POLICY_ID,
@@ -751,6 +752,7 @@ def test_wmi_collection_path_publishes_reference_provenance_artifact(
         reference_policy_version=_WMI_REFERENCE_POLICY_VERSION,
         evaluation_horizon_sec=600,
         action_result=action_result,
+        a01_started_at_utc=action_result.invoked_at_utc,
         action_attributed_event_ids=("evt-wmi-reference",),
         lineage_process_guids=(_ANCHOR_GUID, _MIDDLE_GUID, _TERMINAL_GUID),
         scenario_identifier="scenarios/R1/wmi-v01.json",
@@ -768,6 +770,8 @@ def test_wmi_collection_path_publishes_reference_provenance_artifact(
     assert result.collection_provenance_path.is_file()
     assert loaded_provenance == result.collection_provenance
     assert loaded_provenance.run_id == _RUN_ID
+    assert loaded_provenance.selected_target_host == _HOST_ID
+    assert result.reference_selection.target_host == _HOST_ID
     assert loaded_provenance.reference_policy_id == _WMI_REFERENCE_POLICY_ID
     assert loaded_provenance.reference_policy_version == _WMI_REFERENCE_POLICY_VERSION
     assert loaded_provenance.horizon_matches is True
@@ -792,6 +796,7 @@ def test_wmi_collection_reference_failure_publishes_no_artifact(tmp_path: Path) 
         run_and_write_r1_wmi_collection_artifacts(
             events,
             run_id=_RUN_ID,
+            target_host=_HOST_ID,
             output_directory=output_directory,
             selector_policy=_selector_policy(),
             approved_policy_id=_WMI_POLICY_ID,
@@ -802,6 +807,51 @@ def test_wmi_collection_reference_failure_publishes_no_artifact(tmp_path: Path) 
             reference_policy_version=_WMI_REFERENCE_POLICY_VERSION,
             evaluation_horizon_sec=600,
             action_result=failed_action_result,
+            a01_started_at_utc=failed_action_result.invoked_at_utc,
+            action_attributed_event_ids=("evt-wmi-reference",),
+            lineage_process_guids=(_ANCHOR_GUID, _MIDDLE_GUID, _TERMINAL_GUID),
+            scenario_identifier="scenarios/R1/wmi-v01.json",
+            scenario_version="v1",
+            execution_commit="0123456789abcdef",
+            run_start=_BASE_TIME,
+        )
+
+    # Then
+    assert tuple(output_directory.iterdir()) == ()
+
+
+def test_wmi_collection_rejects_mismatched_execution_anchor_before_publication(
+    tmp_path: Path,
+) -> None:
+    # Given
+    events = _wmi_events()
+    output_directory = _output_directory(tmp_path, "wmi-anchor-mismatch")
+    action_result = R1WmiActionResult(
+        action_id="A01",
+        action_type="wmi_process_create",
+        invocation_method="Win32_Process.Create",
+        invoked_at_utc=_BASE_TIME + timedelta(milliseconds=500),
+        return_value=0,
+        process_id=4200,
+    )
+
+    # When
+    with pytest.raises(ValueError, match="must match the A01 execution record start time"):
+        run_and_write_r1_wmi_collection_artifacts(
+            events,
+            run_id=_RUN_ID,
+            target_host=_HOST_ID,
+            output_directory=output_directory,
+            selector_policy=_selector_policy(),
+            approved_policy_id=_WMI_POLICY_ID,
+            approved_policy_version=_WMI_POLICY_VERSION,
+            approved_policy_config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+            scenario_family_id="wmi_management",
+            reference_policy_id=_WMI_REFERENCE_POLICY_ID,
+            reference_policy_version=_WMI_REFERENCE_POLICY_VERSION,
+            evaluation_horizon_sec=600,
+            action_result=action_result,
+            a01_started_at_utc=action_result.invoked_at_utc + timedelta(milliseconds=1),
             action_attributed_event_ids=("evt-wmi-reference",),
             lineage_process_guids=(_ANCHOR_GUID, _MIDDLE_GUID, _TERMINAL_GUID),
             scenario_identifier="scenarios/R1/wmi-v01.json",

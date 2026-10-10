@@ -15,10 +15,12 @@ import hashlib
 import inspect
 import json
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from incident_awareness.collection.collector.sysmon_jsonl import SysmonJsonlRecord
 from incident_awareness.collection.r1_pilot_validation import (
     R1PilotValidationReport,
     R1ReportError,
@@ -27,6 +29,15 @@ from incident_awareness.collection.r1_pilot_validation import (
     load_r1_pilot_expectation,
     validate_r1_pilot_run,
     write_report,
+)
+from incident_awareness.evidence.r1_reference_policy import (
+    R1WmiActionResult,
+    load_r1_reference_policy,
+    resolve_r1_wmi_reference,
+)
+from incident_awareness.normalization.sysmon import (
+    SysmonNormalizationContext,
+    normalize_sysmon_process_create,
 )
 
 RUN_ID = "RUN-20300102-001"
@@ -66,12 +77,20 @@ STEPS = (
     ("connect", "network_connection", 480),
     ("session_end", "remote_session", 600),
 )
-WMI_ACTIONS = (
-    ("A01", "invoke", "wmi_process_create", 300),
-    ("A02", "observe", "process_observation", 301),
-    ("A03", "launch", "process_create", 302),
-    ("A04", "connect", "network_connection", 480),
-)
+WMI_ACTIONS = {
+    "normal": (
+        ("N01", "invoke", "wmi_process_create", 0),
+        ("N02", "launch", "process_create", 300),
+        ("N03", "connect", "network_connection", 480),
+        ("N04", "run_end", "run_end", 720),
+    ),
+    "attack": (
+        ("A01", "invoke", "wmi_process_create", 0),
+        ("A02", "launch", "process_create", 300),
+        ("A03", "connect", "network_connection", 480),
+        ("A04", "run_end", "run_end", 720),
+    ),
+}
 RECORDED_TIMES = (
     "2030-01-02T00:00:02.000Z",
     "2030-01-02T00:02:00.100Z",
@@ -189,23 +208,25 @@ def wmi_scenario() -> dict:
     rendered = scenario(
         family_id="wmi_management",
         attack_image="cmd.exe",
+        normal_image="wscript.exe",
         session_host_image="WmiPrvSE.exe",
         policy_version="wmi-ref-v0.1",
     )
-    rendered["runs"]["attack"]["actions"] = [
-        {
-            "action_id": action_id,
-            "step": step,
-            "action_type": action_type,
-            "offset_sec": offset_sec,
-            "description": "synthetic WMI action",
-        }
-        for action_id, step, action_type, offset_sec in WMI_ACTIONS
-    ]
+    for run_type in ("normal", "attack"):
+        rendered["runs"][run_type]["actions"] = [
+            {
+                "action_id": action_id,
+                "step": step,
+                "action_type": action_type,
+                "offset_sec": offset_sec,
+                "description": "synthetic WMI action",
+            }
+            for action_id, step, action_type, offset_sec in WMI_ACTIONS[run_type]
+        ]
     return rendered
 
 
-def wmi_recorded_rows() -> list[Row]:
+def wmi_recorded_rows(run_type: str) -> list[Row]:
     """확정된 WMI action 네 개의 synthetic execution record를 만든다."""
     return [
         (
@@ -214,7 +235,39 @@ def wmi_recorded_rows() -> list[Row]:
             f"2030-01-02T00:{offset_sec // 60:02d}:{offset_sec % 60:02d}.000Z",
             action_type,
         )
-        for action_id, _, action_type, offset_sec in WMI_ACTIONS
+        for action_id, _, action_type, offset_sec in WMI_ACTIONS[run_type]
+    ]
+
+
+def wmi_run_events(run_type: str, *, reference_utc_time: str) -> list[dict]:
+    """확정된 WMI lineage와 시각을 가진 synthetic Sysmon Event를 만든다."""
+    intermediate_image = "cmd.exe" if run_type == "attack" else "wscript.exe"
+    return [
+        process_event(
+            record_id=1,
+            guid=SESSION_GUID,
+            parent_guid=SERVICE_GUID,
+            image=SYSTEM32 + "WmiPrvSE.exe",
+            pid=4000,
+            utc_time="2030-01-01 23:59:59.900",
+        ),
+        process_event(
+            record_id=2,
+            guid=INTERMEDIATE_GUID,
+            parent_guid=SESSION_GUID,
+            image=SYSTEM32 + intermediate_image,
+            pid=4100,
+            utc_time=reference_utc_time,
+        ),
+        process_event(
+            record_id=3,
+            guid=FINAL_GUID,
+            parent_guid=INTERMEDIATE_GUID,
+            image=FINAL_IMAGE,
+            pid=4200,
+            utc_time="2030-01-02 00:05:00.250",
+        ),
+        connection_event(record_id=4, guid=FINAL_GUID),
     ]
 
 
@@ -224,6 +277,7 @@ def process_event(
     guid: str,
     parent_guid: str | None,
     image: str,
+    pid: int | None = None,
     host: str = TARGET_HOST,
     utc_time: str | None = None,
 ) -> dict:
@@ -239,6 +293,8 @@ def process_event(
         "ProcessGuid": guid,
         "Image": image,
     }
+    if pid is not None:
+        event_data["ProcessId"] = str(pid)
     if parent_guid is not None:
         event_data["ParentProcessGuid"] = parent_guid
 
@@ -507,15 +563,14 @@ def validate(run: tuple[Path, Path], *, rehearsal: bool = False) -> R1PilotValid
 
 def test_wmi_reference_uses_a01_attributed_intermediate_eid1(tmp_path: Path) -> None:
     # Given
-    reference_time = "2030-01-02T00:05:00.250Z"
-    events = run_events("normal")
-    events[0]["EventData"]["Image"] = SYSTEM32 + "WmiPrvSE.exe"
+    reference_time = "2030-01-02T00:00:00.250Z"
+    events = wmi_run_events("attack", reference_utc_time="2030-01-02 00:00:00.250")
     run = build_run(
         tmp_path,
         run_type="attack",
         scenario_body=wmi_scenario(),
         events=events,
-        rows=wmi_recorded_rows(),
+        rows=wmi_recorded_rows("attack"),
         metadata={
             "family_id": "wmi_management",
             "reference_time": reference_time,
@@ -531,22 +586,126 @@ def test_wmi_reference_uses_a01_attributed_intermediate_eid1(tmp_path: Path) -> 
     # Then
     assert report.ok, errors_of(report)
     assert any("A01-attributed intermediate" in check for check in report.checks)
+    assert report.lineage is not None
+    assert tuple(reversed(report.lineage.images)) == (
+        SYSTEM32 + "WmiPrvSE.exe",
+        SYSTEM32 + "cmd.exe",
+        FINAL_IMAGE,
+    )
+
+
+@pytest.mark.parametrize(
+    ("reference_utc_time", "reference_time"),
+    [
+        ("2030-01-02 00:00:00.000", "2030-01-02T00:00:00Z"),
+        ("2030-01-02 00:00:02.000", "2030-01-02T00:00:02Z"),
+    ],
+)
+def test_wmi_resolver_and_validator_share_the_execution_a01_anchor(
+    tmp_path: Path,
+    reference_utc_time: str,
+    reference_time: str,
+) -> None:
+    # Given
+    raw_events = wmi_run_events("attack", reference_utc_time=reference_utc_time)
+    normalization_context = SysmonNormalizationContext(
+        run_id=RUN_ID,
+        raw_log_id="RAW-R1-WMI",
+        segment_no=1,
+    )
+    normalized_events = tuple(
+        normalize_sysmon_process_create(
+            SysmonJsonlRecord(record_no=index, data=event),
+            context=normalization_context,
+        )
+        for index, event in enumerate(raw_events[:2], start=1)
+    )
+    a01_started_at_utc = datetime(2030, 1, 2, tzinfo=UTC)
+    action_result = R1WmiActionResult(
+        action_id="A01",
+        action_type="wmi_process_create",
+        invocation_method="Win32_Process.Create",
+        invoked_at_utc=a01_started_at_utc,
+        return_value=0,
+        process_id=4100,
+    )
+    policy = load_r1_reference_policy("r1-wmi-a01-reference", "wmi-ref-v0.1")
+    selection = resolve_r1_wmi_reference(
+        normalized_events,
+        policy=policy,
+        expected_run_id=RUN_ID,
+        target_host=TARGET_HOST,
+        scenario_family_id="wmi_management",
+        reference_policy_version="wmi-ref-v0.1",
+        evaluation_horizon_sec=600,
+        action_result=action_result,
+        a01_started_at_utc=a01_started_at_utc,
+        action_attributed_event_ids=(normalized_events[1].event_id,),
+        lineage_process_guids=(SESSION_GUID, INTERMEDIATE_GUID, FINAL_GUID),
+    )
+    run = build_run(
+        tmp_path,
+        run_type="attack",
+        scenario_body=wmi_scenario(),
+        events=raw_events,
+        rows=wmi_recorded_rows("attack"),
+        metadata={
+            "family_id": "wmi_management",
+            "reference_time": reference_time,
+            "reference_source_event_id": selection.reference_source_event_id,
+            "reference_policy_version": "wmi-ref-v0.1",
+            "end_time": "2030-01-02T00:16:00.000Z",
+        },
+    )
+
+    # When
+    report = validate(run)
+
+    # Then
+    assert selection.reference_time.isoformat().replace("+00:00", "Z") == reference_time
+    assert report.ok, errors_of(report)
+
+
+def test_wmi_normal_uses_four_steps_and_wscript_lineage(tmp_path: Path) -> None:
+    # Given
+    run = build_run(
+        tmp_path,
+        run_type="normal",
+        scenario_body=wmi_scenario(),
+        events=wmi_run_events("normal", reference_utc_time="2030-01-02 00:00:00.250"),
+        rows=wmi_recorded_rows("normal"),
+        metadata={
+            "family_id": "wmi_management",
+            "reference_policy_version": "wmi-ref-v0.1",
+            "end_time": "2030-01-02T00:16:00.000Z",
+        },
+    )
+
+    # When
+    report = validate(run)
+
+    # Then
+    assert report.ok, errors_of(report)
+    assert report.lineage is not None
+    assert tuple(reversed(report.lineage.images)) == (
+        SYSTEM32 + "WmiPrvSE.exe",
+        SYSTEM32 + "wscript.exe",
+        FINAL_IMAGE,
+    )
 
 
 def test_wmi_reference_before_a01_is_rejected(tmp_path: Path) -> None:
     # Given
-    events = run_events("normal")
-    events[0]["EventData"]["Image"] = SYSTEM32 + "WmiPrvSE.exe"
-    events[1]["EventData"]["UtcTime"] = "2030-01-02 00:04:59.999"
+    events = wmi_run_events("attack", reference_utc_time="2030-01-01 23:59:59.999")
     run = build_run(
         tmp_path,
         run_type="attack",
         scenario_body=wmi_scenario(),
         events=events,
-        rows=wmi_recorded_rows(),
+        rows=wmi_recorded_rows("attack"),
         metadata={
             "family_id": "wmi_management",
-            "reference_time": "2030-01-02T00:04:59.999Z",
+            "reference_time": "2030-01-01T23:59:59.999Z",
             "reference_source_event_id": "2",
             "reference_policy_version": "wmi-ref-v0.1",
             "end_time": "2030-01-02T00:16:00.000Z",
@@ -561,18 +720,61 @@ def test_wmi_reference_before_a01_is_rejected(tmp_path: Path) -> None:
     assert "earlier than the recorded start of A01" in errors_of(report)
 
 
+def test_wmi_reference_after_candidate_window_is_rejected(tmp_path: Path) -> None:
+    # Given
+    events = wmi_run_events("attack", reference_utc_time="2030-01-02 00:00:02.001")
+    run = build_run(
+        tmp_path,
+        run_type="attack",
+        scenario_body=wmi_scenario(),
+        events=events,
+        rows=wmi_recorded_rows("attack"),
+        metadata={
+            "family_id": "wmi_management",
+            "reference_time": "2030-01-02T00:00:02.001Z",
+            "reference_source_event_id": "2",
+            "reference_policy_version": "wmi-ref-v0.1",
+            "end_time": "2030-01-02T00:16:00.000Z",
+        },
+    )
+
+    # When
+    report = validate(run)
+
+    # Then
+    assert not report.ok
+    assert "later than the WMI A01 candidate window" in errors_of(report)
+
+
 def test_wmi_scenario_accepts_a01_reference_without_session_begin(tmp_path: Path) -> None:
     # Given
     scenario_path = tmp_path / "wmi-scenario.json"
     scenario_path.write_text(json.dumps(wmi_scenario()), encoding="utf-8")
 
     # When
-    expectation = load_r1_pilot_expectation(scenario_path, "attack")
+    attack = load_r1_pilot_expectation(scenario_path, "attack")
+    normal = load_r1_pilot_expectation(scenario_path, "normal")
 
     # Then
-    assert expectation.reference_action_id == "A01"
-    assert [action.action_id for action in expectation.actions] == ["A01", "A02", "A03", "A04"]
-    assert all(action.step != "session_begin" for action in expectation.actions)
+    assert attack.reference_action_id == "A01"
+    assert normal.reference_action_id is None
+    assert [
+        (action.action_id, action.action_type, action.offset_sec) for action in attack.actions
+    ] == [
+        ("A01", "wmi_process_create", 0),
+        ("A02", "process_create", 300),
+        ("A03", "network_connection", 480),
+        ("A04", "run_end", 720),
+    ]
+    assert [
+        (action.action_id, action.action_type, action.offset_sec) for action in normal.actions
+    ] == [
+        ("N01", "wmi_process_create", 0),
+        ("N02", "process_create", 300),
+        ("N03", "network_connection", 480),
+        ("N04", "run_end", 720),
+    ]
+    assert all(action.step != "session_begin" for action in (*attack.actions, *normal.actions))
 
 
 def test_wmi_scenario_rejects_reference_action_other_than_a01(tmp_path: Path) -> None:

@@ -150,6 +150,7 @@ class R1ReferenceSelection:
 
     run_id: str
     entity_id: str
+    target_host: str
     reference_action_id: str
     reference_time: datetime
     reference_source_event_id: str
@@ -206,10 +207,13 @@ def resolve_r1_wmi_reference(
     events: Iterable[NormalizedEvent],
     *,
     policy: R1ReferencePolicy,
+    expected_run_id: str,
+    target_host: str,
     scenario_family_id: str,
     reference_policy_version: str,
     evaluation_horizon_sec: int,
     action_result: R1WmiActionResult,
+    a01_started_at_utc: datetime,
     action_attributed_event_ids: Iterable[str],
     lineage_process_guids: Iterable[str],
 ) -> R1ReferenceSelection:
@@ -223,6 +227,9 @@ def resolve_r1_wmi_reference(
         evaluation_horizon_sec=evaluation_horizon_sec,
     )
     _validate_action_result(policy, action_result)
+    _validate_identity("expected_run_id", expected_run_id)
+    _validate_identity("target_host", target_host)
+    _validate_a01_anchor(action_result, a01_started_at_utc)
 
     event_batch = tuple(events)
     if any(not isinstance(event, NormalizedEvent) for event in event_batch):
@@ -240,14 +247,26 @@ def resolve_r1_wmi_reference(
         event
         for event in event_batch
         if event.event_id in attributed_event_ids
-        and _matches_reference_event(event, policy, lineage_guids, action_result)
-        and _has_wmi_context_parent(event, event_batch, policy, lineage_guids)
+        and _matches_reference_event(
+            event,
+            policy,
+            lineage_guids,
+            action_result,
+            expected_run_id,
+            target_host,
+        )
+        and _has_wmi_context_parent(
+            event,
+            event_batch,
+            policy,
+            lineage_guids,
+            expected_run_id,
+            target_host,
+        )
     )
     candidates: list[tuple[NormalizedEvent, str]] = []
-    window_start = action_result.invoked_at_utc + timedelta(
-        seconds=policy.candidate_start_offset_sec
-    )
-    window_end = action_result.invoked_at_utc + timedelta(seconds=policy.candidate_window_sec)
+    window_start = a01_started_at_utc + timedelta(seconds=policy.candidate_start_offset_sec)
+    window_end = a01_started_at_utc + timedelta(seconds=policy.candidate_window_sec)
     for event in structural_candidates:
         if event.timestamp_source != "event_time" or event.event_time is None:
             raise ValueError("R1 reference Event must carry parsed Sysmon EventData.UtcTime")
@@ -271,6 +290,7 @@ def resolve_r1_wmi_reference(
         policy_config_hash=policy.config_hash,
         run_id=selected.run_id,
         entity_id=selected.host_id,
+        target_host=selected.host_id,
         policy_config_path=policy.canonical_path,
         scenario_evaluation_horizon_sec=evaluation_horizon_sec,
         expected_evaluation_horizon_sec=policy.expected_evaluation_horizon_sec,
@@ -411,10 +431,14 @@ def _matches_reference_event(
     policy: R1ReferencePolicy,
     lineage_process_guids: frozenset[str],
     action_result: R1WmiActionResult,
+    expected_run_id: str,
+    target_host: str,
 ) -> bool:
     process = event.process
     return (
-        event.source == policy.reference_source
+        event.run_id == expected_run_id
+        and event.host_id == target_host
+        and event.source == policy.reference_source
         and event.source_layer == policy.reference_source_layer
         and event.event_type == policy.reference_event_type
         and process is not None
@@ -432,12 +456,18 @@ def _has_wmi_context_parent(
     events: tuple[NormalizedEvent, ...],
     policy: R1ReferencePolicy,
     lineage_process_guids: frozenset[str],
+    expected_run_id: str,
+    target_host: str,
 ) -> bool:
     process = candidate.process
     if process is None or process.parent_process_guid is None:
         return False
     return any(
-        context.run_id == candidate.run_id
+        candidate.run_id == expected_run_id
+        and candidate.host_id == target_host
+        and context.run_id == expected_run_id
+        and context.host_id == target_host
+        and context.run_id == candidate.run_id
         and context.host_id == candidate.host_id
         and context.source == policy.reference_source
         and context.source_layer == policy.reference_source_layer
@@ -458,6 +488,20 @@ def _validate_identity(field_name: str, value: str) -> None:
         raise ValueError(f"{field_name} must be a non-blank string")
     if value != value.strip():
         raise ValueError(f"{field_name} must not contain surrounding whitespace")
+
+
+def _validate_a01_anchor(
+    action_result: R1WmiActionResult,
+    a01_started_at_utc: datetime,
+) -> None:
+    if not isinstance(a01_started_at_utc, datetime):
+        raise TypeError("A01 execution record start time must be a datetime")
+    if a01_started_at_utc.tzinfo is None or a01_started_at_utc.utcoffset() is None:
+        raise ValueError("A01 execution record start time must include timezone information")
+    if a01_started_at_utc.utcoffset() != timedelta(0):
+        raise ValueError("A01 execution record start time must be UTC")
+    if action_result.invoked_at_utc != a01_started_at_utc:
+        raise ValueError("WMI invoked_at_utc must match the A01 execution record start time")
 
 
 def _validate_sysmon_record_id(event: NormalizedEvent) -> str:

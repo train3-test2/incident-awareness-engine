@@ -81,6 +81,7 @@ class R1CollectionProvenance(BaseModel):
 
     contract_version: Literal["v0.1"]
     run_id: StrictStr
+    selected_target_host: StrictStr
     scenario_identifier: StrictStr
     scenario_version: StrictStr
     reference_policy_canonical_path: StrictStr
@@ -101,6 +102,7 @@ class R1CollectionProvenance(BaseModel):
 
     @field_validator(
         "run_id",
+        "selected_target_host",
         "scenario_identifier",
         "scenario_version",
         "reference_policy_canonical_path",
@@ -403,9 +405,12 @@ def build_r1_collection_provenance(
     _validate_run_id(run_id)
     if selection.run_id != run_id:
         raise ValueError("reference selection run_id must match the requested run_id")
+    if selection.entity_id != selection.target_host:
+        raise ValueError("reference selection entity_id must match its target_host")
     return R1CollectionProvenance(
         contract_version=R1_COLLECTION_PROVENANCE_CONTRACT_VERSION,
         run_id=run_id,
+        selected_target_host=selection.target_host,
         scenario_identifier=scenario_identifier,
         scenario_version=scenario_version,
         reference_policy_canonical_path=selection.policy_config_path,
