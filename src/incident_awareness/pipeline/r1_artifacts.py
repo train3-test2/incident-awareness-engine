@@ -6,6 +6,7 @@ import os
 import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass, fields
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -75,6 +76,8 @@ class R1CollectionProvenance(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     run_id: StrictStr
+    scenario_identifier: StrictStr
+    scenario_version: StrictStr
     reference_policy_canonical_path: StrictStr
     reference_policy_id: StrictStr
     reference_policy_version: StrictStr
@@ -83,13 +86,27 @@ class R1CollectionProvenance(BaseModel):
     scenario_evaluation_horizon_sec: StrictInt = Field(gt=0)
     policy_expected_evaluation_horizon_sec: StrictInt = Field(gt=0)
     horizon_matches: StrictBool
+    reference_action_id: StrictStr
+    reference_time: datetime
+    reference_source_event_id: StrictStr
+    reference_event_id: StrictStr
+    action_process_id: StrictInt = Field(gt=0)
+    execution_commit: StrictStr
+    loader_version: StrictStr
 
     @field_validator(
         "run_id",
+        "scenario_identifier",
+        "scenario_version",
         "reference_policy_canonical_path",
         "reference_policy_id",
         "reference_policy_version",
         "reference_policy_config_hash",
+        "reference_action_id",
+        "reference_source_event_id",
+        "reference_event_id",
+        "execution_commit",
+        "loader_version",
     )
     @classmethod
     def validate_non_blank(cls, value: str) -> str:
@@ -217,10 +234,14 @@ def run_and_write_r1_evidence_artifacts(
     output_directory: Path,
     lineage_inputs: Iterable[R1LineageInput] = (),
     selector_provenance: R1SelectorProvenance | None = None,
+    collection_provenance: R1CollectionProvenance | None = None,
 ) -> R1EvidenceArtifactRun:
     """명시적 R1 입력을 추출하고 immutable JSONL/summary artifact로 게시한다."""
     _validate_run_id(run_id)
-    evidence_path, summary_path = _prepare_output_paths(output_directory)
+    evidence_path, summary_path = _prepare_output_paths(
+        output_directory,
+        include_collection_provenance=collection_provenance is not None,
+    )
     event_batch: tuple[NormalizedEvent, ...] | None = None
     lineage_input_batch: tuple[R1LineageInput, ...] | None = None
     lineage_provenance: tuple[R1LineageInputProvenance, ...] | None = None
@@ -286,12 +307,18 @@ def run_and_write_r1_evidence_artifacts(
         selector=validated_selector_provenance,
     )
     _validate_summary_contract(completed_summary)
-    _publish_files(
-        (
-            (evidence_path, evidence_content),
-            (summary_path, _serialize_summary(completed_summary)),
+    files = [
+        (evidence_path, evidence_content),
+        (summary_path, _serialize_summary(completed_summary)),
+    ]
+    if collection_provenance is not None:
+        files.append(
+            (
+                _collection_provenance_path(output_directory),
+                _serialize_collection_provenance(collection_provenance),
+            )
         )
-    )
+    _publish_files(tuple(files))
 
     return R1EvidenceArtifactRun(
         evidences=evidences,
@@ -333,6 +360,10 @@ def write_r1_collection_provenance(
     *,
     run_id: str,
     output_directory: Path,
+    scenario_identifier: str,
+    scenario_version: str,
+    execution_commit: str,
+    loader_version: str,
 ) -> tuple[R1CollectionProvenance, Path]:
     """검증된 reference 선택을 immutable Run provenance artifact로 게시한다."""
     if not isinstance(selection, R1ReferenceSelection):
@@ -341,8 +372,40 @@ def write_r1_collection_provenance(
     if selection.run_id != run_id:
         raise ValueError("reference selection run_id must match the requested run_id")
 
-    provenance = R1CollectionProvenance(
+    provenance = build_r1_collection_provenance(
+        selection,
         run_id=run_id,
+        scenario_identifier=scenario_identifier,
+        scenario_version=scenario_version,
+        execution_commit=execution_commit,
+        loader_version=loader_version,
+    )
+    provenance_path = _collection_provenance_path(output_directory)
+    if provenance_path.exists():
+        raise FileExistsError(f"R1 artifact files must not already exist: {provenance_path.name}")
+    _publish_files(((provenance_path, _serialize_collection_provenance(provenance)),))
+    return provenance, provenance_path
+
+
+def build_r1_collection_provenance(
+    selection: R1ReferenceSelection,
+    *,
+    run_id: str,
+    scenario_identifier: str,
+    scenario_version: str,
+    execution_commit: str,
+    loader_version: str,
+) -> R1CollectionProvenance:
+    """게시 전에 strict collection provenance를 완성한다."""
+    if not isinstance(selection, R1ReferenceSelection):
+        raise TypeError("selection must be an R1ReferenceSelection")
+    _validate_run_id(run_id)
+    if selection.run_id != run_id:
+        raise ValueError("reference selection run_id must match the requested run_id")
+    return R1CollectionProvenance(
+        run_id=run_id,
+        scenario_identifier=scenario_identifier,
+        scenario_version=scenario_version,
         reference_policy_canonical_path=selection.policy_config_path,
         reference_policy_id=selection.policy_id,
         reference_policy_version=selection.reference_policy_version,
@@ -355,27 +418,25 @@ def write_r1_collection_provenance(
         scenario_evaluation_horizon_sec=selection.scenario_evaluation_horizon_sec,
         policy_expected_evaluation_horizon_sec=selection.expected_evaluation_horizon_sec,
         horizon_matches=selection.horizon_matches,
+        reference_action_id=selection.reference_action_id,
+        reference_time=selection.reference_time,
+        reference_source_event_id=selection.reference_source_event_id,
+        reference_event_id=selection.reference_event_id,
+        action_process_id=selection.action_process_id,
+        execution_commit=execution_commit,
+        loader_version=loader_version,
     )
-    provenance_path = _collection_provenance_path(output_directory)
-    if provenance_path.exists():
-        raise FileExistsError(f"R1 artifact files must not already exist: {provenance_path.name}")
-    _publish_files(((provenance_path, _serialize_collection_provenance(provenance)),))
-    return provenance, provenance_path
 
 
 def load_r1_collection_provenance(output_directory: Path) -> R1CollectionProvenance:
     """Run 단위 reference policy provenance artifact를 strict validation으로 읽는다."""
     provenance_path = _collection_provenance_path(output_directory)
     try:
-        payload = json.loads(provenance_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError(
-            f"R1 collection provenance is not valid JSON: {provenance_path}"
-        ) from error
-
-    try:
-        return R1CollectionProvenance.model_validate(payload, strict=True)
-    except ValidationError as error:
+        return R1CollectionProvenance.model_validate_json(
+            provenance_path.read_bytes(),
+            strict=True,
+        )
+    except (OSError, ValidationError) as error:
         raise ValueError("R1 collection provenance does not match the writer contract") from error
 
 
@@ -386,9 +447,16 @@ def _validate_run_id(run_id: str) -> None:
     RunMetadata.validate_run_id(run_id)
 
 
-def _prepare_output_paths(output_directory: Path) -> tuple[Path, Path]:
+def _prepare_output_paths(
+    output_directory: Path,
+    *,
+    include_collection_provenance: bool = False,
+) -> tuple[Path, Path]:
     evidence_path, summary_path = _artifact_paths(output_directory)
-    existing_paths = [path for path in (evidence_path, summary_path) if path.exists()]
+    checked_paths = [evidence_path, summary_path]
+    if include_collection_provenance:
+        checked_paths.append(_collection_provenance_path(output_directory))
+    existing_paths = [path for path in checked_paths if path.exists()]
     if existing_paths:
         names = ", ".join(path.name for path in existing_paths)
         raise FileExistsError(f"R1 artifact files must not already exist: {names}")
@@ -825,6 +893,7 @@ __all__ = [
     "R1ExtractionSummary",
     "R1LineageInputProvenance",
     "R1SelectorProvenance",
+    "build_r1_collection_provenance",
     "load_r1_collection_provenance",
     "load_r1_evidence_artifacts",
     "load_r1_extraction_summary",

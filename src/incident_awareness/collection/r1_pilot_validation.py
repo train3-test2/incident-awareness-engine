@@ -998,24 +998,36 @@ def _check_reference(
     if metadata.reference_action_id != expectation.reference_action_id:
         return
 
-    session = report.lineage.nodes[-1]
-    described = f"the EID 1 of the session host of this run ({session.key.process_guid})"
+    reference_node = (
+        report.lineage.nodes[1]
+        if expectation.identity.family_id == "wmi_management"
+        else report.lineage.nodes[-1]
+    )
+    role = (
+        "A01-attributed intermediate"
+        if expectation.identity.family_id == "wmi_management"
+        else "session host"
+    )
+    described = f"the EID 1 of the {role} of this run ({reference_node.key.process_guid})"
     before = len(report.errors)
 
-    if session.record_id is None or metadata.reference_source_event_id != session.record_id:
+    if (
+        reference_node.record_id is None
+        or metadata.reference_source_event_id != reference_node.record_id
+    ):
         report.fail(
             f"run_metadata.json reference_source_event_id is "
             f"{metadata.reference_source_event_id!r}, but {described} is RecordId "
-            f"{session.record_id!r}"
+            f"{reference_node.record_id!r}"
         )
 
     try:
-        recorded = datetime.strptime(session.event_utc_time or "", EVENT_UTC_FORMAT).replace(
+        recorded = datetime.strptime(reference_node.event_utc_time or "", EVENT_UTC_FORMAT).replace(
             tzinfo=UTC
         )
     except ValueError:
         report.fail(
-            f"{described} carries no readable EventData.UtcTime ({session.event_utc_time!r}); "
+            f"{described} carries no readable EventData.UtcTime ({reference_node.event_utc_time!r}); "
             "TimeCreated is not used in its place"
         )
         return
@@ -1023,15 +1035,22 @@ def _check_reference(
     if reference_time != recorded:
         report.fail(
             f"run_metadata.json reference_time is {_stamp(reference_time)}, but the "
-            f"EventData.UtcTime of {described} is {session.event_utc_time}"
+            f"EventData.UtcTime of {described} is {reference_node.event_utc_time}"
         )
 
     if len(report.errors) == before:
-        report.passed(
-            f"the reference of the run is the EID 1 of its session host: RecordId "
-            f"{session.record_id}, ProcessGuid {session.key.process_guid}, EventData.UtcTime "
-            f"{session.event_utc_time}"
-        )
+        if expectation.identity.family_id == "wmi_management":
+            report.passed(
+                f"the reference of the run is {described}: RecordId "
+                f"{reference_node.record_id}, ProcessGuid {reference_node.key.process_guid}, "
+                f"EventData.UtcTime {reference_node.event_utc_time}"
+            )
+        else:
+            report.passed(
+                "the reference of the run is the EID 1 of its session host: RecordId "
+                f"{reference_node.record_id}, ProcessGuid {reference_node.key.process_guid}, "
+                f"EventData.UtcTime {reference_node.event_utc_time}"
+            )
 
     # The session host is created by the reference action and exists before the
     # next action runs in it.

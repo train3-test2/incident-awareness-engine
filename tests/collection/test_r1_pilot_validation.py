@@ -465,6 +465,43 @@ def validate(run: tuple[Path, Path], *, rehearsal: bool = False) -> R1PilotValid
     )
 
 
+def test_wmi_reference_uses_a01_attributed_intermediate_eid1(tmp_path: Path) -> None:
+    # Given
+    reference_time = "2030-01-02T00:05:00.250Z"
+    rows = [
+        (RUN_ID, action_id("attack", index), f"2030-01-02T00:{5 + index:02d}:00.000Z", action_type)
+        for index, (_, action_type, _) in enumerate(STEPS)
+    ]
+    events = run_events("normal")
+    events[0]["EventData"]["Image"] = SYSTEM32 + "WmiPrvSE.exe"
+    run = build_run(
+        tmp_path,
+        run_type="attack",
+        scenario_body=scenario(
+            family_id="wmi_management",
+            attack_image="cmd.exe",
+            session_host_image="WmiPrvSE.exe",
+            policy_version="wmi-ref-v0.1",
+        ),
+        events=events,
+        rows=rows,
+        metadata={
+            "family_id": "wmi_management",
+            "reference_time": reference_time,
+            "reference_source_event_id": "2",
+            "reference_policy_version": "wmi-ref-v0.1",
+            "end_time": "2030-01-02T00:16:00.000Z",
+        },
+    )
+
+    # When
+    report = validate(run)
+
+    # Then
+    assert report.ok, errors_of(report)
+    assert any("A01-attributed intermediate" in check for check in report.checks)
+
+
 def rewrite_json(path: Path, mutate: Callable[[dict], None]) -> None:
     payload = json.loads(path.read_text(encoding="utf-8"))
     mutate(payload)

@@ -21,14 +21,29 @@ from incident_awareness.evidence.r1_reference_policy import (
 from incident_awareness.pipeline.r1_artifacts import (
     R1_COLLECTION_PROVENANCE_FILENAME,
     load_r1_collection_provenance,
-    write_r1_collection_provenance,
+)
+from incident_awareness.pipeline.r1_artifacts import (
+    write_r1_collection_provenance as _write_r1_collection_provenance,
 )
 
 _POLICY_ID = "r1-wmi-a01-reference"
 _POLICY_VERSION = "wmi-ref-v0.1"
-_ACTUAL_POLICY_HASH = "4144a6e2857fad7e834d819d5393eb03343398df83e5727470e9b97a24e495ba"
+_ACTUAL_POLICY_HASH = "c381fe4aa8e6445dcb9e88fac4307a042c6e438e022a8400d7475ab3a32e9e67"
 _REFERENCE_TIME = datetime(2026, 10, 10, 1, 0, 1, tzinfo=UTC)
 _REFERENCE_GUID = "{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}"
+_CONTEXT_GUID = "{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}"
+
+
+def write_r1_collection_provenance(selection, *, run_id: str, output_directory: Path):
+    return _write_r1_collection_provenance(
+        selection,
+        run_id=run_id,
+        output_directory=output_directory,
+        scenario_identifier="scenarios/R1/wmi-v01.json",
+        scenario_version="v1",
+        execution_commit="0123456789abcdef",
+        loader_version="r1-reference-policy-loader-v0.1",
+    )
 
 
 def _policy_payload(**overrides: object) -> dict[str, object]:
@@ -44,6 +59,7 @@ def _policy_payload(**overrides: object) -> dict[str, object]:
         "reference_source_layer": "raw_telemetry",
         "reference_event_type": "process_create",
         "reference_process_name": "cmd.exe",
+        "candidate_window_sec": 2,
         "expected_evaluation_horizon_sec": 600,
     }
     payload.update(overrides)
@@ -74,17 +90,22 @@ def _reference_event(
     event_id: str = "evt-reference",
     process_guid: str = _REFERENCE_GUID,
     process_name: str = "cmd.exe",
+    pid: int = 4100,
+    parent_process_guid: str = _CONTEXT_GUID,
+    run_id: str = "RUN-20261010-001",
+    host_id: str = "TARGET-A",
+    reference_time: datetime = _REFERENCE_TIME,
 ) -> NormalizedEvent:
     return NormalizedEvent.model_validate(
         {
             "event_id": event_id,
-            "run_id": "RUN-20261010-001",
-            "timestamp": _REFERENCE_TIME,
+            "run_id": run_id,
+            "timestamp": reference_time,
             "timestamp_source": "event_time",
-            "event_time": _REFERENCE_TIME,
-            "record_time": _REFERENCE_TIME,
-            "ingest_time": _REFERENCE_TIME,
-            "host_id": "TARGET-A",
+            "event_time": reference_time,
+            "record_time": reference_time,
+            "ingest_time": reference_time,
+            "host_id": host_id,
             "source": "sysmon",
             "source_layer": "raw_telemetry",
             "source_event_id": "42001",
@@ -98,17 +119,34 @@ def _reference_event(
                 "parser_version": "v0.3",
             },
             "process": {
-                "pid": 4100,
+                "pid": pid,
                 "process_guid": process_guid,
                 "name": process_name,
                 "path": rf"C:\Windows\System32\{process_name}",
                 "command_line": process_name,
                 "parent_pid": None,
-                "parent_process_guid": "{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}",
+                "parent_process_guid": parent_process_guid,
                 "parent_name": None,
             },
             "network": None,
         }
+    )
+
+
+def _context_event(
+    *,
+    run_id: str = "RUN-20261010-001",
+    host_id: str = "TARGET-A",
+) -> NormalizedEvent:
+    return _reference_event(
+        event_id="evt-context",
+        process_guid=_CONTEXT_GUID,
+        process_name="WmiPrvSE.exe",
+        pid=4000,
+        parent_process_guid="{CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC}",
+        run_id=run_id,
+        host_id=host_id,
+        reference_time=_REFERENCE_TIME - timedelta(seconds=1),
     )
 
 
@@ -134,14 +172,14 @@ def _resolve(
     *,
     action_result: R1WmiActionResult | None = None,
     action_attributed_event_ids: tuple[str, ...] = ("evt-reference",),
-    lineage_process_guids: tuple[str, ...] = (_REFERENCE_GUID,),
+    lineage_process_guids: tuple[str, ...] = (_CONTEXT_GUID, _REFERENCE_GUID),
     family_id: str = "wmi_management",
     reference_policy_version: str = _POLICY_VERSION,
     evaluation_horizon_sec: int = 600,
 ):
     policy = load_r1_reference_policy(_POLICY_ID, _POLICY_VERSION)
     return resolve_r1_wmi_reference(
-        events,
+        (_context_event(), *events),
         policy=policy,
         scenario_family_id=family_id,
         reference_policy_version=reference_policy_version,
@@ -167,6 +205,7 @@ def test_loads_managed_wmi_reference_policy() -> None:
     assert policy.reference_action_id == "A01"
     assert policy.expected_evaluation_horizon_sec == 600
     assert policy.config_hash == _ACTUAL_POLICY_HASH
+    assert policy.candidate_window_sec == 2
 
 
 def test_semantically_identical_config_has_same_canonical_hash(tmp_path: Path) -> None:
@@ -175,6 +214,7 @@ def test_semantically_identical_config_has_same_canonical_hash(tmp_path: Path) -
     config_path.write_text(
         """policies:
   - expected_evaluation_horizon_sec: 600
+    candidate_window_sec: 2
     reference_process_name: cmd.exe
     reference_event_type: process_create
     reference_source_layer: raw_telemetry
@@ -196,6 +236,10 @@ config_version: v0.1
 
     # Then
     assert policy.config_hash == _ACTUAL_POLICY_HASH
+    assert policy.canonical_path == (
+        f"external-policy:{_POLICY_ID}/{_POLICY_VERSION}@{_ACTUAL_POLICY_HASH}"
+    )
+    assert str(tmp_path) not in policy.canonical_path
 
 
 @pytest.mark.parametrize(
@@ -319,6 +363,15 @@ def test_writes_and_loads_reference_policy_runtime_provenance(tmp_path: Path) ->
     assert payload["scenario_evaluation_horizon_sec"] == 600
     assert payload["policy_expected_evaluation_horizon_sec"] == 600
     assert payload["horizon_matches"] is True
+    assert payload["scenario_identifier"] == "scenarios/R1/wmi-v01.json"
+    assert payload["scenario_version"] == "v1"
+    assert payload["reference_action_id"] == "A01"
+    assert payload["reference_time"] == "2026-10-10T01:00:01Z"
+    assert payload["reference_source_event_id"] == "42001"
+    assert payload["reference_event_id"] == "evt-reference"
+    assert payload["action_process_id"] == 4100
+    assert payload["execution_commit"] == "0123456789abcdef"
+    assert payload["loader_version"] == "r1-reference-policy-loader-v0.1"
 
 
 def test_collection_provenance_serialization_is_deterministic(tmp_path: Path) -> None:
@@ -413,6 +466,48 @@ def test_reference_requires_process_guid_lineage_membership() -> None:
     assert reference_event.process.pid == 4100
 
 
+@pytest.mark.parametrize(
+    "event_overrides",
+    [
+        {"pid": 4101},
+        {"parent_process_guid": "{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}"},
+        {"host_id": "TARGET-B"},
+        {"run_id": "RUN-20261010-002"},
+    ],
+)
+def test_reference_requires_a01_pid_and_same_scope_wmi_parent(
+    event_overrides: dict[str, object],
+) -> None:
+    # Given
+    reference_event = _reference_event(**event_overrides)
+
+    # When / Then
+    with pytest.raises(ValueError, match="candidate count must be exactly 1, found 0"):
+        _resolve((reference_event,))
+
+
+@pytest.mark.parametrize("offset_seconds", [-2, 2])
+def test_reference_candidate_window_includes_boundaries(offset_seconds: int) -> None:
+    # Given
+    event = _reference_event(reference_time=_REFERENCE_TIME + timedelta(seconds=offset_seconds))
+
+    # When
+    selection = _resolve((event,), action_result=_action_result(invoked_at_utc=_REFERENCE_TIME))
+
+    # Then
+    assert selection.reference_event_id == event.event_id
+
+
+@pytest.mark.parametrize("offset_seconds", [-3, 3])
+def test_reference_candidate_window_rejects_outside(offset_seconds: int) -> None:
+    # Given
+    event = _reference_event(reference_time=_REFERENCE_TIME + timedelta(seconds=offset_seconds))
+
+    # When / Then
+    with pytest.raises(ValueError, match="outside the A01 candidate window"):
+        _resolve((event,), action_result=_action_result(invoked_at_utc=_REFERENCE_TIME))
+
+
 def test_rejects_multiple_reference_candidates() -> None:
     # Given
     first = _reference_event()
@@ -424,7 +519,7 @@ def test_rejects_multiple_reference_candidates() -> None:
         _resolve(
             (first, second),
             action_attributed_event_ids=(first.event_id, second.event_id),
-            lineage_process_guids=(_REFERENCE_GUID, second_guid),
+            lineage_process_guids=(_CONTEXT_GUID, _REFERENCE_GUID, second_guid),
         )
 
     # Then
@@ -451,13 +546,13 @@ def test_rejects_failed_or_processless_a01(action_result: R1WmiActionResult) -> 
     assert action_result.action_id == "A01"
 
 
-def test_rejects_reference_event_before_a01_invocation() -> None:
+def test_rejects_reference_event_before_candidate_window() -> None:
     # Given
     reference_event = _reference_event()
-    action_result = _action_result(invoked_at_utc=_REFERENCE_TIME + timedelta(milliseconds=1))
+    action_result = _action_result(invoked_at_utc=_REFERENCE_TIME + timedelta(seconds=3))
 
     # When
-    with pytest.raises(ValueError, match="predates the A01 invocation"):
+    with pytest.raises(ValueError, match="outside the A01 candidate window"):
         _resolve((reference_event,), action_result=action_result)
 
     # Then

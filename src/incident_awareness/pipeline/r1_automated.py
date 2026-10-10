@@ -24,8 +24,8 @@ from incident_awareness.pipeline.r1_artifacts import (
     R1CollectionProvenance,
     R1EvidenceArtifactRun,
     R1SelectorProvenance,
+    build_r1_collection_provenance,
     run_and_write_r1_evidence_artifacts,
-    write_r1_collection_provenance,
 )
 from incident_awareness.pipeline.r1_evidence import (
     R1SelectedEvidencePipelineResult,
@@ -88,6 +88,7 @@ def run_and_write_r1_evidence_artifacts_from_policy(
     approved_policy_config_path: Path = DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH,
     scenario_family_id: str | None = None,
     run_start: datetime | None = None,
+    collection_provenance: R1CollectionProvenance | None = None,
 ) -> R1AutomatedEvidenceArtifactRun:
     """자동 선택 Evidence를 기존 R1 artifact contract로 게시한다."""
     event_batch = tuple(events)
@@ -116,6 +117,7 @@ def run_and_write_r1_evidence_artifacts_from_policy(
         output_directory=output_directory,
         lineage_inputs=lineage_inputs,
         selector_provenance=selector_provenance,
+        collection_provenance=collection_provenance,
     )
     return R1AutomatedEvidenceArtifactRun(
         pipeline_result=pipeline_result,
@@ -138,12 +140,22 @@ def run_and_write_r1_wmi_collection_artifacts(
     action_result: R1WmiActionResult,
     action_attributed_event_ids: Iterable[str],
     lineage_process_guids: Iterable[str],
+    scenario_identifier: str,
+    scenario_version: str,
+    execution_commit: str,
+    loader_version: str,
     approved_policy_config_path: Path = DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH,
     reference_policy_config_path: Path = DEFAULT_R1_REFERENCE_POLICIES_PATH,
     run_start: datetime | None = None,
 ) -> R1WmiCollectionArtifactRun:
     """WMI reference를 확정한 뒤 provenance와 기존 R1 Evidence artifact를 게시한다."""
     event_batch = tuple(events)
+    approved_policy = load_r1_approved_lineage_policy(
+        approved_policy_id,
+        approved_policy_version,
+        config_path=approved_policy_config_path,
+    )
+    _validate_automated_policy_family(scenario_family_id, approved_policy)
     reference_policy = load_r1_reference_policy(
         reference_policy_id,
         reference_policy_version,
@@ -160,10 +172,13 @@ def run_and_write_r1_wmi_collection_artifacts(
         lineage_process_guids=lineage_process_guids,
     )
 
-    collection_provenance, collection_provenance_path = write_r1_collection_provenance(
+    collection_provenance = build_r1_collection_provenance(
         reference_selection,
         run_id=run_id,
-        output_directory=output_directory,
+        scenario_identifier=scenario_identifier,
+        scenario_version=scenario_version,
+        execution_commit=execution_commit,
+        loader_version=loader_version,
     )
     evidence_run = run_and_write_r1_evidence_artifacts_from_policy(
         event_batch,
@@ -175,7 +190,9 @@ def run_and_write_r1_wmi_collection_artifacts(
         approved_policy_config_path=approved_policy_config_path,
         scenario_family_id=scenario_family_id,
         run_start=run_start,
+        collection_provenance=collection_provenance,
     )
+    collection_provenance_path = output_directory / "r1_collection_provenance.json"
     return R1WmiCollectionArtifactRun(
         reference_selection=reference_selection,
         collection_provenance=collection_provenance,

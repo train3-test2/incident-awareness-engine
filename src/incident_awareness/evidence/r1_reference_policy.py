@@ -73,6 +73,7 @@ class _ReferencePolicyConfig(BaseModel):
     reference_source_layer: Literal["raw_telemetry"]
     reference_event_type: Literal["process_create"]
     reference_process_name: StrictStr
+    candidate_window_sec: StrictInt = Field(gt=0)
     expected_evaluation_horizon_sec: StrictInt = Field(gt=0)
 
     @field_validator(
@@ -122,6 +123,7 @@ class R1ReferencePolicy:
     reference_source_layer: str
     reference_event_type: str
     reference_process_name: str
+    candidate_window_sec: int
     expected_evaluation_horizon_sec: int
 
 
@@ -146,6 +148,7 @@ class R1ReferenceSelection:
     reference_time: datetime
     reference_source_event_id: str
     reference_event_id: str
+    action_process_id: int
     policy_id: str
     reference_policy_version: str
     policy_config_hash: str
@@ -231,7 +234,8 @@ def resolve_r1_wmi_reference(
         event
         for event in event_batch
         if event.event_id in attributed_event_ids
-        and _matches_reference_event(event, policy, lineage_guids)
+        and _matches_reference_event(event, policy, lineage_guids, action_result)
+        and _has_wmi_context_parent(event, event_batch, policy, lineage_guids)
     )
     if len(candidates) != 1:
         raise ValueError(f"R1 reference candidate count must be exactly 1, found {len(candidates)}")
@@ -239,14 +243,20 @@ def resolve_r1_wmi_reference(
     selected = candidates[0]
     if selected.timestamp_source != "event_time" or selected.event_time is None:
         raise ValueError("R1 reference Event must carry parsed Sysmon EventData.UtcTime")
-    if selected.event_time < action_result.invoked_at_utc:
-        raise ValueError("R1 reference Event predates the A01 invocation")
+    window = timedelta(seconds=policy.candidate_window_sec)
+    if (
+        not action_result.invoked_at_utc - window
+        <= selected.event_time
+        <= action_result.invoked_at_utc + window
+    ):
+        raise ValueError("R1 reference Event is outside the A01 candidate window")
 
     return R1ReferenceSelection(
         reference_action_id=policy.reference_action_id,
         reference_time=selected.event_time,
         reference_source_event_id=selected.source_event_id,
         reference_event_id=selected.event_id,
+        action_process_id=action_result.process_id,
         policy_id=policy.policy_id,
         reference_policy_version=policy.version,
         policy_config_hash=policy.config_hash,
@@ -304,21 +314,26 @@ def _build_policy(config_path: Path, policy_config: _ReferencePolicyConfig) -> R
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+    config_hash = hashlib.sha256(canonical_payload).hexdigest()
     return R1ReferencePolicy(
         config_path=config_path.resolve(),
-        canonical_path=_canonical_config_path(config_path),
-        config_hash=hashlib.sha256(canonical_payload).hexdigest(),
+        canonical_path=_canonical_config_path(config_path, policy_config, config_hash),
+        config_hash=config_hash,
         **policy_config.model_dump(),
     )
 
 
-def _canonical_config_path(config_path: Path) -> str:
+def _canonical_config_path(
+    config_path: Path,
+    policy_config: _ReferencePolicyConfig,
+    config_hash: str,
+) -> str:
     resolved_path = config_path.resolve()
     repository_root = Path(__file__).parents[3].resolve()
     try:
         return resolved_path.relative_to(repository_root).as_posix()
     except ValueError:
-        return resolved_path.as_posix()
+        return f"external-policy:{policy_config.policy_id}/{policy_config.version}@{config_hash}"
 
 
 def _validate_policy_binding(
@@ -384,6 +399,7 @@ def _matches_reference_event(
     event: NormalizedEvent,
     policy: R1ReferencePolicy,
     lineage_process_guids: frozenset[str],
+    action_result: R1WmiActionResult,
 ) -> bool:
     process = event.process
     return (
@@ -393,8 +409,34 @@ def _matches_reference_event(
         and process is not None
         and process.process_guid is not None
         and process.process_guid in lineage_process_guids
+        and process.pid == action_result.process_id
+        and process.parent_process_guid is not None
         and process.name is not None
         and process.name.casefold() == policy.reference_process_name.casefold()
+    )
+
+
+def _has_wmi_context_parent(
+    candidate: NormalizedEvent,
+    events: tuple[NormalizedEvent, ...],
+    policy: R1ReferencePolicy,
+    lineage_process_guids: frozenset[str],
+) -> bool:
+    process = candidate.process
+    if process is None or process.parent_process_guid is None:
+        return False
+    return any(
+        context.run_id == candidate.run_id
+        and context.host_id == candidate.host_id
+        and context.source == policy.reference_source
+        and context.source_layer == policy.reference_source_layer
+        and context.event_type == policy.reference_event_type
+        and context.process is not None
+        and context.process.process_guid == process.parent_process_guid
+        and context.process.process_guid in lineage_process_guids
+        and context.process.name is not None
+        and context.process.name.casefold() == "wmiprvse.exe"
+        for context in events
     )
 
 

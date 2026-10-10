@@ -749,6 +749,10 @@ def test_wmi_collection_path_publishes_reference_provenance_artifact(
         action_result=action_result,
         action_attributed_event_ids=("evt-wmi-reference",),
         lineage_process_guids=(_ANCHOR_GUID, _MIDDLE_GUID, _TERMINAL_GUID),
+        scenario_identifier="scenarios/R1/wmi-v01.json",
+        scenario_version="v1",
+        execution_commit="0123456789abcdef",
+        loader_version="r1-reference-policy-loader-v0.1",
         run_start=_BASE_TIME,
     )
     loaded_provenance = load_r1_collection_provenance(output_directory)
@@ -796,6 +800,10 @@ def test_wmi_collection_reference_failure_publishes_no_artifact(tmp_path: Path) 
             action_result=failed_action_result,
             action_attributed_event_ids=("evt-wmi-reference",),
             lineage_process_guids=(_ANCHOR_GUID, _MIDDLE_GUID, _TERMINAL_GUID),
+            scenario_identifier="scenarios/R1/wmi-v01.json",
+            scenario_version="v1",
+            execution_commit="0123456789abcdef",
+            loader_version="r1-reference-policy-loader-v0.1",
             run_start=_BASE_TIME,
         )
 

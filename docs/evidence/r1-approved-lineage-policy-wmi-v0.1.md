@@ -80,16 +80,19 @@ WMI A01 reference policy의 canonical config는
 | policy ID | `r1-wmi-a01-reference` |
 | version | `wmi-ref-v0.1` |
 | family ID | `wmi_management` |
-| actual config hash | `4144a6e2857fad7e834d819d5393eb03343398df83e5727470e9b97a24e495ba` |
+| candidate window | A01 `invoked_at_utc` 기준 양끝 포함 ±2초 |
+| actual config hash | `c381fe4aa8e6445dcb9e88fac4307a042c6e438e022a8400d7475ab3a32e9e67` |
 
 Config hash는 선택된 policy object의 `policy_id`, `version`, `family_id`, A01 action·성공 조건,
-reference Event 조건과 `expected_evaluation_horizon_sec`를 모두 포함한다. 이 object를 key 정렬,
+reference Event 조건, `candidate_window_sec=2`와 `expected_evaluation_horizon_sec`를 모두 포함한다. 이 object를 key 정렬,
 공백 없는 JSON separators와 ASCII escaping으로 canonical serialization하고 UTF-8 bytes의 SHA-256
 lowercase hex를 계산한다. YAML key 순서, 표현 형식과 comment는 hash에 포함되지 않는다.
 
 Run 단위 runtime provenance의 영속 artifact는 `r1_collection_provenance.json`이다. 이 artifact는
-canonical config path, policy ID/version/hash, loader가 선택한 policy identity, scenario의
-`evaluation_horizon_sec`, policy의 `expected_evaluation_horizon_sec`와 두 값의 일치 결과를 기록한다.
+portable scenario identifier/version, portable canonical config identifier, policy ID/version/hash,
+loader가 선택한 policy identity, scenario와 policy의 horizon 및 일치 결과, 선택된 reference의
+action/time/source Event ID/NormalizedEvent ID/A01 반환 PID, 실제 execution commit과 loader version을 기록한다.
+Repository 외부 config에는 머신 종속 절대경로 대신 policy identity와 content hash 기반 identifier를 사용한다.
 Writer는 기존 R1 artifact와 동일하게 기존 파일을 덮어쓰지 않고 원자적으로 게시하며, 같은 output
 directory에서 재실행할 때는 새 빈 directory를 사용한다. Loader는 unknown/missing field와 identity 또는
 horizon binding 불일치를 fail-closed한다.
