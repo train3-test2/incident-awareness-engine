@@ -451,7 +451,7 @@ test("Synthetic zero-point and 67-point traces preserve every point in order", (
 test("Fusion Point table is collapsed without dropping stored point rows", async () => {
     // Given
     const scriptPath = new URL(
-        "../../../src/incident_awareness/dashboard/ui/assets/fusion-engine.js",
+        "../../../src/incident_awareness/dashboard/ui/assets/fusion-score-chart.mjs",
         import.meta.url,
     );
 
@@ -480,27 +480,13 @@ test("Fusion details DOM starts closed and contains all 67 synthetic rows", asyn
         },
     };
     const moduleUrl = new URL(
-        "../../../src/incident_awareness/dashboard/ui/assets/fusion-engine.js",
+        "../../../src/incident_awareness/dashboard/ui/assets/fusion-score-chart.mjs",
         import.meta.url,
     );
     const points = makeSyntheticPolicyConsistentPoints();
 
     try {
-        const fusionContractUrl = new URL(
-            "../../../src/incident_awareness/dashboard/ui/assets/fusion-engine-contract.mjs",
-            import.meta.url,
-        );
-        const runDetailContractUrl = new URL(
-            "../../../src/incident_awareness/dashboard/ui/assets/run-detail-contract.mjs",
-            import.meta.url,
-        );
-        const moduleSource = (await readFile(moduleUrl, "utf8"))
-            .replace("./fusion-engine-contract.mjs", fusionContractUrl.href)
-            .replaceAll("./run-detail-contract.mjs", runDetailContractUrl.href);
-        const moduleDataUrl = `data:text/javascript;charset=utf-8,${encodeURIComponent(
-            moduleSource,
-        )}`;
-        const { createTraceTable } = await import(moduleDataUrl);
+        const { createTraceTable } = await import(moduleUrl.href);
 
         // When
         const details = createTraceTable(points);
