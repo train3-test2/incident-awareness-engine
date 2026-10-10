@@ -102,6 +102,12 @@ jobs:
       FIRST_CYCLE_DATABASE_URL_SECRET_ARN: ${{ vars.FIRST_CYCLE_DATABASE_URL_SECRET_ARN }}
       FIRST_CYCLE_S3_BUCKET: ${{ vars.FIRST_CYCLE_S3_BUCKET }}
       FIRST_CYCLE_SQS_QUEUE_URL: ${{ vars.FIRST_CYCLE_SQS_QUEUE_URL }}
+      R1_FAMILY_ID: ${{ vars.R1_FAMILY_ID }}
+      R1_APPROVED_POLICY_ID: ${{ vars.R1_APPROVED_POLICY_ID }}
+      R1_APPROVED_POLICY_VERSION: ${{ vars.R1_APPROVED_POLICY_VERSION }}
+      R1_APPROVED_POLICY_CONFIG_HASH: ${{ vars.R1_APPROVED_POLICY_CONFIG_HASH }}
+      R1_ARCHIVE_BUCKET: ${{ vars.R1_ARCHIVE_BUCKET }}
+      R1_ARCHIVE_PREFIX: ${{ vars.R1_ARCHIVE_PREFIX }}
 
     steps:
       - uses: actions/checkout@v6
@@ -111,7 +117,7 @@ jobs:
           AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
         run: |
           set -euo pipefail
-          for value in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SUBNET_IDS ECS_SECURITY_GROUP_IDS ECS_EXECUTION_ROLE_ARN ECS_FIRST_CYCLE_TASK_ROLE_ARN ECS_FIRST_CYCLE_WORKER_SERVICE FIRST_CYCLE_DATABASE_URL_SECRET_ARN FIRST_CYCLE_S3_BUCKET FIRST_CYCLE_SQS_QUEUE_URL; do
+          for value in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SUBNET_IDS ECS_SECURITY_GROUP_IDS ECS_EXECUTION_ROLE_ARN ECS_FIRST_CYCLE_TASK_ROLE_ARN ECS_FIRST_CYCLE_WORKER_SERVICE FIRST_CYCLE_DATABASE_URL_SECRET_ARN FIRST_CYCLE_S3_BUCKET FIRST_CYCLE_SQS_QUEUE_URL R1_FAMILY_ID R1_APPROVED_POLICY_ID R1_APPROVED_POLICY_VERSION R1_APPROVED_POLICY_CONFIG_HASH R1_ARCHIVE_BUCKET R1_ARCHIVE_PREFIX; do
             if [ -z "${!value}" ]; then
               echo "GitHub Actions variable $value must be configured."
               exit 1
@@ -163,7 +169,13 @@ jobs:
             --task-role-arn "$ECS_FIRST_CYCLE_TASK_ROLE_ARN" \
             --database-url-secret-arn "$FIRST_CYCLE_DATABASE_URL_SECRET_ARN" \
             --sqs-queue-url "$FIRST_CYCLE_SQS_QUEUE_URL" \
-            --s3-input-bucket "$FIRST_CYCLE_S3_BUCKET"
+            --s3-input-bucket "$FIRST_CYCLE_S3_BUCKET" \
+            --r1-family-id "$R1_FAMILY_ID" \
+            --r1-approved-policy-id "$R1_APPROVED_POLICY_ID" \
+            --r1-approved-policy-version "$R1_APPROVED_POLICY_VERSION" \
+            --r1-approved-policy-config-hash "$R1_APPROVED_POLICY_CONFIG_HASH" \
+            --r1-archive-bucket "$R1_ARCHIVE_BUCKET" \
+            --r1-archive-prefix "$R1_ARCHIVE_PREFIX"
 
       - name: Register Worker task definition
         id: worker-task-definition

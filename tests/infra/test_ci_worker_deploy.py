@@ -14,6 +14,8 @@ def test_develop_deploy_creates_or_updates_the_worker_service() -> None:
     assert "ImageNotFoundException" in workflow
     assert 'exit "$lookup_status"' in workflow
     assert "task-definition.first-cycle-worker.json" in workflow
+    assert "R1_APPROVED_POLICY_CONFIG_HASH" in workflow
+    assert '--r1-archive-prefix "$R1_ARCHIVE_PREFIX"' in workflow
     assert "task-definition.first-cycle-migrate.json" in workflow
     assert "aws ecs register-task-definition" in workflow
     assert "Run First Cycle migrations" in workflow

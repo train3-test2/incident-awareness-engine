@@ -50,6 +50,14 @@ def test_render_replaces_all_worker_identifiers() -> None:
             "DATABASE_URL_SECRET_ARN": "arn:aws:secretsmanager:region:123456789012:secret:db",
             "SQS_QUEUE_URL": "https://sqs.region.amazonaws.com/123456789012/queue",
             "S3_INPUT_BUCKET": "first-cycle-inputs",
+            "R1_FAMILY_ID": "remote_management",
+            "R1_APPROVED_POLICY_ID": "r1-remote-management-approved-lineage",
+            "R1_APPROVED_POLICY_VERSION": "v0.3",
+            "R1_APPROVED_POLICY_CONFIG_HASH": (
+                "b3d1d28a909b494f660d3e8164a994a3d818a98dadcd10336560b4bec38680d2"
+            ),
+            "R1_ARCHIVE_BUCKET": "r1-archive",
+            "R1_ARCHIVE_PREFIX": "archive/first-cycle/r1",
         },
     )
 
@@ -70,6 +78,21 @@ def test_render_replaces_all_worker_identifiers() -> None:
         {
             "name": "INCIDENT_AWARENESS_S3_INPUT_BUCKET",
             "value": "first-cycle-inputs",
+        },
+        {"name": "INCIDENT_AWARENESS_R1_FAMILY_ID", "value": "remote_management"},
+        {
+            "name": "INCIDENT_AWARENESS_R1_APPROVED_POLICY_ID",
+            "value": "r1-remote-management-approved-lineage",
+        },
+        {"name": "INCIDENT_AWARENESS_R1_APPROVED_POLICY_VERSION", "value": "v0.3"},
+        {
+            "name": "INCIDENT_AWARENESS_R1_APPROVED_POLICY_CONFIG_HASH",
+            "value": "b3d1d28a909b494f660d3e8164a994a3d818a98dadcd10336560b4bec38680d2",
+        },
+        {"name": "INCIDENT_AWARENESS_R1_ARCHIVE_BUCKET", "value": "r1-archive"},
+        {
+            "name": "INCIDENT_AWARENESS_R1_ARCHIVE_PREFIX",
+            "value": "archive/first-cycle/r1",
         },
     ]
 

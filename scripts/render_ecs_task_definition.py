@@ -17,6 +17,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--database-url-secret-arn")
     parser.add_argument("--sqs-queue-url")
     parser.add_argument("--s3-input-bucket")
+    parser.add_argument("--r1-family-id")
+    parser.add_argument("--r1-approved-policy-id")
+    parser.add_argument("--r1-approved-policy-version")
+    parser.add_argument("--r1-approved-policy-config-hash")
+    parser.add_argument("--r1-archive-bucket")
+    parser.add_argument("--r1-archive-prefix")
     parser.add_argument("--evaluation-snapshot-s3-uri")
     return parser.parse_args()
 
@@ -81,6 +87,12 @@ def main() -> None:
             "DATABASE_URL_SECRET_ARN": arguments.database_url_secret_arn,
             "SQS_QUEUE_URL": arguments.sqs_queue_url,
             "S3_INPUT_BUCKET": arguments.s3_input_bucket,
+            "R1_FAMILY_ID": arguments.r1_family_id,
+            "R1_APPROVED_POLICY_ID": arguments.r1_approved_policy_id,
+            "R1_APPROVED_POLICY_VERSION": arguments.r1_approved_policy_version,
+            "R1_APPROVED_POLICY_CONFIG_HASH": arguments.r1_approved_policy_config_hash,
+            "R1_ARCHIVE_BUCKET": arguments.r1_archive_bucket,
+            "R1_ARCHIVE_PREFIX": arguments.r1_archive_prefix,
             "EVALUATION_SNAPSHOT_S3_URI": arguments.evaluation_snapshot_s3_uri,
         },
     )
