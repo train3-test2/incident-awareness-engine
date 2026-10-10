@@ -1555,14 +1555,15 @@ test("Dashboard polls Runtime after each completed request without overlap", asy
         script,
         /완료 보고를 확인해 저장된 분석 결과를 다시 불러오는 중입니다/,
     );
-    assert.match(script, /runtimePollTimeoutId = setTimeout\(/);
-    assert.match(script, /\(\) => void pollRuntimeSummary\(\)/);
+    assert.match(script, /runtimePollTimeoutId = setTimeout\(\(\) =>/);
+    assert.match(script, /void pollRuntimeSummary\(\);/);
     assert.match(script, /RUNTIME_POLL_INTERVAL_MS/);
     assert.match(script, /getStageLabel\(runtime\.current_stage\)/);
     assert.match(script, /getLatestRuntimeReport\(state\.items\)/);
     assert.match(script, /formatRunTimestamp\(runtime\.updated_at\)/);
     assert.match(script, /presentation\.telemetryLabel/);
-    assert.equal(script.match(/void pollRuntimeSummary\(\)/g)?.length, 2);
+    assert.match(script, /window\.addEventListener\("pagehide", stopRuntimePolling\)/);
+    assert.match(script, /window\.addEventListener\("pageshow"/);
     assert.doesNotMatch(script, /현재 실행 중|setInterval\(/);
 });
 
@@ -1582,8 +1583,14 @@ test("Dashboard selection loads both detail APIs and discards delayed responses"
 
     // Then
     assert.match(script, /async function selectRun\(runId, runtimeEntityId = null\)/);
+    assert.match(script, /const ANALYSIS_REQUEST_TIMEOUT_MS = 10000;/);
     assert.match(script, /buildRunDetailApiPath\(runId\)/);
     assert.match(script, /buildFusionEngineApiPath\(runId\)/);
+    assert.match(script, /async function fetchSelectedAnalysis\(endpoint, failureMessage\)/);
+    assert.match(script, /selectedAnalysisAbortControllers\.add\(controller\)/);
+    assert.match(script, /signal: controller\.signal/);
+    assert.match(script, /payload: await response\.json\(\)/);
+    assert.match(script, /cancelSelectedAnalysisRequests\(\)/);
     assert.match(script, /Promise\.all\(\[/);
     assert.match(script, /shouldApplySelectedRunResponse\(/);
     assert.match(script, /resolveInitialRunSelection\(/);
@@ -1822,13 +1829,40 @@ async function startDashboardHarness() {
 
     const requests = [];
     const timers = new Map();
+    const windowListeners = new Map();
     let nextTimerId = 1;
     const fakeGlobals = {
         document,
-        window: { addEventListener() {} },
+        window: {
+            addEventListener(type, listener) {
+                windowListeners.set(type, [
+                    ...(windowListeners.get(type) ?? []),
+                    listener,
+                ]);
+            },
+        },
         Node: FakeNode,
-        fetch: (url) => new Promise((resolve) => {
-            requests.push({ url: String(url), resolve, settled: false });
+        fetch: (url, options = {}) => new Promise((resolve, reject) => {
+            const request = {
+                url: String(url),
+                options,
+                resolve,
+                reject,
+                settled: false,
+                jsonReject: null,
+            };
+            const rejectAborted = () => {
+                if (!request.settled) {
+                    request.settled = true;
+                    reject(new Error("Request aborted"));
+                }
+                request.jsonReject?.(new Error("Response body aborted"));
+            };
+            options.signal?.addEventListener("abort", rejectAborted, { once: true });
+            if (options.signal?.aborted) {
+                rejectAborted();
+            }
+            requests.push(request);
         }),
         setTimeout: (callback, delay) => {
             const id = nextTimerId;
@@ -1863,7 +1897,12 @@ async function startDashboardHarness() {
             await new Promise((resolve) => setImmediate(resolve));
         }
     };
-    const respond = async (url, status, body, { newest = false } = {}) => {
+    const respond = async (
+        url,
+        status,
+        body,
+        { newest = false, deferJson = false } = {},
+    ) => {
         const pending = requests.filter(
             (candidate) => !candidate.settled && candidate.url === url,
         );
@@ -1873,8 +1912,33 @@ async function startDashboardHarness() {
         request.resolve({
             ok: status >= 200 && status < 300,
             status,
-            json: async () => body,
+            json: async () => {
+                if (!deferJson) {
+                    return body;
+                }
+                return new Promise((resolve, reject) => {
+                    if (request.options.signal?.aborted) {
+                        reject(new Error("Response body aborted"));
+                        return;
+                    }
+                    request.jsonReject = reject;
+                });
+            },
         });
+        await flush();
+    };
+    const triggerTimers = async (delay) => {
+        const matchingTimers = [...timers].filter(([, timer]) => timer.delay === delay);
+        for (const [timerId, timer] of matchingTimers) {
+            timers.delete(timerId);
+            timer.callback();
+        }
+        await flush();
+    };
+    const dispatchWindowEvent = async (type, event = {}) => {
+        for (const listener of windowListeners.get(type) ?? []) {
+            listener({ type, ...event });
+        }
         await flush();
     };
     const triggerPoll = async () => {
@@ -1917,6 +1981,11 @@ async function startDashboardHarness() {
         restore,
         flush,
         respond,
+        dispatchWindowEvent,
+        triggerTimers,
+        timerCount: (delay) => [...timers.values()].filter(
+            (timer) => timer.delay === delay,
+        ).length,
         requestCount: (url) => requests.filter((request) => request.url === url).length,
         pendingCount: (url) => requests.filter(
             (request) => !request.settled && request.url === url,
@@ -2049,6 +2118,235 @@ async function startDashboardWithRuntime(runtimeItems, runs) {
     await harness.respond(RUNTIME_API_PATH, 200, { items: runtimeItems });
     return harness;
 }
+
+test("Dashboard pauses and resumes Runtime polling across bfcache lifecycle", async (t) => {
+    // Given
+    const harness = await startDashboardHarness();
+    t.after(harness.restore);
+    const initialRequestCount = harness.requestCount(RUNTIME_API_PATH);
+
+    // When
+    await harness.dispatchWindowEvent("pageshow", { persisted: false });
+    const afterOrdinaryPageShow = harness.requestCount(RUNTIME_API_PATH);
+    await harness.dispatchWindowEvent("pagehide");
+    await harness.dispatchWindowEvent("pageshow", { persisted: true });
+    const whileOriginalRequestIsPending = harness.requestCount(RUNTIME_API_PATH);
+    await harness.respond(RUNTIME_API_PATH, 200, { items: [] });
+    const scheduledAfterRestore = harness.timerCount(RUNTIME_POLL_DELAY_MS);
+    await harness.dispatchWindowEvent("pageshow", { persisted: true });
+    const duplicateTimerCount = harness.timerCount(RUNTIME_POLL_DELAY_MS);
+    await harness.dispatchWindowEvent("pagehide");
+    const timersAfterHide = harness.timerCount(RUNTIME_POLL_DELAY_MS);
+    await harness.dispatchWindowEvent("pageshow", { persisted: false });
+    const afterNonPersistedShowWhilePaused = harness.requestCount(RUNTIME_API_PATH);
+    await harness.dispatchWindowEvent("pageshow", { persisted: true });
+    await harness.respond(RUNTIME_API_PATH, 200, { items: [] });
+    await harness.poll([]);
+    const continuedTimerCount = harness.timerCount(RUNTIME_POLL_DELAY_MS);
+
+    // Then
+    assert.equal(initialRequestCount, 1);
+    assert.equal(afterOrdinaryPageShow, 1);
+    assert.equal(whileOriginalRequestIsPending, 1);
+    assert.equal(scheduledAfterRestore, 1);
+    assert.equal(duplicateTimerCount, 1);
+    assert.equal(timersAfterHide, 0);
+    assert.equal(afterNonPersistedShowWhilePaused, 1);
+    assert.equal(harness.requestCount(RUNTIME_API_PATH), 3);
+    assert.equal(continuedTimerCount, 1);
+});
+
+test("Dashboard does not schedule a poll when an in-flight request ends while hidden", async (t) => {
+    // Given
+    const harness = await startDashboardHarness();
+    t.after(harness.restore);
+
+    // When
+    await harness.dispatchWindowEvent("pagehide");
+    await harness.respond(RUNTIME_API_PATH, 200, { items: [] });
+    const timersWhileHidden = harness.timerCount(RUNTIME_POLL_DELAY_MS);
+    await harness.dispatchWindowEvent("pageshow", { persisted: true });
+
+    // Then
+    assert.equal(timersWhileHidden, 0);
+    assert.equal(harness.requestCount(RUNTIME_API_PATH), 2);
+});
+
+test("Dashboard keeps Runtime transition detection after bfcache restore", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime(
+        [runtimeReport("RUN-A", "WIN-A", "running", "fusion")],
+        [runListItem("RUN-A", "WIN-A")],
+    );
+    t.after(harness.restore);
+    const detailPath = buildRunDetailApiPath("RUN-A");
+    await harness.respondAnalysis("RUN-A", notFound(), notFound());
+    await harness.dispatchWindowEvent("pagehide");
+
+    // When
+    await harness.dispatchWindowEvent("pageshow", { persisted: true });
+    await harness.respond(RUNTIME_API_PATH, 200, {
+        items: [runtimeReport("RUN-A", "WIN-A", "completed", null)],
+    });
+    const requestsAfterCompletion = harness.requestCount(detailPath);
+    await harness.respondAnalysis(
+        "RUN-A",
+        storedDetail("RUN-A", "WIN-A", "DEC-A"),
+        storedFusion("RUN-A", "WIN-A", "DEC-A"),
+    );
+
+    // Then
+    assert.equal(requestsAfterCompletion, 2);
+    assert.equal(harness.text("selected-run-status"), STORED_STATUS);
+    assert.equal(harness.timerCount(RUNTIME_POLL_DELAY_MS), 1);
+});
+
+test("Dashboard preserves Run Detail when Fusion Engine times out and can retry", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    await harness.respond(
+        buildRunDetailApiPath("RUN-A"),
+        200,
+        storedDetail("RUN-A", "WIN-A", "DEC-A").body,
+    );
+
+    // When
+    await harness.triggerTimers(10000);
+    const timedOut = {
+        status: harness.text("selected-run-status"),
+        disabled: harness.refreshButton().disabled,
+    };
+    harness.refreshButton().click();
+    const retryPending = harness.refreshButton().disabled;
+    await harness.respondAnalysis(
+        "RUN-A",
+        storedDetail("RUN-A", "WIN-A", "DEC-A"),
+        storedFusion("RUN-A", "WIN-A", "DEC-A"),
+    );
+
+    // Then
+    assert.deepEqual(timedOut, {
+        status: "Fusion Engine 조회에 실패해 Run Detail 출처의 결과만 표시합니다.",
+        disabled: false,
+    });
+    assert.equal(retryPending, true);
+    assert.equal(harness.text("selected-run-status"), STORED_STATUS);
+});
+
+test("Dashboard preserves Fusion Engine when Run Detail response body times out", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    await harness.respond(
+        buildRunDetailApiPath("RUN-A"),
+        200,
+        storedDetail("RUN-A", "WIN-A", "DEC-A").body,
+        { deferJson: true },
+    );
+    await harness.respond(
+        buildFusionEngineApiPath("RUN-A"),
+        200,
+        storedFusion("RUN-A", "WIN-A", "DEC-A").body,
+    );
+
+    // When
+    await harness.triggerTimers(10000);
+
+    // Then
+    assert.equal(
+        harness.text("selected-run-status"),
+        "Run Detail 조회에 실패해 Fusion Engine 출처의 결과만 표시합니다.",
+    );
+    assert.equal(harness.refreshButton().disabled, false);
+});
+
+test("Dashboard distinguishes analysis timeout from 404 and clears pending state", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+
+    // When
+    await harness.triggerTimers(10000);
+    const afterTimeout = {
+        status: harness.text("selected-run-status"),
+        disabled: harness.refreshButton().disabled,
+    };
+    harness.refreshButton().click();
+    await harness.respondAnalysis("RUN-A", notFound(), notFound());
+    const afterNotFound = {
+        status: harness.text("selected-run-status"),
+        disabled: harness.refreshButton().disabled,
+    };
+
+    // Then
+    assert.deepEqual(afterTimeout, {
+        status: "선택한 Run의 상세 결과를 불러오지 못했습니다.",
+        disabled: false,
+    });
+    assert.deepEqual(afterNotFound, {
+        status: "선택한 Run에 저장된 상세 결과가 없습니다.",
+        disabled: false,
+    });
+});
+
+test("Dashboard bounds a Decision mismatch retry even when its second read times out", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    const detailPath = buildRunDetailApiPath("RUN-A");
+    const fusionPath = buildFusionEngineApiPath("RUN-A");
+    await harness.respondAnalysis(
+        "RUN-A",
+        storedDetail("RUN-A", "WIN-A", "DEC-DETAIL"),
+        storedFusion("RUN-A", "WIN-A", "DEC-FUSION"),
+    );
+    await harness.respond(
+        detailPath,
+        200,
+        storedDetail("RUN-A", "WIN-A", "DEC-DETAIL").body,
+    );
+
+    // When
+    await harness.triggerTimers(10000);
+
+    // Then
+    assert.equal(harness.requestCount(detailPath), 2);
+    assert.equal(harness.requestCount(fusionPath), 2);
+    assert.equal(
+        harness.text("selected-run-status"),
+        "Fusion Engine 조회에 실패해 Run Detail 출처의 결과만 표시합니다.",
+    );
+    assert.equal(harness.refreshButton().disabled, false);
+});
+
+test("Dashboard can resume an out-of-query automatic recheck after timeout", async (t) => {
+    // Given
+    const others = otherRunningReports();
+    const harness = await startDashboardWithRuntime(
+        [runtimeReport("RUN-A", "WIN-A", "running", "fusion"), ...others.slice(0, 4)],
+        [runListItem("RUN-A", "WIN-A")],
+    );
+    t.after(harness.restore);
+    const detailPath = buildRunDetailApiPath("RUN-A");
+    await harness.respondAnalysis("RUN-A", notFound(), notFound());
+    await harness.poll(others);
+
+    // When
+    await harness.triggerTimers(10000);
+    const afterTimeout = {
+        pending: harness.pendingCount(detailPath),
+        disabled: harness.refreshButton().disabled,
+    };
+    await harness.poll(others);
+    await harness.poll(others);
+
+    // Then
+    assert.deepEqual(afterTimeout, { pending: 0, disabled: false });
+    assert.equal(harness.requestCount(detailPath), 3);
+    assert.equal(harness.pendingCount(detailPath), 1);
+    assert.equal(harness.refreshButton().disabled, true);
+});
 
 test("Dashboard Runtime rows select one Run and Entity pair at a time", async (t) => {
     // Given
@@ -2376,11 +2674,7 @@ test("Dashboard discards a delayed recheck after another Runtime Entity is selec
     // When
     harness.runtimeButton("RUN-C", "WIN-C").click();
     await harness.flush();
-    await harness.respondAnalysis(
-        "RUN-A",
-        storedDetail("RUN-A", "WIN-B", "DEC-A"),
-        storedFusion("RUN-A", "WIN-B", "DEC-A"),
-    );
+    const cancelledRecheck = harness.pendingCount(firstDetailPath);
     const afterDelayedResponse = {
         runId: harness.text("selected-run-id"),
         status: harness.text("selected-run-status"),
@@ -2398,6 +2692,7 @@ test("Dashboard discards a delayed recheck after another Runtime Entity is selec
 
     // Then
     assert.equal(pendingRecheck, 1);
+    assert.equal(cancelledRecheck, 0);
     assert.equal(afterDelayedResponse.runId, "RUN-C");
     assert.equal(
         afterDelayedResponse.status,
@@ -2597,15 +2892,9 @@ test("Dashboard discards a late manual refresh after another Entity is selected"
         scope: harness.text("selected-run-scope"),
         context: harness.text("pipeline-stage-context"),
     };
-    await harness.respondAnalysis(
-        "RUN-A",
-        storedDetail("RUN-A", "WIN-B", "DEC-OLD"),
-        storedFusion("RUN-A", "WIN-B", "DEC-OLD"),
-    );
-
     // Then
     assert.equal(manualPending, 1);
-    assert.deepEqual(switching, { disabled: true, pending: 2 });
+    assert.deepEqual(switching, { disabled: true, pending: 1 });
     assert.equal(current.status, WAITING_STATUS);
     assert.match(current.scope, /Entity WIN-A\. 저장 분석 대상 RunMetadata\.target_host도 WIN-A/);
     assert.equal(current.context, `RUN-A · WIN-A · ${RUNNING_LABEL}`);

@@ -52,6 +52,7 @@ const RUNS_ENDPOINT = "/runs?limit=20";
 const RUNTIME_ENDPOINT = "/operations/runtime?limit=5";
 const RUNTIME_POLL_INTERVAL_MS = 5000;
 const RUNTIME_REQUEST_TIMEOUT_MS = 10000;
+const ANALYSIS_REQUEST_TIMEOUT_MS = 10000;
 const SCORE_CHART_DIMENSIONS = {
     width: 960,
     height: 360,
@@ -94,6 +95,9 @@ let selectedAnalysisPendingVersion = null;
 let selectedRequestVersion = 0;
 let runtimeInitialQuerySettled = false;
 let runtimePollTimeoutId = null;
+let runtimePollingActive = false;
+let runtimeRequestInFlight = false;
+const selectedAnalysisAbortControllers = new Set();
 
 function createStatusBadge(presentation) {
     const badge = document.createElement("span");
@@ -572,36 +576,53 @@ async function fetchJson(endpoint, failureMessage) {
     return response.json();
 }
 
+function cancelSelectedAnalysisRequests() {
+    for (const controller of selectedAnalysisAbortControllers) {
+        controller.abort();
+    }
+    selectedAnalysisAbortControllers.clear();
+}
+
+async function fetchSelectedAnalysis(endpoint, failureMessage) {
+    const controller = new AbortController();
+    selectedAnalysisAbortControllers.add(controller);
+    const timeoutId = setTimeout(
+        () => controller.abort(),
+        ANALYSIS_REQUEST_TIMEOUT_MS,
+    );
+    try {
+        const response = await fetch(endpoint, {
+            headers: {
+                Accept: "application/json",
+            },
+            cache: "no-store",
+            signal: controller.signal,
+        });
+        if (response.status === 404) {
+            return { kind: "not_found" };
+        }
+        if (!response.ok) {
+            throw new Error(failureMessage);
+        }
+        return { kind: "success", payload: await response.json() };
+    } finally {
+        clearTimeout(timeoutId);
+        selectedAnalysisAbortControllers.delete(controller);
+    }
+}
+
 async function fetchRunDetail(runId) {
-    const response = await fetch(buildRunDetailApiPath(runId), {
-        headers: {
-            Accept: "application/json",
-        },
-        cache: "no-store",
-    });
-    if (response.status === 404) {
-        return { kind: "not_found" };
-    }
-    if (!response.ok) {
-        throw new Error("Run Detail API request failed");
-    }
-    return { kind: "success", payload: await response.json() };
+    return fetchSelectedAnalysis(
+        buildRunDetailApiPath(runId),
+        "Run Detail API request failed",
+    );
 }
 
 async function fetchFusionEngine(runId) {
-    const response = await fetch(buildFusionEngineApiPath(runId), {
-        headers: {
-            Accept: "application/json",
-        },
-        cache: "no-store",
-    });
-    if (response.status === 404) {
-        return { kind: "not_found" };
-    }
-    if (!response.ok) {
-        throw new Error("Fusion Engine API request failed");
-    }
-    return { kind: "success", payload: await response.json() };
+    return fetchSelectedAnalysis(
+        buildFusionEngineApiPath(runId),
+        "Fusion Engine API request failed",
+    );
 }
 
 async function loadRunDetailState(runId) {
@@ -624,6 +645,7 @@ async function loadFusionEngineState(runId) {
 
 async function loadSelectedRunAnalysis(runId, loadingMessage) {
     const requestVersion = ++selectedRequestVersion;
+    cancelSelectedAnalysisRequests();
     selectedAnalysisPendingVersion = requestVersion;
     selectedAnalysisState = "loading";
     renderSelectedRefreshControl();
@@ -796,7 +818,36 @@ async function fetchRuntimeSummary() {
     }
 }
 
-async function pollRuntimeSummary() {
+function scheduleRuntimePoll() {
+    if (
+        !runtimePollingActive
+        || runtimeRequestInFlight
+        || runtimePollTimeoutId !== null
+    ) {
+        return;
+    }
+    runtimePollTimeoutId = setTimeout(() => {
+        runtimePollTimeoutId = null;
+        void pollRuntimeSummary();
+    }, RUNTIME_POLL_INTERVAL_MS);
+}
+
+function startRuntimePolling() {
+    runtimePollingActive = true;
+    if (!runtimeRequestInFlight && runtimePollTimeoutId === null) {
+        void pollRuntimeSummary();
+    }
+}
+
+function stopRuntimePolling() {
+    runtimePollingActive = false;
+    if (runtimePollTimeoutId !== null) {
+        clearTimeout(runtimePollTimeoutId);
+        runtimePollTimeoutId = null;
+    }
+}
+
+async function updateRuntimeSummary() {
     let refreshCompletedSelection = false;
     let updateFailedSelection = false;
     let selectedRuntimeResult = { kind: "error" };
@@ -849,10 +900,19 @@ async function pollRuntimeSummary() {
         }
         recheckSelectedRuntimeAnalysis();
     }
-    runtimePollTimeoutId = setTimeout(
-        () => void pollRuntimeSummary(),
-        RUNTIME_POLL_INTERVAL_MS,
-    );
+}
+
+async function pollRuntimeSummary() {
+    if (!runtimePollingActive || runtimeRequestInFlight) {
+        return;
+    }
+    runtimeRequestInFlight = true;
+    try {
+        await updateRuntimeSummary();
+    } finally {
+        runtimeRequestInFlight = false;
+        scheduleRuntimePoll();
+    }
 }
 
 if (dashboardView !== null) {
@@ -862,11 +922,12 @@ if (dashboardView !== null) {
     selectedRunRefreshButton.addEventListener("click", refreshSelectedRunAnalysis);
     void loadOverview();
     void loadRuns();
-    void pollRuntimeSummary();
+    startRuntimePolling();
 
-    window.addEventListener("pagehide", () => {
-        if (runtimePollTimeoutId !== null) {
-            clearTimeout(runtimePollTimeoutId);
+    window.addEventListener("pagehide", stopRuntimePolling);
+    window.addEventListener("pageshow", (event) => {
+        if (event.persisted) {
+            startRuntimePolling();
         }
     });
 }

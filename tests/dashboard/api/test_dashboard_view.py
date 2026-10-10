@@ -266,26 +266,31 @@ def test_dashboard_script_fetches_independent_apis_and_polls_only_runtime() -> N
     assert "fetchJson(OVERVIEW_ENDPOINT" in script
     assert "fetchJson(RUNS_ENDPOINT" in script
     assert "fetch(RUNTIME_ENDPOINT" in script
-    assert "fetch(buildRunDetailApiPath(runId)" in script
-    assert "fetch(buildFusionEngineApiPath(runId)" in script
-    assert script.count('Accept: "application/json"') == 4
-    assert script.count('cache: "no-store"') == 4
+    assert "fetchSelectedAnalysis(" in script
+    assert "buildRunDetailApiPath(runId)" in script
+    assert "buildFusionEngineApiPath(runId)" in script
+    assert script.count('Accept: "application/json"') == 3
+    assert script.count('cache: "no-store"') == 3
     assert script.count("void loadOverview();") == 1
     assert script.count("void loadRuns();") == 1
-    assert script.count("void pollRuntimeSummary();") == 1
+    assert "startRuntimePolling();" in script
     assert 'document.getElementById("runs-status")' in script
     assert 'document.getElementById("runs-list")' in script
     assert 'document.getElementById("runtime-summary-status")' in script
     assert 'document.getElementById("runtime-summary-list")' in script
     assert "setInterval(" not in script
-    assert script.count("setTimeout(") == 2
+    assert script.count("setTimeout(") == 3
     assert "setTimeout(() => controller.abort(), RUNTIME_REQUEST_TIMEOUT_MS)" in script
     assert "runtimePollTimeoutId = setTimeout(" in script
-    assert "() => void pollRuntimeSummary()" in script
+    assert "void pollRuntimeSummary();" in script
     assert "clearTimeout(timeoutId);" in script
     assert "signal: controller.signal" in script
-    assert script.index("const payload = await fetchRuntimeSummary();") < script.index(
-        "runtimePollTimeoutId = setTimeout("
+    poll_source = script.split("async function pollRuntimeSummary()", maxsplit=1)[1].split(
+        "if (dashboardView !== null)",
+        maxsplit=1,
+    )[0]
+    assert poll_source.index("await updateRuntimeSummary();") < poll_source.index(
+        "scheduleRuntimePoll();"
     )
 
 
@@ -411,9 +416,9 @@ def test_dashboard_runtime_summary_preserves_order_and_operations_state_meaning(
     assert "buildPipelineStagePresentation(" in script
     assert "현재 실행 중" not in script
     assert "setInterval(" not in script
-    assert script.count("setTimeout(") == 2
+    assert script.count("setTimeout(") == 3
     assert "setTimeout(() => controller.abort(), RUNTIME_REQUEST_TIMEOUT_MS)" in script
-    assert "() => void pollRuntimeSummary()" in script
+    assert "void pollRuntimeSummary();" in script
     assert "clearTimeout(timeoutId);" in script
 
 
