@@ -191,6 +191,36 @@ def test_fusion_engine_view_serves_html_shell_without_database_access(
     assert database_connection_attempts == []
 
 
+def test_fusion_engine_view_uses_compact_card_order_and_responsive_grid() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    html = client.get(f"/dashboard/runs/{RUN_ID}/fusion-engine").text
+    detail_css = client.get("/dashboard-assets/detail.css").text
+
+    # Then
+    heading_ids = (
+        "fusion-runtime-heading",
+        "runtime-config-heading",
+        "fusion-score-trajectory-heading",
+        "stopping-trace-heading",
+        "decision-timing-heading",
+        "fusion-episodes-heading",
+    )
+    heading_positions = [html.index(f'id="{heading_id}"') for heading_id in heading_ids]
+    assert heading_positions == sorted(heading_positions)
+
+    score_section = html[html.rfind("<section", 0, heading_positions[2]) : heading_positions[2]]
+    episodes_section = html[html.rfind("<section", 0, heading_positions[5]) : heading_positions[5]]
+    assert "detail-section--wide" in score_section
+    assert "detail-section--wide" in episodes_section
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in detail_css
+    assert "@media (max-width: 48rem)" in detail_css
+    assert "grid-template-columns: minmax(0, 1fr);" in detail_css
+    assert "grid-column: auto;" in detail_css
+
+
 def test_historical_decision_view_serves_html_shell_without_database_access(
     database_connection_attempts: list[str],
 ) -> None:

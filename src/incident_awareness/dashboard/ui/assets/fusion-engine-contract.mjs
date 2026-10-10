@@ -79,6 +79,39 @@ function requireTracePoint(point, index) {
     return timestamp;
 }
 
+function buildTimestampTicks(timestamps, plot) {
+    if (timestamps.length === 0) {
+        return [];
+    }
+    if (timestamps.length === 1) {
+        return [{
+            timestamp: new Date(timestamps[0]).toISOString(),
+            x: plot.left + plot.width / 2,
+            textAnchor: "middle",
+        }];
+    }
+
+    const firstTimestamp = timestamps[0];
+    const lastTimestamp = timestamps.at(-1);
+    const duration = lastTimestamp - firstTimestamp;
+    const tickTimestamps = [firstTimestamp];
+    const middleTimestamp = firstTimestamp + Math.floor(duration / 2);
+    if (middleTimestamp > firstTimestamp && middleTimestamp < lastTimestamp) {
+        tickTimestamps.push(middleTimestamp);
+    }
+    tickTimestamps.push(lastTimestamp);
+
+    return tickTimestamps.map((timestamp, index) => ({
+        timestamp: new Date(timestamp).toISOString(),
+        x: plot.left + ((timestamp - firstTimestamp) / duration) * plot.width,
+        textAnchor: index === 0
+            ? "start"
+            : index === tickTimestamps.length - 1
+                ? "end"
+                : "middle",
+    }));
+}
+
 export function buildScoreTrajectoryModel(trace, runtimeConfig, dimensions) {
     if (trace === null || typeof trace !== "object" || Array.isArray(trace)) {
         throw new TypeError("Stopping Trace must be an object");
@@ -105,13 +138,10 @@ export function buildScoreTrajectoryModel(trace, runtimeConfig, dimensions) {
     const timestamps = trace.points.map((point, index) => requireTracePoint(point, index));
     const firstTimestamp = timestamps[0] ?? null;
     const lastTimestamp = timestamps.at(-1) ?? null;
-    if (
-        timestamps.length > 1
-        && (lastTimestamp === null
-            || firstTimestamp === null
-            || lastTimestamp <= firstTimestamp)
-    ) {
-        throw new RangeError("Stopping Trace timestamps must be strictly increasing");
+    for (let index = 1; index < timestamps.length; index += 1) {
+        if (timestamps[index] <= timestamps[index - 1]) {
+            throw new RangeError("Stopping Trace timestamps must be strictly increasing");
+        }
     }
 
     const points = trace.points.map((point, index) => {
@@ -164,6 +194,7 @@ export function buildScoreTrajectoryModel(trace, runtimeConfig, dimensions) {
         plot,
         points,
         thresholds,
+        xTicks: buildTimestampTicks(timestamps, plot),
         yTicks: [
             { value: 1, label: "1.0", y: plot.top },
             { value: 0.5, label: "0.5", y: plot.top + plot.height / 2 },

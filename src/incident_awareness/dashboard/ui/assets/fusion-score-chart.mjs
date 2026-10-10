@@ -113,7 +113,7 @@ export function createScoreTrajectoryChart(model) {
     const description = createSvgElement("desc");
     description.setAttribute("id", "fusion-score-chart-description");
     description.textContent = (
-        "저장된 FusionStoppingTrace score와 Runtime Config threshold를 표시합니다."
+        "저장된 FusionStoppingTrace score와 Runtime Config threshold를 실제 시간축에 표시합니다."
     );
     svg.append(title, description);
 
@@ -131,6 +131,42 @@ export function createScoreTrajectoryChart(model) {
         );
         label.setAttribute("text-anchor", "end");
         svg.append(grid, label);
+    }
+
+    const xTickEnd = model.plot.bottom
+        + (model.height - model.plot.bottom) * 0.16;
+    const xLabelY = model.plot.bottom
+        + (model.height - model.plot.bottom) * 0.58;
+    const formattedTickTimestamps = model.xTicks.map(
+        (tick) => formatRunTimestamp(tick.timestamp),
+    );
+    const includeMilliseconds = (
+        new Set(formattedTickTimestamps).size < formattedTickTimestamps.length
+    );
+    for (const [index, tick] of model.xTicks.entries()) {
+        const tickLine = createSvgElement("line", "fusion-score-chart__x-tick");
+        tickLine.setAttribute("x1", String(tick.x));
+        tickLine.setAttribute("x2", String(tick.x));
+        tickLine.setAttribute("y1", String(model.plot.bottom));
+        tickLine.setAttribute("y2", String(xTickEnd));
+
+        const formattedTimestamp = formattedTickTimestamps[index];
+        const visibleTimestamp = includeMilliseconds
+            ? `${formattedTimestamp} · ${String(
+                new Date(tick.timestamp).getMilliseconds(),
+            ).padStart(3, "0")} ms`
+            : formattedTimestamp;
+        const label = createSvgText(
+            "fusion-score-chart__axis-label fusion-score-chart__axis-label--x",
+            tick.x,
+            xLabelY,
+            visibleTimestamp,
+        );
+        label.setAttribute("text-anchor", tick.textAnchor);
+        const labelTitle = createSvgElement("title");
+        labelTitle.textContent = `${formattedTimestamp} (${tick.timestamp})`;
+        label.append(labelTitle);
+        svg.append(tickLine, label);
     }
 
     for (const threshold of model.thresholds) {
