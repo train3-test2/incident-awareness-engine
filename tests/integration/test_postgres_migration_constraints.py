@@ -62,6 +62,13 @@ SIXTH_MIGRATION_PATH = (
     / "migrations"
     / "006_s3_object_receipts.sql"
 )
+SEVENTH_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "infra"
+    / "postgres"
+    / "migrations"
+    / "007_r1_archive_publications.sql"
+)
 RUN_ID = "RUN-20260912-998"
 EVENT_ID = "evt-001"
 ENTITY_ID = "WIN-01"
@@ -93,6 +100,7 @@ def migration_connection(database_url: str) -> psycopg.Connection[tuple[object, 
         connection.execute(FOURTH_MIGRATION_PATH.read_text(encoding="utf-8"))
         connection.execute(FIFTH_MIGRATION_PATH.read_text(encoding="utf-8"))
         connection.execute(SIXTH_MIGRATION_PATH.read_text(encoding="utf-8"))
+        connection.execute(SEVENTH_MIGRATION_PATH.read_text(encoding="utf-8"))
         connection.execute(
             """
             INSERT INTO runs (
@@ -177,7 +185,8 @@ def test_baselines_migrations_applied_by_docker_initdb(
               'decision_runtime_snapshots',
               'fusion_runtime_config_snapshots',
               'pipeline_runtime_status',
-              's3_object_receipts'
+              's3_object_receipts',
+              'r1_archive_publications'
           )
         ORDER BY table_name
         """
@@ -192,6 +201,7 @@ def test_baselines_migrations_applied_by_docker_initdb(
         "004_fusion_runtime_config_snapshot",
         "005_pipeline_runtime_status",
         "006_s3_object_receipts",
+        "007_r1_archive_publications",
     )
     assert migration_ids == [
         ("001_first_cycle",),
@@ -200,6 +210,7 @@ def test_baselines_migrations_applied_by_docker_initdb(
         ("004_fusion_runtime_config_snapshot",),
         ("005_pipeline_runtime_status",),
         ("006_s3_object_receipts",),
+        ("007_r1_archive_publications",),
     ]
     assert existing_tables == [
         ("decision_runtime_snapshots",),
@@ -210,6 +221,7 @@ def test_baselines_migrations_applied_by_docker_initdb(
         ("fusion_runtime_config_snapshots",),
         ("fusion_stopping_traces",),
         ("pipeline_runtime_status",),
+        ("r1_archive_publications",),
         ("runs",),
         ("s3_object_receipts",),
     ]
@@ -760,6 +772,7 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
                 "004_fusion_runtime_config_snapshot",
                 "005_pipeline_runtime_status",
                 "006_s3_object_receipts",
+                "007_r1_archive_publications",
             ),
         ]
         with psycopg.connect(database_url) as verification_connection:
@@ -774,7 +787,8 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
                       'decision_runtime_snapshots',
                       'fusion_runtime_config_snapshots',
                       'pipeline_runtime_status',
-                      's3_object_receipts'
+                      's3_object_receipts',
+                      'r1_archive_publications'
                   )
                 GROUP BY table_name
                 ORDER BY table_name
@@ -784,7 +798,7 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
                 """
                 SELECT migration_id, count(*)
                 FROM schema_migrations
-                WHERE migration_id IN (%s, %s, %s, %s, %s)
+                WHERE migration_id IN (%s, %s, %s, %s, %s, %s)
                 GROUP BY migration_id
                 ORDER BY migration_id
                 """,
@@ -794,6 +808,7 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
                     "004_fusion_runtime_config_snapshot",
                     "005_pipeline_runtime_status",
                     "006_s3_object_receipts",
+                    "007_r1_archive_publications",
                 ),
             ).fetchall()
 
@@ -802,6 +817,7 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
             ("fusion_runtime_config_snapshots", 1),
             ("fusion_stopping_traces", 1),
             ("pipeline_runtime_status", 1),
+            ("r1_archive_publications", 1),
             ("s3_object_receipts", 1),
         ]
         assert migration_counts == [
@@ -810,6 +826,7 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
             ("004_fusion_runtime_config_snapshot", 1),
             ("005_pipeline_runtime_status", 1),
             ("006_s3_object_receipts", 1),
+            ("007_r1_archive_publications", 1),
         ]
     finally:
         setup_connection.rollback()

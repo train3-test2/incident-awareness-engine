@@ -20,7 +20,7 @@ from incident_awareness.collection.collector.sysmon_jsonl import (
     SysmonJsonlRecord,
     read_sysmon_jsonl,
 )
-from incident_awareness.common.models.event import NORMALIZED_EVENT_SCHEMA_VERSION
+from incident_awareness.common.models.event import NORMALIZED_EVENT_SCHEMA_VERSION, NormalizedEvent
 from incident_awareness.common.models.fusion import FusionResult
 from incident_awareness.common.models.pipeline_runtime import PipelineStage
 from incident_awareness.common.models.result import DecisionResult
@@ -36,6 +36,11 @@ from incident_awareness.pipeline.event_evidence import normalize_sysmon_and_extr
 from incident_awareness.pipeline.fusion import run_s0_fusion_with_trace
 from incident_awareness.pipeline.hybrid import combine_parallel_decision
 from incident_awareness.pipeline.persistence import DatabaseConnection, persist_s0_results
+from incident_awareness.pipeline.r1_production import (
+    R1GeneratedArchive,
+    R1ProductionConfig,
+    generate_r1_production_archive,
+)
 from incident_awareness.pipeline.reporting import PipelineExecutionSummary, build_execution_summary
 from incident_awareness.pipeline.runner import (
     _bootstrap_runtime_tracker,
@@ -101,6 +106,7 @@ class StandalonePreparedRun:
 
     output_dir: Path
     inputs: PipelineInputs
+    r1_production_config: R1ProductionConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +115,7 @@ class StandaloneExecution:
 
     output_dir: Path
     summary: PipelineExecutionSummary
+    r1_archive: R1GeneratedArchive | None = None
     _runtime_tracker: PipelineRuntimeTracker | None = dataclass_field(
         default=None,
         repr=False,
@@ -190,6 +197,7 @@ def prepare_standalone_run(
     target_host: str | None = None,
     entity_id: str | None = None,
     fusion_config_path: Path | None = None,
+    r1_production_config: R1ProductionConfig | None = None,
     output_dir_reserved: bool = False,
 ) -> StandalonePreparedRun:
     """Validate JSONL and materialize the minimum runnable First Cycle inputs."""
@@ -254,6 +262,7 @@ def prepare_standalone_run(
             decision_id=decision_id,
             decision_config_version=execution_config.decision_config_version,
         ),
+        r1_production_config=r1_production_config,
     )
 
 
@@ -270,7 +279,7 @@ def run_prepared_standalone_run(
     transaction-owning ``run_standalone_sysmon_jsonl()`` path retains the tracker
     and publishes its terminal state after the caller confirms the commit.
     """
-    summary, runtime_tracker = _run_prepared_standalone_stages(
+    summary, runtime_tracker, _ = _run_prepared_standalone_stages(
         prepared,
         connection=connection,
         commit=commit,
@@ -287,7 +296,11 @@ def _run_prepared_standalone_stages(
     connection: DatabaseConnection,
     commit: bool,
     runtime_observer: PipelineRuntimeObserver | None,
-) -> tuple[PipelineExecutionSummary, PipelineRuntimeTracker | None]:
+) -> tuple[
+    PipelineExecutionSummary,
+    PipelineRuntimeTracker | None,
+    R1GeneratedArchive | None,
+]:
     started_at = _capture_runtime_started_at()
     artifacts = _run_stage(
         PipelineStage.ARTIFACT_VALIDATION,
@@ -312,6 +325,13 @@ def _run_prepared_standalone_stages(
         ),
         runtime_tracker=runtime_tracker,
     )
+    r1_archive = None
+    if getattr(prepared, "r1_production_config", None) is not None:
+        r1_archive = _generate_r1_archive_if_configured(
+            prepared,
+            events=normalized_artifacts.events,
+            run_id=artifacts.run_metadata.run_id,
+        )
     fusion_output = _run_stage(
         PipelineStage.FUSION,
         lambda: run_s0_fusion_with_trace(prepared.inputs, artifacts, normalized_artifacts),
@@ -358,7 +378,31 @@ def _run_prepared_standalone_stages(
             else:
                 runtime_tracker.fail(PipelineStage.PERSISTENCE)
         raise
-    return summary, runtime_tracker
+    return summary, runtime_tracker, r1_archive
+
+
+def _generate_r1_archive_if_configured(
+    prepared: StandalonePreparedRun,
+    *,
+    events: tuple[NormalizedEvent, ...],
+    run_id: str,
+) -> R1GeneratedArchive | None:
+    config = getattr(prepared, "r1_production_config", None)
+    if config is None:
+        return None
+    try:
+        return generate_r1_production_archive(
+            events,
+            run_id=run_id,
+            output_directory=prepared.output_dir / "r1",
+            config=config,
+        )
+    except Exception:
+        _LOGGER.exception(
+            "R1 production Evidence generation failed",
+            extra={"run_id": run_id, "failure_boundary": "r1_evidence_generation"},
+        )
+        raise
 
 
 def _load_ordered_standalone_artifacts(prepared: StandalonePreparedRun) -> S0PipelineArtifacts:
@@ -397,6 +441,7 @@ def run_standalone_sysmon_jsonl(
     target_host: str | None = None,
     entity_id: str | None = None,
     fusion_config_path: Path | None = None,
+    r1_production_config: R1ProductionConfig | None = None,
     runtime_observer: PipelineRuntimeObserver | None = None,
 ) -> StandaloneExecution:
     """Run one standalone Sysmon JSONL execution in the caller's transaction.
@@ -417,9 +462,10 @@ def run_standalone_sysmon_jsonl(
             target_host=target_host,
             entity_id=entity_id,
             fusion_config_path=fusion_config_path,
+            r1_production_config=r1_production_config,
             output_dir_reserved=True,
         )
-        summary, runtime_tracker = _run_prepared_standalone_stages(
+        summary, runtime_tracker, r1_archive = _run_prepared_standalone_stages(
             prepared,
             connection=connection,
             commit=False,
@@ -432,6 +478,7 @@ def run_standalone_sysmon_jsonl(
     return StandaloneExecution(
         output_dir=prepared.output_dir,
         summary=summary,
+        r1_archive=r1_archive,
         _runtime_tracker=runtime_tracker,
     )
 

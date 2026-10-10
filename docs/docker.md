@@ -61,7 +61,9 @@ Dockerfile은 다음 환경 변수를 설정한다.
 초기화하면 `infra/postgres/migrations/` 디렉터리가
 `/docker-entrypoint-initdb.d`에 mount되고, SQL 파일이 filename 순서대로 실행된다.
 현재 초기화 대상은 `001_first_cycle.sql`, `002_fusion_stopping_trace.sql`,
-`003_decision_runtime_snapshot.sql`, `004_fusion_runtime_config_snapshot.sql`이다.
+`003_decision_runtime_snapshot.sql`, `004_fusion_runtime_config_snapshot.sql`,
+`005_pipeline_runtime_status.sql`, `006_s3_object_receipts.sql`,
+`007_r1_archive_publications.sql`이다.
 
 이미 초기화된 named volume에는 PostgreSQL initdb script가 자동으로 다시 실행되지 않는다.
 새 migration이 추가된 뒤 기존 volume을 유지하려면 DB 연결 환경 변수

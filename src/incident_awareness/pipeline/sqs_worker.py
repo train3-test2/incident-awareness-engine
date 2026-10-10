@@ -22,12 +22,22 @@ from botocore.client import BaseClient
 from botocore.exceptions import BotoCoreError, ClientError
 from psycopg import OperationalError
 
+from incident_awareness.pipeline.r1_production import (
+    R1ArchiveConflictError,
+    R1ArchiveUploadError,
+    load_r1_production_config,
+    publish_r1_archive,
+)
 from incident_awareness.pipeline.runtime_telemetry import (
     PipelineRuntimeObserver,
     PostgresPipelineRuntimeObserver,
 )
 from incident_awareness.pipeline.standalone import StandaloneExecution, run_standalone_sysmon_jsonl
 from incident_awareness.storage.config import DatabaseConfig
+from incident_awareness.storage.repositories.r1_archive_publication_repository import (
+    R1ArchivePublication,
+    R1ArchivePublicationRepository,
+)
 from incident_awareness.storage.repositories.s3_object_receipt_repository import (
     S3ObjectReceiptRepository,
 )
@@ -66,6 +76,20 @@ class SuccessfulReceiptStore(Protocol):
     def release_execution(self) -> None: ...
 
     def rollback(self) -> None: ...
+
+
+class R1ArchivePublicationStore(Protocol):
+    """Persist and transition generic R1 archive outbox entries."""
+
+    def get(self, run_id: str) -> R1ArchivePublication | None: ...
+
+    def save_pending(self, publication: R1ArchivePublication) -> R1ArchivePublication: ...
+
+    def mark_retryable(self, run_id: str, error: Exception) -> None: ...
+
+    def mark_published(self, run_id: str) -> None: ...
+
+    def mark_failed(self, run_id: str, error: Exception) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +137,42 @@ class _PostgresSuccessfulReceiptStore:
         self._connection.rollback()
 
 
+class _PostgresR1ArchivePublicationStore:
+    """Use the Worker transaction for outbox creation and later state commits."""
+
+    def __init__(self, connection: psycopg.Connection[tuple[object, ...]]) -> None:
+        self._connection = connection
+        self._repository = R1ArchivePublicationRepository(connection)
+
+    def get(self, run_id: str) -> R1ArchivePublication | None:
+        return self._repository.get(run_id)
+
+    def save_pending(self, publication: R1ArchivePublication) -> R1ArchivePublication:
+        return self._repository.save_pending(publication)
+
+    def mark_retryable(self, run_id: str, error: Exception) -> None:
+        self._repository.update_status(
+            run_id,
+            status="retryable",
+            error_type=type(error).__name__,
+            error_message=str(error),
+        )
+        self._connection.commit()
+
+    def mark_published(self, run_id: str) -> None:
+        self._repository.update_status(run_id, status="published")
+        self._connection.commit()
+
+    def mark_failed(self, run_id: str, error: Exception) -> None:
+        self._repository.update_status(
+            run_id,
+            status="failed",
+            error_type=type(error).__name__,
+            error_message=str(error),
+        )
+        self._connection.commit()
+
+
 def parse_s3_sysmon_inputs(message_body: str, *, expected_bucket: str) -> tuple[S3SysmonInput, ...]:
     """Parse a direct S3 Event Notification body into validated Worker inputs.
 
@@ -156,6 +216,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     namespace = build_parser().parse_args(argv)
     database_config = DatabaseConfig.from_environment()
+    r1_production_config = load_r1_production_config(os.environ)
     with psycopg.connect(database_config.url, autocommit=False) as connection:
 
         def run_standalone(
@@ -167,6 +228,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 sysmon_jsonl_path=sysmon_jsonl_path,
                 output_root=output_root,
                 connection=connection,
+                r1_production_config=r1_production_config,
                 runtime_observer=runtime_observer,
             )
 
@@ -177,6 +239,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             s3_client=boto3.client("s3"),
             run_standalone=run_standalone,
             receipt_store=_PostgresSuccessfulReceiptStore(connection),
+            publication_store=(
+                _PostgresR1ArchivePublicationStore(connection)
+                if r1_production_config is not None
+                else None
+            ),
             runtime_observer_factory=PostgresPipelineRuntimeObserver,
             once=namespace.once,
         )
@@ -193,6 +260,7 @@ def run_worker(
         StandaloneExecution,
     ],
     receipt_store: SuccessfulReceiptStore | None = None,
+    publication_store: R1ArchivePublicationStore | None = None,
     runtime_observer_factory: Callable[[], PostgresPipelineRuntimeObserver] | None = None,
     once: bool = False,
 ) -> int:
@@ -222,6 +290,7 @@ def run_worker(
                     s3_client=s3_client,
                     run_standalone=run_standalone,
                     receipt_store=receipt_store,
+                    publication_store=publication_store,
                     runtime_observer_factory=runtime_observer_factory,
                 )
             except PermanentWorkerError:
@@ -261,6 +330,7 @@ def _process_message(
         StandaloneExecution,
     ],
     receipt_store: SuccessfulReceiptStore | None = None,
+    publication_store: R1ArchivePublicationStore | None = None,
     runtime_observer_factory: Callable[[], PostgresPipelineRuntimeObserver] | None = None,
 ) -> None:
     if not isinstance(message, Mapping):
@@ -279,8 +349,19 @@ def _process_message(
                 receipt_store.acquire_execution(input_object) if receipt_store is not None else None
             )
             if prior_run_id is not None:
+                if publication_store is not None:
+                    publication = publication_store.get(prior_run_id)
+                    if publication is not None:
+                        _publish_durable_r1_archive(
+                            publication,
+                            s3_client=s3_client,
+                            publication_store=publication_store,
+                        )
+                    else:
+                        receipt_store.release_execution()
+                else:
+                    receipt_store.release_execution()
                 _log_input_status("skipped", input_uri=_s3_uri(input_object), run_id=prior_run_id)
-                receipt_store.release_execution()
                 continue
             input_dir = _input_directory(work_root, input_object)
             input_dir.mkdir()
@@ -311,8 +392,26 @@ def _process_message(
                             raise RetryableWorkerError(
                                 "standalone First Cycle returned a blank run_id"
                             )
+                        publication: R1ArchivePublication | None = None
+                        if execution.r1_archive is not None:
+                            if receipt_store is None or publication_store is None:
+                                raise RetryableWorkerError(
+                                    "R1 production requires durable receipt and publication stores"
+                                )
+                            try:
+                                publication = publication_store.save_pending(
+                                    execution.r1_archive.to_publication()
+                                )
+                            except ValueError as error:
+                                raise PermanentWorkerError(str(error)) from error
                         if receipt_store is not None:
                             receipt_store.save_success(input_object, run_id=run_id)
+                        if publication is not None:
+                            _publish_durable_r1_archive(
+                                publication,
+                                s3_client=s3_client,
+                                publication_store=publication_store,
+                            )
                     except Exception:
                         if execution is not None:
                             # A commit exception can have an indeterminate server outcome.  This
@@ -397,6 +496,79 @@ def _log_input_status(status: str, *, input_uri: str, run_id: str | None = None)
     _LOGGER.info("%s", json.dumps(payload, sort_keys=True))
 
 
+def _publish_durable_r1_archive(
+    publication: R1ArchivePublication,
+    *,
+    s3_client: BaseClient,
+    publication_store: R1ArchivePublicationStore,
+) -> None:
+    if publication.status == "failed":
+        raise PermanentWorkerError("R1 archive publication is in terminal failed state")
+    try:
+        result = publish_r1_archive(publication, s3_client=s3_client)
+    except R1ArchiveConflictError as error:
+        _record_publication_failure(
+            publication_store.mark_failed,
+            publication.run_id,
+            error,
+        )
+        _log_r1_archive_status("conflict", publication, error=error)
+        raise PermanentWorkerError(str(error)) from error
+    except R1ArchiveUploadError as error:
+        _record_publication_failure(
+            publication_store.mark_retryable,
+            publication.run_id,
+            error,
+        )
+        _log_r1_archive_status("retryable", publication, error=error)
+        raise RetryableWorkerError(str(error)) from error
+
+    try:
+        publication_store.mark_published(publication.run_id)
+    except (OperationalError, OSError) as error:
+        retryable = RetryableWorkerError(
+            "R1 archive objects were verified but the published state commit failed"
+        )
+        retryable.add_note(f"{type(error).__name__}: {error}")
+        raise retryable from error
+
+    status = "idempotent" if result.existing_keys and not result.uploaded_keys else "published"
+    _log_r1_archive_status(status, publication)
+
+
+def _record_publication_failure(
+    recorder: Callable[[str, Exception], None],
+    run_id: str,
+    error: Exception,
+) -> None:
+    try:
+        recorder(run_id, error)
+    except Exception as state_error:  # noqa: BLE001 - 원래 publication 오류를 보존한다.
+        error.add_note(
+            "R1 archive failure-state recording also failed: "
+            f"{type(state_error).__name__}: {state_error}"
+        )
+
+
+def _log_r1_archive_status(
+    status: str,
+    publication: R1ArchivePublication,
+    *,
+    error: Exception | None = None,
+) -> None:
+    payload = {
+        "event": "r1_archive_publication",
+        "run_id": publication.run_id,
+        "bucket": publication.bucket,
+        "prefix": publication.object_prefix,
+        "status": status,
+    }
+    if error is not None:
+        payload["error_type"] = type(error).__name__
+        payload["error_message"] = str(error)
+    _LOGGER.info("%s", json.dumps(payload, sort_keys=True))
+
+
 def _rollback_receipt_store(receipt_store: SuccessfulReceiptStore | None) -> None:
     if receipt_store is not None:
         receipt_store.rollback()
@@ -477,6 +649,7 @@ def _required_string(value: Mapping[str, object], name: str) -> str:
 
 __all__ = [
     "PermanentWorkerError",
+    "R1ArchivePublicationStore",
     "RetryableWorkerError",
     "S3SysmonInput",
     "SuccessfulReceiptStore",
