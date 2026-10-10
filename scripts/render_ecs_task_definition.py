@@ -6,6 +6,15 @@ import argparse
 import json
 from pathlib import Path
 
+_R1_PLACEHOLDERS = (
+    "R1_FAMILY_ID",
+    "R1_APPROVED_POLICY_ID",
+    "R1_APPROVED_POLICY_VERSION",
+    "R1_APPROVED_POLICY_CONFIG_HASH",
+    "R1_ARCHIVE_BUCKET",
+    "R1_ARCHIVE_PREFIX",
+)
+
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -29,6 +38,7 @@ def parse_arguments() -> argparse.Namespace:
 
 def render(template: str, replacements: dict[str, str | None]) -> str:
     definition = json.loads(template)
+    _configure_optional_r1_environment(definition, template, replacements)
 
     def replace_values(value: object) -> object:
         if isinstance(value, str):
@@ -73,6 +83,39 @@ def render(template: str, replacements: dict[str, str | None]) -> str:
         raise ValueError(message)
 
     return rendered
+
+
+def _configure_optional_r1_environment(
+    definition: object,
+    template: str,
+    replacements: dict[str, str | None],
+) -> None:
+    placeholders = tuple(placeholder for placeholder in _R1_PLACEHOLDERS if placeholder in template)
+    if not placeholders:
+        return
+
+    supplied = tuple(bool(replacements.get(placeholder)) for placeholder in placeholders)
+    if any(supplied) and not all(supplied):
+        raise ValueError("R1 task-definition values must be supplied all-or-none.")
+    if all(supplied):
+        return
+    if not isinstance(definition, dict):
+        return
+
+    containers = definition.get("containerDefinitions")
+    if not isinstance(containers, list):
+        return
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        environment = container.get("environment")
+        if not isinstance(environment, list):
+            continue
+        container["environment"] = [
+            item
+            for item in environment
+            if not (isinstance(item, dict) and item.get("value") in placeholders)
+        ]
 
 
 def main() -> None:

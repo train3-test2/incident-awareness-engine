@@ -351,15 +351,14 @@ def _process_message(
             if prior_run_id is not None:
                 if publication_store is not None:
                     publication = publication_store.get(prior_run_id)
-                    if publication is None:
-                        raise PermanentWorkerError(
-                            "successful R1 receipt has no durable archive publication state"
+                    if publication is not None:
+                        _publish_durable_r1_archive(
+                            publication,
+                            s3_client=s3_client,
+                            publication_store=publication_store,
                         )
-                    _publish_durable_r1_archive(
-                        publication,
-                        s3_client=s3_client,
-                        publication_store=publication_store,
-                    )
+                    else:
+                        receipt_store.release_execution()
                 else:
                     receipt_store.release_execution()
                 _log_input_status("skipped", input_uri=_s3_uri(input_object), run_id=prior_run_id)

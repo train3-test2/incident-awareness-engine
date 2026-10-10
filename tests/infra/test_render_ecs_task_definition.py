@@ -97,6 +97,60 @@ def test_render_replaces_all_worker_identifiers() -> None:
     ]
 
 
+def test_render_allows_worker_without_any_r1_configuration() -> None:
+    # Given
+    template = (ROOT / "infra" / "ecs" / "task-definition.first-cycle-worker.json").read_text(
+        encoding="utf-8"
+    )
+    replacements = {
+        "IMAGE_URI": "registry.example/engine:abc123",
+        "EXECUTION_ROLE_ARN": "arn:aws:iam::123456789012:role/execution",
+        "TASK_ROLE_ARN": "arn:aws:iam::123456789012:role/task",
+        "DATABASE_URL_SECRET_ARN": "arn:aws:secretsmanager:region:123456789012:secret:db",
+        "SQS_QUEUE_URL": "https://sqs.region.amazonaws.com/123456789012/queue",
+        "S3_INPUT_BUCKET": "first-cycle-inputs",
+    }
+
+    # When
+    rendered = MODULE.render(template, replacements)
+    environment = json.loads(rendered)["containerDefinitions"][0]["environment"]
+
+    # Then
+    assert environment == [
+        {
+            "name": "INCIDENT_AWARENESS_SQS_QUEUE_URL",
+            "value": "https://sqs.region.amazonaws.com/123456789012/queue",
+        },
+        {
+            "name": "INCIDENT_AWARENESS_S3_INPUT_BUCKET",
+            "value": "first-cycle-inputs",
+        },
+    ]
+
+
+def test_render_rejects_partial_worker_r1_configuration() -> None:
+    # Given
+    template = (ROOT / "infra" / "ecs" / "task-definition.first-cycle-worker.json").read_text(
+        encoding="utf-8"
+    )
+    replacements = {
+        "IMAGE_URI": "registry.example/engine:abc123",
+        "EXECUTION_ROLE_ARN": "arn:aws:iam::123456789012:role/execution",
+        "TASK_ROLE_ARN": "arn:aws:iam::123456789012:role/task",
+        "DATABASE_URL_SECRET_ARN": "arn:aws:secretsmanager:region:123456789012:secret:db",
+        "SQS_QUEUE_URL": "https://sqs.region.amazonaws.com/123456789012/queue",
+        "S3_INPUT_BUCKET": "first-cycle-inputs",
+        "R1_FAMILY_ID": "remote_management",
+    }
+
+    # When
+    with pytest.raises(ValueError, match="all-or-none"):
+        MODULE.render(template, replacements)
+
+    # Then
+    assert "R1_APPROVED_POLICY_ID" not in replacements
+
+
 def test_render_replaces_all_dashboard_identifiers() -> None:
     # Given
     template = (ROOT / "infra" / "ecs" / "task-definition.dashboard.json").read_text(

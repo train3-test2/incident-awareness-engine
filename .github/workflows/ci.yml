@@ -117,12 +117,23 @@ jobs:
           AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
         run: |
           set -euo pipefail
-          for value in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SUBNET_IDS ECS_SECURITY_GROUP_IDS ECS_EXECUTION_ROLE_ARN ECS_FIRST_CYCLE_TASK_ROLE_ARN ECS_FIRST_CYCLE_WORKER_SERVICE FIRST_CYCLE_DATABASE_URL_SECRET_ARN FIRST_CYCLE_S3_BUCKET FIRST_CYCLE_SQS_QUEUE_URL R1_FAMILY_ID R1_APPROVED_POLICY_ID R1_APPROVED_POLICY_VERSION R1_APPROVED_POLICY_CONFIG_HASH R1_ARCHIVE_BUCKET R1_ARCHIVE_PREFIX; do
+          for value in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SUBNET_IDS ECS_SECURITY_GROUP_IDS ECS_EXECUTION_ROLE_ARN ECS_FIRST_CYCLE_TASK_ROLE_ARN ECS_FIRST_CYCLE_WORKER_SERVICE FIRST_CYCLE_DATABASE_URL_SECRET_ARN FIRST_CYCLE_S3_BUCKET FIRST_CYCLE_SQS_QUEUE_URL; do
             if [ -z "${!value}" ]; then
               echo "GitHub Actions variable $value must be configured."
               exit 1
             fi
           done
+
+          r1_config_count=0
+          for value in R1_FAMILY_ID R1_APPROVED_POLICY_ID R1_APPROVED_POLICY_VERSION R1_APPROVED_POLICY_CONFIG_HASH R1_ARCHIVE_BUCKET R1_ARCHIVE_PREFIX; do
+            if [ -n "${!value}" ]; then
+              r1_config_count=$((r1_config_count + 1))
+            fi
+          done
+          if [ "$r1_config_count" -ne 0 ] && [ "$r1_config_count" -ne 6 ]; then
+            echo "R1 GitHub Actions variables must be configured all-or-none."
+            exit 1
+          fi
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5

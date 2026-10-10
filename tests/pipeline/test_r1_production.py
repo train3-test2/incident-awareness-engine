@@ -35,6 +35,7 @@ class _FakeS3:
     def __init__(self, *, fail_once_key: str | None = None) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
         self.operations: list[tuple[str, str]] = []
+        self.if_none_match_values: list[object] = []
         self.fail_once_key = fail_once_key
 
     def get_object(self, *, Bucket: str, Key: str) -> dict[str, BytesIO]:
@@ -46,12 +47,21 @@ class _FakeS3:
 
     def put_object(self, *, Bucket: str, Key: str, Body: bytes, **_: object) -> None:
         self.operations.append(("put", Key))
+        self.if_none_match_values.append(_.get("IfNoneMatch"))
         if self.fail_once_key == Key:
             self.fail_once_key = None
             raise ClientError({"Error": {"Code": "SlowDown"}}, "PutObject")
         if (Bucket, Key) in self.objects:
             raise ClientError({"Error": {"Code": "PreconditionFailed"}}, "PutObject")
         self.objects[(Bucket, Key)] = Body
+
+
+class _AccessDeniedForMissingGetS3(_FakeS3):
+    def get_object(self, *, Bucket: str, Key: str) -> dict[str, BytesIO]:
+        if (Bucket, Key) not in self.objects:
+            self.operations.append(("get", Key))
+            raise ClientError({"Error": {"Code": "AccessDenied"}}, "GetObject")
+        return super().get_object(Bucket=Bucket, Key=Key)
 
 
 def _publication() -> R1ArchivePublication:
@@ -254,6 +264,24 @@ def test_publishes_evidence_before_summary() -> None:
     assert put_keys == [f"{_PREFIX}/r1_evidence.jsonl", f"{_PREFIX}/r1_extraction_summary.json"]
     assert result.uploaded_keys == tuple(put_keys)
     assert result.existing_keys == ()
+    assert s3.operations[0] == ("put", f"{_PREFIX}/r1_evidence.jsonl")
+    assert s3.if_none_match_values == ["*", "*"]
+
+
+def test_first_publish_does_not_get_a_missing_key_when_s3_would_return_access_denied() -> None:
+    # Given
+    s3 = _AccessDeniedForMissingGetS3()
+
+    # When
+    result = publish_r1_archive(_publication(), s3_client=s3)  # type: ignore[arg-type]
+
+    # Then
+    assert result.existing_keys == ()
+    assert result.uploaded_keys == (
+        f"{_PREFIX}/r1_evidence.jsonl",
+        f"{_PREFIX}/r1_extraction_summary.json",
+    )
+    assert s3.operations[0] == ("put", f"{_PREFIX}/r1_evidence.jsonl")
 
 
 def test_partial_evidence_upload_continues_with_summary_on_retry() -> None:
@@ -277,6 +305,7 @@ def test_identical_completed_archive_is_idempotent() -> None:
     s3 = _FakeS3()
     publication = _publication()
     publish_r1_archive(publication, s3_client=s3)  # type: ignore[arg-type]
+    s3.operations.clear()
 
     # When
     result = publish_r1_archive(publication, s3_client=s3)  # type: ignore[arg-type]
@@ -287,6 +316,12 @@ def test_identical_completed_archive_is_idempotent() -> None:
         f"{_PREFIX}/r1_evidence.jsonl",
         f"{_PREFIX}/r1_extraction_summary.json",
     )
+    assert s3.operations == [
+        ("put", f"{_PREFIX}/r1_evidence.jsonl"),
+        ("get", f"{_PREFIX}/r1_evidence.jsonl"),
+        ("put", f"{_PREFIX}/r1_extraction_summary.json"),
+        ("get", f"{_PREFIX}/r1_extraction_summary.json"),
+    ]
 
 
 def test_existing_different_content_fails_closed_without_overwrite() -> None:
@@ -301,7 +336,7 @@ def test_existing_different_content_fails_closed_without_overwrite() -> None:
 
     # Then
     assert s3.objects[(_BUCKET, evidence_key)] == b"different"
-    assert all(operation != "put" for operation, _ in s3.operations)
+    assert s3.operations == [("put", evidence_key), ("get", evidence_key)]
 
 
 def test_rejects_outbox_payload_outside_canonical_archive_prefix() -> None:

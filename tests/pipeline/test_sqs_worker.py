@@ -307,6 +307,38 @@ def test_worker_skips_a_successfully_receipted_s3_object_version(
     assert any('"status": "skipped"' in record.getMessage() for record in caplog.records)
 
 
+@pytest.mark.parametrize("receipt_origin", ("pre-r1", "s0-only"))
+def test_worker_skips_legacy_successful_receipt_without_publication(
+    receipt_origin: str,
+) -> None:
+    # Given
+    receipts = _FakeReceiptStore()
+    receipts.successful_run_ids[(_BUCKET, _KEY, "opaque-etag")] = "RUN-20261005-001"
+    publications = _FakePublicationStore([])
+    calls: list[tuple[Path, Path]] = []
+    sqs = _FakeSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": receipt_origin}])
+
+    # When
+    result = run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=sqs,
+        s3_client=_FakeS3(),
+        run_standalone=_successful_standalone(calls),
+        receipt_store=receipts,
+        publication_store=publications,
+        once=True,
+    )
+
+    # Then
+    assert result == 0
+    assert calls == []
+    assert sqs.deleted_receipts == [receipt_origin]
+    assert receipts.released_executions == 1
+    assert receipts.rollbacks == 0
+    assert publications.publications == {}
+
+
 def test_worker_completes_after_receipt_commit_and_closes_per_run_observer() -> None:
     # Given
     first_record = _s3_event(e_tag="first-version")["Records"][0]

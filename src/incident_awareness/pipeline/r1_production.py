@@ -253,11 +253,6 @@ def _put_immutable_object(
     content: bytes,
     expected_sha256: str,
 ) -> bool:
-    existing = _read_s3_object(s3_client, bucket=bucket, key=key)
-    if existing is not None:
-        _validate_existing_content(existing, key=key, expected_sha256=expected_sha256)
-        return False
-
     try:
         s3_client.put_object(
             Bucket=bucket,
