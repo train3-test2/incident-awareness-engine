@@ -1,5 +1,6 @@
 import json
 from datetime import UTC, datetime, timedelta
+from inspect import signature
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from incident_awareness.evidence.r1_approved_lineage_policy import (
 )
 from incident_awareness.evidence.r1_reference_policy import (
     DEFAULT_R1_REFERENCE_POLICIES_PATH,
+    R1_REFERENCE_POLICY_LOADER_VERSION,
     R1WmiActionResult,
     load_r1_reference_policies,
     load_r1_reference_policy,
@@ -19,7 +21,9 @@ from incident_awareness.evidence.r1_reference_policy import (
     validate_normal_reference_fields,
 )
 from incident_awareness.pipeline.r1_artifacts import (
+    R1_COLLECTION_PROVENANCE_CONTRACT_VERSION,
     R1_COLLECTION_PROVENANCE_FILENAME,
+    build_r1_collection_provenance,
     load_r1_collection_provenance,
 )
 from incident_awareness.pipeline.r1_artifacts import (
@@ -42,7 +46,6 @@ def write_r1_collection_provenance(selection, *, run_id: str, output_directory: 
         scenario_identifier="scenarios/R1/wmi-v01.json",
         scenario_version="v1",
         execution_commit="0123456789abcdef",
-        loader_version="r1-reference-policy-loader-v0.1",
     )
 
 
@@ -97,6 +100,8 @@ def _reference_event(
     run_id: str = "RUN-20261010-001",
     host_id: str = "TARGET-A",
     reference_time: datetime = _REFERENCE_TIME,
+    source_event_id: str = "42001",
+    source_record_id: str | None = "42001",
 ) -> NormalizedEvent:
     return NormalizedEvent.model_validate(
         {
@@ -110,11 +115,11 @@ def _reference_event(
             "host_id": host_id,
             "source": "sysmon",
             "source_layer": "raw_telemetry",
-            "source_event_id": "42001",
+            "source_event_id": source_event_id,
             "event_type": "process_create",
             "raw_ref": {
                 "raw_log_id": "RAW-R1-WMI-REFERENCE",
-                "source_record_id": "42001",
+                "source_record_id": source_record_id,
                 "segment_no": 1,
                 "record_no": 10,
                 "parser_id": "sysmon-normalizer",
@@ -378,7 +383,8 @@ def test_writes_and_loads_reference_policy_runtime_provenance(tmp_path: Path) ->
     assert payload["reference_event_id"] == "evt-reference"
     assert payload["action_process_id"] == 4100
     assert payload["execution_commit"] == "0123456789abcdef"
-    assert payload["loader_version"] == "r1-reference-policy-loader-v0.1"
+    assert payload["loader_version"] == R1_REFERENCE_POLICY_LOADER_VERSION
+    assert payload["contract_version"] == R1_COLLECTION_PROVENANCE_CONTRACT_VERSION
 
 
 def test_collection_provenance_serialization_is_deterministic(tmp_path: Path) -> None:
@@ -447,6 +453,61 @@ def test_collection_provenance_loader_rejects_unknown_fields(tmp_path: Path) -> 
     assert payload["unknown"] == "value"
 
 
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("contract_version", "v9.9"),
+        ("contract_version", None),
+        ("loader_version", "spoofed-loader"),
+        ("loader_version", None),
+    ],
+)
+def test_collection_provenance_loader_rejects_wrong_or_missing_implementation_versions(
+    tmp_path: Path,
+    field_name: str,
+    invalid_value: str | None,
+) -> None:
+    # Given
+    selection = _resolve((_reference_event(),))
+    _, provenance_path = write_r1_collection_provenance(
+        selection,
+        run_id=selection.run_id,
+        output_directory=tmp_path,
+    )
+    payload = json.loads(provenance_path.read_text(encoding="utf-8"))
+    if invalid_value is None:
+        del payload[field_name]
+    else:
+        payload[field_name] = invalid_value
+    provenance_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    # When
+    with pytest.raises(ValueError, match="does not match the writer contract"):
+        load_r1_collection_provenance(tmp_path)
+
+    # Then
+    assert payload.get(field_name) != (
+        R1_COLLECTION_PROVENANCE_CONTRACT_VERSION
+        if field_name == "contract_version"
+        else R1_REFERENCE_POLICY_LOADER_VERSION
+    )
+
+
+def test_collection_provenance_versions_are_not_caller_controlled() -> None:
+    # Given
+    writer_parameters = signature(_write_r1_collection_provenance).parameters
+    builder_parameters = signature(build_r1_collection_provenance).parameters
+
+    # When
+    caller_controlled_parameters = {
+        "contract_version",
+        "loader_version",
+    } & (writer_parameters.keys() | builder_parameters.keys())
+
+    # Then
+    assert caller_controlled_parameters == set()
+
+
 def test_process_name_alone_does_not_select_reference() -> None:
     # Given
     reference_event = _reference_event()
@@ -511,8 +572,58 @@ def test_reference_candidate_window_rejects_outside(offset_seconds: int) -> None
     event = _reference_event(reference_time=_REFERENCE_TIME + timedelta(seconds=offset_seconds))
 
     # When / Then
-    with pytest.raises(ValueError, match="outside the A01 candidate window"):
+    with pytest.raises(ValueError, match="candidate count must be exactly 1, found 0"):
         _resolve((event,), action_result=_action_result(invoked_at_utc=_REFERENCE_TIME))
+
+
+def test_candidate_cardinality_is_evaluated_after_time_filtering() -> None:
+    # Given
+    inside = _reference_event()
+    outside_guid = "{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}"
+    outside = _reference_event(
+        event_id="evt-outside",
+        process_guid=outside_guid,
+        reference_time=_REFERENCE_TIME + timedelta(seconds=3),
+        source_event_id="42002",
+        source_record_id="42002",
+    )
+
+    # When
+    selection = _resolve(
+        (inside, outside),
+        action_attributed_event_ids=(inside.event_id, outside.event_id),
+        lineage_process_guids=(_CONTEXT_GUID, _REFERENCE_GUID, outside_guid),
+        action_result=_action_result(invoked_at_utc=_REFERENCE_TIME),
+    )
+
+    # Then
+    assert selection.reference_event_id == inside.event_id
+
+
+@pytest.mark.parametrize(
+    ("source_event_id", "source_record_id"),
+    [
+        ("42001", None),
+        ("42001", "not-an-integer"),
+        ("42001", "042001"),
+        ("42001", "+42001"),
+        ("42001", " 42001"),
+        ("42001", "42002"),
+    ],
+)
+def test_reference_requires_matching_canonical_sysmon_record_id(
+    source_event_id: str,
+    source_record_id: str | None,
+) -> None:
+    # Given
+    event = _reference_event(
+        source_event_id=source_event_id,
+        source_record_id=source_record_id,
+    )
+
+    # When / Then
+    with pytest.raises(ValueError, match="source_record_id|source_event_id"):
+        _resolve((event,))
 
 
 def test_rejects_multiple_reference_candidates() -> None:
@@ -579,7 +690,7 @@ def test_rejects_reference_event_before_candidate_window() -> None:
     action_result = _action_result(invoked_at_utc=_REFERENCE_TIME + timedelta(seconds=3))
 
     # When
-    with pytest.raises(ValueError, match="outside the A01 candidate window"):
+    with pytest.raises(ValueError, match="candidate count must be exactly 1, found 0"):
         _resolve((reference_event,), action_result=action_result)
 
     # Then

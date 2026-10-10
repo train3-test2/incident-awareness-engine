@@ -28,6 +28,7 @@ from incident_awareness.common.models.event import NormalizedEvent
 DEFAULT_R1_REFERENCE_POLICIES_PATH = (
     Path(__file__).parents[3] / "configs" / "r1_reference_policies_v0.1.yaml"
 )
+R1_REFERENCE_POLICY_LOADER_VERSION = "r1-reference-policy-loader-v0.1"
 
 
 class _UniqueKeySafeLoader(yaml.SafeLoader):
@@ -235,30 +236,34 @@ def resolve_r1_wmi_reference(
         lineage_process_guids,
     )
 
-    candidates = tuple(
+    structural_candidates = tuple(
         event
         for event in event_batch
         if event.event_id in attributed_event_ids
         and _matches_reference_event(event, policy, lineage_guids, action_result)
         and _has_wmi_context_parent(event, event_batch, policy, lineage_guids)
     )
-    if len(candidates) != 1:
-        raise ValueError(f"R1 reference candidate count must be exactly 1, found {len(candidates)}")
-
-    selected = candidates[0]
-    if selected.timestamp_source != "event_time" or selected.event_time is None:
-        raise ValueError("R1 reference Event must carry parsed Sysmon EventData.UtcTime")
+    candidates: list[tuple[NormalizedEvent, str]] = []
     window_start = action_result.invoked_at_utc + timedelta(
         seconds=policy.candidate_start_offset_sec
     )
     window_end = action_result.invoked_at_utc + timedelta(seconds=policy.candidate_window_sec)
-    if not window_start <= selected.event_time <= window_end:
-        raise ValueError("R1 reference Event is outside the A01 candidate window")
+    for event in structural_candidates:
+        if event.timestamp_source != "event_time" or event.event_time is None:
+            raise ValueError("R1 reference Event must carry parsed Sysmon EventData.UtcTime")
+        if not window_start <= event.event_time <= window_end:
+            continue
+        source_record_id = _validate_sysmon_record_id(event)
+        candidates.append((event, source_record_id))
+    if len(candidates) != 1:
+        raise ValueError(f"R1 reference candidate count must be exactly 1, found {len(candidates)}")
+
+    selected, source_record_id = candidates[0]
 
     return R1ReferenceSelection(
         reference_action_id=policy.reference_action_id,
         reference_time=selected.event_time,
-        reference_source_event_id=selected.source_event_id,
+        reference_source_event_id=source_record_id,
         reference_event_id=selected.event_id,
         action_process_id=action_result.process_id,
         policy_id=policy.policy_id,
@@ -455,8 +460,23 @@ def _validate_identity(field_name: str, value: str) -> None:
         raise ValueError(f"{field_name} must not contain surrounding whitespace")
 
 
+def _validate_sysmon_record_id(event: NormalizedEvent) -> str:
+    source_record_id = event.raw_ref.source_record_id
+    if (
+        not isinstance(source_record_id, str)
+        or not source_record_id.isascii()
+        or not source_record_id.isdecimal()
+        or str(int(source_record_id)) != source_record_id
+    ):
+        raise ValueError("R1 reference raw_ref.source_record_id must be canonical decimal")
+    if event.source_event_id != source_record_id:
+        raise ValueError("R1 reference source_event_id must match raw_ref.source_record_id")
+    return source_record_id
+
+
 __all__ = [
     "DEFAULT_R1_REFERENCE_POLICIES_PATH",
+    "R1_REFERENCE_POLICY_LOADER_VERSION",
     "R1ReferencePolicy",
     "R1ReferenceSelection",
     "R1WmiActionResult",

@@ -33,7 +33,10 @@ from incident_awareness.evidence.r1_multi_event import (
     REMOTE_SESSION_PROCESS_LINEAGE_DEVIATION,
     R1ExtractionDiagnostic,
 )
-from incident_awareness.evidence.r1_reference_policy import R1ReferenceSelection
+from incident_awareness.evidence.r1_reference_policy import (
+    R1_REFERENCE_POLICY_LOADER_VERSION,
+    R1ReferenceSelection,
+)
 from incident_awareness.evidence.r1_selector import R1SelectorDiagnostic
 from incident_awareness.pipeline.r1_evidence import (
     R1LineageInput,
@@ -44,6 +47,7 @@ from incident_awareness.pipeline.r1_evidence import (
 R1_EVIDENCE_FILENAME = "r1_evidence.jsonl"
 R1_EXTRACTION_SUMMARY_FILENAME = "r1_extraction_summary.json"
 R1_COLLECTION_PROVENANCE_FILENAME = "r1_collection_provenance.json"
+R1_COLLECTION_PROVENANCE_CONTRACT_VERSION = "v0.1"
 
 type R1ExtractionStatus = Literal["completed", "failed"]
 type R1SelectorStatus = Literal["selected", "failed"]
@@ -75,6 +79,7 @@ class R1CollectionProvenance(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    contract_version: Literal["v0.1"]
     run_id: StrictStr
     scenario_identifier: StrictStr
     scenario_version: StrictStr
@@ -92,7 +97,7 @@ class R1CollectionProvenance(BaseModel):
     reference_event_id: StrictStr
     action_process_id: StrictInt = Field(gt=0)
     execution_commit: StrictStr
-    loader_version: StrictStr
+    loader_version: Literal["r1-reference-policy-loader-v0.1"]
 
     @field_validator(
         "run_id",
@@ -106,7 +111,6 @@ class R1CollectionProvenance(BaseModel):
         "reference_source_event_id",
         "reference_event_id",
         "execution_commit",
-        "loader_version",
     )
     @classmethod
     def validate_non_blank(cls, value: str) -> str:
@@ -363,7 +367,6 @@ def write_r1_collection_provenance(
     scenario_identifier: str,
     scenario_version: str,
     execution_commit: str,
-    loader_version: str,
 ) -> tuple[R1CollectionProvenance, Path]:
     """검증된 reference 선택을 immutable Run provenance artifact로 게시한다."""
     if not isinstance(selection, R1ReferenceSelection):
@@ -378,7 +381,6 @@ def write_r1_collection_provenance(
         scenario_identifier=scenario_identifier,
         scenario_version=scenario_version,
         execution_commit=execution_commit,
-        loader_version=loader_version,
     )
     provenance_path = _collection_provenance_path(output_directory)
     if provenance_path.exists():
@@ -394,7 +396,6 @@ def build_r1_collection_provenance(
     scenario_identifier: str,
     scenario_version: str,
     execution_commit: str,
-    loader_version: str,
 ) -> R1CollectionProvenance:
     """게시 전에 strict collection provenance를 완성한다."""
     if not isinstance(selection, R1ReferenceSelection):
@@ -403,6 +404,7 @@ def build_r1_collection_provenance(
     if selection.run_id != run_id:
         raise ValueError("reference selection run_id must match the requested run_id")
     return R1CollectionProvenance(
+        contract_version=R1_COLLECTION_PROVENANCE_CONTRACT_VERSION,
         run_id=run_id,
         scenario_identifier=scenario_identifier,
         scenario_version=scenario_version,
@@ -424,7 +426,7 @@ def build_r1_collection_provenance(
         reference_event_id=selection.reference_event_id,
         action_process_id=selection.action_process_id,
         execution_commit=execution_commit,
-        loader_version=loader_version,
+        loader_version=R1_REFERENCE_POLICY_LOADER_VERSION,
     )
 
 
@@ -885,6 +887,7 @@ def _publish_files(files: tuple[tuple[Path, bytes], ...]) -> None:
 
 
 __all__ = [
+    "R1_COLLECTION_PROVENANCE_CONTRACT_VERSION",
     "R1_COLLECTION_PROVENANCE_FILENAME",
     "R1_EVIDENCE_FILENAME",
     "R1_EXTRACTION_SUMMARY_FILENAME",

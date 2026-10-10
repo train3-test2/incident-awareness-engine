@@ -57,8 +57,10 @@ def _event(
     process_guid: str,
     process_name: str | None,
     parent_process_guid: str | None = None,
+    source_record_id: str | None = None,
 ) -> NormalizedEvent:
     is_network = event_type == "network_connection"
+    canonical_source_record_id = source_record_id or f"record-{event_id}"
     return NormalizedEvent.model_validate(
         {
             "event_id": event_id,
@@ -71,11 +73,11 @@ def _event(
             "host_id": _HOST_ID,
             "source": "sysmon",
             "source_layer": "raw_telemetry",
-            "source_event_id": f"record-{event_id}",
+            "source_event_id": canonical_source_record_id,
             "event_type": event_type,
             "raw_ref": {
                 "raw_log_id": "RAW-R1-AUTOMATED",
-                "source_record_id": f"record-{event_id}",
+                "source_record_id": canonical_source_record_id,
                 "segment_no": 1,
                 "record_no": 4 if is_network else 1,
                 "parser_id": "sysmon-normalizer",
@@ -157,6 +159,7 @@ def _wmi_events() -> tuple[NormalizedEvent, ...]:
             process_guid=_MIDDLE_GUID,
             process_name="cmd.exe",
             parent_process_guid=_ANCHOR_GUID,
+            source_record_id="42001",
         ),
         _event(
             event_id="evt-wmi-terminal",
@@ -753,7 +756,6 @@ def test_wmi_collection_path_publishes_reference_provenance_artifact(
         scenario_identifier="scenarios/R1/wmi-v01.json",
         scenario_version="v1",
         execution_commit="0123456789abcdef",
-        loader_version="r1-reference-policy-loader-v0.1",
         run_start=_BASE_TIME,
     )
     loaded_provenance = load_r1_collection_provenance(output_directory)
@@ -805,7 +807,6 @@ def test_wmi_collection_reference_failure_publishes_no_artifact(tmp_path: Path) 
             scenario_identifier="scenarios/R1/wmi-v01.json",
             scenario_version="v1",
             execution_commit="0123456789abcdef",
-            loader_version="r1-reference-policy-loader-v0.1",
             run_start=_BASE_TIME,
         )
 

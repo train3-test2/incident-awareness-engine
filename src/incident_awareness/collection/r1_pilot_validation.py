@@ -481,16 +481,24 @@ def _read_expectation(scenario_bytes: bytes, run_type: str) -> R1PilotExpectatio
         destination_port=destination_port,
         identity=identity,
         dataset_tier=_load_dataset_tier(scenario),
-        reference_action_id=_load_reference_action(run, run_type, actions),
+        reference_action_id=_load_reference_action(
+            run,
+            run_type,
+            actions,
+            identity.family_id,
+        ),
         evaluation_horizon_sec=_load_horizon(scenario),
         reference_policy_version=_load_reference_policy_version(scenario, run_metadata),
     )
 
 
 def _load_reference_action(
-    run: dict, run_type: str, actions: tuple[R1ScenarioAction, ...]
+    run: dict,
+    run_type: str,
+    actions: tuple[R1ScenarioAction, ...],
+    family_id: str,
 ) -> str | None:
-    """The reference action of one run type: none for a normal run, the session action for an attack run."""
+    """Load the family-specific attack reference, or require no normal reference."""
     stated = run.get("reference_action_id")
     if run_type != "attack":
         if stated is not None:
@@ -499,6 +507,18 @@ def _load_reference_action(
                 "attack run records a reference"
             )
         return None
+
+    if family_id == "wmi_management":
+        a01 = [action for action in actions if action.action_id == "A01"]
+        if stated != "A01":
+            raise R1ScenarioError(
+                f"runs.attack.reference_action_id must be the WMI action 'A01', found {stated!r}"
+            )
+        if len(a01) != 1 or a01[0].action_type != "wmi_process_create":
+            raise R1ScenarioError(
+                "runs.attack A01 must exist exactly once with action_type 'wmi_process_create'"
+            )
+        return "A01"
 
     begin = [action.action_id for action in actions if action.step == REFERENCE_STEP]
     if len(begin) != 1:

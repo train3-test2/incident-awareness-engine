@@ -143,7 +143,6 @@ def run_and_write_r1_wmi_collection_artifacts(
     scenario_identifier: str,
     scenario_version: str,
     execution_commit: str,
-    loader_version: str,
     approved_policy_config_path: Path = DEFAULT_R1_APPROVED_LINEAGE_POLICIES_PATH,
     reference_policy_config_path: Path = DEFAULT_R1_REFERENCE_POLICIES_PATH,
     run_start: datetime | None = None,
@@ -178,7 +177,6 @@ def run_and_write_r1_wmi_collection_artifacts(
         scenario_identifier=scenario_identifier,
         scenario_version=scenario_version,
         execution_commit=execution_commit,
-        loader_version=loader_version,
     )
     evidence_run = run_and_write_r1_evidence_artifacts_from_policy(
         event_batch,
