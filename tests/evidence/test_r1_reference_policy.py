@@ -28,7 +28,7 @@ from incident_awareness.pipeline.r1_artifacts import (
 
 _POLICY_ID = "r1-wmi-a01-reference"
 _POLICY_VERSION = "wmi-ref-v0.1"
-_ACTUAL_POLICY_HASH = "47bb9b8f8121c88ad9d12f6a1585aa3ec7ea6eb636ea71b4dca5a321f09fc0d7"
+_ACTUAL_POLICY_HASH = "ddce36c637226b1a31033591973f64c819fe3f3240ea4c369d6343582445e2d8"
 _REFERENCE_TIME = datetime(2026, 10, 10, 1, 0, 1, tzinfo=UTC)
 _REFERENCE_GUID = "{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}"
 _CONTEXT_GUID = "{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}"
@@ -60,6 +60,7 @@ def _policy_payload(**overrides: object) -> dict[str, object]:
         "reference_source_layer": "raw_telemetry",
         "reference_event_type": "process_create",
         "reference_process_name": "cmd.exe",
+        "candidate_start_offset_sec": 0,
         "candidate_window_sec": 2,
         "expected_evaluation_horizon_sec": 600,
     }
@@ -208,6 +209,7 @@ def test_loads_managed_wmi_reference_policy() -> None:
     assert policy.reference_action_id == "A01"
     assert policy.expected_evaluation_horizon_sec == 600
     assert policy.config_hash == _ACTUAL_POLICY_HASH
+    assert policy.candidate_start_offset_sec == 0
     assert policy.candidate_window_sec == 2
 
 
@@ -217,6 +219,7 @@ def test_semantically_identical_config_has_same_canonical_hash(tmp_path: Path) -
     config_path.write_text(
         """policies:
   - expected_evaluation_horizon_sec: 600
+    candidate_start_offset_sec: 0
     candidate_window_sec: 2
     reference_process_name: cmd.exe
     reference_event_type: process_create
@@ -490,7 +493,7 @@ def test_reference_requires_a01_pid_and_same_scope_wmi_parent(
         _resolve((reference_event,))
 
 
-@pytest.mark.parametrize("offset_seconds", [-2, 2])
+@pytest.mark.parametrize("offset_seconds", [0, 2])
 def test_reference_candidate_window_includes_boundaries(offset_seconds: int) -> None:
     # Given
     event = _reference_event(reference_time=_REFERENCE_TIME + timedelta(seconds=offset_seconds))
@@ -502,7 +505,7 @@ def test_reference_candidate_window_includes_boundaries(offset_seconds: int) -> 
     assert selection.reference_event_id == event.event_id
 
 
-@pytest.mark.parametrize("offset_seconds", [-3, 3])
+@pytest.mark.parametrize("offset_seconds", [-1, 3])
 def test_reference_candidate_window_rejects_outside(offset_seconds: int) -> None:
     # Given
     event = _reference_event(reference_time=_REFERENCE_TIME + timedelta(seconds=offset_seconds))

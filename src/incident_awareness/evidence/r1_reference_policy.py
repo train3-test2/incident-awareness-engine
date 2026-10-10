@@ -74,6 +74,7 @@ class _ReferencePolicyConfig(BaseModel):
     reference_source_layer: Literal["raw_telemetry"]
     reference_event_type: Literal["process_create"]
     reference_process_name: StrictStr
+    candidate_start_offset_sec: Literal[0]
     candidate_window_sec: StrictInt = Field(gt=0)
     expected_evaluation_horizon_sec: StrictInt = Field(gt=0)
 
@@ -125,6 +126,7 @@ class R1ReferencePolicy:
     reference_source_layer: str
     reference_event_type: str
     reference_process_name: str
+    candidate_start_offset_sec: int
     candidate_window_sec: int
     expected_evaluation_horizon_sec: int
 
@@ -246,12 +248,11 @@ def resolve_r1_wmi_reference(
     selected = candidates[0]
     if selected.timestamp_source != "event_time" or selected.event_time is None:
         raise ValueError("R1 reference Event must carry parsed Sysmon EventData.UtcTime")
-    window = timedelta(seconds=policy.candidate_window_sec)
-    if (
-        not action_result.invoked_at_utc - window
-        <= selected.event_time
-        <= action_result.invoked_at_utc + window
-    ):
+    window_start = action_result.invoked_at_utc + timedelta(
+        seconds=policy.candidate_start_offset_sec
+    )
+    window_end = action_result.invoked_at_utc + timedelta(seconds=policy.candidate_window_sec)
+    if not window_start <= selected.event_time <= window_end:
         raise ValueError("R1 reference Event is outside the A01 candidate window")
 
     return R1ReferenceSelection(

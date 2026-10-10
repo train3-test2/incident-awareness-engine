@@ -145,6 +145,7 @@ CONNECTION_PROTOCOL = "tcp"
 PLANNED_LINEAGE_KEY = "planned_lineage"
 LINEAGE_ROLES = ("final tool", "intermediate", "session host")
 REFERENCE_FIELDS = ("reference_time", "reference_action_id", "reference_source_event_id")
+WMI_REFERENCE_CANDIDATE_WINDOW_SEC = 2
 IDENTITY_FIELDS = ("family_id", "variation_id", "repetition")
 # What a Pair states once, at the top level of its rendered scenario, for both
 # of its runs. The renderer and the runner refuse a run block that states one of
@@ -1063,6 +1064,13 @@ def _check_reference(
                 f"reference_time {_stamp(reference_time)} is earlier than the recorded start of "
                 f"{expectation.reference_action_id} ({_stamp(started)})"
             )
+        if expectation.identity.family_id == "wmi_management":
+            latest = started + timedelta(seconds=WMI_REFERENCE_CANDIDATE_WINDOW_SEC)
+            if reference_time > latest:
+                report.fail(
+                    f"reference_time {_stamp(reference_time)} is later than the WMI A01 "
+                    f"candidate window ending at {_stamp(latest)}"
+                )
         if index + 1 < len(records) and reference_time > records[index + 1].timestamp:
             report.fail(
                 f"reference_time {_stamp(reference_time)} is later than the next recorded action "

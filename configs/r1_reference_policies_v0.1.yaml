@@ -12,5 +12,6 @@ policies:
     reference_source_layer: raw_telemetry
     reference_event_type: process_create
     reference_process_name: cmd.exe
+    candidate_start_offset_sec: 0
     candidate_window_sec: 2
     expected_evaluation_horizon_sec: 600
