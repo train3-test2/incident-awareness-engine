@@ -1,9 +1,11 @@
-from datetime import UTC, datetime, timedelta
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from incident_awareness.common.models.event import NormalizedEvent
+from incident_awareness.evaluation.context_inputs import validate_context_inputs
 from incident_awareness.evidence.r1_approved_lineage_policy import (
     DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
 )
@@ -122,9 +124,6 @@ def _selector_policy() -> R1SelectorPolicy:
     )
 
 
-from incident_awareness.evaluation.context_inputs import validate_context_inputs
-
-
 @pytest.mark.parametrize("middle", ["cmd.exe", "wscript.exe"])
 @pytest.mark.parametrize("fault", [None, "missing", "duplicate", "host", "boundary", "post_run"])
 def test_context_input_boundary(tmp_path: Path, middle, fault):
@@ -162,3 +161,57 @@ def test_context_input_boundary(tmp_path: Path, middle, fault):
             check()
     else:
         assert check() == ("evt-context",)
+
+
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("direct_context", "direct Evidence includes context"),
+        ("missing_direct", "missing direct Event"),
+        ("evidence_host", "Evidence Run/host mismatch"),
+        ("evidence_time", "Evidence outside Run"),
+        ("summary_run", "completed artifact must match Run"),
+        ("naive", "boundaries must be UTC"),
+        ("offset", "boundaries must be UTC"),
+        ("zero_duration", "positive duration"),
+    ],
+)
+def test_rejects_invalid_evidence_and_metadata(tmp_path: Path, fault, message):
+    events = list(_wmi_events(middle_process_name="cmd.exe"))
+    artifact = run_and_write_r1_evidence_artifacts_from_policy(
+        events,
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        selector_policy=_selector_policy(),
+        approved_policy_id=_WMI_POLICY_ID,
+        approved_policy_version=_WMI_POLICY_VERSION,
+        approved_policy_config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+        scenario_family_id="wmi_management",
+        run_start=_RUN_START,
+    ).artifact_run
+    start = _RUN_START
+    end = start + timedelta(seconds=3)
+    first, *rest = artifact.evidences
+    # Mutate a loaded object to exercise the evaluation boundary independently
+    # of the upstream loader's own validation.
+    if fault == "direct_context":
+        first = first.model_copy(update={"event_ids": ["evt-context", *first.event_ids]})
+    elif fault == "missing_direct":
+        first = first.model_copy(update={"event_ids": ["absent"]})
+    elif fault == "evidence_host":
+        first = first.model_copy(update={"entity_id": "OTHER"})
+    elif fault == "evidence_time":
+        first = first.model_copy(update={"timestamp": end + timedelta(milliseconds=1)})
+    elif fault == "summary_run":
+        artifact = replace(artifact, summary=replace(artifact.summary, run_id="RUN-20261010-002"))
+    elif fault == "naive":
+        start = start.replace(tzinfo=None)
+    elif fault == "offset":
+        start = start.astimezone(timezone(timedelta(hours=9)))
+    elif fault == "zero_duration":
+        end = start
+    artifact = replace(artifact, evidences=(first, *rest))
+    with pytest.raises(ValueError, match=message):
+        validate_context_inputs(
+            artifact, events, run_id=_RUN_ID, entity_id=_HOST_ID, run_start=start, run_end=end
+        )
