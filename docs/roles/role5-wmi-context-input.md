@@ -19,7 +19,7 @@ loader 이후 Baseline 특징 생성 전에 호출한다. 합성 WMI Normal/Atta
 실제 Pilot 성공이나 causal 적격성을 주장하지 않는다.
 available_at/watermark, TTSD, 운영점 선택은 범위 밖이다.
 
-#259의 reference 정본은 r1-wmi-a01-reference/wmi-ref-v0.1이며 후보 구간은
+이슈 #259의 reference 정본은 r1-wmi-a01-reference/wmi-ref-v0.1이며 후보 구간은
 A01 invoked_at_utc부터 +2초까지 양끝 포함이다. 이전 ±2초 제안은 사용하지 않는다.
 
 Run 시작·종료 경계는 UTC 밀리초 정밀도여야 하며 서브밀리초 값은 거부한다.

@@ -23,6 +23,14 @@ _TERMINAL_GUID = "{CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC}"
 _WMI_POLICY_ID = "r1-wmi-management-approved-lineage"
 _WMI_POLICY_VERSION = "v0.1"
 
+_CONTEXT_FAULT_MESSAGES = {
+    "missing": "missing context Event",
+    "duplicate": "duplicate Event ID",
+    "host": "input Run/host mismatch",
+    "boundary": "context must precede Run start",
+    "post_run": "post-Run input",
+}
+
 
 def _event(
     *,
@@ -159,16 +167,14 @@ def test_context_input_boundary(tmp_path: Path, middle, fault):
 
     # When
     if fault:
-        with pytest.raises(ValueError) as error:
+        with pytest.raises(ValueError, match=_CONTEXT_FAULT_MESSAGES[fault]):
             check()
         result = None
     else:
         result = check()
 
     # Then
-    if fault:
-        assert str(error.value)
-    else:
+    if not fault:
         assert result == ("evt-context",)
 
 
