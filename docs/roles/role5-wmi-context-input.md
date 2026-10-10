@@ -21,3 +21,9 @@ available_at/watermark, TTSD, 운영점 선택은 범위 밖이다.
 
 #259의 reference 정본은 r1-wmi-a01-reference/wmi-ref-v0.1이며 후보 구간은
 A01 invoked_at_utc부터 +2초까지 양끝 포함이다. 이전 ±2초 제안은 사용하지 않는다.
+
+Run 시작·종료 경계는 UTC 밀리초 정밀도여야 하며 서브밀리초 값은 거부한다.
+Completed artifact라도 selector가 `selected`가 아니거나 lineage provenance가 없으면
+검증 실패다. 정상 선택된 lineage의 `context_event_ids`가 비어 있는 경우는 허용한다.
+추출 summary의 `input_event_count`와 전달된 Event batch 크기도 일치해야 한다.
+이는 입력 동일성의 최소 검사이며, 같은 수의 Event 교체나 전체 내용의 동일성을 보증하지 않는다.

@@ -127,6 +127,7 @@ def _selector_policy() -> R1SelectorPolicy:
 @pytest.mark.parametrize("middle", ["cmd.exe", "wscript.exe"])
 @pytest.mark.parametrize("fault", [None, "missing", "duplicate", "host", "boundary", "post_run"])
 def test_context_input_boundary(tmp_path: Path, middle, fault):
+    # Given
     events = list(_wmi_events(middle_process_name=middle))
     artifact = run_and_write_r1_evidence_artifacts_from_policy(
         events,
@@ -156,11 +157,19 @@ def test_context_input_boundary(tmp_path: Path, middle, fault):
             artifact, events, run_id=_RUN_ID, entity_id=_HOST_ID, run_start=_RUN_START, run_end=end
         )
 
+    # When
     if fault:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError) as error:
             check()
+        result = None
     else:
-        assert check() == ("evt-context",)
+        result = check()
+
+    # Then
+    if fault:
+        assert str(error.value)
+    else:
+        assert result == ("evt-context",)
 
 
 @pytest.mark.parametrize(
@@ -177,6 +186,7 @@ def test_context_input_boundary(tmp_path: Path, middle, fault):
     ],
 )
 def test_rejects_invalid_evidence_and_metadata(tmp_path: Path, fault, message):
+    # Given
     events = list(_wmi_events(middle_process_name="cmd.exe"))
     artifact = run_and_write_r1_evidence_artifacts_from_policy(
         events,
@@ -211,7 +221,102 @@ def test_rejects_invalid_evidence_and_metadata(tmp_path: Path, fault, message):
     elif fault == "zero_duration":
         end = start
     artifact = replace(artifact, evidences=(first, *rest))
-    with pytest.raises(ValueError, match=message):
+    # When
+    with pytest.raises(ValueError) as error:
         validate_context_inputs(
             artifact, events, run_id=_RUN_ID, entity_id=_HOST_ID, run_start=start, run_end=end
         )
+
+    # Then
+    assert message in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "start_precision",
+        "end_precision",
+        "truncated",
+        "no_selector",
+        "no_lineage",
+        "empty_lineage",
+        "add",
+        "remove",
+        "no_context",
+    ],
+)
+def test_context_validation_review_regressions(tmp_path, fault):
+    # Given
+    events = list(_wmi_events(middle_process_name="cmd.exe"))
+    start = _RUN_START
+    end = start + timedelta(seconds=3)
+    extra = events[0].model_copy(
+        update={
+            "event_id": "unreferenced",
+            "process": events[0].process.model_copy(
+                update={"process_guid": "{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}"}
+            ),
+        }
+    )
+    if fault == "truncated":
+        events = events[1:]
+    elif fault == "remove":
+        events.append(extra)
+    elif fault == "no_context":
+        start -= timedelta(seconds=2)
+    artifact = run_and_write_r1_evidence_artifacts_from_policy(
+        events,
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        selector_policy=_selector_policy(),
+        approved_policy_id=_WMI_POLICY_ID,
+        approved_policy_version=_WMI_POLICY_VERSION,
+        approved_policy_config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
+        scenario_family_id="wmi_management",
+        run_start=start,
+    ).artifact_run
+    expected = ""
+    if fault == "start_precision":
+        start += timedelta(microseconds=1)
+        expected = "millisecond precision"
+    elif fault == "end_precision":
+        end += timedelta(microseconds=999)
+        expected = "millisecond precision"
+    elif fault == "truncated":
+        expected = "selected lineage"
+    elif fault == "no_selector":
+        artifact = replace(artifact, summary=replace(artifact.summary, selector=None))
+        expected = "selected lineage"
+    elif fault in ("no_lineage", "empty_lineage"):
+        artifact = replace(
+            artifact,
+            summary=replace(artifact.summary, lineage_inputs=None if fault == "no_lineage" else ()),
+        )
+        expected = "lineage provenance"
+    elif fault == "add":
+        events.append(extra)
+        expected = "Event count"
+    elif fault == "remove":
+        events.pop()
+        expected = "Event count"
+
+    # When
+    if expected:
+        with pytest.raises(ValueError) as error:
+            validate_context_inputs(
+                artifact, events, run_id=_RUN_ID, entity_id=_HOST_ID, run_start=start, run_end=end
+            )
+        result = None
+    else:
+        result = validate_context_inputs(
+            artifact, events, run_id=_RUN_ID, entity_id=_HOST_ID, run_start=start, run_end=end
+        )
+
+    # Then
+    if expected:
+        assert expected in str(error.value)
+    else:
+        assert result == ()
+        assert artifact.summary.selector.status == "selected"
+    if fault == "truncated":
+        assert "truncated_lineage" in artifact.summary.selector.diagnostics

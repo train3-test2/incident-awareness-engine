@@ -19,14 +19,23 @@ def validate_context_inputs(
 
     Caller must filter post-Run events BEFORE extraction. Pre-Run events remain
     available for lineage reconstruction. Returned IDs are context, not features.
+    Event count matching is a minimum check, not proof of identical Event content.
     """
     for value in (run_start, run_end):
         if value.tzinfo is None or value.utcoffset() != timedelta(0):
             raise ValueError("Run boundaries must be UTC")
+        if value.microsecond % 1000:
+            raise ValueError("Run boundaries must have millisecond precision")
     if run_end <= run_start:
         raise ValueError("Run must have positive duration")
     if artifact.summary.run_id != run_id or artifact.summary.status != "completed":
         raise ValueError("completed artifact must match Run")
+    if artifact.summary.selector is None or artifact.summary.selector.status != "selected":
+        raise ValueError("context validation requires a selected lineage")
+    if not artifact.summary.lineage_inputs:
+        raise ValueError("context validation requires lineage provenance")
+    if artifact.summary.input_event_count != len(events):
+        raise ValueError("input Event count differs from extraction summary")
     by_id = {event.event_id: event for event in events}
     if len(by_id) != len(events):
         raise ValueError("duplicate Event ID")
@@ -36,7 +45,7 @@ def validate_context_inputs(
         if event.timestamp > run_end:
             raise ValueError("post-Run input must be removed before extraction")
     context = set()
-    for lineage in artifact.summary.lineage_inputs or ():
+    for lineage in artifact.summary.lineage_inputs:
         for event_id in lineage.context_event_ids:
             event = by_id.get(event_id)
             if event is None:
