@@ -749,6 +749,102 @@ test("Score trajectory renderer draws bounded accessible timestamp labels", asyn
     }
 });
 
+test("Score trajectory description matches zero, one, and multiple visible ticks", async () => {
+    // Given
+    const originalDocument = globalThis.document;
+    globalThis.document = {
+        createElement: createFakeElement,
+        createElementNS(_namespace, tagName) {
+            return createFakeElement(tagName);
+        },
+    };
+    const moduleUrl = new URL(
+        "../../../src/incident_awareness/dashboard/ui/assets/fusion-score-chart.mjs",
+        import.meta.url,
+    );
+    const models = [
+        buildScoreTrajectoryModel(makeTrace([]), null, CHART_DIMENSIONS),
+        buildScoreTrajectoryModel(
+            makeTrace([makeTrace().points[0]]),
+            null,
+            CHART_DIMENSIONS,
+        ),
+        buildScoreTrajectoryModel(makeTrace(), null, CHART_DIMENSIONS),
+        buildScoreTrajectoryModel(
+            makeTrace([
+                { ...makeTrace().points[0], timestamp: "2026-10-05T01:00:00.000Z" },
+                { ...makeTrace().points[1], timestamp: "2026-10-05T01:00:00.002Z" },
+            ]),
+            null,
+            CHART_DIMENSIONS,
+        ),
+    ];
+
+    try {
+        const { createScoreTrajectoryChart } = await import(moduleUrl.href);
+
+        // When
+        const rendered = models.map((model) => {
+            const svg = createScoreTrajectoryChart(model).children[0];
+            const [description] = findFakeElements(
+                svg,
+                (element) => (
+                    element.attributes.get("id") === "fusion-score-chart-description"
+                ),
+            );
+            const labels = findFakeElements(
+                svg,
+                (element) => element.attributes.get("class")?.includes(
+                    "fusion-score-chart__axis-label--x",
+                ) === true,
+            );
+            return { description: description.textContent, labels };
+        });
+
+        // Then
+        for (const result of rendered) {
+            assert.match(result.description, /FusionStoppingTrace score/);
+            assert.match(result.description, /Runtime Config threshold/);
+            assert.equal(
+                result.labels.every((label) => result.description.includes(label.textContent)),
+                true,
+            );
+        }
+
+        assert.equal(rendered[0].labels.length, 0);
+        assert.match(rendered[0].description, /시간축 눈금은 없습니다\./);
+        assert.doesNotMatch(rendered[0].description, /2026-/);
+
+        assert.equal(rendered[1].labels.length, 1);
+        assert.match(rendered[1].description, /시간축 눈금 1개:/);
+        assert.equal(
+            rendered[1].labels[0].textContent,
+            formatRunTimestamp(models[1].xTicks[0].timestamp),
+        );
+
+        assert.equal(rendered[2].labels.length, 3);
+        assert.match(rendered[2].description, /시간축 눈금 3개:/);
+        assert.deepEqual(
+            rendered[2].labels.map((label) => label.textContent),
+            models[2].xTicks.map((tick) => formatRunTimestamp(tick.timestamp)),
+        );
+
+        assert.equal(rendered[3].labels.length, 3);
+        assert.deepEqual(
+            rendered[3].labels.map(
+                (label) => label.textContent.match(/\d{3} ms$/)?.[0],
+            ),
+            ["000 ms", "001 ms", "002 ms"],
+        );
+    } finally {
+        if (originalDocument === undefined) {
+            delete globalThis.document;
+        } else {
+            globalThis.document = originalDocument;
+        }
+    }
+});
+
 test("Score trajectory preserves policy state and nullable persistence count", () => {
     // Given
     const trace = makeTrace();
