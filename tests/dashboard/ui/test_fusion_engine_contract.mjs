@@ -11,6 +11,9 @@ import {
     extractFusionEngineRunIdFromPathname,
     resolveFusionEngineQueryState,
 } from "../../../src/incident_awareness/dashboard/ui/assets/fusion-engine-contract.mjs";
+import {
+    formatRunTimestamp,
+} from "../../../src/incident_awareness/dashboard/ui/assets/dashboard-contract.mjs";
 
 const CHART_DIMENSIONS = {
     width: 100,
@@ -115,6 +118,17 @@ function createFakeElement(tagName) {
             text = String(value);
         },
     };
+}
+
+function findFakeElements(root, predicate) {
+    const matches = [];
+    if (predicate(root)) {
+        matches.push(root);
+    }
+    for (const child of root.children) {
+        matches.push(...findFakeElements(child, predicate));
+    }
+    return matches;
 }
 
 function makePayload() {
@@ -359,6 +373,13 @@ test("Single score point uses a finite centered x-coordinate", () => {
     // Then
     assert.equal(model.points[0].x, 50);
     assert.equal(Number.isFinite(model.points[0].x), true);
+    assert.deepEqual(model.xTicks, [
+        {
+            timestamp: "2026-10-05T01:00:00.000Z",
+            x: 50,
+            textAnchor: "middle",
+        },
+    ]);
 });
 
 test("Multiple timestamps map monotonically without reordering", () => {
@@ -372,6 +393,124 @@ test("Multiple timestamps map monotonically without reordering", () => {
     assert.deepEqual(model.points.map((point) => point.x), [10, 50, 90]);
     assert.strictEqual(model.points[0].timestamp, trace.points[0].timestamp);
     assert.strictEqual(model.points[2].timestamp, trace.points[2].timestamp);
+    assert.deepEqual(model.xTicks, [
+        {
+            timestamp: "2026-10-05T01:00:00.000Z",
+            x: 10,
+            textAnchor: "start",
+        },
+        {
+            timestamp: "2026-10-05T01:00:10.000Z",
+            x: 50,
+            textAnchor: "middle",
+        },
+        {
+            timestamp: "2026-10-05T01:00:20.000Z",
+            x: 90,
+            textAnchor: "end",
+        },
+    ]);
+});
+
+test("Score trajectory uses elapsed time for uneven points and bounded ticks", () => {
+    // Given
+    const trace = makeTrace([
+        {
+            timestamp: "2026-10-05T01:00:00.000Z",
+            score: 0.2,
+            persistence_count: null,
+            policy_state: "off",
+        },
+        {
+            timestamp: "2026-10-05T01:00:01.000Z",
+            score: 0.4,
+            persistence_count: null,
+            policy_state: "off",
+        },
+        {
+            timestamp: "2026-10-05T01:01:40.000Z",
+            score: 0.6,
+            persistence_count: 1,
+            policy_state: "off",
+        },
+    ]);
+
+    // When
+    const model = buildScoreTrajectoryModel(trace, null, CHART_DIMENSIONS);
+
+    // Then
+    assert.deepEqual(model.points.map((point) => point.x), [10, 10.8, 90]);
+    assert.deepEqual(
+        model.xTicks.map(({ timestamp, x }) => ({ timestamp, x })),
+        [
+            { timestamp: "2026-10-05T01:00:00.000Z", x: 10 },
+            { timestamp: "2026-10-05T01:00:50.000Z", x: 50 },
+            { timestamp: "2026-10-05T01:01:40.000Z", x: 90 },
+        ],
+    );
+    assert.equal(model.xTicks.length <= 3, true);
+});
+
+test("Score trajectory preserves short, long, date-boundary, and offset timestamps", () => {
+    // Given
+    const shortTrace = makeTrace([
+        { ...makeTrace().points[0], timestamp: "2026-10-05T01:00:00.000Z" },
+        { ...makeTrace().points[1], timestamp: "2026-10-05T01:00:00.002Z" },
+    ]);
+    const longTrace = makeTrace([
+        { ...makeTrace().points[0], timestamp: "2026-10-05T23:59:59.000Z" },
+        { ...makeTrace().points[1], timestamp: "2026-11-04T00:00:01.000Z" },
+    ]);
+    const offsetTrace = makeTrace([
+        { ...makeTrace().points[0], timestamp: "2026-10-05T10:00:00.000+09:00" },
+        { ...makeTrace().points[1], timestamp: "2026-10-05T10:00:02.000+09:00" },
+    ]);
+
+    // When
+    const shortModel = buildScoreTrajectoryModel(shortTrace, null, CHART_DIMENSIONS);
+    const longModel = buildScoreTrajectoryModel(longTrace, null, CHART_DIMENSIONS);
+    const offsetModel = buildScoreTrajectoryModel(offsetTrace, null, CHART_DIMENSIONS);
+
+    // Then
+    assert.deepEqual(shortModel.xTicks.map((tick) => tick.timestamp), [
+        "2026-10-05T01:00:00.000Z",
+        "2026-10-05T01:00:00.001Z",
+        "2026-10-05T01:00:00.002Z",
+    ]);
+    assert.equal(longModel.xTicks.length, 3);
+    assert.notEqual(
+        longModel.xTicks[0].timestamp.slice(0, 10),
+        longModel.xTicks[2].timestamp.slice(0, 10),
+    );
+    assert.equal(offsetModel.xTicks[0].timestamp, "2026-10-05T01:00:00.000Z");
+    assert.equal(
+        formatRunTimestamp(offsetModel.xTicks[0].timestamp),
+        formatRunTimestamp(offsetTrace.points[0].timestamp),
+    );
+});
+
+test("Score trajectory rejects duplicate and intermediate out-of-order timestamps", () => {
+    // Given
+    const duplicate = makeTrace([
+        { ...makeTrace().points[0], timestamp: "2026-10-05T01:00:00.000Z" },
+        { ...makeTrace().points[1], timestamp: "2026-10-05T01:00:00.000Z" },
+    ]);
+    const outOfOrder = makeTrace([
+        { ...makeTrace().points[0], timestamp: "2026-10-05T01:00:00.000Z" },
+        { ...makeTrace().points[1], timestamp: "2026-10-05T01:00:20.000Z" },
+        { ...makeTrace().points[2], timestamp: "2026-10-05T01:00:10.000Z" },
+        { ...makeTrace().points[2], timestamp: "2026-10-05T01:00:30.000Z" },
+    ]);
+
+    // When / Then
+    assert.throws(
+        () => buildScoreTrajectoryModel(duplicate, null, CHART_DIMENSIONS),
+        /strictly increasing/,
+    );
+    assert.throws(
+        () => buildScoreTrajectoryModel(outOfOrder, null, CHART_DIMENSIONS),
+        /strictly increasing/,
+    );
 });
 
 test("Score trajectory maps stored threshold geometry without classifying points", () => {
@@ -414,6 +553,7 @@ test("Score trajectory handles empty points without invalid geometry", () => {
 
     // Then
     assert.deepEqual(model.points, []);
+    assert.deepEqual(model.xTicks, []);
     assertFiniteGeometry(model);
 });
 
@@ -433,7 +573,9 @@ test("Synthetic zero-point and 67-point traces preserve every point in order", (
 
     // Then
     assert.equal(emptyModel.points.length, 0);
+    assert.equal(emptyModel.xTicks.length, 0);
     assert.equal(populatedModel.points.length, 67);
+    assert.equal(populatedModel.xTicks.length, 3);
     assert.deepEqual(
         populatedModel.points.map((point) => point.timestamp),
         points.map((point) => point.timestamp),
@@ -507,6 +649,193 @@ test("Fusion details DOM starts closed and contains all 67 synthetic rows", asyn
         assert.equal(rows[40].children[3].textContent, "1");
         assert.equal(rows[41].children[2].textContent, "Policy ON");
         assert.equal(rows[41].children[3].textContent, "2");
+    } finally {
+        if (originalDocument === undefined) {
+            delete globalThis.document;
+        } else {
+            globalThis.document = originalDocument;
+        }
+    }
+});
+
+test("Score trajectory renderer draws bounded accessible timestamp labels", async () => {
+    // Given
+    const originalDocument = globalThis.document;
+    globalThis.document = {
+        createElement: createFakeElement,
+        createElementNS(_namespace, tagName) {
+            return createFakeElement(tagName);
+        },
+    };
+    const moduleUrl = new URL(
+        "../../../src/incident_awareness/dashboard/ui/assets/fusion-score-chart.mjs",
+        import.meta.url,
+    );
+    const model = buildScoreTrajectoryModel(
+        makeTrace(),
+        makeRuntimeConfig(),
+        CHART_DIMENSIONS,
+    );
+
+    try {
+        const { createScoreTrajectoryChart } = await import(moduleUrl.href);
+
+        // When
+        const chart = createScoreTrajectoryChart(model);
+        const svg = chart.children[0];
+        const tickLines = findFakeElements(
+            svg,
+            (element) => element.attributes.get("class") === "fusion-score-chart__x-tick",
+        );
+        const tickLabels = findFakeElements(
+            svg,
+            (element) => element.attributes.get("class")?.includes(
+                "fusion-score-chart__axis-label--x",
+            ) === true,
+        );
+
+        // Then
+        assert.equal(svg.attributes.get("role"), "img");
+        assert.equal(tickLines.length, 3);
+        assert.equal(tickLabels.length, 3);
+        assert.deepEqual(
+            tickLabels.map((label) => label.textContent),
+            model.xTicks.map((tick) => formatRunTimestamp(tick.timestamp)),
+        );
+        assert.deepEqual(
+            tickLabels.map((label) => label.attributes.get("text-anchor")),
+            ["start", "middle", "end"],
+        );
+        assert.deepEqual(
+            tickLabels.map((label) => Number(label.attributes.get("x"))),
+            model.xTicks.map((tick) => tick.x),
+        );
+        assert.equal(
+            tickLabels.every((label) => (
+                Number(label.attributes.get("x")) >= model.plot.left
+                && Number(label.attributes.get("x")) <= model.plot.right
+                && label.children[0].tagName === "TITLE"
+                && label.children[0].textContent.includes("2026-10-05T01:00:")
+            )),
+            true,
+        );
+
+        const shortModel = buildScoreTrajectoryModel(
+            makeTrace([
+                { ...makeTrace().points[0], timestamp: "2026-10-05T01:00:00.000Z" },
+                { ...makeTrace().points[1], timestamp: "2026-10-05T01:00:00.002Z" },
+            ]),
+            null,
+            CHART_DIMENSIONS,
+        );
+        const shortLabels = findFakeElements(
+            createScoreTrajectoryChart(shortModel).children[0],
+            (element) => element.attributes.get("class")?.includes(
+                "fusion-score-chart__axis-label--x",
+            ) === true,
+        );
+        assert.equal(shortLabels.length, 3);
+        assert.equal(new Set(shortLabels.map((label) => label.textContent)).size, 3);
+        assert.deepEqual(
+            shortLabels.map((label) => label.textContent.match(/\d{3} ms$/)?.[0]),
+            ["000 ms", "001 ms", "002 ms"],
+        );
+    } finally {
+        if (originalDocument === undefined) {
+            delete globalThis.document;
+        } else {
+            globalThis.document = originalDocument;
+        }
+    }
+});
+
+test("Score trajectory description matches zero, one, and multiple visible ticks", async () => {
+    // Given
+    const originalDocument = globalThis.document;
+    globalThis.document = {
+        createElement: createFakeElement,
+        createElementNS(_namespace, tagName) {
+            return createFakeElement(tagName);
+        },
+    };
+    const moduleUrl = new URL(
+        "../../../src/incident_awareness/dashboard/ui/assets/fusion-score-chart.mjs",
+        import.meta.url,
+    );
+    const models = [
+        buildScoreTrajectoryModel(makeTrace([]), null, CHART_DIMENSIONS),
+        buildScoreTrajectoryModel(
+            makeTrace([makeTrace().points[0]]),
+            null,
+            CHART_DIMENSIONS,
+        ),
+        buildScoreTrajectoryModel(makeTrace(), null, CHART_DIMENSIONS),
+        buildScoreTrajectoryModel(
+            makeTrace([
+                { ...makeTrace().points[0], timestamp: "2026-10-05T01:00:00.000Z" },
+                { ...makeTrace().points[1], timestamp: "2026-10-05T01:00:00.002Z" },
+            ]),
+            null,
+            CHART_DIMENSIONS,
+        ),
+    ];
+
+    try {
+        const { createScoreTrajectoryChart } = await import(moduleUrl.href);
+
+        // When
+        const rendered = models.map((model) => {
+            const svg = createScoreTrajectoryChart(model).children[0];
+            const [description] = findFakeElements(
+                svg,
+                (element) => (
+                    element.attributes.get("id") === "fusion-score-chart-description"
+                ),
+            );
+            const labels = findFakeElements(
+                svg,
+                (element) => element.attributes.get("class")?.includes(
+                    "fusion-score-chart__axis-label--x",
+                ) === true,
+            );
+            return { description: description.textContent, labels };
+        });
+
+        // Then
+        for (const result of rendered) {
+            assert.match(result.description, /FusionStoppingTrace score/);
+            assert.match(result.description, /Runtime Config threshold/);
+            assert.equal(
+                result.labels.every((label) => result.description.includes(label.textContent)),
+                true,
+            );
+        }
+
+        assert.equal(rendered[0].labels.length, 0);
+        assert.match(rendered[0].description, /시간축 눈금은 없습니다\./);
+        assert.doesNotMatch(rendered[0].description, /2026-/);
+
+        assert.equal(rendered[1].labels.length, 1);
+        assert.match(rendered[1].description, /시간축 눈금 1개:/);
+        assert.equal(
+            rendered[1].labels[0].textContent,
+            formatRunTimestamp(models[1].xTicks[0].timestamp),
+        );
+
+        assert.equal(rendered[2].labels.length, 3);
+        assert.match(rendered[2].description, /시간축 눈금 3개:/);
+        assert.deepEqual(
+            rendered[2].labels.map((label) => label.textContent),
+            models[2].xTicks.map((tick) => formatRunTimestamp(tick.timestamp)),
+        );
+
+        assert.equal(rendered[3].labels.length, 3);
+        assert.deepEqual(
+            rendered[3].labels.map(
+                (label) => label.textContent.match(/\d{3} ms$/)?.[0],
+            ),
+            ["000 ms", "001 ms", "002 ms"],
+        );
     } finally {
         if (originalDocument === undefined) {
             delete globalThis.document;

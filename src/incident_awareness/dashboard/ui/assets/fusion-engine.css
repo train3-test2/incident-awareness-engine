@@ -46,6 +46,16 @@
     font-size: 0.75rem;
 }
 
+.fusion-score-chart__axis-label--x {
+    font-size: 0.6875rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.fusion-score-chart__x-tick {
+    stroke: var(--shell-color-border-strong);
+    stroke-width: 1;
+}
+
 .fusion-score-chart__trajectory {
     fill: none;
     stroke: var(--shell-color-primary);
@@ -175,7 +185,19 @@
 }
 
 @media (max-width: 30rem) {
+    .fusion-score-chart__axis-label--x,
     .fusion-score-chart__threshold-label {
         font-size: 0.6875rem;
+    }
+}
+
+@media (max-width: 48rem) {
+    .fusion-score-chart {
+        overflow-x: auto;
+    }
+
+    .fusion-score-chart__svg {
+        width: 42rem;
+        max-width: none;
     }
 }

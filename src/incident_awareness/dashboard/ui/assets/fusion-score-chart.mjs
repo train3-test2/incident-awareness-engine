@@ -21,6 +21,26 @@ function createSvgText(className, x, y, value) {
     return text;
 }
 
+function buildXAxisTickPresentation(xTicks) {
+    const formattedTimestamps = xTicks.map(
+        (tick) => formatRunTimestamp(tick.timestamp),
+    );
+    const includeMilliseconds = (
+        new Set(formattedTimestamps).size < formattedTimestamps.length
+    );
+    return xTicks.map((tick, index) => {
+        const formattedTimestamp = formattedTimestamps[index];
+        return {
+            label: includeMilliseconds
+                ? `${formattedTimestamp} · ${String(
+                    new Date(tick.timestamp).getMilliseconds(),
+                ).padStart(3, "0")} ms`
+                : formattedTimestamp,
+            title: `${formattedTimestamp} (${tick.timestamp})`,
+        };
+    });
+}
+
 function createChartLegend(model) {
     const legend = document.createElement("ul");
     legend.classList.add("fusion-score-chart__legend");
@@ -110,10 +130,17 @@ export function createScoreTrajectoryChart(model) {
     const title = createSvgElement("title");
     title.setAttribute("id", "fusion-score-chart-title");
     title.textContent = "Temporal Fusion score trajectory";
+    const xTickPresentation = buildXAxisTickPresentation(model.xTicks);
+    const xAxisDescription = xTickPresentation.length === 0
+        ? "시간축 눈금은 없습니다."
+        : `시간축 눈금 ${xTickPresentation.length}개: ${xTickPresentation.map(
+            (tick) => tick.label,
+        ).join(", ")}.`;
     const description = createSvgElement("desc");
     description.setAttribute("id", "fusion-score-chart-description");
     description.textContent = (
-        "저장된 FusionStoppingTrace score와 Runtime Config threshold를 표시합니다."
+        "저장된 FusionStoppingTrace score와 Runtime Config threshold를 실제 시간축에 표시합니다. "
+        + xAxisDescription
     );
     svg.append(title, description);
 
@@ -131,6 +158,31 @@ export function createScoreTrajectoryChart(model) {
         );
         label.setAttribute("text-anchor", "end");
         svg.append(grid, label);
+    }
+
+    const xTickEnd = model.plot.bottom
+        + (model.height - model.plot.bottom) * 0.16;
+    const xLabelY = model.plot.bottom
+        + (model.height - model.plot.bottom) * 0.58;
+    for (const [index, tick] of model.xTicks.entries()) {
+        const tickLine = createSvgElement("line", "fusion-score-chart__x-tick");
+        tickLine.setAttribute("x1", String(tick.x));
+        tickLine.setAttribute("x2", String(tick.x));
+        tickLine.setAttribute("y1", String(model.plot.bottom));
+        tickLine.setAttribute("y2", String(xTickEnd));
+
+        const tickPresentation = xTickPresentation[index];
+        const label = createSvgText(
+            "fusion-score-chart__axis-label fusion-score-chart__axis-label--x",
+            tick.x,
+            xLabelY,
+            tickPresentation.label,
+        );
+        label.setAttribute("text-anchor", tick.textAnchor);
+        const labelTitle = createSvgElement("title");
+        labelTitle.textContent = tickPresentation.title;
+        label.append(labelTitle);
+        svg.append(tickLine, label);
     }
 
     for (const threshold of model.thresholds) {
