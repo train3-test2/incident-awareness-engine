@@ -144,6 +144,12 @@ Variable로 관리한다.
 | `DASHBOARD_EVALUATION_SNAPSHOT_S3_URI` | Dashboard startup에서 materialize할 exact Evaluation Snapshot object URI (`s3://<bucket>/evaluation/<snapshot_id>/snapshot.json`) |
 | `FIRST_CYCLE_S3_BUCKET` | 수동 First Cycle 및 Worker 자동 입력 Artifact 버킷 이름 |
 | `FIRST_CYCLE_SQS_QUEUE_URL` | Worker가 polling할 SQS source Queue URL |
+| `R1_FAMILY_ID` | Worker가 명시적으로 실행할 R1 family ID |
+| `R1_APPROVED_POLICY_ID` | Worker runtime에서 기대하는 approved lineage policy ID |
+| `R1_APPROVED_POLICY_VERSION` | Worker runtime에서 기대하는 approved lineage policy version |
+| `R1_APPROVED_POLICY_CONFIG_HASH` | repository loader 결과와 비교할 approved policy SHA-256 |
+| `R1_ARCHIVE_BUCKET` | generic R1 Evidence archive bucket |
+| `R1_ARCHIVE_PREFIX` | 고정값 `archive/first-cycle/r1` |
 
 워크플로는 필요한 변수 중 하나라도 비어 있으면 AWS 인증 전에 실패한다. 정책 파일을
 변경한 뒤에는 동일 내용을 GitHub OIDC 역할의 인라인 정책 또는 연결된 정책에도
