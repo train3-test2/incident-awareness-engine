@@ -34,8 +34,6 @@ def validate_context_inputs(
         raise ValueError("context validation requires a selected lineage")
     if not artifact.summary.lineage_inputs:
         raise ValueError("context validation requires lineage provenance")
-    if artifact.summary.input_event_count != len(events):
-        raise ValueError("input Event count differs from extraction summary")
     by_id = {event.event_id: event for event in events}
     if len(by_id) != len(events):
         raise ValueError("duplicate Event ID")
@@ -64,4 +62,7 @@ def validate_context_inputs(
                 raise ValueError("missing direct Event")
             if event_id in context or not run_start <= event.timestamp <= run_end:
                 raise ValueError("direct Evidence includes context or out-of-Run Event")
+    # Report specific identity/provenance failures before the aggregate count.
+    if artifact.summary.input_event_count != len(events):
+        raise ValueError("input Event count differs from extraction summary")
     return tuple(sorted(context))
