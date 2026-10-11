@@ -12,6 +12,7 @@ from incident_awareness.common.models.pipeline_runtime import (
 )
 from incident_awareness.storage.repositories.pipeline_runtime_repository import (
     _SELECT_PIPELINE_RUNTIME_STATUS_PAYLOAD,
+    _SELECT_PIPELINE_RUNTIME_STATUS_PAYLOADS_BY_RUN_ID,
     _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS,
     _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_BY_STATE,
     _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS_WITH_RUNNING_FRESHNESS,
@@ -65,6 +66,13 @@ class _Connection:
                 return _Cursor(self.raw_get_row)
             stored = self.statuses.get((str(params[0]), str(params[1])))
             return _Cursor(None if stored is None else (stored.model_dump(mode="json"),))
+
+        if query == _SELECT_PIPELINE_RUNTIME_STATUS_PAYLOADS_BY_RUN_ID:
+            statuses = [
+                status for status in self.statuses.values() if status.run_id == str(params[0])
+            ]
+            statuses.sort(key=lambda status: status.entity_id)
+            return _Cursor(rows=[(status.model_dump(mode="json"),) for status in statuses])
 
         if query in {
             _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS,
@@ -265,6 +273,23 @@ def test_get_returns_none_for_missing_scope() -> None:
 
     # Then
     assert stored is None
+
+
+def test_lists_every_entity_runtime_for_one_run_in_canonical_order() -> None:
+    # Given
+    connection = _Connection()
+    repository = PipelineRuntimeStatusRepository(connection)
+    other_run = _running_status(run_id="RUN-20261004-002", entity_id="WIN-C")
+    second_entity = _running_status(entity_id="WIN-B")
+    first_entity = _running_status(entity_id="WIN-A")
+    for status in (other_run, second_entity, first_entity):
+        repository.save(status)
+
+    # When
+    statuses = repository.list_for_run("RUN-20261004-001")
+
+    # Then
+    assert [status.entity_id for status in statuses] == ["WIN-A", "WIN-B"]
 
 
 def test_get_rejects_non_object_payload() -> None:

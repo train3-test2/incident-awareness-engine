@@ -12,6 +12,7 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import unquote_plus
@@ -22,6 +23,10 @@ from botocore.client import BaseClient
 from botocore.exceptions import BotoCoreError, ClientError
 from psycopg import OperationalError
 
+from incident_awareness.common.models.pipeline_runtime import (
+    PipelineRuntimeState,
+    PipelineRuntimeStatus,
+)
 from incident_awareness.pipeline.r1_production import (
     R1ArchiveConflictError,
     R1ArchiveUploadError,
@@ -31,9 +36,13 @@ from incident_awareness.pipeline.r1_production import (
 from incident_awareness.pipeline.runtime_telemetry import (
     PipelineRuntimeObserver,
     PostgresPipelineRuntimeObserver,
+    utc_now_milliseconds,
 )
 from incident_awareness.pipeline.standalone import StandaloneExecution, run_standalone_sysmon_jsonl
 from incident_awareness.storage.config import DatabaseConfig
+from incident_awareness.storage.repositories.pipeline_runtime_repository import (
+    PipelineRuntimeStatusRepository,
+)
 from incident_awareness.storage.repositories.r1_archive_publication_repository import (
     R1ArchivePublication,
     R1ArchivePublicationRepository,
@@ -140,9 +149,16 @@ class _PostgresSuccessfulReceiptStore:
 class _PostgresR1ArchivePublicationStore:
     """Use the Worker transaction for outbox creation and later state commits."""
 
-    def __init__(self, connection: psycopg.Connection[tuple[object, ...]]) -> None:
+    def __init__(
+        self,
+        connection: psycopg.Connection[tuple[object, ...]],
+        *,
+        runtime_clock: Callable[[], datetime] = utc_now_milliseconds,
+    ) -> None:
         self._connection = connection
         self._repository = R1ArchivePublicationRepository(connection)
+        self._runtime_repository = PipelineRuntimeStatusRepository(connection)
+        self._runtime_clock = runtime_clock
 
     def get(self, run_id: str) -> R1ArchivePublication | None:
         return self._repository.get(run_id)
@@ -161,6 +177,21 @@ class _PostgresR1ArchivePublicationStore:
 
     def mark_published(self, run_id: str) -> None:
         self._repository.update_status(run_id, status="published")
+        completed_at = self._runtime_clock()
+        # archive 게시 상태와 운영 Runtime 완료 상태를 같은 commit으로 확정한다.
+        for runtime_status in self._runtime_repository.list_for_run(run_id):
+            if runtime_status.status is PipelineRuntimeState.FAILED:
+                raise OSError("R1 archive cannot be finalized while its Runtime is terminal failed")
+            if runtime_status.status is not PipelineRuntimeState.RUNNING:
+                continue
+            completed_status = _complete_runtime_status(
+                runtime_status,
+                completed_at=max(completed_at, runtime_status.updated_at),
+            )
+            if not self._runtime_repository.save(completed_status):
+                raise OSError(
+                    "R1 archive was published but its running Runtime could not be completed"
+                )
         self._connection.commit()
 
     def mark_failed(self, run_id: str, error: Exception) -> None:
@@ -376,6 +407,7 @@ def _process_message(
                 )
                 with runtime_context as active_runtime_observer:
                     execution: StandaloneExecution | None = None
+                    receipt_committed = False
                     try:
                         try:
                             execution = run_standalone(
@@ -406,12 +438,18 @@ def _process_message(
                                 raise PermanentWorkerError(str(error)) from error
                         if receipt_store is not None:
                             receipt_store.save_success(input_object, run_id=run_id)
+                            receipt_committed = True
                         if publication is not None:
                             _publish_durable_r1_archive(
                                 publication,
                                 s3_client=s3_client,
                                 publication_store=publication_store,
                             )
+                    except RetryableWorkerError:
+                        # receipt 확정 뒤 archive 오류는 durable publication 재시도 대상으로 남긴다.
+                        if execution is not None and not receipt_committed:
+                            execution.fail_runtime()
+                        raise
                     except Exception:
                         if execution is not None:
                             # A commit exception can have an indeterminate server outcome.  This
@@ -445,6 +483,25 @@ def _unique_inputs(inputs: Sequence[S3SysmonInput]) -> tuple[S3SysmonInput, ...]
             seen.add(identity)
             unique_inputs.append(input_object)
     return tuple(unique_inputs)
+
+
+def _complete_runtime_status(
+    status: PipelineRuntimeStatus,
+    *,
+    completed_at: datetime,
+) -> PipelineRuntimeStatus:
+    return PipelineRuntimeStatus.model_validate(
+        {
+            **status.model_dump(),
+            "status": PipelineRuntimeState.COMPLETED,
+            "current_stage": None,
+            "normalization_processed_count": status.input_total,
+            "stage_started_at": None,
+            "updated_at": completed_at,
+            "completed_at": completed_at,
+            "failed_stage": None,
+        }
+    )
 
 
 def _input_directory(work_root: Path, input_object: S3SysmonInput) -> Path:

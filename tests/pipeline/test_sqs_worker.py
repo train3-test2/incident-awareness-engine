@@ -2,6 +2,7 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
@@ -9,13 +10,18 @@ from pathlib import Path
 import pytest
 from botocore.exceptions import ClientError
 
-from incident_awareness.common.models.pipeline_runtime import PipelineStage
+from incident_awareness.common.models.pipeline_runtime import (
+    PipelineRuntimeState,
+    PipelineRuntimeStatus,
+    PipelineStage,
+)
 from incident_awareness.pipeline.r1_production import R1GeneratedArchive
 from incident_awareness.pipeline.reporting import PipelineExecutionSummary
 from incident_awareness.pipeline.sqs_worker import (
     PermanentWorkerError,
     RetryableWorkerError,
     S3SysmonInput,
+    _PostgresR1ArchivePublicationStore,
     _PostgresSuccessfulReceiptStore,
     _process_message,
     parse_s3_sysmon_inputs,
@@ -651,6 +657,7 @@ def test_worker_commits_outbox_then_publishes_evidence_and_summary() -> None:
     receipts = _OrderedReceiptStore(events)
     publications = _FakePublicationStore(events)
     s3 = _FakeS3(events=events)
+    tracker = _RuntimeTrackerSpy(events)
 
     # When
     result = run_worker(
@@ -658,7 +665,7 @@ def test_worker_commits_outbox_then_publishes_evidence_and_summary() -> None:
         expected_bucket=_BUCKET,
         sqs_client=_FakeSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}]),
         s3_client=s3,
-        run_standalone=_r1_standalone(),
+        run_standalone=_r1_standalone(tracker=tracker),
         receipt_store=receipts,
         publication_store=publications,
         once=True,
@@ -672,6 +679,7 @@ def test_worker_commits_outbox_then_publishes_evidence_and_summary() -> None:
         "put:r1_evidence.jsonl",
         "put:r1_extraction_summary.json",
         "publication-published",
+        "runtime-completed",
     ]
     publication = publications.publications["RUN-20261005-001"]
     assert publication.status == "published"
@@ -684,11 +692,13 @@ def test_worker_commits_outbox_then_publishes_evidence_and_summary() -> None:
 def test_worker_retries_partial_archive_without_rerunning_standalone() -> None:
     # Given
     receipts = _FakeReceiptStore()
-    publications = _FakePublicationStore([])
+    runtime_events: list[str] = []
+    tracker = _RuntimeTrackerSpy(runtime_events)
+    publications = _FakePublicationStore([], on_publish=tracker.complete)
     summary_key = "archive/first-cycle/r1/RUN-20261005-001/r1_extraction_summary.json"
     s3 = _FakeS3(fail_once_key=summary_key)
     calls: list[int] = []
-    standalone = _r1_standalone(calls=calls)
+    standalone = _r1_standalone(calls=calls, tracker=tracker)
     message = {"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}
 
     # When
@@ -703,6 +713,9 @@ def test_worker_retries_partial_archive_without_rerunning_standalone() -> None:
         publication_store=publications,
         once=True,
     )
+    first_runtime_events = tuple(runtime_events)
+    first_publication_status = publications.publications["RUN-20261005-001"].status
+    first_deleted_receipts = tuple(first_sqs.deleted_receipts)
     second_sqs = _FakeSqs([{**message, "ReceiptHandle": "receipt-2"}])
     run_worker(
         queue_url="https://example.test/queue",
@@ -716,9 +729,12 @@ def test_worker_retries_partial_archive_without_rerunning_standalone() -> None:
     )
 
     # Then
-    assert first_sqs.deleted_receipts == []
+    assert first_runtime_events == ()
+    assert first_publication_status == "retryable"
+    assert first_deleted_receipts == ()
     assert second_sqs.deleted_receipts == ["receipt-2"]
     assert calls == [1]
+    assert runtime_events == ["runtime-completed"]
     assert publications.publications["RUN-20261005-001"].status == "published"
     assert (_BUCKET, summary_key) in s3.objects
 
@@ -726,10 +742,16 @@ def test_worker_retries_partial_archive_without_rerunning_standalone() -> None:
 def test_worker_recovers_when_published_state_commit_fails_after_s3() -> None:
     # Given
     receipts = _FakeReceiptStore()
-    publications = _FakePublicationStore([], fail_publish_once=True)
+    runtime_events: list[str] = []
+    tracker = _RuntimeTrackerSpy(runtime_events)
+    publications = _FakePublicationStore(
+        [],
+        fail_publish_once=True,
+        on_publish=tracker.complete,
+    )
     s3 = _FakeS3()
     calls: list[int] = []
-    standalone = _r1_standalone(calls=calls)
+    standalone = _r1_standalone(calls=calls, tracker=tracker)
     message = {"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}
 
     # When
@@ -744,6 +766,8 @@ def test_worker_recovers_when_published_state_commit_fails_after_s3() -> None:
         publication_store=publications,
         once=True,
     )
+    first_runtime_events = tuple(runtime_events)
+    first_deleted_receipts = tuple(first_sqs.deleted_receipts)
     second_sqs = _FakeSqs([{**message, "ReceiptHandle": "receipt-2"}])
     run_worker(
         queue_url="https://example.test/queue",
@@ -757,9 +781,11 @@ def test_worker_recovers_when_published_state_commit_fails_after_s3() -> None:
     )
 
     # Then
-    assert first_sqs.deleted_receipts == []
+    assert first_runtime_events == ()
+    assert first_deleted_receipts == ()
     assert second_sqs.deleted_receipts == ["receipt-2"]
     assert calls == [1]
+    assert runtime_events == ["runtime-completed"]
     assert publications.publications["RUN-20261005-001"].status == "published"
 
 
@@ -799,6 +825,7 @@ def test_worker_marks_archive_content_conflict_as_terminal() -> None:
     s3 = _FakeS3()
     s3.objects[(_BUCKET, evidence_key)] = b"different"
     sqs = _FakeSqs([{"Body": json.dumps(_s3_event()), "ReceiptHandle": "receipt-1"}])
+    runtime_events: list[str] = []
 
     # When
     run_worker(
@@ -806,7 +833,7 @@ def test_worker_marks_archive_content_conflict_as_terminal() -> None:
         expected_bucket=_BUCKET,
         sqs_client=sqs,
         s3_client=s3,
-        run_standalone=_r1_standalone(),
+        run_standalone=_r1_standalone(tracker=_RuntimeTrackerSpy(runtime_events)),
         receipt_store=receipts,
         publication_store=publications,
         once=True,
@@ -816,6 +843,7 @@ def test_worker_marks_archive_content_conflict_as_terminal() -> None:
     assert sqs.deleted_receipts == []
     assert publications.publications["RUN-20261005-001"].status == "failed"
     assert s3.objects[(_BUCKET, evidence_key)] == b"different"
+    assert runtime_events == ["runtime-failed:persistence"]
 
 
 def test_worker_treats_durable_payload_conflict_as_permanent_before_s3() -> None:
@@ -871,6 +899,77 @@ def test_postgres_receipt_store_acquires_an_object_lock_before_lookup() -> None:
     assert "\x00" not in expected_lock_key
     assert "FROM s3_object_receipts" in connection.queries[1][0]
     assert connection.commits == 1
+
+
+def test_postgres_publication_store_completes_running_runtime_with_published_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    connection = _RuntimePublicationConnection()
+    archive_repository = _RuntimeArchiveRepository()
+    running = _running_runtime_status()
+    runtime_repository = _RuntimeStatusRepository([running])
+    monkeypatch.setattr(
+        "incident_awareness.pipeline.sqs_worker.R1ArchivePublicationRepository",
+        lambda _: archive_repository,
+    )
+    monkeypatch.setattr(
+        "incident_awareness.pipeline.sqs_worker.PipelineRuntimeStatusRepository",
+        lambda _: runtime_repository,
+    )
+    completed_at = running.updated_at + timedelta(seconds=3)
+    store = _PostgresR1ArchivePublicationStore(
+        connection,  # type: ignore[arg-type]
+        runtime_clock=lambda: completed_at,
+    )
+
+    # When
+    store.mark_published(running.run_id)
+
+    # Then
+    assert archive_repository.updates == [(running.run_id, "published")]
+    assert runtime_repository.requested_run_ids == [running.run_id]
+    assert len(runtime_repository.saved) == 1
+    completed = runtime_repository.saved[0]
+    assert completed.status.value == "completed"
+    assert completed.completed_at == completed_at
+    assert completed.updated_at == completed_at
+    assert completed.normalization_processed_count == completed.input_total
+    assert connection.commits == 1
+
+
+def test_postgres_publication_store_does_not_recover_terminal_failed_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    connection = _RuntimePublicationConnection()
+    archive_repository = _RuntimeArchiveRepository()
+    failed = _running_runtime_status().model_copy(
+        update={
+            "status": PipelineRuntimeState.FAILED,
+            "current_stage": None,
+            "stage_started_at": None,
+            "failed_stage": PipelineStage.PERSISTENCE,
+        }
+    )
+    runtime_repository = _RuntimeStatusRepository([failed])
+    monkeypatch.setattr(
+        "incident_awareness.pipeline.sqs_worker.R1ArchivePublicationRepository",
+        lambda _: archive_repository,
+    )
+    monkeypatch.setattr(
+        "incident_awareness.pipeline.sqs_worker.PipelineRuntimeStatusRepository",
+        lambda _: runtime_repository,
+    )
+    store = _PostgresR1ArchivePublicationStore(connection)  # type: ignore[arg-type]
+
+    # When
+    with pytest.raises(OSError, match="terminal failed"):
+        store.mark_published(failed.run_id)
+
+    # Then
+    assert runtime_repository.saved == []
+    assert connection.commits == 0
 
 
 def test_classifies_invalid_s3_event_as_permanent_error() -> None:
@@ -995,6 +1094,56 @@ class _ReceiptConnection:
         return None
 
 
+class _RuntimePublicationConnection:
+    def __init__(self) -> None:
+        self.commits = 0
+
+    def commit(self) -> None:
+        self.commits += 1
+
+
+class _RuntimeArchiveRepository:
+    def __init__(self) -> None:
+        self.updates: list[tuple[str, str]] = []
+
+    def update_status(self, run_id: str, *, status: str, **_: object) -> None:
+        self.updates.append((run_id, status))
+
+
+class _RuntimeStatusRepository:
+    def __init__(self, statuses: list[PipelineRuntimeStatus]) -> None:
+        self.statuses = statuses
+        self.requested_run_ids: list[str] = []
+        self.saved: list[PipelineRuntimeStatus] = []
+
+    def list_for_run(self, run_id: str) -> list[PipelineRuntimeStatus]:
+        self.requested_run_ids.append(run_id)
+        return self.statuses
+
+    def save(self, status: PipelineRuntimeStatus) -> bool:
+        self.saved.append(status)
+        return True
+
+
+def _running_runtime_status() -> PipelineRuntimeStatus:
+    started_at = datetime(2026, 10, 10, tzinfo=UTC)
+    updated_at = started_at + timedelta(seconds=5)
+    return PipelineRuntimeStatus(
+        execution_id="execution-r1-retry",
+        run_id="RUN-20261005-001",
+        entity_id="WIN-01",
+        status=PipelineRuntimeState.RUNNING,
+        current_stage=PipelineStage.PERSISTENCE,
+        input_total=3,
+        normalization_processed_count=3,
+        started_at=started_at,
+        stage_started_at=started_at + timedelta(seconds=4),
+        updated_at=updated_at,
+        completed_at=None,
+        failed_stage=None,
+    )
+
+
 class _FakeReceiptStore:
     def __init__(self) -> None:
         self.successful_run_ids: dict[tuple[str, str, str], str] = {}
@@ -1035,10 +1184,17 @@ class _FailingReceiptStore(_FakeReceiptStore):
 
 
 class _FakePublicationStore:
-    def __init__(self, events: list[str], *, fail_publish_once: bool = False) -> None:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        fail_publish_once: bool = False,
+        on_publish: Callable[[], None] | None = None,
+    ) -> None:
         self.publications: dict[str, R1ArchivePublication] = {}
         self.events = events
         self.fail_publish_once = fail_publish_once
+        self.on_publish = on_publish
 
     def get(self, run_id: str) -> R1ArchivePublication | None:
         return self.publications.get(run_id)
@@ -1075,6 +1231,8 @@ class _FakePublicationStore:
             last_error_message=None,
         )
         self.events.append("publication-published")
+        if self.on_publish is not None:
+            self.on_publish()
 
     def mark_failed(self, run_id: str, error: Exception) -> None:
         self.publications[run_id] = replace(
@@ -1156,6 +1314,7 @@ def _successful_run_id(_: Path, output_root: Path, __: object | None = None) -> 
 def _r1_standalone(
     *,
     calls: list[int] | None = None,
+    tracker: _RuntimeTrackerSpy | None = None,
 ) -> Callable[[Path, Path, object | None], StandaloneExecution]:
     def run(_: Path, output_root: Path, __: object | None = None) -> StandaloneExecution:
         if calls is not None:
@@ -1177,6 +1336,7 @@ def _r1_standalone(
                 evidence_path=evidence_path,
                 summary_path=summary_path,
             ),
+            _runtime_tracker=tracker,
         )
 
     return run
