@@ -1,7 +1,7 @@
 import hashlib
 import json
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -20,6 +20,7 @@ from incident_awareness.pipeline.r1_artifacts import (
 )
 from incident_awareness.pipeline.r1_causal_availability import (
     R1CausalAvailabilityEnvelope,
+    R1CausalEvidenceAvailability,
     build_r1_causal_availability_envelope,
     r1_causal_availability_sort_key,
 )
@@ -215,6 +216,115 @@ def _build(output_directory: Path, *, run_metadata: RunMetadata | None = None):
         selector_policy=_selector_policy(),
         approved_policy=_approved_policy(),
     )
+
+
+def _availability_payload() -> dict[str, object]:
+    return {
+        "evidence_id": "E-causal-time-validation",
+        "timestamp": _RUN_START + timedelta(seconds=2),
+        "available_at": _RUN_END,
+        "event_ids": ("evt-terminal",),
+        "context_event_ids": (),
+    }
+
+
+def _envelope_payload() -> dict[str, object]:
+    return {
+        "contract_version": "v0.1",
+        "run_id": _RUN_ID,
+        "entity_id": _HOST_ID,
+        "run_start": _RUN_START,
+        "run_end": _RUN_END,
+        "watermark_at": _RUN_END,
+        "watermark_basis": "authoritative_run_end",
+        "selector_policy_identity": {
+            "policy_id": "r1-selector",
+            "version": "v0.1",
+            "config_hash": "selector-hash",
+        },
+        "approved_policy_identity": {
+            "policy_id": "r1-approved-lineage",
+            "version": "v0.1",
+            "config_hash": "approved-hash",
+        },
+        "source_extractor_version": "r1-v0.1",
+        "source_evidence_count": 0,
+        "source_evidence_artifact_sha256": "a" * 64,
+        "source_extraction_summary_sha256": "b" * 64,
+        "evidences": (),
+    }
+
+
+@pytest.mark.parametrize("numeric_timestamp", [1791676800, 1791676800.5, "1791676800"])
+@pytest.mark.parametrize("field_name", ["timestamp", "available_at"])
+def test_rejects_numeric_epoch_for_evidence_availability_times(
+    field_name: str,
+    numeric_timestamp: object,
+) -> None:
+    # Given
+    payload = _availability_payload()
+    payload[field_name] = numeric_timestamp
+
+    # When / Then
+    with pytest.raises(ValueError, match="숫자형 Unix timestamp"):
+        R1CausalEvidenceAvailability.model_validate(payload)
+
+
+@pytest.mark.parametrize("numeric_timestamp", [1791676800, 1791676800.5, "1791676800"])
+@pytest.mark.parametrize("field_name", ["run_start", "run_end", "watermark_at"])
+def test_rejects_numeric_epoch_for_envelope_times(
+    field_name: str,
+    numeric_timestamp: object,
+) -> None:
+    # Given
+    payload = _envelope_payload()
+    payload[field_name] = numeric_timestamp
+
+    # When / Then
+    with pytest.raises(ValueError, match="숫자형 Unix timestamp"):
+        R1CausalAvailabilityEnvelope.model_validate(payload)
+
+
+def test_accepts_aware_utc_datetime_and_iso_8601_string_times() -> None:
+    # Given
+    evidence_payload = _availability_payload()
+    evidence_payload["available_at"] = _RUN_END.isoformat().replace("+00:00", "Z")
+    envelope_payload = _envelope_payload()
+    envelope_payload["run_start"] = _RUN_START.isoformat().replace("+00:00", "Z")
+    envelope_payload["run_end"] = _RUN_END.isoformat().replace("+00:00", "Z")
+    envelope_payload["watermark_at"] = _RUN_END.isoformat().replace("+00:00", "Z")
+
+    # When
+    evidence_availability = R1CausalEvidenceAvailability.model_validate(evidence_payload)
+    envelope = R1CausalAvailabilityEnvelope.model_validate(envelope_payload)
+
+    # Then
+    assert evidence_availability.timestamp == _RUN_START + timedelta(seconds=2)
+    assert evidence_availability.available_at == _RUN_END
+    assert envelope.run_start == _RUN_START
+    assert envelope.run_end == envelope.watermark_at == _RUN_END
+
+
+@pytest.mark.parametrize(
+    "invalid_time",
+    [
+        _RUN_START.replace(tzinfo=None),
+        datetime(2026, 10, 11, 10, 0, tzinfo=timezone(timedelta(hours=9))),
+    ],
+    ids=["naive", "non-utc"],
+)
+def test_rejects_non_utc_evidence_and_envelope_times(invalid_time: datetime) -> None:
+    # Given
+    evidence_payload = _availability_payload()
+    evidence_payload["timestamp"] = invalid_time
+    envelope_payload = _envelope_payload()
+    envelope_payload["run_start"] = invalid_time
+
+    # When / Then
+    with pytest.raises(ValueError, match="timezone information|must be UTC"):
+        R1CausalEvidenceAvailability.model_validate(evidence_payload)
+    with pytest.raises(ValueError, match="timezone information|must be UTC"):
+        R1CausalAvailabilityEnvelope.model_validate(envelope_payload)
 
 
 def test_builds_whole_episode_availability_without_changing_evidence_timestamps(

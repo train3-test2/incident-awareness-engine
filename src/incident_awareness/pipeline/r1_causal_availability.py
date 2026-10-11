@@ -67,6 +67,11 @@ class R1CausalEvidenceAvailability(BaseModel):
             raise ValueError("Event IDs must be unique within each provenance field")
         return values
 
+    @field_validator("timestamp", "available_at", mode="before")
+    @classmethod
+    def reject_numeric_datetime(cls, value: object) -> object:
+        return _reject_numeric_datetime(value)
+
     @field_validator("timestamp", "available_at")
     @classmethod
     def validate_utc_datetime(cls, value: datetime) -> datetime:
@@ -107,6 +112,11 @@ class R1CausalAvailabilityEnvelope(BaseModel):
         if not _is_sha256(value):
             raise ValueError("source artifact hashes must be lowercase SHA-256")
         return value
+
+    @field_validator("run_start", "run_end", "watermark_at", mode="before")
+    @classmethod
+    def reject_numeric_datetime(cls, value: object) -> object:
+        return _reject_numeric_datetime(value)
 
     @field_validator("run_start", "run_end", "watermark_at")
     @classmethod
@@ -259,6 +269,22 @@ def _validate_utc_datetime(value: datetime, *, field_name: str) -> None:
         raise ValueError(f"{field_name} must include timezone information")
     if value.utcoffset() != timedelta(0):
         raise ValueError(f"{field_name} must be UTC")
+
+
+def _reject_numeric_datetime(value: object) -> object:
+    if isinstance(value, int | float) or (isinstance(value, str) and _is_numeric_string(value)):
+        raise ValueError("datetime에 숫자형 Unix timestamp를 사용할 수 없습니다.")
+
+    return value
+
+
+def _is_numeric_string(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+
+    return True
 
 
 def _is_sha256(value: str) -> bool:
