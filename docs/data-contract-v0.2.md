@@ -193,7 +193,9 @@ Evaluation entity_id host-level grouping/provenance key
 | `attack_technique_ids`      | List[String] |    X |    O | ATT&CK 맥락 참조값                                                 |
 | `features`                  | Object       |    X |    O | 추출 Feature; Evidence 담당 역할 소유                              |
 
-`timestamp`는 `event_ids`가 가리키는 `NormalizedEvent.timestamp` 중 가장 늦은 값으로 정한다. 이는 Evidence를 확정할 수 있게 된 최초 시각을 나타낸다. 여러 Event의 시간 범위가 필요할 때만 `first_source_event_time`을 함께 기록하며, 이 값은 탐지 성능 채점이나 Decision 시간 계산에 사용하지 않는다.
+`timestamp`는 `event_ids`가 가리키는 `NormalizedEvent.timestamp` 중 가장 늦은 값으로 정한다. 이 값은 Evidence의 직접 근거가 되는 Event time이며, 전체 입력의 후속 Event까지 확인해야 하는 selector의 causal 확정 시각을 의미하지 않는다. 여러 Event의 시간 범위가 필요할 때만 `first_source_event_time`을 함께 기록하며, 이 값은 탐지 성능 채점이나 Decision 시간 계산에 사용하지 않는다.
+
+R1 whole-episode selector처럼 미래 후보의 ambiguity와 temporal inversion을 입력 종료 시점까지 확인하는 경로는 `timestamp`와 별도의 `available_at` 계약을 사용한다. R1 v0.1의 event-time availability와 authoritative `run_end` watermark는 [R1 causal availability 계약 v0.1](evidence/r1-causal-availability-v0.1.md)에 정의하며, 기존 EvidenceResult v0.2 schema에는 `available_at`을 추가하지 않는다.
 
 `entity_id`는 D-01에 따라 non-null인 Endpoint Host 식별자다. Evidence가 참조하는 Source Event의 `NormalizedEvent.host_id`를 사용한다.
 
