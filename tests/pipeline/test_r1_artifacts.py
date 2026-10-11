@@ -898,6 +898,11 @@ def test_loads_writer_artifacts_round_trip(tmp_path: Path) -> None:
     assert loaded.summary == written.summary
     assert loaded.evidence_path == written.evidence_path
     assert loaded.summary_path == written.summary_path
+    assert loaded.summary_artifact_sha256 == written.summary_artifact_sha256
+    assert (
+        loaded.summary_artifact_sha256
+        == hashlib.sha256(loaded.summary_path.read_bytes()).hexdigest()
+    )
     assert [evidence.model_dump() for evidence in loaded.evidences] == [
         evidence.model_dump() for evidence in written.evidences
     ]

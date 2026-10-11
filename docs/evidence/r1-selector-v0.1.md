@@ -131,8 +131,10 @@ Google Drive의 동결 원본을 임시 경로에서 읽고 기존 raw SHA-256�
 
 ## 9. Production 제한
 
-- production runner/CLI에는 연결하지 않는다.
-- R1 analysis window 전체 계약은 아직 정하지 않았다. `run_start`는 terminal/Evidence eligibility 하한과 pre-Run lineage context를 구분할 뿐 `available_at`, watermark 또는 causal window를 정의하지 않는다.
+- SQS Worker → standalone production 경로는 #228 계약대로 연결되어 있지만, 이는 selector의 causal availability나 Temporal Replay 소비 연결을 의미하지 않는다. 수동 `aws_task → runner` 경로는 계속 범위 밖이다.
+- 현재 selector는 입력 전체를 먼저 materialize하고 terminal 후보의 유일성, ambiguity, temporal inversion과 GUID validation을 전체 batch에서 판정하는 `OFFLINE WHOLE-EPISODE ONLY` selector다. 후속 Event가 기존 단일 후보를 ambiguous 또는 invalid 상태로 바꿀 수 있으므로 whole-episode close 전에는 선택을 causal하게 확정하지 않는다.
+- family별 fixed close window는 아직 없다. 현재 [R1 causal availability 계약 v0.1](r1-causal-availability-v0.1.md)은 caller가 trusted `RunMetadata` 또는 기존 authoritative Run boundary에서 명시적으로 전달한 `run_end`를 whole-episode watermark로 사용하며, 모든 생성 Evidence의 `available_at = run_end`로 정한다. `run_end`를 Evidence timestamp나 입력 Event의 최댓값으로 추론하지 않는다.
+- `run_start`는 terminal/Evidence eligibility 하한과 pre-Run lineage context를 구분할 뿐 watermark를 정의하지 않는다. 향후 versioned incremental/window selector가 후보 집합을 더 이르게 안전하게 닫는 계약을 도입하면 새 selector policy와 availability contract에서 `available_at`을 `run_end`보다 앞당길 수 있다.
 - production approved lineage policy를 이번 구현에서 동결하지 않는다.
 - Pair-002는 development tuning 전용이며 training, validation, test, holdout 또는 final evaluation 승인이 아니다.
 - Fusion weight, window, threshold, stopping과 Role5 final evaluation은 별도 책임이다.

@@ -219,6 +219,7 @@ class R1EvidenceArtifactRun:
     summary: R1ExtractionSummary
     evidence_path: Path
     summary_path: Path
+    summary_artifact_sha256: str
 
 
 _SUMMARY_FIELD_NAMES = frozenset(field.name for field in fields(R1ExtractionSummary))
@@ -313,9 +314,10 @@ def run_and_write_r1_evidence_artifacts(
         selector=validated_selector_provenance,
     )
     _validate_summary_contract(completed_summary)
+    summary_content = _serialize_summary(completed_summary)
     files = [
         (evidence_path, evidence_content),
-        (summary_path, _serialize_summary(completed_summary)),
+        (summary_path, summary_content),
     ]
     if collection_provenance is not None:
         files.append(
@@ -331,13 +333,14 @@ def run_and_write_r1_evidence_artifacts(
         summary=completed_summary,
         evidence_path=evidence_path,
         summary_path=summary_path,
+        summary_artifact_sha256=_sha256(summary_content),
     )
 
 
 def load_r1_evidence_artifacts(output_directory: Path) -> R1EvidenceArtifactRun:
     """검증을 통과한 completed R1 Evidence artifact를 읽는다."""
     evidence_path, summary_path = _artifact_paths(output_directory)
-    summary = _read_summary(summary_path)
+    summary, summary_artifact_sha256 = _read_summary_artifact(summary_path)
     if summary.status != "completed":
         raise ValueError("failed R1 extraction artifact cannot be loaded as Evidence")
 
@@ -352,13 +355,15 @@ def load_r1_evidence_artifacts(output_directory: Path) -> R1EvidenceArtifactRun:
         summary=summary,
         evidence_path=evidence_path,
         summary_path=summary_path,
+        summary_artifact_sha256=summary_artifact_sha256,
     )
 
 
 def load_r1_extraction_summary(output_directory: Path) -> R1ExtractionSummary:
     """Evidence 소비 여부와 무관하게 R1 extraction summary를 검증해 읽는다."""
     _, summary_path = _artifact_paths(output_directory)
-    return _read_summary(summary_path)
+    summary, _ = _read_summary_artifact(summary_path)
+    return summary
 
 
 def write_r1_collection_provenance(
@@ -603,9 +608,10 @@ def _serialize_collection_provenance(provenance: R1CollectionProvenance) -> byte
     ).encode("utf-8")
 
 
-def _read_summary(path: Path) -> R1ExtractionSummary:
+def _read_summary_artifact(path: Path) -> tuple[R1ExtractionSummary, str]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        content = path.read_bytes()
+        payload = json.loads(content.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError(f"R1 extraction summary is not valid JSON: {path}") from error
 
@@ -615,7 +621,7 @@ def _read_summary(path: Path) -> R1ExtractionSummary:
         _validate_summary_contract(summary)
     except (TypeError, ValueError) as error:
         raise ValueError("R1 extraction summary does not match the writer contract") from error
-    return summary
+    return summary, _sha256(content)
 
 
 def _validate_summary_payload(payload: object) -> None:
