@@ -1,6 +1,5 @@
 """R1 whole-episode Evidence를 causal replay 입력으로 변환한다."""
 
-import hashlib
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -189,6 +188,9 @@ def build_r1_causal_availability_envelope(
     )
     if actual_approved_identity != expected_approved_identity:
         raise ValueError("approved policy provenance does not match the supplied policy")
+    evidence_artifact_sha256 = summary.evidence_artifact_sha256
+    if evidence_artifact_sha256 is None:
+        raise ValueError("completed Evidence artifact must include its validated SHA-256")
 
     run_end = run_metadata.end_time
     availability_records: list[R1CausalEvidenceAvailability] = []
@@ -223,8 +225,8 @@ def build_r1_causal_availability_envelope(
         approved_policy_identity=actual_approved_identity,
         source_extractor_version=summary.extractor_version,
         source_evidence_count=len(artifact_run.evidences),
-        source_evidence_artifact_sha256=_sha256(artifact_run.evidence_path.read_bytes()),
-        source_extraction_summary_sha256=_sha256(artifact_run.summary_path.read_bytes()),
+        source_evidence_artifact_sha256=evidence_artifact_sha256,
+        source_extraction_summary_sha256=artifact_run.summary_artifact_sha256,
         evidences=tuple(sorted(availability_records, key=r1_causal_availability_sort_key)),
     )
 
@@ -257,10 +259,6 @@ def _validate_utc_datetime(value: datetime, *, field_name: str) -> None:
         raise ValueError(f"{field_name} must include timezone information")
     if value.utcoffset() != timedelta(0):
         raise ValueError(f"{field_name} must be UTC")
-
-
-def _sha256(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()
 
 
 def _is_sha256(value: str) -> bool:

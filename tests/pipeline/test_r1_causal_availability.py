@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import incident_awareness.pipeline.r1_causal_availability as causal_availability
 from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.common.models.run import RunMetadata, RunType, SchemaVersions
 from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
@@ -248,17 +249,55 @@ def test_preserves_source_artifact_provenance_and_round_trips(tmp_path: Path) ->
 
     # When
     envelope = _build(tmp_path)
+    loaded = load_r1_evidence_artifacts(tmp_path)
     restored = R1CausalAvailabilityEnvelope.model_validate_json(envelope.model_dump_json())
 
     # Then
     assert restored == envelope
+    assert envelope.source_evidence_artifact_sha256 == loaded.summary.evidence_artifact_sha256
+    assert envelope.source_extraction_summary_sha256 == loaded.summary_artifact_sha256
+    assert (
+        loaded.summary_artifact_sha256
+        == hashlib.sha256((tmp_path / R1_EXTRACTION_SUMMARY_FILENAME).read_bytes()).hexdigest()
+    )
+
+
+def test_uses_loader_validated_hashes_without_rereading_replaced_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    _write_artifacts(tmp_path)
+    real_load = causal_availability.load_r1_evidence_artifacts
+    loaded_runs = []
+
+    def load_then_replace(output_directory: Path):
+        loaded = real_load(output_directory)
+        loaded_runs.append(loaded)
+        loaded.evidence_path.write_bytes(b"replaced after validation\n")
+        loaded.summary_path.write_bytes(b'{"replaced": true}\n')
+        return loaded
+
+    monkeypatch.setattr(
+        causal_availability,
+        "load_r1_evidence_artifacts",
+        load_then_replace,
+    )
+
+    # When
+    envelope = _build(tmp_path)
+
+    # Then
+    loaded = loaded_runs[0]
+    assert envelope.source_evidence_artifact_sha256 == loaded.summary.evidence_artifact_sha256
+    assert envelope.source_extraction_summary_sha256 == loaded.summary_artifact_sha256
     assert (
         envelope.source_evidence_artifact_sha256
-        == hashlib.sha256((tmp_path / R1_EVIDENCE_FILENAME).read_bytes()).hexdigest()
+        != hashlib.sha256(loaded.evidence_path.read_bytes()).hexdigest()
     )
     assert (
         envelope.source_extraction_summary_sha256
-        == hashlib.sha256((tmp_path / R1_EXTRACTION_SUMMARY_FILENAME).read_bytes()).hexdigest()
+        != hashlib.sha256(loaded.summary_path.read_bytes()).hexdigest()
     )
 
 
