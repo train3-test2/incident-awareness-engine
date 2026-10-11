@@ -62,6 +62,13 @@ FROM pipeline_runtime_status
 WHERE run_id = %s AND entity_id = %s
 """
 
+_SELECT_PIPELINE_RUNTIME_STATUS_PAYLOADS_BY_RUN_ID = """
+SELECT payload
+FROM pipeline_runtime_status
+WHERE run_id = %s
+ORDER BY entity_id ASC
+"""
+
 _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS = """
 SELECT payload
 FROM pipeline_runtime_status
@@ -135,6 +142,19 @@ class PipelineRuntimeStatusRepository:
         return PipelineRuntimeStatus.model_validate(
             _payload_from_row(row, table_name="pipeline_runtime_status")
         )
+
+    def list_for_run(self, run_id: str) -> list[PipelineRuntimeStatus]:
+        """Return every entity-scoped Runtime status for one Run."""
+        rows = self._connection.execute(
+            _SELECT_PIPELINE_RUNTIME_STATUS_PAYLOADS_BY_RUN_ID,
+            (run_id,),
+        ).fetchall()
+        return [
+            PipelineRuntimeStatus.model_validate(
+                _payload_from_row(row, table_name="pipeline_runtime_status")
+            )
+            for row in rows
+        ]
 
     def list_recent(
         self,

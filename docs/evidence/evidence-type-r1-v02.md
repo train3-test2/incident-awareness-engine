@@ -27,7 +27,7 @@ R1-V02 첫 Pilot은 Target-A에서 관측한 host-local 프로세스 계보와 �
 - Sysmon EID 10
 - cross-host correlation
 
-PR #124의 `r1_lineage` 검증기는 Raw Pilot에서 raw Sysmon EID 1 계보와 EID 1→EID 3 연결을 재구성·검증한다. Role2는 이 기능을 raw 입력 대상으로 중복 구현하지 않고, NormalizedEvent Full 경로의 correlation과 Evidence 생성을 담당한다. 시간 순서, Normal/Attack 의미, Evidence type, Fusion 점수는 해당 검증기가 결정하지 않는다. R1 multi-event correlation 함수와 독립 batch pipeline API는 구현되었지만 production runner/CLI에는 아직 연결하지 않았다.
+PR #124의 `r1_lineage` 검증기는 Raw Pilot에서 raw Sysmon EID 1 계보와 EID 1→EID 3 연결을 재구성·검증한다. Role2는 이 기능을 raw 입력 대상으로 중복 구현하지 않고, NormalizedEvent Full 경로의 correlation과 Evidence 생성을 담당한다. 시간 순서, Normal/Attack 의미, Evidence type, Fusion 점수는 해당 검증기가 결정하지 않는다. R1 multi-event correlation 함수와 독립 batch pipeline API는 SQS Worker의 standalone production 경로에 연결되었으며, 수동 `aws_task → runner` 경로에는 연결하지 않았다.
 
 NormalizedEvent v0.3에서 Sysmon EID 1은 `process.process_guid`와 `process.parent_process_guid`를 보존한다. EID 3은 `process.process_guid`를 보존하고 `process.parent_process_guid`는 `None`이다. 두 필드는 모두 공통 계약의 optional 필드다.
 
@@ -112,7 +112,7 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 | 단독 공격 판정용인지 | 아니오. 네트워크 연결 존재만으로 Normal과 Attack을 구분하지 않음 |
 | Fusion에서의 역할 | Normal/Attack 모두에서 발생하므로 단독 공격 신호가 아님. 현재 `feature_channel_group = fusion_feature`로 생성되지만, 실제 R1 scoring profile 포함 여부는 Role1이 결정 |
 
-두 유형에 필요한 NormalizedEvent Full 경로의 Event ↔ Event 의미적·인과적 correlation과 Semantic Evidence 생성은 Role2 책임이다. `src/incident_awareness/pipeline/r1_evidence.py`는 NormalizedEvent batch와 명시적인 lineage input을 받아 R1 Evidence 함수를 호출한다. [R1 자동 Evidence 실행 경로 v0.1](r1-automated-evidence-pipeline-v0.1.md)은 development/offline 범위에서 selector와 repository-managed approved policy loader를 기존 Evidence·artifact 경로에 연결한다. 현재 S0 production pipeline은 단일 `NormalizedEvent`를 받는 `extract_evidence()`만 사용하며, R1 batch API를 production runner/CLI에서 호출하는 위치는 아직 TBD다. 생성된 Evidence 사이의 시간차, 순서, 최근성, Window 내 공존은 Role1 Fusion이 처리한다.
+두 유형에 필요한 NormalizedEvent Full 경로의 Event ↔ Event 의미적·인과적 correlation과 Semantic Evidence 생성은 Role2 책임이다. `src/incident_awareness/pipeline/r1_evidence.py`는 NormalizedEvent batch와 명시적인 lineage input을 받아 R1 Evidence 함수를 호출한다. [R1 자동 Evidence 실행 경로 v0.1](r1-automated-evidence-pipeline-v0.1.md)은 selector와 repository-managed approved policy loader를 기존 Evidence·artifact 경로에 연결한다. SQS Worker의 standalone production 경로는 Normalization 직후 이 자동 경로를 호출하며, 명시적 family/policy/archive runtime 설정이 없으면 기존 S0 경로만 유지한다. 수동 `aws_task → runner` 경로는 연결하지 않는다. 생성된 Evidence 사이의 시간차, 순서, 최근성, Window 내 공존은 Role1 Fusion이 처리한다.
 
 현재 `anchor_event_id`와 `terminal_event_id`를 직접 지정하는 방식은 Pilot과 수동 실행을 위한 명시적 입력 방식이다. `NormalizedEvent.event_id`는 Run마다 달라질 수 있으므로 반복 평가용 frozen config에 특정 Event ID를 그대로 고정하지 않는다. 반복 평가에서는 Ground Truth나 `run_type`을 참조하지 않고 모든 Run에 동일하게 재현 가능한 anchor/terminal selector 규칙을 평가 전에 동결해야 한다. 구체적인 selector 규칙은 실제 R1 telemetry를 확인한 뒤 확정하며, 프로세스 이름 shortcut이나 Ground Truth 기반 선택은 사용하지 않는다.
 
@@ -126,6 +126,7 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 - `remote_process_network_follow_on` Evidence 생성 함수 구현
 - lineage reconstruction 및 `remote_session_process_lineage_deviation` Evidence 생성 함수 구현
 - `src/incident_awareness/pipeline/r1_evidence.py`의 독립 R1 batch pipeline API 구현
+- SQS Worker → standalone 경로에서 Normalization 직후 R1 selector/policy/Evidence/artifact 호출 및 durable S3 archive 게시
 - Pilot·수동 실행에서 Event ID로 지정한 anchor/terminal과 동결된 policy를 전달하는 명시적 lineage input 구조
 - correlation 필수 GUID 누락 시 Evidence를 생성하지 않는 fail-closed 처리
 - Run별 extraction summary에 fail-closed 진단과 lineage/policy provenance 기록
@@ -136,7 +137,7 @@ complete lineage에 포함된 Event의 `process.name`이 하나라도 `None`이�
 
 아직 TBD인 항목은 다음과 같다.
 
-- production runner/CLI에서 R1 batch pipeline API를 호출하는 위치
+- 수동 `aws_task → runner` 경로의 R1 연동 여부
 - 실제 Pilot에서 `anchor_event`와 `terminal_event`를 선택해 전달할 주체와 기준
 - 반복 평가용 anchor/terminal selector 규칙
 - R1 분석 대상 Event batch의 window 계약
@@ -162,7 +163,7 @@ downstream에서 artifact를 소비하기 전에는 summary의 `status = complet
 
 `resolve_r1_evidence_provenance(evidences, events)`는 artifact loader가 검증한 Evidence의 `event_ids`를 NormalizedEvent batch에서 해석하는 별도의 provenance 경계다. Event batch의 `event_id` 유일성과 모든 참조 Event의 존재, `Evidence.run_id == NormalizedEvent.run_id`, `Evidence.entity_id == NormalizedEvent.host_id`, `Evidence.timestamp == max(NormalizedEvent.timestamp)`를 검증하고 `Evidence.event_ids`의 의미적 순서를 그대로 보존한 Event tuple을 반환한다. `raw_ref`와 `source_event_id`는 resolve된 NormalizedEvent를 통해 추적하며 Evidence에 복제하지 않는다. SHA-256, count, artifact ordering, R1 type scope, summary lineage/policy provenance 같은 artifact 무결성 검증은 PR #188 loader의 책임으로 유지한다.
 
-파일은 기존 artifact를 덮어쓰지 않으며 summary를 마지막 완료 표식으로 게시한다. 동일한 `output_directory`는 재사용하거나 덮어쓰지 않는다. failed Run을 재시도할 때는 새로운 빈 `output_directory`를 명시적으로 사용하며, 이번 구현은 기존 artifact 자동 삭제, 자동 overwrite, 자동 attempt 번호 생성을 하지 않는다. 실행 시각처럼 재실행마다 달라지는 값은 기록하지 않는다. Pilot·수동 실행의 Event ID 직접 지정 API는 유지한다. 독립적인 [R1 selector v0.1](r1-selector-v0.1.md)은 frozen structural policy로 anchor/terminal을 선택해 기존 batch pipeline에 연결하며 Pair-002 development telemetry 재검증을 완료했다. Selector provenance의 artifact 영속화는 완료했으며, production runner/CLI 연결은 후속 작업이다.
+파일은 기존 artifact를 덮어쓰지 않으며 summary를 마지막 완료 표식으로 게시한다. 동일한 `output_directory`는 재사용하거나 덮어쓰지 않는다. failed Run을 재시도할 때는 새로운 빈 `output_directory`를 명시적으로 사용하며, 이번 구현은 기존 artifact 자동 삭제, 자동 overwrite, 자동 attempt 번호 생성을 하지 않는다. 실행 시각처럼 재실행마다 달라지는 값은 기록하지 않는다. Pilot·수동 실행의 Event ID 직접 지정 API는 유지한다. 독립적인 [R1 selector v0.1](r1-selector-v0.1.md)은 frozen structural policy로 anchor/terminal을 선택해 기존 batch pipeline에 연결하며 Pair-002 development telemetry 재검증을 완료했다. Selector provenance의 artifact 영속화와 SQS Worker production 연결은 완료했으며, 수동 `aws_task → runner` 연결은 범위 밖이다.
 
 ## 6. 미확정 사항
 
@@ -172,7 +173,7 @@ downstream에서 artifact를 소비하기 전에는 summary의 `status = complet
 | timestamp 기준 | 구현 규칙 확정 / Pair-002 development telemetry 검증 완료 | 사용 Event 중 가장 늦은 `NormalizedEvent.timestamp` 사용. raw timestamp 선택은 Event/Normalization 계약 책임 |
 | 공식 Evidence vocabulary 등록 | 완료 / `configs/evidence_types_v0.2.yaml` | 두 R1 type의 managed validator 허용. Fusion scoring과 평가 승인은 별도 |
 | R1 batch pipeline API | 구현 완료 | `src/incident_awareness/pipeline/r1_evidence.py`에서 NormalizedEvent batch와 명시적 lineage input을 처리 |
-| production runner/CLI 연결 | TBD | R1 batch API 호출 위치와 입력 config 계약 합의 |
+| production runner/CLI 연결 | SQS Worker → standalone 완료 | 명시적 family/policy/archive config로만 활성화. 수동 `aws_task → runner`는 범위 밖 |
 | Pilot·수동 실행의 anchor/terminal 선택 | TBD | 실제 Pilot에서 Event ID를 선택해 전달할 주체와 기준 합의 |
 | 반복 평가용 anchor/terminal selector | development 구현 및 Pair-002 재검증 완료 | [R1 selector v0.1](r1-selector-v0.1.md). 구조 후보가 유일할 때만 선택하며 production 적용과 dataset 확대 검증은 별도 |
 | approved lineage policy 관리 | family binding/lifecycle 및 frozen v0.3 formal pre-holdout 승인 완료 | [v0.2 계약](r1-approved-lineage-policy-v0.2.md)과 [frozen v0.3 record](r1-approved-lineage-policy-freeze-v0.3.md). Production policy 승인은 별도 |

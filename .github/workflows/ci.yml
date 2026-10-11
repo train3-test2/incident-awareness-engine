@@ -102,6 +102,12 @@ jobs:
       FIRST_CYCLE_DATABASE_URL_SECRET_ARN: ${{ vars.FIRST_CYCLE_DATABASE_URL_SECRET_ARN }}
       FIRST_CYCLE_S3_BUCKET: ${{ vars.FIRST_CYCLE_S3_BUCKET }}
       FIRST_CYCLE_SQS_QUEUE_URL: ${{ vars.FIRST_CYCLE_SQS_QUEUE_URL }}
+      R1_FAMILY_ID: ${{ vars.R1_FAMILY_ID }}
+      R1_APPROVED_POLICY_ID: ${{ vars.R1_APPROVED_POLICY_ID }}
+      R1_APPROVED_POLICY_VERSION: ${{ vars.R1_APPROVED_POLICY_VERSION }}
+      R1_APPROVED_POLICY_CONFIG_HASH: ${{ vars.R1_APPROVED_POLICY_CONFIG_HASH }}
+      R1_ARCHIVE_BUCKET: ${{ vars.R1_ARCHIVE_BUCKET }}
+      R1_ARCHIVE_PREFIX: ${{ vars.R1_ARCHIVE_PREFIX }}
 
     steps:
       - uses: actions/checkout@v6
@@ -117,6 +123,17 @@ jobs:
               exit 1
             fi
           done
+
+          r1_config_count=0
+          for value in R1_FAMILY_ID R1_APPROVED_POLICY_ID R1_APPROVED_POLICY_VERSION R1_APPROVED_POLICY_CONFIG_HASH R1_ARCHIVE_BUCKET R1_ARCHIVE_PREFIX; do
+            if [ -n "${!value}" ]; then
+              r1_config_count=$((r1_config_count + 1))
+            fi
+          done
+          if [ "$r1_config_count" -ne 0 ] && [ "$r1_config_count" -ne 6 ]; then
+            echo "R1 GitHub Actions variables must be configured all-or-none."
+            exit 1
+          fi
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
@@ -163,7 +180,13 @@ jobs:
             --task-role-arn "$ECS_FIRST_CYCLE_TASK_ROLE_ARN" \
             --database-url-secret-arn "$FIRST_CYCLE_DATABASE_URL_SECRET_ARN" \
             --sqs-queue-url "$FIRST_CYCLE_SQS_QUEUE_URL" \
-            --s3-input-bucket "$FIRST_CYCLE_S3_BUCKET"
+            --s3-input-bucket "$FIRST_CYCLE_S3_BUCKET" \
+            --r1-family-id "$R1_FAMILY_ID" \
+            --r1-approved-policy-id "$R1_APPROVED_POLICY_ID" \
+            --r1-approved-policy-version "$R1_APPROVED_POLICY_VERSION" \
+            --r1-approved-policy-config-hash "$R1_APPROVED_POLICY_CONFIG_HASH" \
+            --r1-archive-bucket "$R1_ARCHIVE_BUCKET" \
+            --r1-archive-prefix "$R1_ARCHIVE_PREFIX"
 
       - name: Register Worker task definition
         id: worker-task-definition

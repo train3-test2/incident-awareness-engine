@@ -20,6 +20,7 @@ MIGRATION_IDS = (
     "004_fusion_runtime_config_snapshot",
     "005_pipeline_runtime_status",
     "006_s3_object_receipts",
+    "007_r1_archive_publications",
 )
 
 
@@ -70,6 +71,9 @@ class _Connection:
 
         if "CREATE TABLE s3_object_receipts" in query:
             self.existing_tables.add("s3_object_receipts")
+
+        if "CREATE TABLE r1_archive_publications" in query:
+            self.existing_tables.add("r1_archive_publications")
 
         if query == "INSERT INTO schema_migrations (migration_id) VALUES (%s)":
             self.applied_migrations.add(str(params[0]))
@@ -129,7 +133,20 @@ def test_applies_all_migrations_in_filename_order() -> None:
         for index, (query, _) in enumerate(connection.queries)
         if "CREATE TABLE s3_object_receipts" in query
     )
-    assert first_index < second_index < third_index < fourth_index < fifth_index < sixth_index
+    seventh_index = next(
+        index
+        for index, (query, _) in enumerate(connection.queries)
+        if "CREATE TABLE r1_archive_publications" in query
+    )
+    assert (
+        first_index
+        < second_index
+        < third_index
+        < fourth_index
+        < fifth_index
+        < sixth_index
+        < seventh_index
+    )
 
 
 def test_skips_migrations_that_are_already_recorded() -> None:
@@ -155,6 +172,9 @@ def test_skips_migrations_that_are_already_recorded() -> None:
         "CREATE TABLE pipeline_runtime_status" in query for query, _ in connection.queries
     )
     assert not any("CREATE TABLE s3_object_receipts" in query for query, _ in connection.queries)
+    assert not any(
+        "CREATE TABLE r1_archive_publications" in query for query, _ in connection.queries
+    )
 
 
 def test_applies_only_second_migration_when_first_is_recorded() -> None:
@@ -271,6 +291,7 @@ def test_baselines_complete_docker_initdb_schema_without_reapplying_migrations()
             "fusion_runtime_config_snapshots",
             "pipeline_runtime_status",
             "s3_object_receipts",
+            "r1_archive_publications",
         }
     )
 

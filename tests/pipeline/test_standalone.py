@@ -321,6 +321,51 @@ def test_standalone_run_persists_fusion_trace_and_runtime_config(
     assert snapshots[-1].status is PipelineRuntimeState.COMPLETED
 
 
+def test_standalone_invokes_r1_after_normalization_and_before_fusion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # Given
+    prepared, summary = _configure_runtime_stage_stubs(monkeypatch)
+    prepared.output_dir = tmp_path / "output"
+    prepared.r1_production_config = object()
+    normalized_event = object()
+    normalized_artifacts = SimpleNamespace(events=(normalized_event,))
+    call_order: list[str] = []
+
+    def normalize(*args, **kwargs):
+        call_order.append("normalization")
+        kwargs["progress_callback"](1)
+        return normalized_artifacts
+
+    def generate(events, *, run_id, output_directory, config):
+        call_order.append("r1")
+        assert events == (normalized_event,)
+        assert run_id == "RUN-20261009-001"
+        assert output_directory == tmp_path / "output" / "r1"
+        assert config is prepared.r1_production_config
+        return object()
+
+    def fuse(*args):
+        call_order.append("fusion")
+        return SimpleNamespace(
+            fusion_result=object(),
+            stopping_trace=object(),
+            runtime_config_snapshot=object(),
+        )
+
+    monkeypatch.setattr(standalone_module, "normalize_sysmon_and_extract_evidence", normalize)
+    monkeypatch.setattr(standalone_module, "generate_r1_production_archive", generate)
+    monkeypatch.setattr(standalone_module, "run_s0_fusion_with_trace", fuse)
+
+    # When
+    actual = run_prepared_standalone_run(prepared, connection=object())
+
+    # Then
+    assert actual is summary
+    assert call_order == ["normalization", "r1", "fusion"]
+
+
 def test_standalone_commit_false_does_not_publish_completed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -40,6 +40,15 @@
       "Resource": "arn:aws:s3:::incident-awareness-first-cycle-998301375101-ap-northeast-2-an/incoming/first-cycle/sysmon/*"
     },
     {
+      "Sid": "ReadWriteR1ArchiveObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::incident-awareness-first-cycle-998301375101-ap-northeast-2-an/archive/first-cycle/r1/*"
+    },
+    {
       "Sid": "ConsumeAutomatedSysmonInputMessages",
       "Effect": "Allow",
       "Action": [

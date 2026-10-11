@@ -24,6 +24,30 @@
         {
           "name": "INCIDENT_AWARENESS_S3_INPUT_BUCKET",
           "value": "S3_INPUT_BUCKET"
+        },
+        {
+          "name": "INCIDENT_AWARENESS_R1_FAMILY_ID",
+          "value": "R1_FAMILY_ID"
+        },
+        {
+          "name": "INCIDENT_AWARENESS_R1_APPROVED_POLICY_ID",
+          "value": "R1_APPROVED_POLICY_ID"
+        },
+        {
+          "name": "INCIDENT_AWARENESS_R1_APPROVED_POLICY_VERSION",
+          "value": "R1_APPROVED_POLICY_VERSION"
+        },
+        {
+          "name": "INCIDENT_AWARENESS_R1_APPROVED_POLICY_CONFIG_HASH",
+          "value": "R1_APPROVED_POLICY_CONFIG_HASH"
+        },
+        {
+          "name": "INCIDENT_AWARENESS_R1_ARCHIVE_BUCKET",
+          "value": "R1_ARCHIVE_BUCKET"
+        },
+        {
+          "name": "INCIDENT_AWARENESS_R1_ARCHIVE_PREFIX",
+          "value": "R1_ARCHIVE_PREFIX"
         }
       ],
       "secrets": [

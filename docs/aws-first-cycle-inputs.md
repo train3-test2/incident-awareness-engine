@@ -379,6 +379,12 @@ ECS Task Definition은 다음 환경 변수를 Worker에 전달한다.
 | `INCIDENT_AWARENESS_SQS_QUEUE_URL` | `incident-awareness-first-cycle-ingest` Queue URL |
 | `INCIDENT_AWARENESS_S3_INPUT_BUCKET` | 자동 처리 입력 bucket 이름 |
 | `INCIDENT_AWARENESS_DATABASE_URL` | Secrets Manager가 주입하는 PostgreSQL URL |
+| `INCIDENT_AWARENESS_R1_FAMILY_ID` | 실행할 R1 scenario family ID |
+| `INCIDENT_AWARENESS_R1_APPROVED_POLICY_ID` | 기대 approved lineage policy ID |
+| `INCIDENT_AWARENESS_R1_APPROVED_POLICY_VERSION` | 기대 approved lineage policy version |
+| `INCIDENT_AWARENESS_R1_APPROVED_POLICY_CONFIG_HASH` | loader 결과와 비교할 policy SHA-256 |
+| `INCIDENT_AWARENESS_R1_ARCHIVE_BUCKET` | R1 결과를 게시할 S3 bucket |
+| `INCIDENT_AWARENESS_R1_ARCHIVE_PREFIX` | 고정 archive prefix `archive/first-cycle/r1` |
 
 Worker는 long polling으로 한 번에 SQS 메시지 하나를 받고, 각 S3 record의 JSONL을 컨테이너
 임시 디렉터리에 내려받는다. 이후 기존 standalone CLI를 호출해 RunMetadata·Manifest를
@@ -386,6 +392,38 @@ Worker는 long polling으로 한 번에 SQS 메시지 하나를 받고, 각 S3 r
 호출한다. JSONL 검증, S3 다운로드, standalone 실행 중 하나라도 실패하면 Worker는 메시지를
 삭제하지 않는다. 해당 메시지는 visibility timeout 이후 재시도되며, 3회 처리 실패 뒤 DLQ로
 이동한다.
+
+명시적 R1 환경 변수가 모두 제공되면 Worker는 Normalization 직후의 `NormalizedEvent`
+batch를 현재 built-in selector와 repository-managed approved lineage policy loader에 전달한다.
+`family_id`는 S0 scenario ID, Ground Truth, `run_type`, label에서 추론하지 않는다. Policy의
+ID/version/hash와 family binding이 runtime 기대값과 다르면 selector 실행 전에 fail-closed한다.
+R1 설정이 전혀 없으면 기존 S0 경로만 실행하며, 일부 값만 제공한 partial 설정은 허용하지
+않는다. 수동 `aws_task → runner` 경로는 이 연동 범위 밖이다.
+
+generic SQS 실행은 다음 두 파일만 Run별 archive에 게시한다.
+
+```text
+s3://<bucket>/archive/first-cycle/r1/<run_id>/
+├── r1_evidence.jsonl
+└── r1_extraction_summary.json
+```
+
+Evidence를 먼저 게시하고 summary를 마지막에 게시한다. Summary가 존재하고 현재 durable
+publication payload와 동일한 것이 확인되어야 게시 완료다. WMI 전용
+`r1_collection_provenance.json`은 A01 reference 입력이 존재하는 별도 orchestration의
+artifact이며 generic SQS 실행에서는 생성하거나 추론하지 않는다.
+
+이 경로가 생성한 R1 Evidence는 계속 `OFFLINE WHOLE-EPISODE ONLY`다. Worker는 해당
+Evidence를 Role1 Fusion에 자동 전달하거나 score/window/stopping 판단에 사용하지 않는다.
+Role1 소비 연결과 causal availability 계약은 별도 작업이다.
+
+`r1_archive_publications` outbox는 두 artifact bytes, SHA-256, bucket/prefix와
+`pending`, `retryable`, `published`, `failed` 상태를 PostgreSQL에 보존한다. First Cycle 결과와
+입력 receipt를 커밋한 뒤 S3 게시를 시작하므로 S3 오류가 나도 같은 SQS 메시지 재수신 시
+standalone을 다시 실행하지 않고 durable payload로 이어서 게시할 수 있다. 기존 object가 같은
+SHA-256이면 재사용하고, 다르면 overwrite하지 않고 terminal conflict로 처리한다. Evidence만
+게시된 partial 상태는 완료가 아니며 summary 게시를 재시도한다. 자동 삭제, object overwrite,
+자동 attempt directory 생성은 하지 않는다.
 
 CloudWatch Logs에는 각 입력마다 JSON 로그를 남긴다. 시작 시 `input_s3_uri`와
 `status=started`를 기록하고, 성공 시에는 같은 URI, `status=succeeded`, standalone이 생성한
@@ -439,6 +477,9 @@ stopped reason을 먼저 확인한 뒤 아래 기준으로 조치한다.
 | JSONL 형식·시간 순서·단일 Host·지원 Event ID 위반 | 원본 JSONL을 수정하고 새 `ING-<uuidv4>` prefix로 다시 업로드한다. 기존 객체를 덮어쓰거나 DLQ 메시지를 그대로 redrive하지 않는다. |
 | S3 key·bucket·ETag 계약 위반 또는 접근 거부 | 객체 경로 또는 `ecsFirstCycleTaskRole`의 최소 권한을 수정한 뒤 새 객체를 업로드한다. |
 | S3 일시 오류·DB 연결 오류·컨테이너 종료 | source Queue의 visibility timeout 이후 자동 재시도를 기다린다. 3회 모두 실패하면 네트워크·RDS·CloudWatch Logs를 확인하고 수정 후 재제출한다. |
+| R1 family/policy ID·version·hash 불일치 | 설정 오류로 fail-closed한다. repository registry와 배포 변수를 대조한 뒤 수정한다. |
+| R1 archive 일시 업로드 실패 | receipt와 durable publication payload를 유지하고 SQS 재수신 시 동일 bytes로 이어서 게시한다. |
+| R1 archive content conflict | 기존 object를 덮어쓰지 않고 terminal failure로 기록한다. Run ID와 artifact provenance를 조사한 뒤 별도 운영 결정을 내린다. |
 
 DLQ 메시지는 문제 원인을 고치기 전에는 redrive하지 않는다. 수정된 입력은 새 ingest key로
 제출해 원본 실패 Artifact와 재실행 입력을 구분한다. 운영자가 수동으로 `--once` Worker를
@@ -450,8 +491,10 @@ DLQ 메시지는 문제 원인을 고치기 전에는 redrive하지 않는다. �
 템플릿이다. `ecsFirstCycleTaskRole`을 Task Role로 사용해 수동 실행용 `first-cycle/*`와
 자동 Worker 입력용 `incoming/first-cycle/sysmon/*` S3 객체만 읽고, DB URL은 Secrets
 Manager에서 `INCIDENT_AWARENESS_DATABASE_URL` 환경 변수로 주입한다. 역할 정책은
-`infra/iam/ecs-first-cycle-task-role-policy.json`으로 관리한다. 이 역할에는 S3 쓰기·삭제,
-다른 bucket 접근 권한을 부여하지 않는다. 자동 Worker 실행 시에는 같은 역할이
+`infra/iam/ecs-first-cycle-task-role-policy.json`으로 관리한다. 이 역할의 S3 쓰기는
+`archive/first-cycle/r1/*`의 `PutObject`로 제한하고, 동일 prefix의 기존 content 확인을 위해
+`GetObject`만 허용한다. `DeleteObject`, input prefix 쓰기, 다른 bucket 접근 권한은 부여하지
+않는다. 자동 Worker 실행 시에는 같은 역할이
 `incident-awareness-first-cycle-ingest` source Queue에만 `ReceiveMessage`와
 `DeleteMessage`를 수행한다. DLQ 읽기·삭제, 다른 Queue 접근, 임의 메시지 전송 권한은
 부여하지 않는다.
@@ -517,7 +560,8 @@ First Cycle schema의 versioned migration은 이미지에 포함된
 `/app/infra/postgres/migrations/` 디렉터리에서 관리한다. 현재 migration은
 `001_first_cycle.sql`, `002_fusion_stopping_trace.sql`,
 `003_decision_runtime_snapshot.sql`, `004_fusion_runtime_config_snapshot.sql`,
-`005_pipeline_runtime_status.sql`, `006_s3_object_receipts.sql`이다.
+`005_pipeline_runtime_status.sql`, `006_s3_object_receipts.sql`,
+`007_r1_archive_publications.sql`이다.
 DB 연결 환경 변수 `INCIDENT_AWARENESS_DATABASE_URL`이 주입된 별도 Fargate 일회성 태스크에서
 아래 명령을 실행한다.
 

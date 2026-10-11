@@ -77,7 +77,62 @@ def test_first_cycle_task_definition_contract(
         assert container["environment"] == [
             {"name": "INCIDENT_AWARENESS_SQS_QUEUE_URL", "value": "SQS_QUEUE_URL"},
             {"name": "INCIDENT_AWARENESS_S3_INPUT_BUCKET", "value": "S3_INPUT_BUCKET"},
+            {"name": "INCIDENT_AWARENESS_R1_FAMILY_ID", "value": "R1_FAMILY_ID"},
+            {
+                "name": "INCIDENT_AWARENESS_R1_APPROVED_POLICY_ID",
+                "value": "R1_APPROVED_POLICY_ID",
+            },
+            {
+                "name": "INCIDENT_AWARENESS_R1_APPROVED_POLICY_VERSION",
+                "value": "R1_APPROVED_POLICY_VERSION",
+            },
+            {
+                "name": "INCIDENT_AWARENESS_R1_APPROVED_POLICY_CONFIG_HASH",
+                "value": "R1_APPROVED_POLICY_CONFIG_HASH",
+            },
+            {"name": "INCIDENT_AWARENESS_R1_ARCHIVE_BUCKET", "value": "R1_ARCHIVE_BUCKET"},
+            {"name": "INCIDENT_AWARENESS_R1_ARCHIVE_PREFIX", "value": "R1_ARCHIVE_PREFIX"},
         ]
+
+
+def test_first_cycle_task_role_limits_r1_archive_access_to_read_and_write() -> None:
+    # Given
+    policy = json.loads(
+        (IAM_DIRECTORY / "ecs-first-cycle-task-role-policy.json").read_text(encoding="utf-8")
+    )
+
+    # When
+    statement = next(
+        item for item in policy["Statement"] if item["Sid"] == "ReadWriteR1ArchiveObjects"
+    )
+    all_actions = {
+        action
+        for item in policy["Statement"]
+        for action in ([item["Action"]] if isinstance(item["Action"], str) else item["Action"])
+    }
+
+    # Then
+    assert statement == {
+        "Sid": "ReadWriteR1ArchiveObjects",
+        "Effect": "Allow",
+        "Action": ["s3:GetObject", "s3:PutObject"],
+        "Resource": (
+            "arn:aws:s3:::incident-awareness-first-cycle-998301375101-ap-northeast-2-an/"
+            "archive/first-cycle/r1/*"
+        ),
+    }
+    assert "s3:DeleteObject" not in all_actions
+    assert all(
+        not (
+            "s3:PutObject"
+            in ([item["Action"]] if isinstance(item["Action"], str) else item["Action"])
+            and (
+                "/first-cycle/*" in item["Resource"]
+                or "/incoming/first-cycle/sysmon/*" in item["Resource"]
+            )
+        )
+        for item in policy["Statement"]
+    )
 
 
 def test_first_cycle_task_overrides_supply_only_run_specific_inputs() -> None:
