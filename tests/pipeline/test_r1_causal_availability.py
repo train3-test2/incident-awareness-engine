@@ -143,6 +143,8 @@ def _approved_policy() -> ApprovedLineagePolicy:
         version="v0.1",
         config_hash="approved-hash-v0.1",
         approved_lineage=("anchor.exe", "approved-hop.exe", "terminal.exe"),
+        family_id="remote_management",
+        lifecycle="development",
     )
 
 
@@ -152,6 +154,7 @@ def _run_metadata(
     target_host: str = _HOST_ID,
     start_time: datetime = _RUN_START,
     end_time: datetime | None = _RUN_END,
+    family_id: str | None = "remote_management",
 ) -> RunMetadata:
     return RunMetadata(
         run_id=run_id,
@@ -160,6 +163,7 @@ def _run_metadata(
         target_host=target_host,
         start_time=start_time,
         end_time=end_time,
+        family_id=family_id,
         schema_versions=SchemaVersions(
             run_metadata="v0.2",
             event="v0.3",
@@ -179,12 +183,13 @@ def _write_artifacts(
     *,
     with_selector: bool = True,
     with_pre_run_context: bool = False,
+    events: tuple[NormalizedEvent, ...] | None = None,
 ) -> None:
     policy = _approved_policy()
     context_event_ids = ("evt-anchor",) if with_pre_run_context else ()
     selector_policy = _selector_policy()
     run_and_write_r1_evidence_artifacts(
-        _events(with_pre_run_context=with_pre_run_context),
+        events if events is not None else _events(with_pre_run_context=with_pre_run_context),
         run_id=_RUN_ID,
         output_directory=output_directory,
         lineage_inputs=(
@@ -478,6 +483,65 @@ def test_rejects_approved_policy_provenance_mismatch(tmp_path: Path) -> None:
             run_metadata=_run_metadata(),
             selector_policy=_selector_policy(),
             approved_policy=policy,
+        )
+
+
+def test_rejects_extraction_diagnostics_even_when_offline_artifact_has_evidence(
+    tmp_path: Path,
+) -> None:
+    # Given
+    anchor, _, terminal, network = _events()
+    middle = _event(
+        event_id="evt-middle",
+        event_type="process_create",
+        timestamp=_RUN_START + timedelta(seconds=1),
+        process_guid=_MIDDLE_GUID,
+        process_name="   ",
+        parent_process_guid=_ANCHOR_GUID,
+    )
+    _write_artifacts(tmp_path, events=(anchor, middle, terminal, network))
+    loaded = load_r1_evidence_artifacts(tmp_path)
+
+    # When / Then
+    assert loaded.summary.diagnostics == ("missing_or_blank_process_name",)
+    assert [evidence.evidence_type for evidence in loaded.evidences] == [
+        "remote_process_network_follow_on"
+    ]
+    with pytest.raises(ValueError, match="without extraction diagnostics"):
+        _build(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("run_family_id", "policy_family_id", "error_pattern"),
+    [
+        ("remote_management", "wmi_management", "does not match approved policy family_id"),
+        ("wmi_management", "remote_management", "does not match approved policy family_id"),
+        (None, "remote_management", "requires RunMetadata.family_id"),
+        ("remote_management", None, "legacy unbound approved policy"),
+        (None, None, "requires RunMetadata.family_id"),
+    ],
+)
+def test_rejects_unproven_causal_family_binding(
+    tmp_path: Path,
+    run_family_id: str | None,
+    policy_family_id: str | None,
+    error_pattern: str,
+) -> None:
+    # Given
+    _write_artifacts(tmp_path)
+    approved_policy = replace(
+        _approved_policy(),
+        family_id=policy_family_id,
+        lifecycle="development" if policy_family_id is not None else None,
+    )
+
+    # When / Then
+    with pytest.raises(ValueError, match=error_pattern):
+        build_r1_causal_availability_envelope(
+            tmp_path,
+            run_metadata=_run_metadata(family_id=run_family_id),
+            selector_policy=_selector_policy(),
+            approved_policy=approved_policy,
         )
 
 

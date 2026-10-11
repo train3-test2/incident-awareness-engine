@@ -73,7 +73,7 @@ Evidence-level availability record는 다음을 포함한다.
 - direct `event_ids`
 - 선택 lineage의 `context_event_ids`
 
-Builder는 먼저 기존 `load_r1_evidence_artifacts()`를 호출해 Evidence artifact 무결성과 summary binding을 검증한다. 그 후 caller가 전달한 selector/approved policy identity와 summary provenance가 정확히 일치하는지 확인한다. Selector provenance가 없는 legacy/manual artifact, selector가 실패한 artifact 또는 하나의 선택 lineage provenance로 해석할 수 없는 artifact는 causal input으로 승격하지 않는다.
+Builder는 먼저 기존 `load_r1_evidence_artifacts()`를 호출해 Evidence artifact 무결성과 summary binding을 검증한다. 그 후 caller가 전달한 selector/approved policy identity와 summary provenance가 정확히 일치하는지 확인한다. Extraction diagnostics가 남은 completed artifact는 offline artifact로 읽을 수 있지만 causal replay input으로 승격하지 않는다. 또한 `RunMetadata.family_id`와 family-bound approved lineage policy의 `family_id`가 정확히 일치해야 하며, family를 Ground Truth, `run_type` 또는 label로 보충하거나 추론하지 않는다. Family-less legacy policy는 historical reproduction용이므로 causal input으로 승격하지 않는다. Selector provenance가 없는 legacy/manual artifact, selector가 실패한 artifact 또는 하나의 선택 lineage provenance로 해석할 수 없는 artifact도 causal input으로 승격하지 않는다.
 
 Envelope는 별도 model이며 다음 기존 파일을 생성하거나 변경하지 않는다.
 

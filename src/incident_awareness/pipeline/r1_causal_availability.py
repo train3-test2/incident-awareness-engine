@@ -15,6 +15,9 @@ from pydantic import (
 )
 
 from incident_awareness.common.models.run import RunMetadata
+from incident_awareness.evidence.r1_approved_lineage_policy import (
+    validate_r1_policy_family_binding,
+)
 from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
 from incident_awareness.evidence.r1_selector import R1SelectorPolicy
 from incident_awareness.pipeline.r1_artifacts import load_r1_evidence_artifacts
@@ -164,11 +167,16 @@ def build_r1_causal_availability_envelope(
         raise TypeError("approved_policy must be an ApprovedLineagePolicy")
     if run_metadata.end_time is None:
         raise ValueError("causal availability requires authoritative RunMetadata.end_time")
+    if run_metadata.family_id is None:
+        raise ValueError("causal availability requires RunMetadata.family_id")
+    validate_r1_policy_family_binding(run_metadata.family_id, approved_policy)
 
     artifact_run = load_r1_evidence_artifacts(artifact_directory)
     summary = artifact_run.summary
     if summary.run_id != run_metadata.run_id:
         raise ValueError("Evidence artifact run_id must match RunMetadata run_id")
+    if summary.diagnostics:
+        raise ValueError("causal availability requires an artifact without extraction diagnostics")
 
     selector = summary.selector
     if selector is None:
