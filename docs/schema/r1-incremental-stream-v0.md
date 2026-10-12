@@ -367,7 +367,71 @@ seal을 만들어서는 안 된다.
 Decision의 소비 시점은 정의하지 않는다. 해당 의미는 Role2·Role4의 versioned Evidence/selector
 계약에서 별도로 확정한다.
 
-## 13. 소유 경계
+## 13. Role2 #266 소비 입력·오류 처리·보장 범위
+
+Role2 #266 증분 selector가 받는 입력은 transport 원본 메시지가 아니라, Role3 ingress가 계약을
+검증하고 **처음 수락한** 아래 control/data message다. exact duplicate는 Role3 ledger에서
+`duplicate`로 끝나며 Role2 selector에 두 번째로 전달하지 않는다.
+
+| Role2 입력 | Role3가 보장하는 범위 | Role2가 해서는 안 되는 해석 |
+| --- | --- | --- |
+| `event_chunk` | 한 partition 안의 유효한 `NormalizedEvent`; 같은 chunk 재전달 제거 | chunk 수신 순서나 Event 최댓값을 frontier로 추론 |
+| `source_watermark` | 해당 partition에서 `watermark_at` 이하 Event를 collector가 flush했다는 전달 frontier | terminal candidate 종료 또는 Evidence 확정 |
+| `run_closed` | Run의 final partition watermark가 수락 source watermark와 결속됨 | Role4 seal 없이 candidate 집합이 닫혔다고 판단 |
+| Role4 candidate-generation seal | close·partition·final watermark를 참조하는 candidate-generation 완료 입력 | telemetry watermark를 대체하거나 raw telemetry 완전성을 선언 |
+
+### 최소 소비 순서 예시
+
+아래는 하나의 `RUN-20261012-001` / `WIN-01` / Sysmon partition에 대한 정상 흐름 예시다.
+Role2는 각 message의 `run_id`와 partition을 selector state key에 포함해 다른 Run·host와 섞지
+않는다.
+
+```text
+1. accepted event_chunk      CHK-...-000001, sequence=1
+   → Role2가 해당 Event만 selector state에 누적
+2. accepted source_watermark WM-...-000001, sequence=1, covered_through_chunk_sequence=1
+   → Role2는 event-time frontier를 기록하되 Evidence를 확정하지 않음
+3. accepted event_chunk      CHK-...-000002, sequence=2
+   → Role2가 selector state를 추가 누적
+4. accepted source_watermark WM-...-000002, sequence=2, covered_through_chunk_sequence=2
+5. accepted run_closed       CLOSE-...-000001
+   → Role3가 final watermark와 동일 partition의 수락 watermark를 이미 대조함
+6. accepted Role4 seal       input_close_id=CLOSE-...-000001
+   → Role2가 seal과 close의 전체 partition/final watermark reference를 대조한 뒤에만
+     Role2·Role4 소비 계약이 정한 Evidence 확정 절차로 진행 가능
+```
+
+collector 발급 순서는 watermark가 가리키는 chunk flush 뒤지만, transport는 out-of-order일 수 있다.
+따라서 Role2가 control message를 먼저 수신한 경우 `covered_through_chunk_sequence`까지의 필요한
+chunk가 selector state에 모두 누적될 때까지 buffer하고 Evidence를 확정하지 않는다. 끝내 누락되면
+partition 오류로 처리한다. chunk sequence의 연속성·buffering/retry 방식은 Role2 incremental
+selector 구현에서 별도로 정하되, timeout으로 누락 chunk를 정상 입력처럼 넘어가면 안 된다.
+
+### 오류 처리
+
+| 입력 상태 | Role3 처리 | Role2 #266 처리 |
+| --- | --- | --- |
+| exact chunk/watermark/close 재전달 | `duplicate`; 재전달 억제 | 새 selector state 변경 없음 |
+| 같은 identity·다른 content 또는 sequence 재사용 | fail-closed/DLQ | 해당 partition/Run의 확정 중지; 기존 Evidence를 정상으로 승격하지 않음 |
+| watermark 뒤 새 Event | chunk 전체 fail-closed/DLQ | late Event를 기존 selector state나 확정 Evidence에 조용히 합치지 않음 |
+| close와 final watermark 결속 불일치 | close를 기록하지 않음 | seal을 포함해 이 close에 의존한 확정 금지 |
+| seal reference 불일치·미수신 | Role4/Role2 결속 오류 | telemetry close만으로 terminal candidate/Evidence 확정 금지 |
+
+### 보장하지 않는 것
+
+이 v0.1 stream boundary는 at-least-once 재전달에서 logical message 중복을 제거하고, collector가
+선언한 telemetry 전달 frontier를 보존한다. 그러나 다음은 보장하지 않는다.
+
+- 원본 telemetry 자체의 누락 없음, raw source의 완전성 또는 collector 외부 장애 없음
+- Event의 global total order, 서로 다른 partition 간 ordering, wall-clock delivery latency
+- Role4 candidate-generation 정책의 정당성, terminal 후보의 유일성, Evidence의 의미·점수
+- `available_at` 값, Fusion/Decision/Role5 평가 결과 또는 이미 확정한 Evidence의 철회·보정
+
+현행 #228 whole-JSONL batch Worker는 위의 `event_chunk`/watermark/close/seal 입력을 Role2에
+전달하지 않는다. 따라서 기존 R1 selector의 `OFFLINE WHOLE-EPISODE ONLY` 및 authoritative
+`run_end` availability 계약은 그대로 유지한다.
+
+## 14. 소유 경계
 
 Role3는 envelope validation, partition validation, chunk/Event identity, 재전달 dedup과
 transport recovery를 소유한다. Role4는 candidate-generation seal의 schema·발급·재전달
