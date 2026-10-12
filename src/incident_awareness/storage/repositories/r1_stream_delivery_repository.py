@@ -292,8 +292,7 @@ class R1StreamDeliveryRepository:
 
     def save_watermark(self, watermark: R1SourceWatermark, *, content_sha256: str) -> bool:
         partition_params = _partition_params(watermark.partition)
-        if self._protect_run(watermark.partition.run_id):
-            raise ValueError("cannot accept a watermark after run_closed is accepted")
+        is_closed = self._protect_run(watermark.partition.run_id)
         # The advisory lock also serializes the first watermark, when no table row
         # exists yet. The caller owns the surrounding database transaction.
         self._connection.execute(_LOCK_WATERMARK_PARTITION, partition_params).fetchone()
@@ -317,6 +316,8 @@ class R1StreamDeliveryRepository:
             ):
                 return False
             raise ValueError("watermark identity conflicts with previously accepted content")
+        if is_closed:
+            raise ValueError("cannot accept a watermark after run_closed is accepted")
         existing_by_sequence = self._row_to_delivery(
             self._connection.execute(
                 _SELECT_WATERMARK_BY_SEQUENCE,

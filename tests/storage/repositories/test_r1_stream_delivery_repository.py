@@ -185,12 +185,27 @@ def test_rejects_a_watermark_that_regresses_or_mutates_the_durable_frontier(
 
 
 def test_rejects_a_watermark_after_its_run_is_closed() -> None:
-    connection = _Connection(rows=[(1,)])
+    connection = _Connection(rows=[(1,), None, None])
 
     with pytest.raises(ValueError, match="after run_closed"):
         R1StreamDeliveryRepository(connection).save_watermark(_watermark(), content_sha256="a" * 64)
 
     assert "pg_advisory_xact_lock" in connection.statements[0][0]
+
+
+def test_allows_an_exact_watermark_replay_after_its_run_is_closed() -> None:
+    watermark = _watermark()
+    connection = _Connection(
+        rows=[
+            (1,),
+            _accepted_watermark_row(watermark),
+            (watermark.watermark_id, watermark.watermark_sequence, "a" * 64),
+        ]
+    )
+
+    assert not R1StreamDeliveryRepository(connection).save_watermark(
+        watermark, content_sha256="a" * 64
+    )
 
 
 def test_chunk_identity_is_scoped_to_its_partition() -> None:
