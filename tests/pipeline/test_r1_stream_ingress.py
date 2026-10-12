@@ -4,16 +4,19 @@ from incident_awareness.common.models.r1_stream import R1EventChunk, R1RunClosed
 from incident_awareness.pipeline.r1_stream_ingress import (
     R1StreamDeliveryDisposition,
     R1StreamIngress,
+    _canonical_sha256,
 )
 
 
 class _Ledger:
     def __init__(self) -> None:
         self.accepted: set[tuple[str, str]] = set()
+        self.chunk_hashes: list[str] = []
         self.watermark_hashes: list[str] = []
         self.close_hashes: list[str] = []
 
-    def save_chunk(self, *, chunk_id: str, **_: object) -> bool:
+    def save_chunk(self, *, chunk_id: str, content_sha256: str, **_: object) -> bool:
+        self.chunk_hashes.append(content_sha256)
         return self._save("chunk", chunk_id)
 
     def save_watermark(self, watermark: R1SourceWatermark, *, content_sha256: str) -> bool:
@@ -36,11 +39,30 @@ class _Ledger:
 
 
 def test_chunk_replay_is_a_duplicate_not_a_second_delivery() -> None:
-    ingress = R1StreamIngress(_Ledger())  # type: ignore[arg-type]
-    chunk = _chunk()
+    ledger = _Ledger()
+    ingress = R1StreamIngress(ledger)  # type: ignore[arg-type]
+    chunk = _valid_chunk()
 
     assert ingress.accept_chunk(chunk).disposition is R1StreamDeliveryDisposition.ACCEPTED
     assert ingress.accept_chunk(chunk).disposition is R1StreamDeliveryDisposition.DUPLICATE
+    assert ledger.chunk_hashes == [chunk.chunk_content_sha256, chunk.chunk_content_sha256]
+
+
+def test_rejects_a_chunk_when_the_provided_digest_is_not_canonical() -> None:
+    ledger = _Ledger()
+
+    with pytest.raises(ValueError, match="chunk_content_sha256"):
+        R1StreamIngress(ledger).accept_chunk(_chunk())  # type: ignore[arg-type]
+
+    assert ledger.chunk_hashes == []
+    assert ledger.accepted == set()
+
+
+def test_chunk_canonical_digest_excludes_only_the_provided_digest_field() -> None:
+    chunk = _chunk()
+    changed_digest = chunk.model_copy(update={"chunk_content_sha256": "b" * 64})
+
+    assert _canonical_sha256(chunk) == _canonical_sha256(changed_digest)
 
 
 def test_watermark_and_close_replays_are_idempotent() -> None:
@@ -124,6 +146,11 @@ def _chunk() -> R1EventChunk:
             ],
         }
     )
+
+
+def _valid_chunk() -> R1EventChunk:
+    chunk = _chunk()
+    return chunk.model_copy(update={"chunk_content_sha256": _canonical_sha256(chunk)})
 
 
 def _watermark() -> R1SourceWatermark:

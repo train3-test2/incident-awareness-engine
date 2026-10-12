@@ -40,11 +40,14 @@ class R1StreamIngress:
         self._ledger = ledger
 
     def accept_chunk(self, chunk: R1EventChunk) -> R1StreamDeliveryResult:
+        content_sha256 = _canonical_sha256(chunk)
+        if content_sha256 != chunk.chunk_content_sha256:
+            raise ValueError("chunk_content_sha256 does not match the canonical chunk payload")
         accepted = self._ledger.save_chunk(
             partition=chunk.partition,
             chunk_id=chunk.chunk_id,
             sequence=chunk.chunk_sequence,
-            content_sha256=chunk.chunk_content_sha256,
+            content_sha256=content_sha256,
         )
         return _result(accepted)
 
@@ -70,8 +73,10 @@ def _result(accepted: bool) -> R1StreamDeliveryResult:
     )
 
 
-def _canonical_sha256(message: R1SourceWatermark | R1RunClosed) -> str:
+def _canonical_sha256(message: R1EventChunk | R1SourceWatermark | R1RunClosed) -> str:
     payload = message.model_dump(mode="json", by_alias=True)
+    if isinstance(message, R1EventChunk):
+        del payload["chunk_content_sha256"]
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

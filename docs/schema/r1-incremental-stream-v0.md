@@ -68,6 +68,8 @@ Sysmon의 예시는 `Microsoft-Windows-Sysmon/Operational`이다.
 
 `chunk_content_sha256`은 위 표현에서 `chunk_content_sha256` 필드를 뺀 뒤 계산한다. 따라서
 chunk의 partition, sequence, Event 순서 또는 Event 내용이 달라지면 digest도 달라진다.
+Role3 ingress는 ledger 기록 전에 제공된 digest를 같은 방식으로 재계산해 대조하며, 다르면
+chunk를 수락하거나 기록하지 않고 fail-closed한다.
 
 ### Chunk 재전달
 
