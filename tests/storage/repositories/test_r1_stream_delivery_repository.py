@@ -158,13 +158,8 @@ def test_accepts_a_close_watermark_only_when_every_bound_value_matches() -> None
     watermark = _watermark()
     connection = _Connection(
         rows=[
-            (
-                watermark.watermark_id,
-                watermark.watermark_sequence,
-                watermark.watermark_at,
-                watermark.allowed_lateness_ms,
-                watermark.covered_through_chunk_sequence,
-            )
+            _accepted_watermark_row(watermark),
+            (1,),
         ]
     )
 
@@ -188,6 +183,32 @@ def test_rejects_a_close_watermark_with_different_frontier_values() -> None:
     with pytest.raises(ValueError, match="does not match"):
         R1StreamDeliveryRepository(connection).assert_final_watermarks_match(
             _close_final_watermarks()
+        )
+
+
+def test_rejects_a_close_that_omits_an_accepted_partition() -> None:
+    watermark = _watermark()
+    connection = _Connection(rows=[_accepted_watermark_row(watermark), (2,)])
+
+    with pytest.raises(ValueError, match="do not cover every accepted partition"):
+        R1StreamDeliveryRepository(connection).assert_final_watermarks_match(
+            _close_final_watermarks()
+        )
+
+
+def test_rejects_a_close_that_references_an_older_partition_watermark() -> None:
+    latest = _watermark()
+    older = _watermark(
+        watermark_id="WM-001",
+        watermark_sequence=1,
+        watermark_at="2026-10-12T01:02:03.000Z",
+        covered_through_chunk_sequence=1,
+    )
+    connection = _Connection(rows=[_accepted_watermark_row(latest)])
+
+    with pytest.raises(ValueError, match="latest accepted partition watermark"):
+        R1StreamDeliveryRepository(connection).assert_final_watermarks_match(
+            (_final_watermark(older),)
         )
 
 
@@ -220,15 +241,17 @@ def _accepted_watermark_row(watermark: R1SourceWatermark) -> tuple[object, ...]:
 
 def _close_final_watermarks() -> tuple[R1FinalPartitionWatermark, ...]:
     watermark = _watermark()
-    return (
-        R1FinalPartitionWatermark(
-            partition=watermark.partition,
-            watermark_id=watermark.watermark_id,
-            watermark_sequence=watermark.watermark_sequence,
-            watermark_at=watermark.watermark_at,
-            allowed_lateness_ms=watermark.allowed_lateness_ms,
-            covered_through_chunk_sequence=watermark.covered_through_chunk_sequence,
-        ),
+    return (_final_watermark(watermark),)
+
+
+def _final_watermark(watermark: R1SourceWatermark) -> R1FinalPartitionWatermark:
+    return R1FinalPartitionWatermark(
+        partition=watermark.partition,
+        watermark_id=watermark.watermark_id,
+        watermark_sequence=watermark.watermark_sequence,
+        watermark_at=watermark.watermark_at,
+        allowed_lateness_ms=watermark.allowed_lateness_ms,
+        covered_through_chunk_sequence=watermark.covered_through_chunk_sequence,
     )
 
 
