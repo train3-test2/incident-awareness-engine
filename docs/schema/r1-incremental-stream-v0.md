@@ -8,9 +8,9 @@
 [AWS First Cycle 입력 Artifact 계약](../aws-first-cycle-inputs.md#현행-batch-경계와-향후-증분-stream-경계)을
 따른다.
 
-이 문서는 `event_chunk`와 source event-time `source_watermark`를 정의한다. allowed lateness,
-late Event 처리, `run_closed` 메시지는 동일 partition·identity 규칙을 공유하지만 별도 계약에서
-정의한다.
+이 문서는 `event_chunk`, source event-time `source_watermark`, allowed lateness와
+out-of-order Event 처리 규칙을 정의한다. watermark 이후 late Event의 fail-closed/DLQ 처리와
+`run_closed` 메시지는 동일 partition·identity 규칙을 공유하지만 별도 계약에서 정의한다.
 
 ## 2. 공통 규칙
 
@@ -174,6 +174,7 @@ watermark의 allowed lateness 및 watermark 이후 late Event 처리 방식은 �
 | `partition` | object | O | `event_chunk.partition`과 같은 `(run_id, host_id, source, source_channel)` 범위 |
 | `watermark_sequence` | integer | O | partition별 1 이상 증가하는 source 발급 순서 |
 | `watermark_at` | datetime | O | collector가 flush 완료를 보장하는 UTC event-time frontier; 밀리초 정밀도 |
+| `allowed_lateness_ms` | integer | O | 이 watermark를 발급하기 전에 collector가 적용한 event-time lateness budget; 0 이상 정수 |
 | `covered_through_chunk_sequence` | integer | O | watermark 발급 전에 flush 완료한 마지막 chunk sequence; 1 이상 |
 | `emitted_at` | datetime | O | control message 발급 시각; UTC·밀리초 정밀도이며 event-time frontier가 아님 |
 
@@ -195,12 +196,37 @@ watermark의 재전달 idempotency, chunk sequence 누락 검증은 transport re
   },
   "watermark_sequence": 1,
   "watermark_at": "2026-10-12T01:02:03.456Z",
+  "allowed_lateness_ms": 30000,
   "covered_through_chunk_sequence": 1,
   "emitted_at": "2026-10-12T01:02:04.000Z"
 }
 ```
 
-## 8. 소유 경계
+## 8. Allowed lateness와 out-of-order 규칙
+
+`allowed_lateness_ms`는 collector가 source event-time 순서가 뒤섞일 수 있음을 고려해,
+`watermark_at`을 발급하기 전에 적용한 event-time lateness budget이다. 단위는 밀리초이며
+0 이상 정수다. 이 값은 watermark 발급 뒤 consumer가 추가 Event를 기다리는 grace period가
+아니다.
+
+- collector는 partition을 처음 열기 전에 `allowed_lateness_ms`를 설정하고, 같은 partition의
+  모든 watermark에서 값을 바꾸지 않는다. 변경하려면 새 partition lifecycle을 시작해야 한다.
+- collector는 `max(Event.timestamp) - allowed_lateness_ms`나 wall-clock timeout을 자동으로
+  watermark로 해석해서는 안 된다. source별 수신·flush 상태를 근거로 frontier를 명시적으로
+  발급해야 한다.
+- source가 out-of-order Event를 내보내는 것은 허용한다. Event의 `timestamp`가 chunk sequence
+  또는 SQS 수신 순서와 같을 필요는 없다. consumer는 source 발급 순서인 `chunk_sequence`과
+  Event의 event-time을 구분한다.
+- 새로 수락하는 Event의 `timestamp`가 직전 유효 watermark 이하이면 late Event다. 단, 이미
+  수락한 동일 chunk 또는 동일 Event의 idempotent 재전달은 late Event가 아니다.
+- late Event의 fail-closed/DLQ 상태 전이와 운영 처리 방식은 다음 계약 항목에서 구현한다.
+  이 절은 late Event를 조용히 Event batch에 합치거나 기존 Evidence를 보정할 수 없다는
+  입력 규칙만 정의한다.
+
+`allowed_lateness_ms`는 telemetry 전달 순서에 대한 Role3 collector 정책이며, Role4
+candidate-generation seal이나 Role2 Evidence 확정 경계를 대체하지 않는다.
+
+## 9. 소유 경계
 
 Role3는 envelope validation, partition validation, chunk/Event identity, 재전달 dedup과
 transport recovery를 소유한다. Role2는 유효한 Event chunk를 소비해 selector 상태를

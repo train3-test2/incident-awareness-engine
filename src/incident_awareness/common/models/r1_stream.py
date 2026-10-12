@@ -103,6 +103,7 @@ class R1SourceWatermark(BaseModel):
     partition: R1StreamPartition
     watermark_sequence: int = Field(strict=True, ge=1)
     watermark_at: datetime
+    allowed_lateness_ms: int = Field(strict=True, ge=0)
     covered_through_chunk_sequence: int = Field(strict=True, ge=1)
     emitted_at: datetime
 

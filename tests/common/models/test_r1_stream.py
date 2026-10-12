@@ -61,6 +61,7 @@ def _watermark(**updates: object) -> dict[str, object]:
         "partition": _chunk()["partition"],
         "watermark_sequence": 1,
         "watermark_at": "2026-10-12T01:02:03.456Z",
+        "allowed_lateness_ms": 30_000,
         "covered_through_chunk_sequence": 1,
         "emitted_at": "2026-10-12T01:02:04.000Z",
     }
@@ -122,6 +123,7 @@ def test_accepts_a_partition_scoped_source_watermark() -> None:
     watermark = R1SourceWatermark.model_validate(_watermark())
 
     assert watermark.watermark_at == datetime(2026, 10, 12, 1, 2, 3, 456000, tzinfo=UTC)
+    assert watermark.allowed_lateness_ms == 30_000
     assert watermark.covered_through_chunk_sequence == 1
     assert watermark.model_dump(by_alias=True)["message_type"] == "source_watermark"
 
@@ -132,6 +134,8 @@ def test_accepts_a_partition_scoped_source_watermark() -> None:
         ("watermark_at", 0),
         ("watermark_at", "2026-10-12T10:02:03.456+09:00"),
         ("watermark_at", "2026-10-12T01:02:03.456789Z"),
+        ("allowed_lateness_ms", -1),
+        ("allowed_lateness_ms", True),
         ("watermark_sequence", 0),
         ("watermark_id", " WM-000001"),
     ],
