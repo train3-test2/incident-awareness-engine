@@ -33,6 +33,7 @@ _MIGRATION_BASELINE_TABLES = {
     "008_r1_stream_delivery_ledger": frozenset(
         {"r1_stream_chunks", "r1_stream_watermarks", "r1_stream_run_closes"}
     ),
+    "009_r1_stream_close_watermark_binding": frozenset(),
 }
 _MIGRATIONS_DIRECTORY = Path(__file__).resolve().parents[3] / "infra" / "postgres" / "migrations"
 

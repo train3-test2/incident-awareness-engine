@@ -1,3 +1,5 @@
+import pytest
+
 from incident_awareness.common.models.r1_stream import R1EventChunk, R1RunClosed, R1SourceWatermark
 from incident_awareness.pipeline.r1_stream_ingress import (
     R1StreamDeliveryDisposition,
@@ -12,8 +14,11 @@ class _Ledger:
     def save_chunk(self, *, chunk_id: str, **_: object) -> bool:
         return self._save("chunk", chunk_id)
 
-    def save_watermark(self, *, watermark_id: str, **_: object) -> bool:
-        return self._save("watermark", watermark_id)
+    def save_watermark(self, watermark: R1SourceWatermark, **_: object) -> bool:
+        return self._save("watermark", watermark.watermark_id)
+
+    def assert_final_watermarks_match(self, _: object) -> None:
+        return None
 
     def save_run_close(self, *, close_id: str, **_: object) -> bool:
         return self._save("close", close_id)
@@ -45,6 +50,20 @@ def test_watermark_and_close_replays_are_idempotent() -> None:
     )
     assert ingress.accept_run_closed(_close()).disposition is R1StreamDeliveryDisposition.ACCEPTED
     assert ingress.accept_run_closed(_close()).disposition is R1StreamDeliveryDisposition.DUPLICATE
+
+
+def test_does_not_record_a_close_when_partition_watermark_binding_is_rejected() -> None:
+    class _RejectingLedger(_Ledger):
+        def assert_final_watermarks_match(self, _: object) -> None:
+            raise ValueError(
+                "run close references a source watermark not accepted for its partition"
+            )
+
+    ledger = _RejectingLedger()
+    with pytest.raises(ValueError, match="not accepted"):
+        R1StreamIngress(ledger).accept_run_closed(_close())  # type: ignore[arg-type]
+
+    assert ("close", "CLOSE-001") not in ledger.accepted
 
 
 def _partition() -> dict[str, str]:

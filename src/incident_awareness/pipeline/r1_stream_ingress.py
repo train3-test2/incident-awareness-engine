@@ -50,14 +50,12 @@ class R1StreamIngress:
 
     def accept_watermark(self, watermark: R1SourceWatermark) -> R1StreamDeliveryResult:
         accepted = self._ledger.save_watermark(
-            partition=watermark.partition,
-            watermark_id=watermark.watermark_id,
-            sequence=watermark.watermark_sequence,
-            content_sha256=_canonical_sha256(watermark),
+            watermark, content_sha256=_canonical_sha256(watermark)
         )
         return _result(accepted)
 
     def accept_run_closed(self, run_closed: R1RunClosed) -> R1StreamDeliveryResult:
+        self._ledger.assert_final_watermarks_match(run_closed.final_watermarks)
         accepted = self._ledger.save_run_close(
             run_id=run_closed.run_id,
             close_id=run_closed.close_id,

@@ -22,6 +22,7 @@ MIGRATION_IDS = (
     "006_s3_object_receipts",
     "007_r1_archive_publications",
     "008_r1_stream_delivery_ledger",
+    "009_r1_stream_close_watermark_binding",
 )
 
 

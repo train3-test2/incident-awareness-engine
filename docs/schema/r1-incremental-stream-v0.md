@@ -273,9 +273,12 @@ Role4 candidate-generation seal 없이는 R1 terminal candidate 종료나 Eviden
 | `final_watermarks[].covered_through_chunk_sequence` | integer | O | final watermark 전에 flush한 마지막 chunk sequence |
 | `emitted_at` | datetime | O | `run_closed` 발급 시각, UTC·밀리초 정밀도 |
 
-`run_closed`는 모든 final watermark가 준비된 뒤에만 발급한다. 누락 partition이 없는지,
-final watermark가 기존 source watermark와 단조적으로 일치하는지 검증은 별도 결속 검증
-항목에서 수행한다.
+`run_closed`는 모든 final watermark가 준비된 뒤에만 발급한다. ingress는 각 final watermark를
+같은 `(run_id, host_id, source, source_channel)` partition에서 이미 수락한 `source_watermark`와
+대조한다. `watermark_id`, sequence, `watermark_at`, `allowed_lateness_ms`,
+`covered_through_chunk_sequence`가 모두 정확히 같아야 한다. 해당 partition의 source watermark가
+없거나 값이 하나라도 다르면 `run_closed` 전체를 기록하지 않고 fail-closed한다. 다른 partition의
+동일 `watermark_id`로 대체할 수 없다.
 
 ```json
 {
