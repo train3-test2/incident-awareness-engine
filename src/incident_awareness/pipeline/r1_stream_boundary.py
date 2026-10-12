@@ -38,6 +38,8 @@ class R1LateEventGuard:
 
     이 클래스는 transport 내구성이나 재전달 dedup ledger를 소유하지 않는다. caller는
     durable sink를 제공해야 하고, 이후 recovery 계층이 동일 chunk 재전달을 분리한다.
+    다만 같은 process 안에서 앞선 watermark identity가 재전달된 경우에는 frontier를
+    되돌리지 않고 exact replay로만 허용한다.
     """
 
     def __init__(
@@ -49,6 +51,9 @@ class R1LateEventGuard:
         self._dead_letter_sink = dead_letter_sink
         self._clock = clock
         self._watermarks: dict[tuple[str, str, str, str], _AcceptedWatermark] = {}
+        self._watermarks_by_identity: dict[
+            tuple[tuple[str, str, str, str], str], _AcceptedWatermark
+        ] = {}
 
     def accept_watermark(self, watermark: R1SourceWatermark) -> None:
         """Advance one partition frontier without permitting regression or mutation."""
@@ -61,11 +66,16 @@ class R1LateEventGuard:
             covered_through_chunk_sequence=watermark.covered_through_chunk_sequence,
             emitted_at=watermark.emitted_at,
         )
+        identity_key = (partition_key, watermark.watermark_id)
+        accepted_by_identity = self._watermarks_by_identity.get(identity_key)
+        if accepted_by_identity is not None:
+            if accepted == accepted_by_identity:
+                return
+            raise ValueError("watermark identity conflicts with previously accepted content")
         existing = self._watermarks.get(partition_key)
         if existing is None:
             self._watermarks[partition_key] = accepted
-            return
-        if accepted == existing:
+            self._watermarks_by_identity[identity_key] = accepted
             return
         if accepted.watermark_sequence <= existing.watermark_sequence:
             raise ValueError(
@@ -76,6 +86,7 @@ class R1LateEventGuard:
         if accepted.allowed_lateness_ms != existing.allowed_lateness_ms:
             raise ValueError("allowed_lateness_ms must remain constant within a partition")
         self._watermarks[partition_key] = accepted
+        self._watermarks_by_identity[identity_key] = accepted
 
     def accept_chunk(self, chunk: R1EventChunk) -> None:
         """Accept a chunk only when none of its Events are at or before the frontier."""

@@ -137,6 +137,25 @@ def test_accepts_an_exact_watermark_duplicate_without_changing_the_frontier() ->
         guard.accept_chunk(_chunk(events=[_event("evt-before", "2026-10-12T01:02:03.000Z")]))
 
 
+def test_accepts_an_earlier_watermark_replay_without_regressing_the_frontier() -> None:
+    sink = _DeadLetterSink()
+    guard = _guard(sink)
+    earlier = _watermark()
+    latest = _watermark(
+        watermark_id="WM-002",
+        watermark_sequence=2,
+        watermark_at="2026-10-12T01:02:03.457Z",
+        covered_through_chunk_sequence=2,
+    )
+    guard.accept_watermark(earlier)
+    guard.accept_watermark(latest)
+
+    guard.accept_watermark(earlier)
+
+    with pytest.raises(LateStreamEventError, match="WM-002"):
+        guard.accept_chunk(_chunk(events=[_event("evt-at-latest", "2026-10-12T01:02:03.457Z")]))
+
+
 @pytest.mark.parametrize(
     ("updated_watermark", "error"),
     (
@@ -161,7 +180,7 @@ def test_accepts_an_exact_watermark_duplicate_without_changing_the_frontier() ->
             "allowed_lateness_ms",
         ),
         ({"watermark_id": "WM-002", "watermark_sequence": 2}, "watermark sequence"),
-        ({"emitted_at": "2026-10-12T01:02:05.000Z"}, "watermark sequence"),
+        ({"emitted_at": "2026-10-12T01:02:05.000Z"}, "watermark identity"),
     ),
 )
 def test_rejects_conflicting_watermark_without_regressing_the_current_frontier(
