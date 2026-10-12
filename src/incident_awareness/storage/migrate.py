@@ -30,6 +30,11 @@ _MIGRATION_BASELINE_TABLES = {
     "005_pipeline_runtime_status": frozenset({"pipeline_runtime_status"}),
     "006_s3_object_receipts": frozenset({"s3_object_receipts"}),
     "007_r1_archive_publications": frozenset({"r1_archive_publications"}),
+    "008_r1_stream_delivery_ledger": frozenset(
+        {"r1_stream_chunks", "r1_stream_watermarks", "r1_stream_run_closes"}
+    ),
+    "009_r1_stream_close_watermark_binding": frozenset(),
+    "010_r1_stream_event_delivery_ledger": frozenset({"r1_stream_events"}),
 }
 _MIGRATIONS_DIRECTORY = Path(__file__).resolve().parents[3] / "infra" / "postgres" / "migrations"
 

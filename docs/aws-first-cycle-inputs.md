@@ -137,6 +137,60 @@ Producer는 파일을 작성 중인 상태로 이 final key에 업로드해서�
 한 번만 업로드하며, 수정본을 다시 제출할 때는 새 `ING-<uuidv4>` prefix를 사용한다. 이
 규칙으로 S3 `ObjectCreated` 이벤트 하나가 처리 대상 파일 하나를 의미하도록 한다.
 
+### 현행 batch 경계와 향후 증분 stream 경계
+
+현재 자동 처리 경로는 **완성된 S3 JSONL object 단위의 batch** 계약이다. S3가 final key에
+완성된 파일을 만든 뒤 `ObjectCreated`를 보내고, Worker는 파일 전체를 다운로드한 뒤에만
+정규화와 후속 Pipeline을 실행한다. R1 설정이 있는 경우에도 Role2 selector가 받는 것은
+Normalization이 끝난 `NormalizedEvent` **전체 batch**이며, Event 또는 chunk가 순차 전달되는
+경로는 아니다.
+
+| 구분 | 현행 S3/SQS batch 경로 | 향후 증분 stream 경계 |
+| --- | --- | --- |
+| 전달 단위 | 완성된 `sysmon.jsonl` S3 object 하나 | versioned stream envelope 안의 immutable chunk |
+| 입력 완료 의미 | S3 final object 생성 및 Worker의 전체 파일 다운로드 가능 | collector가 partition별 event-time frontier를 명시한 watermark 또는 final close |
+| 중복 방지 | `bucket + decoded key + eTag` object identity | chunk 및 Event의 안정적인 identity를 이용한 재전달 dedup |
+| R1 selector 입력 | whole-episode `NormalizedEvent` batch | 동일 partition의 Event/chunk 순차 입력과 watermark/close 신호 |
+| late/out-of-order | live 전달 정책 없음; 전체 입력을 materialize한 뒤 처리 | allowed lateness와 watermark 이후 late Event 처리 정책을 versioned 계약으로 명시 |
+
+현행 경로에서 `RunMetadata.end_time`은 닫힌 whole-episode 입력을 평가하는 R1 causal
+availability 계약의 authoritative `run_end`로 사용될 수 있다. 그러나 이는 이미 완성된
+입력 batch의 논리적 replay 경계이며, collector가 실행 중에 발급하는 source event-time
+watermark 또는 transport-level stream close 신호가 아니다. SQS 수신 시각, S3 업로드 시각,
+`max(Event.timestamp)`, 임의 timeout으로 그러한 watermark를 추론해서는 안 된다.
+
+따라서 현재 #228 Worker와 archive 경로는 증분 Evidence 확정 입력으로 사용하지 않는다.
+Role2는 현행 경로에서 whole-episode close 전 terminal candidate를 최종 확정하지 않으며,
+증분 selector는 아래 별도 stream boundary 계약이 구현·검증된 뒤에만 사용한다.
+
+#### 향후 stream boundary의 역할 분리
+
+증분 stream은 현행 `incoming/first-cycle/sysmon/` batch prefix를 변경하거나 대체하지 않고,
+별도 versioned 입력 계약과 경로로 도입한다. 구체적인 envelope 필드나 전송 구현은 이 문서의
+batch 계약에 추가하지 않는다. 도입 PR은 최소 아래의 계약을 함께 정의하고 검증해야 한다.
+
+- **Role3 / collector·transport**: 단일 `(run_id, host_id, source/channel)` partition에
+  결속된 immutable chunk, 안정적인 chunk/Event identity, 재전달 dedup, source watermark,
+  allowed lateness, `run_closed`와 final watermark 전달을 제공한다.
+- **Role3 / validation·recovery**: watermark와 close가 해당 partition에 결속되는지 검증하고,
+  중복 chunk·watermark·close와 Worker 재시도에서 idempotency를 보장한다. watermark 이후의
+  late Event 처리 결과도 계약대로 기록한다.
+- **Role2 / consumer**: Role3가 제공한 watermark·close만 소비해 증분 selector 상태와
+  Evidence 확정 시점을 판단한다. Event timestamp, 수신 시각 또는 timeout으로 경계를
+  보완 추론하지 않는다.
+- **Role4 / candidate generation**: Role3가 수락한 `run_closed`와 final watermark 전체를
+  참조하는 versioned candidate-generation seal을 발급한다. Role2는 telemetry close와 이 seal의
+  partition·watermark 결속이 모두 검증되기 전에는 terminal candidate 또는 Evidence를 최종
+  확정하지 않는다.
+
+v0 stream 계약은 watermark 이후 late Event의 처리 방식(예: fail-closed/DLQ 또는 명시적
+보정), final close의 재전달 규칙, partition별 순서 보장 범위를 명시해야 한다. 이미 확정한
+Evidence의 철회·보정·재계산과 Fusion·Decision·Evaluation 변경은 이 transport boundary의
+범위 밖이며 각각의 소비 계약에서 다룬다.
+
+Event chunk envelope와 Event 전달의 v0.1 필드·identity·partition 규칙은
+[R1 Incremental Stream v0.1](schema/r1-incremental-stream-v0.md)에 정의한다.
+
 S3 Event Notification은 prefix `incoming/first-cycle/sysmon/`와 suffix `sysmon.jsonl`로
 필터링한다. 이후 Worker는 Event에 포함된 bucket·object key만 신뢰 경계 입력으로 받고,
 객체를 로컬의 `telemetry/sysmon-0001.jsonl`로 내려받아 standalone CLI를 호출한다.

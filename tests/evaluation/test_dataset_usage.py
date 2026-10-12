@@ -23,7 +23,7 @@ PAIR_USAGE = Path(__file__).parents[2] / "docs/roles/validation/r1-pair002-data-
 
 @pytest.fixture
 def payload():
-    return json.loads((FIXTURES / "split.json").read_text())
+    return json.loads((FIXTURES / "split.json").read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("rid", ["RUN-20261005-912", "RUN-20261005-913"])
@@ -147,10 +147,10 @@ def test_revalidation_rejects_mutated_policy(payload):
 )
 def test_legacy_sidecar_flags_are_strict(tmp_path, field, value):
     # Given
-    data = json.loads(PAIR_USAGE.read_text())
+    data = json.loads(PAIR_USAGE.read_text(encoding="utf-8"))
     data[field] = value
     path = tmp_path / "usage.json"
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps(data), encoding="utf-8")
     # When / Then
     with pytest.raises((ValueError, TypeError)):
         load_usage_policy([path], policy_version="v1")
@@ -165,9 +165,9 @@ def test_duplicate_sidecar_conflict_is_not_last_wins():
 def test_cli_build_then_train_and_missing_policy_fails(payload, tmp_path, monkeypatch):
     # Given
     sidecar = tmp_path / "usage.json"
-    sidecar.write_text(json.dumps(payload.pop("usage_policy")))
+    sidecar.write_text(json.dumps(payload.pop("usage_policy")), encoding="utf-8")
     inventory = tmp_path / "inventory.json"
-    inventory.write_text(json.dumps(payload))
+    inventory.write_text(json.dumps(payload), encoding="utf-8")
     manifest = tmp_path / "manifest.json"
     monkeypatch.setattr(
         "sys.argv",
@@ -201,17 +201,17 @@ def test_cli_build_then_train_and_missing_policy_fails(payload, tmp_path, monkey
     monkeypatch.setattr("sys.argv", argv)
     train_cli()
     # Then
-    saved = json.loads(manifest.read_text())
+    saved = json.loads(manifest.read_text(encoding="utf-8"))
     assert saved["usage_policy"]["policy_version"] == "reviewed-v1"
     assert model.exists()
     saved["usage_policy"]["runs"][0]["eligible_splits"] = []
-    manifest.write_text(json.dumps(saved))
+    manifest.write_text(json.dumps(saved), encoding="utf-8")
     model.unlink()
     with pytest.raises(SystemExit):
         train_cli()
     assert not model.exists()
     del saved["usage_policy"]
-    manifest.write_text(json.dumps(saved))
+    manifest.write_text(json.dumps(saved), encoding="utf-8")
     with pytest.raises(SystemExit) as error:
         train_cli()
     assert error.value.code == 2
@@ -221,10 +221,10 @@ def test_cli_build_then_train_and_missing_policy_fails(payload, tmp_path, monkey
 @pytest.mark.parametrize("field", ["eligible_for_train", "used_for_tuning", "pair_id"])
 def test_historical_missing_fields_fail(tmp_path, field):
     # Given
-    data = json.loads(PAIR_USAGE.read_text())
+    data = json.loads(PAIR_USAGE.read_text(encoding="utf-8"))
     del data[field]
     path = tmp_path / "usage.json"
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps(data), encoding="utf-8")
     # When / Then
     with pytest.raises((KeyError, ValueError)):
         load_usage_policy([path], policy_version="v1")
@@ -232,10 +232,10 @@ def test_historical_missing_fields_fail(tmp_path, field):
 
 def test_conflicting_legacy_eligibility_is_rejected(tmp_path):
     # Given
-    data = json.loads(PAIR_USAGE.read_text())
+    data = json.loads(PAIR_USAGE.read_text(encoding="utf-8"))
     data["eligible_splits"] = ["test"]
     path = tmp_path / "usage.json"
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps(data), encoding="utf-8")
     # When / Then
     with pytest.raises(ValueError, match="conflicting eligibility"):
         load_usage_policy([path], policy_version="v1")

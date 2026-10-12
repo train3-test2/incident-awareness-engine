@@ -268,6 +268,21 @@ def test_publishes_evidence_before_summary() -> None:
     assert s3.if_none_match_values == ["*", "*"]
 
 
+def test_generic_batch_archive_publishes_only_its_two_existing_artifacts() -> None:
+    """#228 batch archive must not acquire incremental stream control artifacts."""
+    s3 = _FakeS3()
+
+    publish_r1_archive(_publication(), s3_client=s3)  # type: ignore[arg-type]
+
+    assert set(s3.objects) == {
+        (_BUCKET, f"{_PREFIX}/r1_evidence.jsonl"),
+        (_BUCKET, f"{_PREFIX}/r1_extraction_summary.json"),
+    }
+    assert not any(
+        "watermark" in key or "run_closed" in key or "event_chunk" in key for _, key in s3.objects
+    )
+
+
 def test_first_publish_does_not_get_a_missing_key_when_s3_would_return_access_denied() -> None:
     # Given
     s3 = _AccessDeniedForMissingGetS3()
