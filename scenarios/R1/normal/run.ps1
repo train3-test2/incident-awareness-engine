@@ -59,6 +59,11 @@
     .PARAMETER Credential
         The account both runs use. Prompted for by the operator; never stored.
 
+    .PARAMETER ReadinessRecordPath
+        The record of the readiness check made from outside the target. Needed
+        only by a scenario that states collection.readiness_method; such a run
+        opens no connection from the target before it starts.
+
     .EXAMPLE
         .\run.ps1 -RunId RUN-YYYYMMDD-NNN -ScenarioJsonPath C:\Tools\R1\scenario.json `
             -DataRoot C:\R1\data -WorkDir C:\R1\work -ObservationSec 660 -DryRun
@@ -79,6 +84,7 @@ param(
     [string]$TargetSysmonBinary,
     [string]$TargetSysmonConfigPath,
     [string]$ExpectedSysmonConfigSha256,
+    [string]$ReadinessRecordPath,
     [switch]$Rehearsal,
     [switch]$DryRun
 )
@@ -111,5 +117,6 @@ Invoke-R1PilotRun -RunType "normal" -RunId $RunId -ScenarioJsonPath $ScenarioJso
     -VmSnapshot $VmSnapshot -TargetSysmonBinary $TargetSysmonBinary `
     -TargetSysmonConfigPath $TargetSysmonConfigPath `
     -ExpectedSysmonConfigSha256 $ExpectedSysmonConfigSha256 `
+    -ReadinessRecordPath $ReadinessRecordPath `
     -Connection $connection -Transport $transport `
     -Rehearsal:$Rehearsal -DryRun:$DryRun | Out-Null

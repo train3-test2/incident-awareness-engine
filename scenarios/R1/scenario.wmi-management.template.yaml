@@ -1,0 +1,236 @@
+# TEMPLATE of an R1 scenario whose intermediate is started through WMI.
+#
+# It is a template: no run has used it, and it is not ready to be used. What was
+# handed over as decided is stated: the family and its variation, the four
+# actions of a run with their ids, offsets and action types, the action an
+# attack run takes its reference from (A01), the length of a run and the
+# evaluation horizon, and the reference policy version.
+#
+# Still open, outside this file: the call through WMI and the wait of the
+# intermediate have never been run in a real session.
+#
+# Nothing here issues a run id or a Pair id, and no Pair is collected from this
+# file. The first use planned for it is a Pilot of one normal and one attack
+# run, rendered with --dataset-tier pilot: it is outside the development and
+# holdout counts. What the three blocks below mean and what may be stated
+# together is docs/scenarios/r1-collection-profile.md. Field formats follow
+# scenarios/R1/scenario.yaml, which stays the canonical remote_management
+# scenario and is not changed by this file.
+
+scenario_version: v1
+scenario_id: R1
+
+family_id: wmi_management
+variation_id: V01
+repetition: null
+
+# Given per rendering (--dataset-tier), like in every R1 scenario.
+dataset_tier: null
+
+gate_type: feasibility
+ambiguity_required: true
+performance_claim_allowed: true
+decisive_comparator:
+  required: true
+  frozen_version: null
+
+run_metadata:
+  target_host: null
+  sysmon_config_version: sysmonconfig-sample-v0.1
+  detector_set_version: null
+  # The version both runs record. Which file registers the policy, and its
+  # hash, is role 2's and is not stored or read here.
+  reference_policy_version: wmi-ref-v0.1
+  schema_versions:
+    run_metadata: v0.2
+    event: v0.3
+    evidence: v0.2
+    fast_hit: v0.2
+    detection_result: v0.2
+    fusion_result: v0.3
+    decision_result: v0.2
+    execution_record: v0.1
+    evaluation_input: v0.1
+
+telemetry:
+  observed_host: Target-A
+  channels:
+    - sysmon
+  sysmon_event_ids:
+    - 1
+    - 3
+
+# The evaluation horizon is the one of every R1 scenario. It is counted from the
+# reference time of an attack run and has nothing to do with how far back the
+# raw export reaches.
+run_length:
+  observation_sec: 780
+  evaluation_horizon_sec: 600
+
+internal_connection:
+  required: true
+  target: null
+  port: null
+  protocol: TCP
+  lab_cidr: null
+  max_attempts: 1
+  decision_reference: "docs/scenarios/r1.md section 11-10"
+
+# The session is opened as in every R1 run, but it does not start the
+# intermediate: it asks WMI to. The parent of the intermediate is therefore the
+# WMI provider host, which is the root of the planned lineage. The intermediate
+# waits until the run tells it to start the final tool, 300 s later.
+#
+#   normal   provider host -> one intermediate     -> final management tool
+#   attack   provider host -> another intermediate -> the same final management tool
+#
+# The Images are a collection plan. Which lineage is approved is role 2's
+# registered policy (r1-wmi-management-approved-lineage v0.1) and is not stored
+# or read here. The root is spelled as that policy and the image file spell it;
+# Images are compared without regard to letter case.
+planned_lineage:
+  entry:
+    kind: wmi_process
+    root_image: WmiPrvSE.exe
+  session_host:
+    image: wsmprovhost.exe
+  final_tool:
+    image: powershell.exe
+    arguments:
+      - "-NoProfile"
+      - "-NonInteractive"
+      - "-ExecutionPolicy"
+      - "Bypass"
+      - "-File"
+      - "{task_script}"
+      - "-ChannelDir"
+      - "{channel_dir}"
+  intermediate:
+    normal:
+      image: wscript.exe
+      launcher_kind: jscript
+      launcher_file: r1_launch.js
+      arguments:
+        - "//NoLogo"
+        - "//B"
+        - "{launcher}"
+    attack:
+      image: cmd.exe
+      launcher_kind: batch
+      launcher_file: r1_launch.cmd
+      arguments:
+        - "/d"
+        - "/c"
+        - "{launcher}"
+
+# The provider host is created when Target-A boots, so the raw export starts at
+# the boot. Everything before the start of the run is context: it restores the
+# lineage and is never an evaluation input. Nothing connects from Target-A to
+# the internal destination before the run; readiness is established from outside
+# Target-A and handed to the run as a record.
+collection:
+  raw_window: target_boot_to_run_end
+  readiness_method: out_of_band
+
+# The session host is not in this lineage, so the rule of
+# scenarios/R1/scenario.yaml does not apply. A run that records a reference
+# takes it from the process-create record of the process its launch action
+# creates: the one record that carries the process id the call returned, was
+# written between the time taken right before the call and the end of the
+# action, and is the intermediate of the lineage found by ProcessGuid. Which
+# run records a reference is as in every R1 scenario (runs.*.reference_action_id).
+reference_rule:
+  action_step: invoke
+  source: wmi_created_process_create
+
+# The two registered policies this family is collected and read under. Only
+# their identities are stated. The hash of each, and the values a run needs
+# from the reference policy (which program, which time window after the call),
+# are read from the registered configuration when this file is rendered and
+# are never typed here. The version of the reference policy is the one stated
+# above as run_metadata.reference_policy_version.
+policies:
+  approved_lineage:
+    policy_id: r1-wmi-management-approved-lineage
+    version: v0.1
+  reference:
+    policy_id: r1-wmi-a01-reference
+
+shortcut_controls:
+  same_account: true
+  same_host: true
+  same_working_directory: true
+  filename_prefix: r1_
+  actions_per_run: 4
+  same_vm_snapshot: true
+  same_sysmon_config: true
+
+outputs:
+  raw_dir: data/raw/{run_id}/telemetry
+  manifest: data/raw/{run_id}/manifest.json
+  ground_truth_dir: data/ground_truth/{run_id}
+  time_format: utc_iso8601_milliseconds
+
+# Four actions per run, the same in both run types. The session to Target-A and
+# the files a run needs are set up before the first action and are not actions.
+#
+#   01   0 s   the intermediate is started through WMI. Its time is the clock of
+#              Target-A right before the call, and it succeeded only when the
+#              call returned 0 and a process id.
+#   02 300 s   the intermediate starts the final management tool.
+#   03 480 s   that instance of the final tool makes its one connection.
+#   04 720 s   the run ends: the processes the run started are ended, and
+#              nothing else is.
+#
+# The action ids, the offsets and the four action types were handed over as
+# decided. The step names are identifiers of the runner; nobody else fixed them.
+runs:
+  normal:
+    run_type: normal
+    reference_action_id: null
+    actions:
+      - action_id: N01
+        offset_sec: 0
+        step: invoke
+        action_type: wmi_process_create
+        description: WMI 로 계획된 중간 프로세스 시작
+      - action_id: N02
+        offset_sec: 300
+        step: launch
+        action_type: process_create
+        description: N01 의 중간 프로세스가 최종 관리 도구 실행
+      - action_id: N03
+        offset_sec: 480
+        step: connect
+        action_type: network_connection
+        description: N02 의 최종 관리 도구 인스턴스가 승인 목적지로 내부 연결
+      - action_id: N04
+        offset_sec: 720
+        step: run_end
+        action_type: run_end
+        description: Run 이 시작한 프로세스만 종료하고 Run 종료
+
+  attack:
+    run_type: attack
+    reference_action_id: A01
+    actions:
+      - action_id: A01
+        offset_sec: 0
+        step: invoke
+        action_type: wmi_process_create
+        description: WMI 로 다른 중간 프로세스 시작
+      - action_id: A02
+        offset_sec: 300
+        step: launch
+        action_type: process_create
+        description: A01 의 중간 프로세스가 같은 최종 관리 도구 실행
+      - action_id: A03
+        offset_sec: 480
+        step: connect
+        action_type: network_connection
+        description: A02 의 최종 관리 도구 인스턴스가 같은 목적지로 내부 연결
+      - action_id: A04
+        offset_sec: 720
+        step: run_end
+        action_type: run_end
+        description: Run 이 시작한 프로세스만 종료하고 Run 종료

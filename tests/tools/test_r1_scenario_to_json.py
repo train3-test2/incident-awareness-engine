@@ -8,6 +8,7 @@ of the lab appears.
 """
 
 import copy
+import importlib
 import json
 import re
 import sys
@@ -1455,3 +1456,552 @@ def test_any_non_blank_policy_version_is_kept_as_stated(tmp_path: Path) -> None:
     scenario = _load_mutated(tmp_path, _policy_version("synthetic-ref-v9"))
 
     assert scenario["run_metadata"]["reference_policy_version"] == "synthetic-ref-v9"
+
+
+# ---------------------------------------------------------------------------
+# The collection profile a scenario may state
+# ---------------------------------------------------------------------------
+
+_PROFILE_KEYS = ("collection", "reference_rule")
+_LAUNCH_INDEX = 2  # in the canonical scenario of five steps
+_WMI_ACTIONS = (
+    ("invoke", "wmi_process_create", 0),
+    ("launch", "process_create", 300),
+    ("connect", "network_connection", 480),
+    ("run_end", "run_end", 720),
+)
+
+
+def _through_wmi(scenario: dict) -> None:
+    """Turn the canonical scenario into a synthetic one whose intermediate is started through WMI.
+
+    It exercises the renderer only. The variation, the reference policy version
+    and the action ids named here are made up.
+    """
+    scenario["family_id"] = "wmi_management"
+    scenario["variation_id"] = "synthetic_variation"
+    lineage = scenario["planned_lineage"]
+    lineage["entry"] = {"kind": "wmi_process", "root_image": "WmiPrvSE.exe"}
+    lineage["intermediate"]["normal"] = {
+        "image": "wscript.exe",
+        "launcher_kind": "jscript",
+        "launcher_file": "r1_launch.js",
+        "arguments": ["//NoLogo", "//B", "{launcher}"],
+    }
+    lineage["intermediate"]["attack"] = {
+        "image": "cmd.exe",
+        "launcher_kind": "batch",
+        "launcher_file": "r1_launch.cmd",
+        "arguments": ["/d", "/c", "{launcher}"],
+    }
+    scenario["collection"] = {
+        "raw_window": "target_boot_to_run_end",
+        "readiness_method": "out_of_band",
+    }
+    scenario["reference_rule"] = {"action_step": "invoke", "source": "wmi_created_process_create"}
+    scenario["shortcut_controls"]["actions_per_run"] = len(_WMI_ACTIONS)
+    for run_type, run in scenario["runs"].items():
+        run["actions"] = [
+            {
+                "action_id": f"{run_type[0].upper()}{index:02d}",
+                "offset_sec": offset_sec,
+                "step": step,
+                "action_type": action_type,
+                "description": "synthetic action",
+            }
+            for index, (step, action_type, offset_sec) in enumerate(_WMI_ACTIONS, start=1)
+        ]
+    scenario["runs"]["attack"]["reference_action_id"] = "A01"
+    scenario["run_metadata"]["reference_policy_version"] = "synthetic-reference-policy"
+
+
+def _wmi_then(change: Callable[[dict], None]) -> Callable[[dict], None]:
+    def mutate(scenario: dict) -> None:
+        _through_wmi(scenario)
+        change(scenario)
+
+    return mutate
+
+
+def test_the_canonical_scenario_states_no_collection_profile(tmp_path: Path) -> None:
+    # remote_management is collected as before: it states none of the optional
+    # blocks, and rendering adds none.
+    scenario = _load_canonical()
+    assert "entry" not in scenario["planned_lineage"]
+    assert all(key not in scenario for key in _PROFILE_KEYS)
+
+    rendered = apply_run_inputs(
+        scenario,
+        target_host=TARGET_HOST,
+        internal_target=INTERNAL_TARGET,
+        internal_port=INTERNAL_PORT,
+        lab_cidr=LAB_CIDR,
+        repetition=1,
+        dataset_tier="pilot",
+    )
+    written = json.loads(render_json(rendered, tmp_path / "scenario.json").read_text("utf-8"))
+
+    assert "entry" not in written["planned_lineage"]
+    assert all(key not in written for key in _PROFILE_KEYS)
+    assert written["runs"]["attack"]["reference_action_id"] == "A01"
+    assert written["runs"]["attack"]["actions"][_LAUNCH_INDEX]["action_type"] == "process_create"
+
+
+def test_a_scenario_through_wmi_is_rendered_with_the_profile_it_states(tmp_path: Path) -> None:
+    scenario = _load_mutated(tmp_path, _through_wmi)
+    rendered = apply_run_inputs(scenario, repetition=1, dataset_tier="pilot")
+    written = json.loads(render_json(rendered, tmp_path / "scenario.json").read_text("utf-8"))
+
+    assert written["planned_lineage"]["entry"] == {
+        "kind": "wmi_process",
+        "root_image": "WmiPrvSE.exe",
+    }
+    assert written["collection"] == {
+        "raw_window": "target_boot_to_run_end",
+        "readiness_method": "out_of_band",
+    }
+    # the reference is taken from the process the launch action creates
+    assert written["reference_rule"] == {
+        "action_step": "invoke",
+        "source": "wmi_created_process_create",
+    }
+    launch = written["runs"]["attack"]["actions"][0]
+    assert launch["step"] == "invoke" and launch["action_type"] == "wmi_process_create"
+    assert written["runs"]["attack"]["reference_action_id"] == launch["action_id"] == "A01"
+    assert written["runs"]["normal"]["reference_action_id"] is None
+    for run_type in RUN_TYPES:
+        shape = [
+            (a["step"], a["action_type"], a["offset_sec"])
+            for a in written["runs"][run_type]["actions"]
+        ]
+        assert shape == list(_WMI_ACTIONS)
+    assert written["run_metadata"]["reference_policy_version"] == "synthetic-reference-policy"
+    # the session still exists; it is not the root of the lineage
+    assert written["planned_lineage"]["session_host"]["image"] == "wsmprovhost.exe"
+    assert _designed_lineage(written, "normal")[1:] == ("wscript.exe", "powershell.exe")
+    assert _designed_lineage(written, "attack")[1:] == ("cmd.exe", "powershell.exe")
+
+
+def _without(key: str) -> Callable[[dict], None]:
+    def change(scenario: dict) -> None:
+        del scenario[key]
+
+    return change
+
+
+def _set(path: tuple, value: object) -> Callable[[dict], None]:
+    def change(scenario: dict) -> None:
+        target = scenario
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+
+    return change
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (_without("collection"), "collection.raw_window must be 'target_boot_to_run_end'"),
+        (
+            _set(("collection", "raw_window"), "run_window"),
+            "collection.raw_window must be 'target_boot_to_run_end'",
+        ),
+        (
+            _set(("collection", "readiness_method"), None),
+            "collection.readiness_method must be 'out_of_band'",
+        ),
+        (_without("reference_rule"), "reference_rule must be stated for wmi_process"),
+        (
+            _set(
+                ("reference_rule",),
+                {"action_step": "session_begin", "source": "session_host_process_create"},
+            ),
+            "is not implemented for wmi_process",
+        ),
+        (
+            _set(("reference_rule",), {"action_step": None, "source": None}),
+            "is not implemented for wmi_process",
+        ),
+        (
+            _set(("reference_rule", "action_step"), "session_begin"),
+            "reference_rule.action_step must be 'invoke'",
+        ),
+        (
+            _set(("runs", "attack", "reference_action_id"), "A02"),
+            "reference_action_id must be the invoke action 'A01'",
+        ),
+        (
+            _set(("runs", "attack", "reference_action_id"), None),
+            "reference_action_id must be the invoke action 'A01'",
+        ),
+        (
+            _set(("runs", "normal", "reference_action_id"), "N01"),
+            "runs.normal.reference_action_id must be null",
+        ),
+        (
+            _set(("run_metadata", "reference_policy_version"), None),
+            "reference_policy_version must be a non-blank string",
+        ),
+        (
+            _set(("runs", "normal", "actions", 0, "action_type"), "process_create"),
+            "runs.normal: the invoke action of a wmi_process scenario is recorded as",
+        ),
+        (
+            _set(("runs", "attack", "actions", 3, "action_type"), "process_terminate"),
+            "runs.attack: the run_end action of a wmi_process scenario is recorded as",
+        ),
+        (
+            _set(("runs", "attack", "actions", 1, "step"), "prepare"),
+            "runs.attack steps must be",
+        ),
+        (
+            _set(("shortcut_controls", "actions_per_run"), 5),
+            "has 4 actions, shortcut_controls.actions_per_run is 5",
+        ),
+        (
+            _set(("run_length", "observation_sec"), 599),
+            "run_length.observation_sec 599 does not reach the evaluation horizon of 600 s",
+        ),
+        (
+            _set(("run_length", "observation_sec"), 700),
+            "run_length.observation_sec 700 does not cover the last action at 720 s",
+        ),
+        (
+            _set(("run_length", "observation_sec"), "780"),
+            "run_length.observation_sec must be an integer of 1 or more or null",
+        ),
+        (
+            _set(("planned_lineage", "entry", "root_image"), "normal_host.exe"),
+            "would expose the run type",
+        ),
+        (
+            _set(("planned_lineage", "entry", "root_image"), "wsmprovhost.exe"),
+            "must not be the session host image",
+        ),
+        (
+            _set(("planned_lineage", "entry", "kind"), "scheduled_task"),
+            "entry.kind must be one of",
+        ),
+    ],
+    ids=[
+        "no_collection_block",
+        "run_window",
+        "no_readiness_method",
+        "no_reference_rule",
+        "the_rule_of_the_session_entry",
+        "a_rule_left_undecided",
+        "the_session_step",
+        "the_session_action_as_the_reference",
+        "no_reference_action",
+        "a_reference_for_the_normal_run",
+        "no_reference_policy_version",
+        "a_launch_recorded_with_another_type",
+        "a_run_end_recorded_with_another_type",
+        "a_step_of_the_session_entry",
+        "another_number_of_actions",
+        "a_length_that_ends_before_the_horizon",
+        "a_length_that_ends_before_the_last_action",
+        "a_length_as_text",
+        "a_label_word_in_the_root",
+        "the_session_host_as_the_root",
+        "an_entry_kind_that_is_not_implemented",
+    ],
+)
+def test_a_scenario_through_wmi_that_could_not_be_collected_is_refused(
+    tmp_path: Path, change: Callable[[dict], None], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _load_mutated(tmp_path, _wmi_then(change))
+
+
+def test_the_extended_window_is_refused_for_the_session_entry(tmp_path: Path) -> None:
+    # The session host is created in the run: nothing before the run is needed,
+    # so nothing before the run is collected.
+    with pytest.raises(ValueError, match="collection.raw_window must be 'run_window'"):
+        _load_mutated(
+            tmp_path,
+            _set(
+                ("collection",),
+                {"raw_window": "target_boot_to_run_end", "readiness_method": "out_of_band"},
+            ),
+        )
+
+
+def test_stating_the_rule_of_today_keeps_the_attack_reference_where_it_is(tmp_path: Path) -> None:
+    stated = {"action_step": "session_begin", "source": "session_host_process_create"}
+    scenario = _load_mutated(tmp_path, _set(("reference_rule",), stated))
+    assert scenario["runs"]["attack"]["reference_action_id"] == "A01"
+
+    def no_reference(scenario: dict) -> None:
+        scenario["reference_rule"] = dict(stated)
+        scenario["runs"]["attack"]["reference_action_id"] = None
+
+    with pytest.raises(ValueError, match="must be the session_begin action 'A01'"):
+        _load_mutated(tmp_path, no_reference)
+
+
+def test_the_session_entry_cannot_take_the_rule_of_the_wmi_entry(tmp_path: Path) -> None:
+    stated = {"action_step": "invoke", "source": "wmi_created_process_create"}
+
+    with pytest.raises(ValueError, match="is not implemented for remoting_session"):
+        _load_mutated(tmp_path, _set(("reference_rule",), stated))
+
+
+# ---------------------------------------------------------------------------
+# The template of a scenario through WMI
+# ---------------------------------------------------------------------------
+
+WMI_TEMPLATE = Path("scenarios/R1/scenario.wmi-management.template.yaml")
+
+
+def _load_template() -> dict:
+    return yaml.safe_load(WMI_TEMPLATE.read_text(encoding="utf-8"))
+
+
+def test_the_wmi_template_states_what_was_handed_over() -> None:
+    template = _load_template()
+
+    assert (template["scenario_id"], template["family_id"]) == ("R1", "wmi_management")
+    assert (template["variation_id"], template["scenario_version"]) == ("V01", "v1")
+    assert template["run_metadata"]["reference_policy_version"] == "wmi-ref-v0.1"
+    assert template["run_length"] == {"observation_sec": 780, "evaluation_horizon_sec": 600}
+    assert template["shortcut_controls"]["actions_per_run"] == 4
+    assert template["reference_rule"] == {
+        "action_step": "invoke",
+        "source": "wmi_created_process_create",
+    }
+    # the four actions of a run: their ids, offsets and action types
+    for run_type, prefix in (("normal", "N"), ("attack", "A")):
+        actions = template["runs"][run_type]["actions"]
+        assert [a["action_id"] for a in actions] == [f"{prefix}0{n}" for n in (1, 2, 3, 4)]
+        assert [a["offset_sec"] for a in actions] == [0, 300, 480, 720]
+        assert [a["action_type"] for a in actions] == [
+            "wmi_process_create",
+            "process_create",
+            "network_connection",
+            "run_end",
+        ]
+    # only the attack run names a reference, and it is its first action
+    assert template["runs"]["attack"]["reference_action_id"] == "A01"
+    assert template["runs"]["normal"]["reference_action_id"] is None
+    assert _designed_lineage(template, "normal")[1:] == ("wscript.exe", "powershell.exe")
+    assert _designed_lineage(template, "attack")[1:] == ("cmd.exe", "powershell.exe")
+    assert template["planned_lineage"]["entry"]["root_image"] == "WmiPrvSE.exe"
+
+
+def test_the_length_of_a_template_run_reaches_the_horizon_after_its_reference_action() -> None:
+    template = _load_template()
+    actions = template["runs"]["attack"]["actions"]
+    reference = next(a for a in actions if a["action_id"] == "A01")
+
+    needed = reference["offset_sec"] + template["run_length"]["evaluation_horizon_sec"]
+    assert template["run_length"]["observation_sec"] >= needed == 600
+    assert template["run_length"]["observation_sec"] >= actions[-1]["offset_sec"] == 720
+
+
+class _StandInPolicy:
+    """A registered policy as a loader returns it. Every value is made up."""
+
+    def __init__(self, **values: object) -> None:
+        self.__dict__.update(values)
+
+
+def _stand_in_registries(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Replace the two policy registries by stand-ins that hold the identities the template names.
+
+    The hashes, the path and the loader name are made up, so that a rendered value
+    can only come from what a loader returned.
+    """
+    from incident_awareness.collection import r1_policy_provenance as provenance
+
+    approved = _StandInPolicy(
+        policy_id="r1-wmi-management-approved-lineage",
+        version="v0.1",
+        family_id="wmi_management",
+        lifecycle="development",
+        config_hash="a1" * 32,
+    )
+    reference = _StandInPolicy(
+        policy_id="r1-wmi-a01-reference",
+        version="wmi-ref-v0.1",
+        family_id="wmi_management",
+        canonical_path="configs/stand_in_reference_policies.yaml",
+        config_hash="b2" * 32,
+        reference_action_id="A01",
+        action_type="wmi_process_create",
+        reference_process_name="cmd.exe",
+        candidate_start_offset_sec=0,
+        candidate_window_sec=2,
+        success_return_value=0,
+        require_process_id=True,
+        expected_evaluation_horizon_sec=600,
+    )
+
+    def load_approved(policy_id: str, version: str, family_id: object) -> tuple:
+        if (policy_id, version, family_id) != (
+            approved.policy_id,
+            approved.version,
+            "wmi_management",
+        ):
+            raise ValueError(f"R1 approved lineage policy was not found: {policy_id}/{version}")
+        return approved, "configs/stand_in_approved_lineage_policies.yaml"
+
+    def load_reference(policy_id: str, version: str) -> tuple:
+        if (policy_id, version) != (reference.policy_id, reference.version):
+            raise ValueError(f"R1 reference policy was not found: {policy_id}/{version}")
+        return reference, "stand-in-loader"
+
+    monkeypatch.setattr(provenance, "_load_approved_policy", load_approved)
+    monkeypatch.setattr(provenance, "_load_reference_policy", load_reference)
+    return {"approved": approved, "reference": reference}
+
+
+def test_the_wmi_template_leaves_the_values_given_per_rendering_null_and_is_rendered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registries = _stand_in_registries(monkeypatch)
+    template = _load_template()
+    assert template["repetition"] is None and template["dataset_tier"] is None
+    assert template["run_metadata"]["target_host"] is None
+    assert template["internal_connection"]["target"] is None
+
+    scenario = load_r1_scenario(WMI_TEMPLATE)
+    rendered = apply_run_inputs(scenario, repetition=1, dataset_tier="pilot")
+    written = json.loads(render_json(rendered, tmp_path / "scenario.json").read_text("utf-8"))
+
+    assert written["dataset_tier"] == "pilot" and written["repetition"] == 1
+    assert written["planned_lineage"]["entry"] == {
+        "kind": "wmi_process",
+        "root_image": "WmiPrvSE.exe",
+    }
+    assert written["collection"] == {
+        "raw_window": "target_boot_to_run_end",
+        "readiness_method": "out_of_band",
+    }
+    assert written["runs"]["attack"]["reference_action_id"] == "A01"
+    assert written["run_length"]["observation_sec"] == 780
+    # what the rendered scenario says about the two policies is what the loaders returned
+    provenance = written["policy_provenance"]
+    assert provenance["reference"]["config_hash"] == registries["reference"].config_hash
+    assert provenance["reference"]["config_path"] == "configs/stand_in_reference_policies.yaml"
+    assert provenance["reference"]["loader"] == "stand-in-loader"
+    assert provenance["reference"]["candidate_window_sec"] == 2
+    assert provenance["approved_lineage"]["config_hash"] == registries["approved"].config_hash
+    assert provenance["approved_lineage"]["lifecycle"] == "development"
+
+
+def test_the_wmi_template_names_its_policies_and_types_nothing_about_them() -> None:
+    template = _load_template()
+
+    assert template["policies"] == {
+        "approved_lineage": {"policy_id": "r1-wmi-management-approved-lineage", "version": "v0.1"},
+        "reference": {"policy_id": "r1-wmi-a01-reference"},
+    }
+    assert "policy_provenance" not in template
+    # no hash and no window is typed anywhere in the file
+    text = WMI_TEMPLATE.read_text(encoding="utf-8")
+    assert "config_hash" not in text and "candidate_window" not in text
+    assert not re.search(r"\b[0-9a-f]{64}\b", text)
+
+
+def test_a_scenario_cannot_state_its_own_policy_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stand_in_registries(monkeypatch)
+    template = _load_template()
+    template["policy_provenance"] = {"reference": {"config_hash": "0" * 64}}
+    path = tmp_path / "scenario.yaml"
+    path.write_text(yaml.safe_dump(template, allow_unicode=True), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="policy_provenance is not stated in a scenario"):
+        load_r1_scenario(path)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (_set(("policies", "reference", "policy_id"), "another-reference"), "was not found"),
+        (_set(("policies", "approved_lineage", "version"), "v9.9"), "was not found"),
+        (_set(("run_metadata", "reference_policy_version"), "wmi-ref-v9.9"), "was not found"),
+        (_set(("run_length", "evaluation_horizon_sec"), 500), "expected_evaluation_horizon_sec"),
+        (
+            _set(("planned_lineage", "intermediate", "attack", "image"), "cscript.exe"),
+            "reference_process_name",
+        ),
+    ],
+    ids=[
+        "a_reference_policy_that_is_not_registered",
+        "an_approved_version_that_is_not_registered",
+        "a_reference_version_that_is_not_registered",
+        "a_horizon_the_reference_policy_does_not_state",
+        "a_program_the_reference_policy_does_not_state",
+    ],
+)
+def test_a_template_that_does_not_fit_the_policies_it_names_is_not_rendered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: Callable[[dict], None], message: str
+) -> None:
+    _stand_in_registries(monkeypatch)
+    template = _load_template()
+    change(template)
+    path = tmp_path / "scenario.yaml"
+    path.write_text(yaml.safe_dump(template, allow_unicode=True), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        load_r1_scenario(path)
+
+
+def test_the_canonical_scenario_names_no_policy_and_gets_no_policy_provenance() -> None:
+    canonical = _load_canonical()
+
+    assert "policies" not in canonical and "policy_provenance" not in canonical
+
+
+def test_the_wmi_template_is_rendered_from_the_registered_policies(tmp_path: Path) -> None:
+    # The real registries: skipped where their loaders cannot be imported.
+    from incident_awareness.collection import r1_policy_provenance as provenance
+
+    try:
+        registry = importlib.import_module(provenance.REFERENCE_LOADER_MODULE)
+        importlib.import_module(provenance.APPROVED_LOADER_MODULE)
+    except (ImportError, SyntaxError) as error:
+        pytest.skip(f"the policy loaders cannot be imported here: {type(error).__name__}")
+
+    scenario = load_r1_scenario(WMI_TEMPLATE)
+    registered = registry.load_r1_reference_policy("r1-wmi-a01-reference", "wmi-ref-v0.1")
+
+    assert scenario["policy_provenance"]["reference"]["config_hash"] == registered.config_hash
+    assert scenario["policy_provenance"]["reference"]["config_path"] == registered.canonical_path
+    assert scenario["policy_provenance"]["reference"]["candidate_window_sec"] == (
+        registered.candidate_window_sec
+    )
+    assert scenario["run_length"]["evaluation_horizon_sec"] == (
+        registered.expected_evaluation_horizon_sec
+    )
+
+
+def test_both_runs_of_the_wmi_template_do_the_same_things_at_the_same_moments() -> None:
+    template, canonical = _load_template(), _load_canonical()
+
+    shapes = {
+        run_type: [
+            (a["step"], a["offset_sec"], a["action_type"])
+            for a in template["runs"][run_type]["actions"]
+        ]
+        for run_type in RUN_TYPES
+    }
+    assert shapes["normal"] == shapes["attack"]
+    # the connection is where it is in the canonical scenario, 180 s after the final tool
+    offsets = {step: offset for step, offset, _ in shapes["attack"]}
+    canonical_offsets = {a["step"]: a["offset_sec"] for a in canonical["runs"]["attack"]["actions"]}
+    assert offsets["connect"] == canonical_offsets["connect"] == 480
+    assert offsets["connect"] - offsets["launch"] == 180
+    # one final tool, the session host and the schema versions of the canonical scenario
+    assert template["planned_lineage"]["final_tool"] == canonical["planned_lineage"]["final_tool"]
+    assert (
+        template["planned_lineage"]["session_host"] == canonical["planned_lineage"]["session_host"]
+    )
+    assert (
+        template["run_metadata"]["schema_versions"]
+        == (canonical["run_metadata"]["schema_versions"])
+    )

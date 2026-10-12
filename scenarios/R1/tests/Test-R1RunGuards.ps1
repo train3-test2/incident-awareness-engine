@@ -37,7 +37,12 @@
            refused when it is missing or unknown, never taken from a caller, and
            written to the operator trace of both runs unchanged,
         9. the reference of an attack run: which record is selected, when none
-           is, and that its time and the two bounds of its window are UTC.
+           is, and that its time and the two bounds of its window are UTC,
+       10. the collection profile a scenario may state: an entry through WMI
+           and its launch step, the boot-to-end raw window, the readiness
+           record a run is given instead of connecting from the target, the
+           collection provenance and its context records, and that a run of
+           the session entry is planned, launched and exported as before.
 
         The repository has no PowerShell test harness, so this script is a plain
         runner: it prints one line per case and exits non-zero when any case fails.
@@ -2291,6 +2296,2456 @@ Assert-Throws "a collection run refuses a reported hash that is not the file's" 
 Assert-True "every stand-in wrote the bytes and the exit code it was given" (
     $script:ProbeTools.Count -gt 0 -and
     @($script:ProbeTools | Where-Object { -not (Test-ProbeToolFaithful $_) }).Count -eq 0)
+
+ # ---------------------------------------------------------------------------
+ # 10. Collection profile: an entry through WMI, the boot-to-end raw window,
+ #     the readiness record and the collection provenance
+ #
+ # The scenario built here is synthetic. Its four actions, their offsets and the
+ # length of a run follow the timeline that was handed over as decided; its
+ # variation and its reference policy version are made up.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== collection profile (entry through WMI) ===" -ForegroundColor Cyan
+
+$WMI_ROOT_GUID = "{00000000-0000-0000-0000-000000000900}"
+$WMI_BOOT_UTC = "2029-12-31T23:50:00.000Z"
+$RUN_START_UTC = "2030-01-01T00:00:00.000Z"
+
+function New-WmiScenarioObject {
+    <# A scenario whose intermediate is started through WMI. -Change edits it before it is returned. #>
+    param([scriptblock]$Change, [AllowNull()][string]$Target = $TEST_TARGET)
+
+    $scenario = New-ScenarioObject -FamilyId "wmi_management" -VariationId "synthetic_variation" -Target $Target
+    $scenario.planned_lineage | Add-Member -NotePropertyName "entry" -NotePropertyValue (
+        [pscustomobject]@{ kind = "wmi_process"; root_image = "WmiPrvSE.exe" })
+    $scenario.planned_lineage.intermediate.normal = [pscustomobject]@{
+        image = "wscript.exe"; launcher_kind = "jscript"; launcher_file = "r1_launch.js"
+        arguments = @("//NoLogo", "//B", "{launcher}") }
+    $scenario.planned_lineage.intermediate.attack = [pscustomobject]@{
+        image = "cmd.exe"; launcher_kind = "batch"; launcher_file = "r1_launch.cmd"
+        arguments = @("/d", "/c", "{launcher}") }
+    $scenario | Add-Member -NotePropertyName "collection" -NotePropertyValue (
+        [pscustomobject]@{ raw_window = "target_boot_to_run_end"; readiness_method = "out_of_band" })
+    $scenario | Add-Member -NotePropertyName "reference_rule" -NotePropertyValue (
+        [pscustomobject]@{ action_step = "invoke"; source = "wmi_created_process_create" })
+    # The four actions of a run through WMI, the same in both runs. The run
+    # that records a reference names the first of them.
+    foreach ($runType in @("normal", "attack")) {
+        $prefix = $runType.Substring(0, 1).ToUpper()
+        $scenario.runs.$runType.actions = @(
+            [pscustomobject]@{ action_id = ($prefix + "01"); offset_sec = 0; step = "invoke"
+                               action_type = "wmi_process_create"; description = "synthetic" },
+            [pscustomobject]@{ action_id = ($prefix + "02"); offset_sec = 300; step = "launch"
+                               action_type = "process_create"; description = "synthetic" },
+            [pscustomobject]@{ action_id = ($prefix + "03"); offset_sec = 480; step = "connect"
+                               action_type = "network_connection"; description = "synthetic" },
+            [pscustomobject]@{ action_id = ($prefix + "04"); offset_sec = 720; step = "run_end"
+                               action_type = "run_end"; description = "synthetic" })
+    }
+    $scenario.shortcut_controls.actions_per_run = 4
+    $scenario.run_length.observation_sec = 780
+    $scenario.runs.attack.reference_action_id = "A01"
+    $scenario.run_metadata.reference_policy_version = "synthetic-reference-policy"
+    # The policies the scenario names, and what a renderer wrote about them after
+    # it read the registries. Every identity, hash and path here is made up; the
+    # window is two seconds after the call.
+    $scenario | Add-Member -NotePropertyName "policies" -NotePropertyValue ([pscustomobject]@{
+        approved_lineage = [pscustomobject]@{ policy_id = "synthetic-approved-lineage"; version = "v9.9" }
+        reference        = [pscustomobject]@{ policy_id = "synthetic-reference" } })
+    $scenario | Add-Member -NotePropertyName "policy_provenance" -NotePropertyValue ([pscustomobject]@{
+        approved_lineage = [pscustomobject][ordered]@{
+            policy_id = "synthetic-approved-lineage"; version = "v9.9"; family_id = "wmi_management"
+            lifecycle = "development"; config_path = "configs/synthetic_approved_lineage_policies.yaml"
+            config_hash = ("a1" * 32); loader = "load_r1_approved_lineage_policy" }
+        reference        = [pscustomobject][ordered]@{
+            policy_id = "synthetic-reference"; version = "synthetic-reference-policy"
+            family_id = "wmi_management"; config_path = "configs/synthetic_reference_policies.yaml"
+            config_hash = ("b2" * 32); loader = "synthetic-loader-v0"; reference_action_id = "A01"
+            action_type = "wmi_process_create"; reference_process_name = "cmd.exe"
+            candidate_start_offset_sec = 0; candidate_window_sec = 2; success_return_value = 0
+            require_process_id = $true; expected_evaluation_horizon_sec = 600 } })
+    if ($null -ne $Change) { & $Change $scenario | Out-Null }
+    return $scenario
+}
+
+function New-TimedRecord {
+    <# One synthetic record with the time Sysmon would write, which the plain fixture leaves out. #>
+    param([int]$RecordId, [int]$EventId, [string]$UtcTime, $EventData, [string]$Computer = $TEST_HOST)
+
+    $data = [ordered]@{ UtcTime = $UtcTime }
+    foreach ($key in $EventData.Keys) { $data[$key] = $EventData[$key] }
+    return (New-SyntheticRecord $RecordId $EventId $Computer $data)
+}
+
+function New-TimedRunRecords {
+    <#
+        What the raw export of one run holds, every record with its UtcTime.
+
+        -FromBoot adds what an export from the boot of the target holds on top:
+        the service host and the provider host, created at boot. The background
+        process is five seconds older than the run, inside the margin the export
+        has always had. With -FromBoot the intermediate is a child of the
+        provider host; without it, of the session host.
+    #>
+    param(
+        [string]$IntermediateImage = "wscript.exe",
+        [switch]$FromBoot,
+        [switch]$NoConnection,
+        [string]$SessionUtcTime = "2030-01-01 00:00:00.000",
+        [string]$IntermediateUtcTime = "",
+        [double]$LaunchOffsetSec = 0,
+        [double]$ToolOffsetSec = -1,
+        [double]$ConnectOffsetSec = -1,
+        [string]$FinalToolUtcTime = ""
+    )
+
+    # The intermediate, the final tool and its connection follow the launch,
+    # which is at the start of the run unless -LaunchOffsetSec says later.
+    $launchAt = [datetime]::new(2030, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc).AddSeconds($LaunchOffsetSec)
+    $invariant = [System.Globalization.CultureInfo]::InvariantCulture
+    if ([string]::IsNullOrEmpty($IntermediateUtcTime)) {
+        $IntermediateUtcTime = $launchAt.AddMilliseconds(200).ToString("yyyy-MM-dd HH:mm:ss.fff", $invariant)
+    }
+    # The final tool is started by a later action when -ToolOffsetSec says so,
+    # and makes its connection at -ConnectOffsetSec; without them both follow
+    # the launch at once.
+    $runStart = [datetime]::new(2030, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+    $toolAt = $launchAt
+    if ($ToolOffsetSec -ge 0) { $toolAt = $runStart.AddSeconds($ToolOffsetSec) }
+    $connectAt = $toolAt
+    if ($ConnectOffsetSec -ge 0) { $connectAt = $runStart.AddSeconds($ConnectOffsetSec) }
+    $finalUtcTime = $toolAt.AddMilliseconds(400).ToString("yyyy-MM-dd HH:mm:ss.fff", $invariant)
+    if (-not [string]::IsNullOrEmpty($FinalToolUtcTime)) { $finalUtcTime = $FinalToolUtcTime }
+    $connectionUtcTime = $connectAt.AddMilliseconds(600).ToString("yyyy-MM-dd HH:mm:ss.fff", $invariant)
+
+    $records = New-Object System.Collections.Generic.List[object]
+    $parentOfIntermediate = $SESSION_GUID
+    if ($FromBoot) {
+        $parentOfIntermediate = $WMI_ROOT_GUID
+        $records.Add((New-TimedRecord 5 1 "2029-12-31 23:50:05.000" ([ordered]@{
+            ProcessGuid = $OUTSIDE_GUID; ProcessId = "700"; Image = "C:\synthetic\svchost.exe" })))
+        $records.Add((New-TimedRecord 10 1 "2029-12-31 23:50:22.000" ([ordered]@{
+            ProcessGuid = $WMI_ROOT_GUID; ProcessId = "900"; Image = "C:\synthetic\WmiPrvSE.exe"
+            ParentProcessGuid = $OUTSIDE_GUID; ParentProcessId = "700" })))
+    }
+    $records.Add((New-TimedRecord 11 1 "2029-12-31 23:59:55.000" ([ordered]@{
+        ProcessGuid = "{00000000-0000-0000-0000-000000000800}"; ProcessId = "800"
+        Image = "C:\synthetic\background.exe"; ParentProcessGuid = $OUTSIDE_GUID; ParentProcessId = "700" })))
+    $records.Add((New-TimedRecord 1 1 $SessionUtcTime ([ordered]@{
+        ProcessGuid = $SESSION_GUID; ProcessId = "4000"; Image = "C:\synthetic\wsmprovhost.exe"
+        ParentProcessGuid = $OUTSIDE_GUID; ParentProcessId = "700" })))
+    $records.Add((New-TimedRecord 2 1 $IntermediateUtcTime ([ordered]@{
+        ProcessGuid = $INTERMEDIATE_GUID; ProcessId = "4100"; Image = ("C:\synthetic\" + $IntermediateImage)
+        ParentProcessGuid = $parentOfIntermediate; ParentProcessId = "900" })))
+    $records.Add((New-TimedRecord 3 1 $finalUtcTime ([ordered]@{
+        ProcessGuid = $FINAL_GUID; ProcessId = "4200"; Image = "C:\synthetic\powershell.exe"
+        ParentProcessGuid = $INTERMEDIATE_GUID; ParentProcessId = "4100" })))
+    if (-not $NoConnection) {
+        $records.Add((New-TimedRecord 4 3 $connectionUtcTime ([ordered]@{
+            ProcessGuid = $FINAL_GUID; ProcessId = "4200"; Image = "C:\synthetic\powershell.exe"
+            Protocol = "tcp"; DestinationIp = $TEST_TARGET; DestinationPort = [string]$TEST_PORT })))
+    }
+    return $records.ToArray()
+}
+
+function New-DestinationConnection {
+    <# One more connection to the internal destination, by any process, at a given time. #>
+    param([int]$RecordId, [string]$UtcTime, [string]$ProcessGuid = "{00000000-0000-0000-0000-000000000800}")
+    return (New-TimedRecord $RecordId 3 $UtcTime ([ordered]@{
+        ProcessGuid = $ProcessGuid; ProcessId = "800"; Image = "C:\synthetic\background.exe"
+        Protocol = "tcp"; DestinationIp = $TEST_TARGET; DestinationPort = [string]$TEST_PORT }))
+}
+
+ # The plain fake transport, with the two things a declared collection needs:
+ # the step that launches through WMI, the boot time when the probe is asked for
+ # it, and telemetry whose records carry their UtcTime.
+$script:PlainFakeInvoke = (New-FakeTransport).invoke
+function New-CollectionFakeTransport {
+    $script:FakeLaunchTime = $null
+    $script:FakeToolTime = $null
+    $script:FakeConnectTime = $null
+    $transport = New-FakeTransport
+    $transport.invoke = {
+        param($Session, $Step, $Arguments)
+        if ($Step -eq "launch_wmi") {
+            $script:FakeCalls.Add("invoke:" + $Step)
+            $script:FakeArguments[$Step] = $Arguments
+            if ((Get-FakeOption "FailStep" "") -eq $Step) { throw ("synthetic failure in step " + $Step) }
+            # What the step hands back: the stamp taken right before the call,
+            # what the call returned, as unsigned numbers like the real one,
+            # and the stamp taken when the call was back.
+            $script:FakeLaunchTime = $script:FakeNow
+            $answer = @{
+                utc           = (Get-FakeOption "WmiActionUtc" (Get-UtcStamp $script:FakeNow))
+                return_value  = (Get-FakeOption "WmiReturnValue" ([uint32]0))
+                process_id    = (Get-FakeOption "WmiProcessId" ([uint32]4100))
+                completed_utc = (Get-FakeOption "WmiCompletedUtc" (Get-UtcStamp $script:FakeNow.AddSeconds(1)))
+            }
+            foreach ($name in @(Get-FakeOption "WmiOmit" @())) { $answer.Remove($name) }
+            # The call took the second the answer says it took.
+            $script:FakeNow = $script:FakeNow.AddSeconds(1)
+            return $answer
+        }
+        if ($Step -eq "open_gate" -or $Step -eq "start_tool" -or $Step -eq "end_run") {
+            $script:FakeCalls.Add("invoke:" + $Step)
+            $script:FakeArguments[$Step] = $Arguments
+            if ((Get-FakeOption "FailStep" "") -eq $Step) { throw ("synthetic failure in step " + $Step) }
+            $stamp = Get-UtcStamp $script:FakeNow
+            if ($Step -eq "open_gate") { return @{ utc = $stamp } }
+            if ($Step -eq "start_tool") {
+                # The stamp taken right before the intermediate was told to start
+                # the tool, the process id the tool reported, and the stamp taken
+                # when it was ready.
+                $script:FakeToolTime = $script:FakeNow
+                $toolAnswer = @{
+                    utc           = (Get-FakeOption "ToolActionUtc" $stamp)
+                    final_pid     = (Get-FakeOption "ToolFinalPid" 4200)
+                    completed_utc = (Get-FakeOption "ToolCompletedUtc" (Get-UtcStamp $script:FakeNow.AddSeconds(1)))
+                }
+                # The tool needed the second the answer says it needed.
+                $script:FakeNow = $script:FakeNow.AddSeconds(1)
+                return $toolAnswer
+            }
+            # end_run: the final tool is ended, the intermediate then ends by
+            # itself, and the provider host is still running afterwards.
+            $owned = @($Arguments.owned)
+            return @{
+                utc           = $stamp
+                ended         = (Get-FakeOption "EndRunEnded" @(
+                    @{ process_id = [int]$owned[0].process_id; image = [string]$owned[0].image; outcome = "exited_by_itself" },
+                    @{ process_id = [int]$owned[1].process_id; image = [string]$owned[1].image; outcome = "stopped" }))
+                provider_host = (Get-FakeOption "EndRunProvider" @{
+                    process_id = 900; name = "WmiPrvSE.exe"; running_before = $true; running_after = $true })
+                completed_utc = $stamp
+            }
+        }
+        $answer = & $script:PlainFakeInvoke $Session $Step $Arguments
+        if ($Step -eq "probe" -and $Arguments.ContainsKey("read_boot_time")) {
+            $answer.boot_utc = (Get-FakeOption "BootUtc" $WMI_BOOT_UTC)
+        }
+        if ($Step -eq "trigger") {
+            $script:FakeConnectTime = $script:FakeNow
+            $answer.status.pid = [int](Get-FakeOption "StatusPid" $answer.status.pid)
+        }
+        return $answer
+    }
+    $transport.convert = {
+        param($EvtxPath, $JsonlPath)
+        $script:FakeCalls.Add("convert")
+
+        $records = Get-FakeOption "Records" $null
+        if ($null -eq $records) {
+            $throughWmi = $script:FakeArguments.ContainsKey("launch_wmi")
+            if ($throughWmi) {
+                $image = ([string]$script:FakeArguments["launch_wmi"].command_line -split " ")[0]
+            } else {
+                $image = [string]$script:FakeArguments["launch"].executable
+            }
+            $launchOffset = 0
+            if ($null -ne $script:FakeLaunchTime) {
+                $launchOffset = ($script:FakeLaunchTime -
+                    [datetime]::new(2030, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)).TotalSeconds
+            }
+            $runStart = [datetime]::new(2030, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+            $toolOffset = -1
+            if ($null -ne $script:FakeToolTime) { $toolOffset = ($script:FakeToolTime - $runStart).TotalSeconds }
+            $connectOffset = -1
+            if ($null -ne $script:FakeConnectTime -and $throughWmi) {
+                $connectOffset = ($script:FakeConnectTime - $runStart).TotalSeconds
+            }
+            $records = New-TimedRunRecords -IntermediateImage $image -FromBoot:$throughWmi `
+                -NoConnection:((-not $script:FakeArguments.ContainsKey("trigger")) -or
+                    [bool](Get-FakeOption "TelemetryNoConnection" $false)) `
+                -SessionUtcTime $script:FakeSessionUtc -LaunchOffsetSec $launchOffset `
+                -ToolOffsetSec $toolOffset -ConnectOffsetSec $connectOffset `
+                -FinalToolUtcTime ([string](Get-FakeOption "TelemetryFinalUtcTime" ""))
+        }
+        $records = @($records) + @(Get-FakeOption "ExtraRecords" @())
+
+        $lines = @($records | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 5 })
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllLines($JsonlPath, [string[]]$lines, $utf8NoBom)
+        return $lines.Count
+    }
+    return $transport
+}
+
+function Save-ReadinessRecord {
+    <# The record an out-of-band readiness check hands to a run. -Change edits it; -Text replaces it. #>
+    param([scriptblock]$Change, [string]$Text)
+
+    $record = [ordered]@{
+        method = "out_of_band"; checked_at = "2029-12-31T23:59:20.000Z"; result = "ready"
+        active_tcp_probe_used = $false }
+    if ($null -ne $Change) { & $Change $record | Out-Null }
+    $path = Join-Path (New-TempRoot) "readiness.json"
+    if ([string]::IsNullOrEmpty($Text)) { $Text = ($record | ConvertTo-Json) }
+    [System.IO.File]::WriteAllText($path, $Text, (New-Object System.Text.UTF8Encoding($false)))
+    return $path
+}
+
+function Invoke-FakeCollectionRun {
+    param(
+        [string]$RunType = "normal", [string]$RunId = "RUN-20300101-001", [string]$ScenarioPath,
+        [string]$DataRoot, [AllowNull()][AllowEmptyString()][string]$ReadinessRecordPath,
+        [AllowNull()][hashtable]$Transport, [int]$ObservationSec = 780, [switch]$Rehearsal, [switch]$DryRun
+    )
+    return (Invoke-R1PilotRun -RunType $RunType -RunId $RunId -ScenarioJsonPath $ScenarioPath `
+        -DataRoot $DataRoot -WorkDir $TEST_WORK -ObservationSec $ObservationSec -VmSnapshot "synthetic-snapshot" `
+        -TargetSysmonBinary "C:\synthetic\Sysmon64.exe" -TargetSysmonConfigPath "C:\synthetic\sysmonconfig.xml" `
+        -ReadinessRecordPath $ReadinessRecordPath `
+        -Connection @{ address = "synthetic"; port = 5985 } -Transport $Transport `
+        -NowProvider $script:FakeNowProvider -Sleeper $script:FakeSleeper `
+        -Rehearsal:$Rehearsal -DryRun:$DryRun)
+}
+
+ # --- the profile a scenario states --------------------------------------------
+
+$sessionProfile = Get-R1CollectionProfile -Scenario (New-ScenarioObject)
+Assert-True "a scenario that states no profile is collected as before" (
+    $sessionProfile.entry_kind -ceq "remoting_session" -and $sessionProfile.root_image -ceq "wsmprovhost.exe" -and
+    $sessionProfile.raw_window -ceq "run_window" -and $null -eq $sessionProfile.readiness_method -and
+    $sessionProfile.reference_source -ceq "session_host_process_create" -and
+    $sessionProfile.reference_step -ceq "session_begin" -and
+    -not $sessionProfile.collection_declared)
+
+$wmiProfile = Get-R1CollectionProfile -Scenario (New-WmiScenarioObject)
+Assert-True "an entry through WMI has the provider host as its root and the boot-to-end raw window" (
+    $wmiProfile.entry_kind -ceq "wmi_process" -and $wmiProfile.root_image -ceq "WmiPrvSE.exe" -and
+    $wmiProfile.session_host_image -ceq "wsmprovhost.exe" -and
+    $wmiProfile.raw_window -ceq "target_boot_to_run_end" -and $wmiProfile.collection_declared)
+Assert-True "an entry through WMI establishes readiness out of band" ($wmiProfile.readiness_method -ceq "out_of_band")
+Assert-True "an entry through WMI takes its reference from the process its launch action creates" (
+    $wmiProfile.reference_source -ceq "wmi_created_process_create" -and
+    $wmiProfile.reference_step -ceq "invoke")
+
+foreach ($case in @(
+    @{ name = "without a collection block"; like = "*collection.raw_window must be target_boot_to_run_end*"
+       change = { param($s) $s.PSObject.Properties.Remove("collection") } },
+    @{ name = "with the run window"; like = "*collection.raw_window must be target_boot_to_run_end*"
+       change = { param($s) $s.collection.raw_window = "run_window" } },
+    @{ name = "without a readiness method"; like = "*collection.readiness_method must be out_of_band*"
+       change = { param($s) $s.collection.readiness_method = $null } },
+    @{ name = "with an active probe as its readiness method"; like = "*collection.readiness_method must be out_of_band or null*"
+       change = { param($s) $s.collection.readiness_method = "active_tcp_from_target" } },
+    @{ name = "whose root is the session host"; like = "*must not be the session host image*"
+       change = { param($s) $s.planned_lineage.entry.root_image = "wsmprovhost.exe" } },
+    @{ name = "whose root is a path"; like = "*root_image must be a plain file name*"
+       change = { param($s) $s.planned_lineage.entry.root_image = "C:\dir\WmiPrvSE.exe" } },
+    @{ name = "with a key the entry does not have"; like = "*planned_lineage.entry states unknown key*"
+       change = { param($s) $s.planned_lineage.entry | Add-Member -NotePropertyName "parent_image_fallback" -NotePropertyValue $true } },
+    @{ name = "without a reference rule"; like = "*reference_rule must be stated for wmi_process*"
+       change = { param($s) $s.PSObject.Properties.Remove("reference_rule") } },
+    @{ name = "that names the session host as its reference source"; like = "*is not implemented for wmi_process*"
+       change = { param($s) $s.reference_rule.source = "session_host_process_create"; $s.reference_rule.action_step = "session_begin" } },
+    @{ name = "whose reference rule is left undecided"; like = "*is not implemented for wmi_process*"
+       change = { param($s) $s.reference_rule.source = $null; $s.reference_rule.action_step = $null } },
+    @{ name = "whose reference is taken at the session step"; like = "*reference_rule.action_step must be invoke*"
+       change = { param($s) $s.reference_rule.action_step = "session_begin" } },
+    @{ name = "whose normal run records its first action with another type"
+       like = "*runs.normal: the invoke action of a wmi_process scenario is recorded as wmi_process_create*"
+       change = { param($s) ($s.runs.normal.actions | Where-Object { $_.step -eq "invoke" }).action_type = "process_create" } },
+    @{ name = "whose attack run records its first action with another type"
+       like = "*runs.attack: the invoke action of a wmi_process scenario is recorded as wmi_process_create*"
+       change = { param($s) ($s.runs.attack.actions | Where-Object { $_.step -eq "invoke" }).action_type = "process_create" } })) {
+
+    $broken = New-WmiScenarioObject -Change $case.change
+    Assert-Throws ("an entry through WMI " + $case.name + " is refused") {
+        Get-R1CollectionProfile -Scenario $broken
+    } $case.like
+}
+
+$unknownKind = New-ScenarioObject
+$unknownKind.planned_lineage | Add-Member -NotePropertyName "entry" -NotePropertyValue (
+    [pscustomobject]@{ kind = "scheduled_task"; root_image = "wsmprovhost.exe" })
+Assert-Throws "an entry kind that is not implemented is refused" {
+    Get-R1CollectionProfile -Scenario $unknownKind
+} "*planned_lineage.entry.kind must be one of*"
+
+$sessionWithBoot = New-ScenarioObject
+$sessionWithBoot | Add-Member -NotePropertyName "collection" -NotePropertyValue (
+    [pscustomobject]@{ raw_window = "target_boot_to_run_end"; readiness_method = "out_of_band" })
+Assert-Throws "the session entry is not given the boot-to-end raw window" {
+    Get-R1CollectionProfile -Scenario $sessionWithBoot
+} "*collection.raw_window must be run_window for remoting_session*"
+
+foreach ($case in @(
+    @{ name = "left undecided"; rule = [pscustomobject]@{ action_step = $null; source = $null } },
+    @{ name = "replaced by the rule of the entry through WMI"
+       rule = [pscustomobject]@{ action_step = "invoke"; source = "wmi_created_process_create" } })) {
+
+    $sessionOtherRule = New-ScenarioObject
+    $sessionOtherRule | Add-Member -NotePropertyName "reference_rule" -NotePropertyValue $case.rule
+    Assert-Throws ("the reference rule of the session entry cannot be " + $case.name) {
+        Get-R1CollectionProfile -Scenario $sessionOtherRule
+    } "*is not implemented for remoting_session*"
+}
+
+ # --- the launch plan -----------------------------------------------------------
+
+$wmiScenario = New-WmiScenarioObject
+$wmiNormalPlan = Get-R1LaunchPlan -Scenario $wmiScenario -RunType "normal" -WorkDir $TEST_WORK
+$wmiAttackPlan = Get-R1LaunchPlan -Scenario $wmiScenario -RunType "attack" -WorkDir $TEST_WORK
+Assert-True "through WMI the normal run is planned as provider host -> one intermediate -> the final tool" (
+    (@($wmiNormalPlan.expected_lineage) -join ",") -ceq "powershell.exe,wscript.exe,WmiPrvSE.exe")
+Assert-True "through WMI the attack run is planned with the other intermediate and the same root" (
+    (@($wmiAttackPlan.expected_lineage) -join ",") -ceq "powershell.exe,cmd.exe,WmiPrvSE.exe")
+Assert-True "through WMI the intermediate is handed over as one command line without quoting" (
+    [string]$wmiNormalPlan.intermediate.command_line -ceq ("wscript.exe //NoLogo //B " + $TEST_WORK + "\r1_launch.js") -and
+    [string]$wmiAttackPlan.intermediate.command_line -ceq ("cmd.exe /d /c " + $TEST_WORK + "\r1_launch.cmd"))
+Assert-True "through WMI both runs still end in the same final command and write the same files" (
+    $wmiNormalPlan.final.command_line -ceq $wmiAttackPlan.final.command_line -and
+    (@($wmiNormalPlan.files.Keys) -join ",") -ceq (@($wmiAttackPlan.files.Keys) -join ","))
+Assert-R1PlanShortcutFree -Plan $wmiNormalPlan
+Assert-R1PlanShortcutFree -Plan $wmiAttackPlan
+Assert-True "through WMI neither plan names the run type or carries an encoded command option" $true
+
+$sessionPlan = Get-R1LaunchPlan -Scenario (New-ScenarioObject) -RunType "normal" -WorkDir $TEST_WORK
+Assert-True "the plan of the session entry is the one it always was: no command line, the session host as its root" (
+    -not $sessionPlan.intermediate.Contains("command_line") -and
+    (@($sessionPlan.intermediate.Keys) -join ",") -ceq "executable,arguments,launcher_path" -and
+    [string]$sessionPlan.expected_lineage[2] -ceq "wsmprovhost.exe")
+
+Assert-Throws "a root that names the run type is refused before anything is started" {
+    Get-R1LaunchPlan -Scenario (New-WmiScenarioObject -Change {
+            param($s) $s.planned_lineage.entry.root_image = "attack_host.exe" }) -RunType "normal" -WorkDir $TEST_WORK
+} "*planned_lineage.entry.root_image would expose the run type on Target-A*"
+Assert-Throws "an argument that would need quoting in the command line is refused" {
+    Get-R1LaunchPlan -Scenario (New-WmiScenarioObject -Change {
+            param($s) $s.planned_lineage.intermediate.normal.arguments = @("//B", "{launcher}", "two words") }) `
+        -RunType "normal" -WorkDir $TEST_WORK
+} "*would need quoting in a command line*"
+
+$launchWmiText = $R1_REMOTE_STEPS["launch_wmi"].ToString()
+Assert-True "the step that launches through WMI calls the process class and runs no helper program" (
+    $launchWmiText -match 'Invoke-CimMethod -ClassName Win32_Process -MethodName Create' -and
+    $launchWmiText -notmatch 'wmic|Start-Process|cmd\.exe|powershell\.exe|schtasks|sc\.exe')
+Assert-True "the step that launches through WMI hands back what the call returned and judges nothing" (
+    $launchWmiText -match 'return_value\s+= \$returnValue' -and
+    $launchWmiText -match 'process_id\s+= \$processId' -and
+    $launchWmiText -notmatch 'Create returned')
+
+ # The time of the action is the clock of the target, as UTC, on the line right
+ # before the call: nothing is done between the stamp and the call.
+$launchWmiLines = @($launchWmiText -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+$launchCallAt = -1
+for ($index = 0; $index -lt $launchWmiLines.Count; $index++) {
+    if ($launchWmiLines[$index] -like '$created = Invoke-CimMethod*') { $launchCallAt = $index }
+}
+Assert-True "the time of the launch is taken as UTC on the line right before the call" (
+    $launchCallAt -gt 0 -and
+    $launchWmiLines[$launchCallAt - 1] -ceq '$utc = (Get-Date).ToUniversalTime().ToString($stampFormat)' -and
+    $launchWmiText -match '\$stampFormat = "yyyy-MM-ddTHH:mm:ss\.fffZ"')
+Assert-True "the launch step starts the intermediate only: it does not wait for a final tool" (
+    $launchWmiText -notmatch 'ready_file|Start-Sleep|final_pid')
+
+ # The intermediate is started 300 s before it starts the final tool. Both
+ # launchers wait in between by reading one line from a pipe of the target.
+$gateCmd = [string]$wmiNormalPlan.files["r1_launch.cmd"]
+$gateJs = [string]$wmiNormalPlan.files["r1_launch.js"]
+Assert-True "through WMI the batch launcher reads the gate before it starts the final tool, and stops on any other word" (
+    $gateCmd.Contains('set /p R1GATE=<\\.\pipe\r1_gate') -and
+    $gateCmd.Contains('if not "%R1GATE%"=="go" exit /b 1') -and
+    $gateCmd.IndexOf('exit /b 1') -lt $gateCmd.IndexOf([string]$wmiNormalPlan.final.command_line))
+Assert-True "through WMI the script launcher reads the gate before it starts the final tool, and stops on any other word" (
+    $gateJs.Contains('fso.OpenTextFile("\\\\.\\pipe\\r1_gate", 1)') -and
+    $gateJs.Contains('if (word != "go") { WScript.Quit(1); }') -and
+    $gateJs.IndexOf('WScript.Quit(1)') -lt $gateJs.IndexOf('shell.Run('))
+Assert-True "waiting on the gate starts no process and reaches no other machine" (
+    $gateCmd -notmatch 'timeout|ping|waitfor|choice|start |powershell -|\\\\[^.\\]' -and
+    $gateJs -notmatch 'WScript\.Sleep|\.Exec\(|XMLHTTP|Socket')
+Assert-True "through WMI both plans name the gate, and both runs write the same two launchers" (
+    $wmiNormalPlan.intermediate.gate_pipe -ceq "r1_gate" -and $wmiAttackPlan.intermediate.gate_pipe -ceq "r1_gate" -and
+    [string]$wmiAttackPlan.files["r1_launch.cmd"] -ceq $gateCmd -and [string]$wmiAttackPlan.files["r1_launch.js"] -ceq $gateJs)
+Assert-True "the launchers of the session entry do not wait: they are the ones they always were" (
+    @($sessionPlan.files.Keys | Where-Object { $_ -like 'r1_launch*' } |
+        Where-Object { ([string]$sessionPlan.files[$_]) -match 'pipe|R1GATE|OpenTextFile' }).Count -eq 0)
+Assert-True "the step of the session entry is not touched" (
+    $R1_REMOTE_STEPS["launch"].ToString() -match 'Start-Process -FilePath \$Arguments\.executable' -and
+    $R1_REMOTE_STEPS["launch"].ToString() -notmatch 'Cim')
+
+ # --- the reference action of a scenario through WMI -----------------------------
+
+$wmiScenarioPath = Save-Scenario (New-WmiScenarioObject)
+$readinessPath = Save-ReadinessRecord
+$wmiFixture = New-WmiScenarioObject
+$wmiLaunchId = [string]($wmiFixture.runs.attack.actions | Where-Object { $_.step -eq "invoke" }).action_id
+$wmiToolId = [string]($wmiFixture.runs.attack.actions | Where-Object { $_.step -eq "launch" }).action_id
+$plainSessionId = [string]((New-ScenarioObject).runs.attack.actions |
+    Where-Object { $_.step -eq "session_begin" }).action_id
+
+$wmiInputs = Assert-R1RunInputs -RunType "attack" -RunId "RUN-20300101-001" -ScenarioJsonPath $wmiScenarioPath `
+    -DataRoot (New-TempRoot) -WorkDir $TEST_WORK -ObservationSec 780
+Assert-True "through WMI the attack run names its first action, the launch, as the reference action" (
+    $wmiInputs.reference_step -ceq "invoke" -and $wmiInputs.reference_action_id -ceq $wmiLaunchId -and
+    $wmiLaunchId -ceq "A01" -and (@($wmiInputs.step_order) -join ",") -ceq "invoke,launch,connect,run_end" -and
+    (@($wmiInputs.actions | ForEach-Object { [string]$_.action_id + "@" + [string]$_.offset_sec }) -join ",") -ceq
+        "A01@0,A02@300,A03@480,A04@720")
+$wmiNormalInputs = Assert-R1RunInputs -RunType "normal" -RunId "RUN-20300101-001" -ScenarioJsonPath $wmiScenarioPath `
+    -DataRoot (New-TempRoot) -WorkDir $TEST_WORK -ObservationSec 780
+Assert-True "through WMI the normal run names no reference action" ($null -eq $wmiNormalInputs.reference_action_id)
+$sessionInputs = Assert-R1RunInputs -RunType "attack" -RunId "RUN-20300101-001" -ScenarioJsonPath $goodScenario `
+    -DataRoot (New-TempRoot) -WorkDir $TEST_WORK -ObservationSec 660
+Assert-True "the session entry still names its session action" (
+    $sessionInputs.reference_step -ceq "session_begin" -and $sessionInputs.reference_action_id -ceq $plainSessionId -and
+    (@($sessionInputs.step_order) -join ",") -ceq "session_begin,prepare,launch,connect,session_end")
+
+foreach ($case in @(
+    @{ name = "naming its second action as its reference"
+       like = ("*reference_action_id must be the invoke action " + $wmiLaunchId + "*")
+       change = { param($s) $s.runs.attack.reference_action_id = $wmiToolId } },
+    @{ name = "naming no reference action"; like = "*runs.attack.reference_action_id is missing*"
+       change = { param($s) $s.runs.attack.reference_action_id = $null } },
+    @{ name = "without a reference policy version"; like = "*reference_policy_version must be a non-blank string*"
+       change = { param($s) $s.run_metadata.reference_policy_version = $null } })) {
+
+    Reset-Fakes
+    $root = New-TempRoot
+    $brokenPath = Save-Scenario (New-WmiScenarioObject -Change $case.change)
+    Assert-Throws ("an attack run through WMI " + $case.name + " is refused") {
+        Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $brokenPath -DataRoot $root `
+            -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport) -Rehearsal
+    } $case.like
+    Assert-True ("  ... and it opens no session and writes nothing (" + $case.name + ")") (
+        $script:FakeCalls.Count -eq 0 -and @(Get-ChildItem -LiteralPath $root -Recurse -Force).Count -eq 0)
+}
+
+Reset-Fakes
+$wmiAttackDry = Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $wmiScenarioPath -DataRoot (New-TempRoot) -DryRun
+Assert-True "a dry run of the attack run still shows its plan" (
+    $wmiAttackDry.mode -eq "dry_run" -and $wmiAttackDry.plan.intermediate.executable -ceq "cmd.exe" -and
+    [string]$wmiAttackDry.plan.expected_lineage[2] -ceq "WmiPrvSE.exe" -and $script:FakeCalls.Count -eq 0)
+
+ # --- the readiness record ------------------------------------------------------
+
+foreach ($case in @(
+    @{ name = "without a readiness record"; path = ""; like = "*the readiness record is missing*" },
+    @{ name = "whose readiness record does not exist"; path = (Join-Path (New-TempRoot) "absent.json"); like = "*the readiness record is missing*" },
+    @{ name = "whose readiness record is not JSON"; path = (Save-ReadinessRecord -Text "ready"); like = "*the readiness record is not readable JSON*" },
+    @{ name = "whose readiness record says a probe was used"; like = "*must state active_tcp_probe_used as false*"
+       path = (Save-ReadinessRecord -Change { param($r) $r.active_tcp_probe_used = $true }) },
+    @{ name = "whose readiness record states the probe as text"; like = "*must state active_tcp_probe_used as false*"
+       path = (Save-ReadinessRecord -Change { param($r) $r.active_tcp_probe_used = "false" }) },
+    @{ name = "whose readiness record does not state the probe"; like = "*the readiness record states no active_tcp_probe_used*"
+       path = (Save-ReadinessRecord -Change { param($r) $r.Remove("active_tcp_probe_used") }) },
+    @{ name = "whose readiness record is of another method"; like = "*the readiness record states the method*"
+       path = (Save-ReadinessRecord -Change { param($r) $r.method = "active_tcp_from_target" }) },
+    @{ name = "whose readiness record is not ready"; like = "*the run is not started unless it is ready*"
+       path = (Save-ReadinessRecord -Change { param($r) $r.result = "not_ready" }) },
+    @{ name = "whose readiness record has no time"; like = "*readiness checked_at*"
+       path = (Save-ReadinessRecord -Change { param($r) $r.checked_at = "yesterday" }) })) {
+
+    Reset-Fakes
+    $root = New-TempRoot
+    Assert-Throws ("a run through WMI " + $case.name + " is refused") {
+        Invoke-FakeCollectionRun -ScenarioPath $wmiScenarioPath -DataRoot $root `
+            -ReadinessRecordPath $case.path -Transport (New-CollectionFakeTransport) -Rehearsal
+    } $case.like
+    Assert-True ("  ... and it opens no session (" + $case.name + ")") ($script:FakeCalls.Count -eq 0)
+}
+
+Reset-Fakes
+$root = New-TempRoot
+$lateReadiness = Save-ReadinessRecord -Change { param($r) $r.checked_at = "2030-01-01T00:00:30.000Z" }
+Assert-Throws "a readiness record taken after the start of the run is refused" {
+    Invoke-FakeCollectionRun -ScenarioPath $wmiScenarioPath -DataRoot $root `
+        -ReadinessRecordPath $lateReadiness -Transport (New-CollectionFakeTransport) -Rehearsal
+} "*the readiness record was taken at*after the start of the run*"
+Assert-True "  ... and nothing after the pre-run check is done" (
+    ($script:FakeCalls -join ",") -eq "open,invoke:probe,close" -and
+    -not (Test-Path -LiteralPath (Join-Path $root "_rehearsal\operator_trace")))
+
+Reset-Fakes
+Assert-Throws "a run of the session entry takes no readiness record" {
+    Invoke-FakeCollectionRun -ScenarioPath $goodScenario -DataRoot (New-TempRoot) `
+        -ReadinessRecordPath $readinessPath -Transport (New-FakeTransport)
+} "*a readiness record is not an input of this run*"
+Assert-True "  ... and it opens no session" ($script:FakeCalls.Count -eq 0)
+
+ # --- a rehearsal of the normal run through WMI ----------------------------------
+
+Reset-Fakes
+$wmiRoot = New-TempRoot
+$wmiRunId = "RUN-20300101-001"
+$wmiResult = Invoke-FakeCollectionRun -ScenarioPath $wmiScenarioPath -DataRoot $wmiRoot `
+    -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport) -Rehearsal
+$wmiEffectiveRoot = Join-Path $wmiRoot "_rehearsal"
+
+Assert-True "wmi: the rehearsal completes and the lineage matches" (
+    $wmiResult.mode -eq "rehearsal" -and $wmiResult.lineage.status -eq "matched" -and
+    $wmiResult.lineage.final_process_guid -eq $FINAL_GUID)
+Assert-True "wmi: the chain reports no session host, because the session host is not in it" (
+    $null -eq $wmiResult.lineage.session_host_guid)
+Assert-True "wmi: the intermediate is launched through WMI, once, and not by the session host" (
+    ($script:FakeCalls -join ",") -eq ("open,invoke:probe,close,open,invoke:prepare,invoke:open_gate,invoke:launch_wmi," +
+        "invoke:start_tool,invoke:trigger,invoke:end_run,close,open,invoke:export,fetch,invoke:cleanup,close,convert") -and
+    (Get-CallCount "invoke:launch") -eq 0)
+Assert-True "wmi: the step is handed the command line of the plan" (
+    [string]$script:FakeArguments["launch_wmi"].command_line -ceq [string]$wmiNormalPlan.intermediate.command_line -and
+    [string]$script:FakeArguments["launch_wmi"].work_dir -ceq $TEST_WORK)
+Assert-True "wmi: the pre-run check is asked for the boot time of the target" (
+    $script:FakeArguments["probe"].ContainsKey("read_boot_time") -and [bool]$script:FakeArguments["probe"].read_boot_time)
+Assert-True "wmi: the export reaches back to the boot of the target, with the margin it always had" (
+    [string]$script:FakeArguments["export"].start_utc -ceq $WMI_BOOT_UTC -and
+    [int]$script:FakeArguments["export"].margin_ms -eq $EVTX_WINDOW_MARGIN_MS)
+
+$wmiTraceDir = Join-Path $wmiEffectiveRoot ("operator_trace\" + $wmiRunId)
+$wmiProvenancePath = Join-Path $wmiTraceDir "r1_wmi_collection_context.json"
+Assert-True "wmi: the collection provenance is written to the operator trace" (
+    (Test-Path -LiteralPath $wmiProvenancePath) -and [string]$wmiResult.collection_provenance -eq $wmiProvenancePath)
+$wmiProvenance = Get-Content -LiteralPath $wmiProvenancePath -Raw -Encoding UTF8 | ConvertFrom-Json
+$wmiProvenanceText = Get-Content -LiteralPath $wmiProvenancePath -Raw -Encoding UTF8
+
+Assert-True "wmi: the raw window starts at the boot and says why" (
+    $wmiProvenance.raw_window -ceq "target_boot_to_run_end" -and
+    $wmiProvenance.raw_collection_start -ceq $WMI_BOOT_UTC -and
+    $wmiProvenance.collection_window_extension_reason -ceq "lineage_root_created_before_run")
+Assert-True "wmi: the observation starts at the start of the run, not at the start of the export" (
+    $wmiProvenance.observation_start -ceq $RUN_START_UTC -and
+    $wmiProvenance.observation_start -cne $wmiProvenance.raw_collection_start)
+Assert-True "wmi: records are placed by EventData.UtcTime, and context only restores a lineage" (
+    $wmiProvenance.time_field -ceq "EventData.UtcTime" -and
+    $wmiProvenance.context_rule -ceq "EventData.UtcTime < observation_start" -and
+    $wmiProvenance.context_use -ceq "lineage_restoration_only")
+Assert-True "wmi: everything before the run is context, the margin included" (
+    [int]$wmiProvenance.record_counts.total -eq 7 -and [int]$wmiProvenance.record_counts.context -eq 3 -and
+    [int]$wmiProvenance.record_counts.observation -eq 4)
+Assert-True "wmi: a normal run has no evaluation window, whatever its raw window is" (
+    $null -eq $wmiProvenance.evaluation_window_start -and $null -eq $wmiProvenance.evaluation_window_end -and
+    [int]$wmiProvenance.evaluation_horizon_sec -eq 600 -and
+    $wmiProvenanceText -match '"evaluation_window_start":\s+null')
+
+$wmiLineage = $wmiProvenance.lineage
+Assert-True "wmi: the lineage is three records linked by ProcessGuid, the root restored from context" (
+    (@($wmiLineage.records | ForEach-Object { $_.role + ":" + $_.record_id + ":" + $_.zone }) -join ",") -ceq
+        "final_tool:3:observation,intermediate:2:observation,root:10:context" -and
+    (@($wmiLineage.linked_by) -join ",") -ceq "ProcessGuid,ParentProcessGuid")
+Assert-True "wmi: the provenance names the context record and the record of the run that refers to it" (
+    (@($wmiLineage.context_record_ids) -join ",") -ceq "10" -and @($wmiLineage.references_to_context).Count -eq 1 -and
+    $wmiLineage.references_to_context[0].record_id -ceq "2" -and
+    $wmiLineage.references_to_context[0].context_record_id -ceq "10" -and
+    $wmiLineage.references_to_context[0].parent_process_guid -ceq $WMI_ROOT_GUID -and
+    $wmiProvenance.evidence_link_key -ceq "RecordId")
+Assert-True "wmi: the one connection of the run is the final tool's, made in the run" (
+    $wmiLineage.connection.record_id -ceq "4" -and $wmiLineage.connection.zone -ceq "observation" -and
+    $wmiLineage.connection.process_guid -ceq $FINAL_GUID)
+Assert-True "wmi: record ids are written as text and lists stay lists" (
+    $wmiProvenanceText -match '"record_id":\s+"10"' -and $wmiProvenanceText -match '"context_record_ids":\s+\[' -and
+    $wmiProvenanceText -match '"references_to_context":\s+\[')
+
+$readinessCopy = Join-Path $wmiTraceDir "r1_readiness_record.json"
+Assert-True "wmi: the provenance carries the readiness record: out of band, ready, no probe" (
+    $wmiProvenance.readiness.method -ceq "out_of_band" -and $wmiProvenance.readiness.result -ceq "ready" -and
+    $wmiProvenance.readiness.active_tcp_probe_used -is [bool] -and -not $wmiProvenance.readiness.active_tcp_probe_used -and
+    $wmiProvenance.readiness.checked_at -ceq "2029-12-31T23:59:20.000Z" -and
+    $wmiProvenanceText -match '"active_tcp_probe_used":\s+false')
+Assert-True "wmi: the readiness record is kept next to the provenance, byte for byte" (
+    (Test-Path -LiteralPath $readinessCopy) -and
+    (Get-FileSha256 $readinessCopy) -ceq (Get-FileSha256 $readinessPath) -and
+    $wmiProvenance.readiness.record_sha256 -ceq (Get-FileSha256 $readinessPath))
+$wmiTrace = Get-Content -LiteralPath (Join-Path $wmiTraceDir "r1_run_trace.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True "wmi: the provenance is tied to the scenario, the manifest and the Sysmon configuration of the run" (
+    $wmiProvenance.scenario_sha256 -ceq $wmiTrace.scenario_sha256 -and
+    $wmiProvenance.manifest_sha256 -ceq (Get-FileSha256 (Join-Path $wmiEffectiveRoot ("raw\" + $wmiRunId + "\manifest.json"))) -and
+    $wmiProvenance.sysmon_config_sha256 -ceq $TEST_CONFIG_SHA)
+$wmiManifestText = Get-Content -LiteralPath (Join-Path $wmiEffectiveRoot ("raw\" + $wmiRunId + "\manifest.json")) -Raw -Encoding UTF8
+Assert-True "wmi: the provenance and the readiness record are in no Manifest" (
+    $wmiManifestText -notmatch 'r1_wmi_collection_context' -and $wmiManifestText -notmatch 'r1_readiness_record')
+$wmiMetadataText = Get-Content -LiteralPath (Join-Path $wmiEffectiveRoot ("ground_truth\" + $wmiRunId + "\run_metadata.json")) -Raw -Encoding UTF8
+Assert-True "wmi: the normal run records no reference, and the reference policy version of its scenario" (
+    $wmiMetadataText -match '"reference_time":\s+null' -and $wmiMetadataText -match '"reference_action_id":\s+null' -and
+    $wmiMetadataText -match '"reference_source_event_id":\s+null' -and
+    $wmiMetadataText -match '"reference_policy_version":\s+"synthetic-reference-policy"')
+
+ # --- the provenance of what the raw export holds --------------------------------
+
+function Get-TestProvenance {
+    <# The provenance and its problems for a run through WMI that left the given records. #>
+    param([object[]]$Records, [string]$ReferenceTime = "", [AllowNull()]$Approval = @{ target = $TEST_TARGET; port = $TEST_PORT; protocol = "TCP" })
+
+    $start = [datetime]::new(2030, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+    return (Get-R1CollectionProvenance -RunId "RUN-20300101-001" -FamilyId "wmi_management" `
+        -CollectionProfile $wmiProfile -Records (ConvertTo-ParsedRecords $Records) -ComputerName $TEST_HOST `
+        -RawCollectionStart $start.AddMinutes(-10) -StartTime $start -EndTime $start.AddSeconds(660) `
+        -ReferenceTime $ReferenceTime -EvaluationHorizonSec 600 -FinalProcessGuid $FINAL_GUID `
+        -Approval $Approval -Readiness $null)
+}
+
+$intact = Get-TestProvenance (New-TimedRunRecords -FromBoot)
+Assert-True "provenance: an intact run through WMI has no problem" (@($intact.problems).Count -eq 0)
+
+$atStart = Get-TestProvenance (New-TimedRunRecords -FromBoot -IntermediateUtcTime "2030-01-01 00:00:00.000")
+Assert-True "provenance: a record at the very start of the run belongs to the run" (
+    @($atStart.problems).Count -eq 0 -and $atStart.provenance.lineage.records[1].zone -ceq "observation")
+$justBefore = Get-TestProvenance (New-TimedRunRecords -FromBoot -IntermediateUtcTime "2029-12-31 23:59:59.999")
+Assert-True "provenance: a millisecond earlier it is context, and an intermediate older than the run fails" (
+    $justBefore.provenance.lineage.records[1].zone -ceq "context" -and
+    (@($justBefore.problems) -join "|") -like "*the intermediate of the lineage (RecordId 2) was created before the start of the run*")
+
+$unreadable = New-TimedRunRecords -FromBoot
+$unreadable[2].EventData.UtcTime = "2029-12-31T23:59:55.000Z"
+Assert-Throws "provenance: a record whose UtcTime cannot be read stops the run, TimeCreated or not" {
+    Get-TestProvenance $unreadable
+} "*carries no readable EventData.UtcTime*no other field is read in its place*"
+$untimed = New-TimedRunRecords -FromBoot
+$untimed[4].EventData.Remove("UtcTime")
+Assert-Throws "provenance: a record without a UtcTime stops the run" {
+    Get-TestProvenance $untimed
+} "*carries no readable EventData.UtcTime*"
+
+$withoutRoot = @(New-TimedRunRecords -FromBoot | Where-Object { $_.RecordId -notin @(5, 10) })
+($withoutRoot | Where-Object { $_.RecordId -eq 2 }).EventData["ParentImage"] = "C:\synthetic\WmiPrvSE.exe"
+$truncated = Get-TestProvenance $withoutRoot
+Assert-True "provenance: without the record of the root the lineage is two records, whatever ParentImage says" (
+    (@($truncated.problems) -join "|") -like "*the lineage of the final tool is 2 process-create record(s) linked by ProcessGuid, not 3*" -and
+    @($truncated.provenance.lineage.records).Count -eq 2 -and @($truncated.provenance.lineage.context_record_ids).Count -eq 0)
+
+$probed = Get-TestProvenance (@(New-TimedRunRecords -FromBoot) + @(New-DestinationConnection 12 "2029-12-31 23:59:30.000"))
+Assert-True "provenance: a connection to the destination before the run fails it" (
+    (@($probed.problems) -join "|") -like "*connected to the internal destination before the start of the run (RecordId 12)*")
+$noConnection = Get-TestProvenance (New-TimedRunRecords -FromBoot -NoConnection)
+Assert-True "provenance: a run without the connection of the scenario fails" (
+    (@($noConnection.problems) -join "|") -like "*0 connection(s) of the target reach the internal destination in the run*" -and
+    $null -eq $noConnection.provenance.lineage.connection)
+$earlyOnly = Get-TestProvenance (@(New-TimedRunRecords -FromBoot -NoConnection) + @(New-DestinationConnection 12 "2029-12-31 23:59:30.000" $FINAL_GUID))
+Assert-True "provenance: an earlier connection does not stand in for the missing one" (
+    (@($earlyOnly.problems) -join "|") -like "*before the start of the run*" -and
+    (@($earlyOnly.problems) -join "|") -like "*0 connection(s) of the target reach the internal destination in the run*")
+$twoConnections = Get-TestProvenance (@(New-TimedRunRecords -FromBoot) + @(New-DestinationConnection 13 "2030-01-01 00:00:00.700"))
+Assert-True "provenance: two connections to the destination in the run are ambiguous" (
+    (@($twoConnections.problems) -join "|") -like "*2 connection(s) of the target reach the internal destination in the run*")
+
+$duplicateRoot = @(New-TimedRunRecords -FromBoot) + @(New-TimedRecord 14 1 "2029-12-31 23:50:23.000" ([ordered]@{
+    ProcessGuid = $WMI_ROOT_GUID; ProcessId = "901"; Image = "C:\synthetic\WmiPrvSE.exe" }))
+Assert-True "provenance: a ProcessGuid recorded twice is reported, not chosen between" (
+    (@((Get-TestProvenance $duplicateRoot).problems) -join "|") -like ("*duplicate EID 1 for ProcessGuid " + $WMI_ROOT_GUID + "*"))
+
+ # A reference time is handed to the provenance here; how the record it comes
+ # from is found is checked further down, on whole runs.
+$withReference = Get-TestProvenance (New-TimedRunRecords -FromBoot -IntermediateImage "cmd.exe") -ReferenceTime "2030-01-01T00:00:00.200Z"
+Assert-True "provenance: with a reference the evaluation ends at the reference plus the horizon, not at the end of the export" (
+    @($withReference.problems).Count -eq 0 -and
+    $withReference.provenance.evaluation_window_start -ceq "2030-01-01T00:00:00.200Z" -and
+    $withReference.provenance.evaluation_window_end -ceq "2030-01-01T00:10:00.200Z" -and
+    $withReference.provenance.evaluation_window_end -cne $withReference.provenance.raw_collection_end -and
+    [string]$withReference.provenance.lineage.records[1].image -like "*cmd.exe")
+$contextReference = Get-TestProvenance (New-TimedRunRecords -FromBoot) -ReferenceTime "2029-12-31T23:50:22.000Z"
+Assert-True "provenance: a context record cannot be the reference of an evaluation" (
+    (@($contextReference.problems) -join "|") -like "*a context record cannot be the reference of an evaluation*")
+
+ # --- a declared collection on the session entry, in a collection run -----------
+ # The session entry may declare its collection too. Its raw window is the run
+ # window, so the only context is the margin before the start.
+
+$declaredScenario = New-ScenarioObject
+$declaredScenario | Add-Member -NotePropertyName "collection" -NotePropertyValue (
+    [pscustomobject]@{ raw_window = "run_window"; readiness_method = $null })
+$declaredPath = Save-Scenario $declaredScenario
+
+Reset-Fakes
+$declaredRoot = New-TempRoot
+$declaredResult = Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $declaredPath -DataRoot $declaredRoot `
+    -Transport (New-CollectionFakeTransport)
+$declaredProvenance = Get-Content -LiteralPath $declaredResult.collection_provenance -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True "declared: a collection run of the session entry completes and writes its provenance" (
+    $declaredResult.mode -eq "collection" -and $declaredResult.lineage.status -eq "matched" -and
+    (Get-CallCount "invoke:launch") -eq 1 -and (Get-CallCount "invoke:launch_wmi") -eq 0)
+Assert-True "declared: the run window is recorded as it always was exported, the margin before the start" (
+    $declaredProvenance.raw_window -ceq "run_window" -and
+    $declaredProvenance.raw_collection_start -ceq "2029-12-31T23:59:50.000Z" -and
+    $null -eq $declaredProvenance.collection_window_extension_reason -and
+    [string]$script:FakeArguments["export"].start_utc -ceq $RUN_START_UTC -and
+    -not $script:FakeArguments["probe"].ContainsKey("read_boot_time"))
+Assert-True "declared: the record of the margin is context, and the root is in the run" (
+    [int]$declaredProvenance.record_counts.context -eq 1 -and [int]$declaredProvenance.record_counts.total -eq 5 -and
+    @($declaredProvenance.lineage.context_record_ids).Count -eq 0 -and
+    $declaredProvenance.lineage.records[2].zone -ceq "observation")
+Assert-True "declared: the evaluation window of the attack run is its reference plus the horizon" (
+    $declaredProvenance.evaluation_window_start -ceq $declaredResult.reference.reference_time -and
+    $declaredProvenance.evaluation_window_end -ceq "2030-01-01T00:10:00.000Z" -and
+    $null -eq $declaredProvenance.readiness)
+
+foreach ($case in @(
+    @{ name = "a connection to the destination inside the margin"; like = "*collection provenance check failed*before the start of the run*"
+       options = @{ ExtraRecords = @(New-DestinationConnection 12 "2029-12-31 23:59:58.000") } },
+    @{ name = "a second connection to the destination in the run"; like = "*collection provenance check failed*2 connection(s)*"
+       options = @{ ExtraRecords = @(New-DestinationConnection 13 "2030-01-01 00:00:00.700") } },
+    @{ name = "telemetry without UtcTime"; like = "*carries no readable EventData.UtcTime*"
+       options = @{ Records = (New-SyntheticRecords) } })) {
+
+    Reset-Fakes $case.options
+    $root = New-TempRoot
+    Assert-Throws ("declared: a collection run with " + $case.name + " fails") {
+        Invoke-FakeCollectionRun -ScenarioPath $declaredPath -DataRoot $root -Transport (New-CollectionFakeTransport)
+    } $case.like
+    Assert-True ("  ... and it leaves no execution_record, run_metadata, manifest or provenance (" + $case.name + ")") (
+        (Test-SuccessArtifactsAbsent -Root $root -RunId "RUN-20300101-001") -and
+        -not (Test-Path -LiteralPath (Join-Path $root "operator_trace\RUN-20300101-001\r1_wmi_collection_context.json")))
+}
+
+ # --- the session entry without a declared collection is run as before -----------
+
+Reset-Fakes
+$plainRoot = New-TempRoot
+$plainResult = Invoke-FakeRun -RunType "attack" -ScenarioPath $goodScenario -DataRoot $plainRoot -Transport (New-FakeTransport)
+Assert-True "plain: a run that declares no collection writes no provenance and no readiness record" (
+    -not $plainResult.Contains("collection_provenance") -and
+    (@(Get-ChildItem -LiteralPath (Join-Path $plainRoot "operator_trace\RUN-20300101-001") -Force |
+            ForEach-Object { $_.Name } | Sort-Object) -join ",") -ceq "r1_run_trace.json,scenario.json")
+Assert-True "plain: its probe is not asked for the boot time and its export starts at the start of the run" (
+    (@($script:FakeArguments["probe"].Keys | Sort-Object) -join ",") -ceq "log_name,sysmon_binary,sysmon_config_path" -and
+    [string]$script:FakeArguments["export"].start_utc -ceq $RUN_START_UTC)
+Assert-True "plain: it is launched by the session host, with the arguments of the plan" (
+    (Get-CallCount "invoke:launch") -eq 1 -and (Get-CallCount "invoke:launch_wmi") -eq 0 -and
+    (@($script:FakeArguments["launch"].Keys | Sort-Object) -join ",") -ceq "arguments,channel_dir,executable,ready_file,timeout_sec,work_dir")
+
+ # ---------------------------------------------------------------------------
+ # 11. What the launch through WMI returned
+ #
+ # The step on the target hands back what the call returned. Whether the launch
+ # action succeeded is decided by Get-R1WmiCreateResult, on the Controller.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== what the launch through WMI returned ===" -ForegroundColor Cyan
+
+ # --- fixture -------------------------------------------------------------------
+
+function New-WmiAnswer {
+    <# What the launch step hands back for a call that started a process. -Set replaces values, -Remove drops keys. #>
+    param([hashtable]$Set = @{}, [string[]]$Remove = @())
+
+    $answer = @{
+        utc = "2030-01-01T00:05:00.000Z"; completed_utc = "2030-01-01T00:05:01.000Z"
+        return_value = [uint32]0; process_id = [uint32]4100 }
+    foreach ($name in $Set.Keys) { $answer[$name] = $Set[$name] }
+    foreach ($name in $Remove) { $answer.Remove($name) }
+    return $answer
+}
+
+function New-ToolAnswer {
+    <# What the step that starts the final tool hands back. -Set replaces values, -Remove drops keys. #>
+    param([hashtable]$Set = @{}, [string[]]$Remove = @())
+
+    $answer = @{ utc = "2030-01-01T00:05:00.000Z"; completed_utc = "2030-01-01T00:05:01.000Z"; final_pid = 4200 }
+    foreach ($name in $Set.Keys) { $answer[$name] = $Set[$name] }
+    foreach ($name in $Remove) { $answer.Remove($name) }
+    return $answer
+}
+
+ # --- failure cases: the return value ---------------------------------------------
+
+foreach ($case in @(
+    @{ name = "a return value of 2"; set = @{ return_value = [uint32]2 } },
+    @{ name = "a return value of 8"; set = @{ return_value = [uint32]8 } },
+    @{ name = "a return value of 21"; set = @{ return_value = [uint32]21 } },
+    @{ name = "a negative return value"; set = @{ return_value = -1 } },
+    @{ name = "a return value of null"; set = @{ return_value = $null } },
+    @{ name = "a return value as text"; set = @{ return_value = "0" } },
+    @{ name = "a return value as a boolean"; set = @{ return_value = $false } },
+    @{ name = "a return value with a fraction"; set = @{ return_value = 0.0 } })) {
+
+    Assert-Throws ("a launch with " + $case.name + " did not succeed") {
+        Get-R1WmiCreateResult -Created (New-WmiAnswer -Set $case.set)
+    } "*the launch action succeeded only when it returns 0*"
+}
+Assert-Throws "a launch that states no return value did not succeed" {
+    Get-R1WmiCreateResult -Created (New-WmiAnswer -Remove @("return_value"))
+} "*the launch action succeeded only when it returns 0*"
+Assert-Throws "a launch step that answered nothing did not succeed" {
+    Get-R1WmiCreateResult -Created $null
+} "*the launch action succeeded only when it returns 0*"
+
+ # --- failure cases: the process id -------------------------------------------------
+
+foreach ($case in @(
+    @{ name = "a process id of null"; set = @{ process_id = $null } },
+    @{ name = "a process id of 0"; set = @{ process_id = [uint32]0 } },
+    @{ name = "a negative process id"; set = @{ process_id = -4100 } },
+    @{ name = "a process id as text"; set = @{ process_id = "4100" } },
+    @{ name = "a process id as a boolean"; set = @{ process_id = $true } },
+    @{ name = "a process id with a fraction"; set = @{ process_id = 4100.5 } },
+    @{ name = "a process id larger than a process id can be"; set = @{ process_id = [uint32]::MaxValue } })) {
+
+    Assert-Throws ("a launch that returned " + $case.name + " did not succeed") {
+        Get-R1WmiCreateResult -Created (New-WmiAnswer -Set $case.set)
+    } "*returned no usable ProcessId*"
+}
+Assert-Throws "a launch that states no process id did not succeed" {
+    Get-R1WmiCreateResult -Created (New-WmiAnswer -Remove @("process_id"))
+} "*returned no usable ProcessId*"
+Assert-Throws "the return value is judged first: a process id next to another return value changes nothing" {
+    Get-R1WmiCreateResult -Created (New-WmiAnswer -Set @{ return_value = [uint32]9; process_id = [uint32]4100 })
+} "*the launch action succeeded only when it returns 0*"
+
+ # The final tool is not started by the launch: it is started by the second
+ # action, and what that step returned is judged the same way.
+foreach ($case in @(
+    @{ name = "null"; set = @{ final_pid = $null } },
+    @{ name = "0"; set = @{ final_pid = 0 } },
+    @{ name = "a negative number"; set = @{ final_pid = -4200 } },
+    @{ name = "text"; set = @{ final_pid = "4200" } },
+    @{ name = "a boolean"; set = @{ final_pid = $true } })) {
+
+    Assert-Throws ("a tool start whose final tool reported the process id " + $case.name + " did not succeed") {
+        Get-R1ToolStartResult -Started (New-ToolAnswer -Set $case.set)
+    } "*the final tool reported no usable process id*"
+}
+Assert-Throws "a tool start that states no process id did not succeed" {
+    Get-R1ToolStartResult -Started (New-ToolAnswer -Remove @("final_pid"))
+} "*the final tool reported no usable process id*"
+foreach ($notUtc in @("2030-01-01T00:05:00.000", "2030-01-01T09:05:00.000+09:00", "2030-01-01 00:05:00.000", $null)) {
+    Assert-Throws ("a tool start whose stamp is not UTC is refused: '" + [string]$notUtc + "'") {
+        Get-R1ToolStartResult -Started (New-ToolAnswer -Set @{ utc = $notUtc })
+    } "*launch utc must be ISO 8601 UTC ending in 'Z'*"
+}
+Assert-Throws "a final tool that was ready before it was told to start is refused" {
+    Get-R1ToolStartResult -Started (New-ToolAnswer -Set @{ completed_utc = "2030-01-01T00:04:59.000Z" })
+} "*a clock moved during the run*"
+$toolStarted = Get-R1ToolStartResult -Started (New-ToolAnswer)
+Assert-True "a tool start that reported a process id succeeded, and its time is kept as UTC" (
+    $toolStarted.final_pid -eq 4200 -and $toolStarted.final_pid -is [int] -and
+    $toolStarted.action_utc -ceq "2030-01-01T00:05:00.000Z" -and
+    $toolStarted.action_time.Kind -eq [System.DateTimeKind]::Utc -and
+    $toolStarted.completed_time.Kind -eq [System.DateTimeKind]::Utc)
+
+ # --- failure cases: the time of the call ---------------------------------------------
+ # The stamp taken right before the call has to be UTC and say so. A time
+ # without the designator, with an offset or in another form is not read.
+
+foreach ($case in @(
+    @{ name = "without the UTC designator"; value = "2030-01-01T00:05:00.000" },
+    @{ name = "with an offset"; value = "2030-01-01T09:05:00.000+09:00" },
+    @{ name = "in the form Sysmon writes"; value = "2030-01-01 00:05:00.000" },
+    @{ name = "a local time as text"; value = "01/01/2030 09:05:00" },
+    @{ name = "empty"; value = "" },
+    @{ name = "null"; value = $null })) {
+
+    Assert-Throws ("a launch whose stamp is " + $case.name + " is refused") {
+        Get-R1WmiCreateResult -Created (New-WmiAnswer -Set @{ utc = $case.value })
+    } "*invoke utc must be ISO 8601 UTC ending in 'Z'*"
+    Assert-Throws ("a launch whose end stamp is " + $case.name + " is refused") {
+        Get-R1WmiCreateResult -Created (New-WmiAnswer -Set @{ completed_utc = $case.value })
+    } "*invoke completed_utc must be ISO 8601 UTC ending in 'Z'*"
+}
+Assert-Throws "a launch that was over before its call is refused" {
+    Get-R1WmiCreateResult -Created (New-WmiAnswer -Set @{ completed_utc = "2030-01-01T00:04:59.999Z" })
+} "*a clock moved during the run*"
+
+ # --- success cases ---------------------------------------------------------------------
+
+$wmiCreated = Get-R1WmiCreateResult -Created (New-WmiAnswer)
+Assert-True "a call that returned 0 and a process id succeeded" (
+    $wmiCreated.return_value -eq 0 -and $wmiCreated.process_id -eq 4100 -and $wmiCreated.process_id -is [int] -and
+    -not $wmiCreated.Contains("final_pid"))
+Assert-True "the time of the call is kept as a UTC stamp and as a UTC time" (
+    $wmiCreated.action_utc -ceq "2030-01-01T00:05:00.000Z" -and
+    $wmiCreated.action_time.Kind -eq [System.DateTimeKind]::Utc -and
+    $wmiCreated.action_time -eq [datetime]::new(2030, 1, 1, 0, 5, 0, [System.DateTimeKind]::Utc))
+Assert-True "the end of the action is kept the same way" (
+    $wmiCreated.completed_utc -ceq "2030-01-01T00:05:01.000Z" -and
+    $wmiCreated.completed_time.Kind -eq [System.DateTimeKind]::Utc -and
+    $wmiCreated.completed_time -gt $wmiCreated.action_time)
+
+$wmiReadBack = Get-R1WmiCreateResult -Created ((New-WmiAnswer | ConvertTo-Json) | ConvertFrom-Json)
+Assert-True "the same answer read back from JSON succeeds too" (
+    $wmiReadBack.return_value -eq 0 -and $wmiReadBack.process_id -eq 4100 -and
+    $wmiReadBack.action_utc -ceq $wmiCreated.action_utc)
+$wmiSameInstant = Get-R1WmiCreateResult -Created (New-WmiAnswer -Set @{ completed_utc = "2030-01-01T00:05:00.000Z" })
+Assert-True "an action that was over in the millisecond of its call is in order" (
+    $wmiSameInstant.completed_time -eq $wmiSameInstant.action_time)
+
+ # ---------------------------------------------------------------------------
+ # 12. A run through WMI that fails
+ #
+ # It leaves a record of the failure in its operator trace and none of the
+ # files a completed run ends with.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== a run through WMI that fails ===" -ForegroundColor Cyan
+
+ # --- fixture -------------------------------------------------------------------
+
+ # The length of a run through WMI, as its scenario states it.
+$WMI_TEST_OBSERVATION_SEC = 780
+$WMI_CALLS_UNTIL_LAUNCH = "open,invoke:probe,close,open,invoke:prepare,invoke:open_gate,invoke:launch_wmi,close"
+
+function Assert-WmiFailedRun {
+    <#
+        Start a run through WMI that has to fail and check what it leaves: the
+        error, no file of a completed run, an empty Ground Truth directory, and
+        one failure record that says where and why the run stopped.
+
+        Returns the failure record, or $null when there is none.
+    #>
+    param([string]$Name, [hashtable]$Options, [string]$MessageLike, [string]$Stage,
+        [string]$RunType = "attack", [string]$ExpectedCalls, [switch]$Rehearsal)
+
+    Reset-Fakes $Options
+    $root = New-TempRoot
+    $runId = "RUN-20300101-020"
+    Assert-Throws $Name {
+        Invoke-FakeCollectionRun -RunType $RunType -RunId $runId -ScenarioPath $wmiScenarioPath -DataRoot $root `
+            -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport) `
+            -ObservationSec $WMI_TEST_OBSERVATION_SEC -Rehearsal:$Rehearsal
+    } $MessageLike
+
+    $effective = $root
+    if ($Rehearsal) { $effective = Join-Path $root "_rehearsal" }
+    $trace = Join-Path $effective ("operator_trace\" + $runId)
+    Assert-True ($Name + " - no execution_record, run_metadata, manifest or provenance") (
+        (Test-SuccessArtifactsAbsent -Root $effective -RunId $runId) -and
+        -not (Test-Path -LiteralPath (Join-Path $trace "r1_wmi_collection_context.json")) -and
+        @(Get-ChildItem -LiteralPath (Join-Path $effective ("ground_truth\" + $runId)) -Force).Count -eq 0)
+    Assert-True ($Name + " - the trace holds the scenario, the trace record and the failure record only") (
+        (@(Get-ChildItem -LiteralPath $trace -Force | ForEach-Object { $_.Name } | Sort-Object) -join ",") -ceq
+            "r1_run_failure.json,r1_run_trace.json,scenario.json")
+
+    $failure = $null
+    $failurePath = Join-Path $trace "r1_run_failure.json"
+    if (Test-Path -LiteralPath $failurePath) {
+        $failure = Get-Content -LiteralPath $failurePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    Assert-True ($Name + " - the failure record says where and why the run stopped") (
+        $null -ne $failure -and $failure.run_id -ceq $runId -and $failure.run_type -ceq $RunType -and
+        $failure.entry_kind -ceq "wmi_process" -and $failure.run_completed -is [bool] -and
+        -not $failure.run_completed -and $failure.stage -ceq $Stage -and ([string]$failure.reason -like $MessageLike))
+    Assert-True ($Name + " - the failure record states that no file of a completed run exists") (
+        $null -ne $failure -and
+        @($failure.completed_run_files.PSObject.Properties | Where-Object { $_.Value -isnot [bool] -or $_.Value }).Count -eq 0 -and
+        @($failure.completed_run_files.PSObject.Properties).Count -eq 4)
+    Assert-True ($Name + " - every opened session is closed") ((Get-CallCount "open") -eq (Get-CallCount "close"))
+    if ($ExpectedCalls) {
+        Assert-True ($Name + " - the run stopped where it failed") (($script:FakeCalls -join ",") -eq $ExpectedCalls)
+    }
+    return $failure
+}
+
+ # --- failure cases: the launch -----------------------------------------------------
+
+$failed = Assert-WmiFailedRun "a launch that returned 8 stops the run" @{ WmiReturnValue = [uint32]8 } `
+    "*the launch action succeeded only when it returns 0*" "action:invoke" -ExpectedCalls $WMI_CALLS_UNTIL_LAUNCH
+Assert-True "  ... and the record keeps what the call returned" (
+    $null -ne $failed -and [int]$failed.launch_returned.return_value -eq 8 -and
+    [string]$failed.launch_returned.action_utc -ceq "2030-01-01T00:00:00.000Z" -and $null -eq $failed.reference)
+
+foreach ($case in @(
+    @{ name = "no process id"; options = @{ WmiProcessId = $null } },
+    @{ name = "the process id 0"; options = @{ WmiProcessId = [uint32]0 } },
+    @{ name = "a negative process id"; options = @{ WmiProcessId = -5 } },
+    @{ name = "an answer without a process id"; options = @{ WmiOmit = @("process_id") } })) {
+
+    Assert-WmiFailedRun ("a launch that returned " + $case.name + " stops the run") $case.options `
+        "*returned no usable ProcessId*" "action:invoke" -ExpectedCalls $WMI_CALLS_UNTIL_LAUNCH | Out-Null
+}
+
+Assert-WmiFailedRun "a launch whose stamp does not say UTC stops the run" `
+    @{ WmiActionUtc = "2030-01-01T00:05:00.000" } "*invoke utc must be ISO 8601 UTC ending in 'Z'*" "action:invoke" `
+    -ExpectedCalls $WMI_CALLS_UNTIL_LAUNCH | Out-Null
+
+$failed = Assert-WmiFailedRun "a launch step that fails on the target stops the run" @{ FailStep = "launch_wmi" } `
+    "*synthetic failure in step launch_wmi*" "action:invoke" -ExpectedCalls $WMI_CALLS_UNTIL_LAUNCH
+Assert-True "  ... and nothing is recorded as returned" ($null -ne $failed -and $null -eq $failed.launch_returned)
+
+Assert-WmiFailedRun "the launch of a normal run is held to the same rule" @{ WmiReturnValue = [uint32]2 } `
+    "*the launch action succeeded only when it returns 0*" "action:invoke" -RunType "normal" `
+    -ExpectedCalls $WMI_CALLS_UNTIL_LAUNCH | Out-Null
+
+Assert-WmiFailedRun "a rehearsal does not go on after a failed launch either" @{ WmiProcessId = [uint32]0 } `
+    "*returned no usable ProcessId*" "action:invoke" -Rehearsal | Out-Null
+
+ # ---------------------------------------------------------------------------
+ # 13. The reference and the connection of a whole run through WMI
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== the reference and the connection of a run through WMI ===" -ForegroundColor Cyan
+
+ # --- fixture -------------------------------------------------------------------
+ # In a collection run the launch is the first thing the run does, the final
+ # tool is started 300 s later and connects at 480 s.
+
+function New-WmiRunRecords {
+    <# The raw export of a collection run through WMI of the attack run type. #>
+    param([string]$IntermediateUtcTime = "", [switch]$NoConnection)
+    return (New-TimedRunRecords -FromBoot -IntermediateImage "cmd.exe" -ToolOffsetSec 300 -ConnectOffsetSec 480 `
+        -IntermediateUtcTime $IntermediateUtcTime -NoConnection:$NoConnection)
+}
+
+function New-SameProgramRecord {
+    <# One more process-create record of the planned program, a child of the provider host unless -ParentGuid says otherwise. #>
+    param([int]$RecordId, [string]$UtcTime, [string]$ParentGuid = $WMI_ROOT_GUID)
+    return (New-TimedRecord $RecordId 1 $UtcTime ([ordered]@{
+        ProcessGuid = "{00000000-0000-0000-0000-000000000a00}"; ProcessId = "5555"
+        Image = "C:\synthetic\cmd.exe"; ParentProcessGuid = $ParentGuid; ParentProcessId = "900" }))
+}
+
+ # --- failure cases: the reference ----------------------------------------------------
+
+$failed = Assert-WmiFailedRun "a run whose intermediate was recorded before the call has no created process" `
+    @{ Records = (New-WmiRunRecords -IntermediateUtcTime "2029-12-31 23:59:59.900") } `
+    "*created process undetermined: no EID 1 of cmd.exe whose parent is a context WmiPrvSE.exe*" "created_process"
+Assert-True "  ... and the record says that no candidate was found" (
+    $null -ne $failed -and $failed.reference.status -ceq "undetermined" -and
+    @($failed.reference.candidate_record_ids).Count -eq 0 -and [int]$failed.launch_returned.process_id -eq 4100)
+
+Assert-WmiFailedRun "a run whose intermediate was recorded after the window of the policy has no created process" `
+    @{ Records = (New-WmiRunRecords -IntermediateUtcTime "2030-01-01 00:00:02.001") } `
+    "*created process undetermined: no EID 1 of cmd.exe whose parent is a context WmiPrvSE.exe*" `
+    "created_process" | Out-Null
+
+$failed = Assert-WmiFailedRun "a run with two records of the planned program in the window has no created process" `
+    @{ ExtraRecords = @((New-SameProgramRecord 20 "2030-01-01 00:00:00.500")) } `
+    "*created process undetermined: 2 EID 1 records of cmd.exe whose parent is a context WmiPrvSE.exe*nothing chooses between them*" `
+    "created_process"
+Assert-True "  ... and the record names both candidates" (
+    $null -ne $failed -and (@($failed.reference.candidate_record_ids) -join ",") -ceq "2,20")
+
+Assert-WmiFailedRun "a run whose intermediate has no readable UtcTime has no created process" `
+    @{ Records = (New-WmiRunRecords -IntermediateUtcTime "2030-01-01T00:00:00.200Z") } `
+    "*created process undetermined:*has no readable EventData.UtcTime*TimeCreated is not used in its place*" `
+    "created_process" | Out-Null
+
+Assert-WmiFailedRun "a rehearsal of the attack run is not completed without its created process either" `
+    @{ ExtraRecords = @((New-SameProgramRecord 20 "2030-01-01 00:00:00.500")) } `
+    "*created process undetermined: 2 EID 1 records of cmd.exe*" "created_process" -Rehearsal | Out-Null
+Assert-WmiFailedRun "a normal run is held to the same rule: its first action created exactly one process" `
+    @{ Records = (@(New-TimedRunRecords -FromBoot -IntermediateImage "wscript.exe" -ToolOffsetSec 300 -ConnectOffsetSec 480 `
+                -IntermediateUtcTime "2030-01-01 00:00:02.001")) } `
+    "*created process undetermined: no EID 1 of wscript.exe whose parent is a context WmiPrvSE.exe*" `
+    "created_process" -RunType "normal" | Out-Null
+Assert-WmiFailedRun "a record that carries another process id than the call returned is not the created process" `
+    @{ WmiProcessId = [uint32]4999 } `
+    "*lineage check failed*" "lineage" | Out-Null
+
+ # --- failure cases: the connection of the scenario --------------------------------------
+
+foreach ($runType in @("normal", "attack")) {
+    Assert-WmiFailedRun ("a " + $runType + " run whose telemetry holds no connection of the final tool fails") `
+        @{ TelemetryNoConnection = $true } "*lineage check failed*no EID 3 with the final tool's ProcessGuid*" `
+        "lineage" -RunType $runType | Out-Null
+    Assert-WmiFailedRun ("a " + $runType + " run whose final tool could not connect fails") `
+        @{ TriggerSuccess = $false } "*internal connection did not succeed*" "action:connect" -RunType $runType `
+        -ExpectedCalls ("open,invoke:probe,close,open,invoke:prepare,invoke:open_gate,invoke:launch_wmi," +
+            "invoke:start_tool,invoke:trigger,close") | Out-Null
+}
+
+Assert-WmiFailedRun "a connection to the destination before the run fails the run" `
+    @{ ExtraRecords = @((New-DestinationConnection 12 "2029-12-31 23:59:30.000")) } `
+    "*collection provenance check failed*before the start of the run*" "collection_provenance" | Out-Null
+Assert-WmiFailedRun "an earlier connection does not stand in for the one the scenario makes" `
+    @{ Records = (@(New-WmiRunRecords -NoConnection) + @(New-DestinationConnection 12 "2029-12-31 23:59:30.000" $FINAL_GUID)) } `
+    "*collection provenance check failed*before the start of the run*0 connection(s) of the target*" `
+    "collection_provenance" | Out-Null
+
+ # --- success case: the attack run --------------------------------------------------------
+
+Reset-Fakes
+$wmiAttackRoot = New-TempRoot
+$wmiAttackId = "RUN-20300101-021"
+$wmiAttack = Invoke-FakeCollectionRun -RunType "attack" -RunId $wmiAttackId -ScenarioPath $wmiScenarioPath `
+    -DataRoot $wmiAttackRoot -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport) `
+    -ObservationSec $WMI_TEST_OBSERVATION_SEC
+
+Assert-True "attack: the collection run completes and the lineage matches" (
+    $wmiAttack.mode -eq "collection" -and $wmiAttack.lineage.status -eq "matched")
+Assert-True "attack: the reference is the record of the process the launch created, not of the session host" (
+    $wmiAttack.reference.reference_action_id -ceq $wmiLaunchId -and
+    $wmiAttack.reference.reference_source_event_id -ceq "2" -and
+    $wmiAttack.reference.reference_time -ceq "2030-01-01T00:00:00.200Z")
+
+$wmiAttackTruth = Join-Path $wmiAttackRoot ("ground_truth\" + $wmiAttackId)
+$wmiAttackRows = @(Import-Csv -LiteralPath (Join-Path $wmiAttackTruth "execution_record.csv"))
+$wmiLaunchRow = @($wmiAttackRows | Where-Object { $_.action_id -ceq $wmiLaunchId })
+Assert-True "attack: the launch is recorded at the stamp taken right before the call, as what it is" (
+    $wmiLaunchRow.Count -eq 1 -and $wmiLaunchRow[0].timestamp -ceq "2030-01-01T00:00:00.000Z" -and
+    $wmiLaunchRow[0].action_type -ceq "wmi_process_create")
+$wmiAttackMetadataText = Get-Content -LiteralPath (Join-Path $wmiAttackTruth "run_metadata.json") -Raw -Encoding UTF8
+Assert-True "attack: run_metadata records the reference and the policy version of the scenario" (
+    $wmiAttackMetadataText -match '"reference_time":\s+"2030-01-01T00:00:00.200Z"' -and
+    $wmiAttackMetadataText -match ('"reference_action_id":\s+"' + $wmiLaunchId + '"') -and
+    $wmiAttackMetadataText -match '"reference_source_event_id":\s+"2"' -and
+    $wmiAttackMetadataText -match '"reference_policy_version":\s+"synthetic-reference-policy"')
+
+$wmiAttackTrace = Join-Path $wmiAttackRoot ("operator_trace\" + $wmiAttackId)
+Assert-True "attack: a completed run leaves no failure record" (
+    (@(Get-ChildItem -LiteralPath $wmiAttackTrace -Force | ForEach-Object { $_.Name } | Sort-Object) -join ",") -ceq
+        "r1_readiness_record.json,r1_run_trace.json,r1_wmi_collection_context.json,scenario.json")
+$wmiAttackProvenanceText = Get-Content -LiteralPath $wmiAttack.collection_provenance -Raw -Encoding UTF8
+$wmiAttackProvenance = $wmiAttackProvenanceText | ConvertFrom-Json
+
+Assert-True "attack: the provenance states the version of its contract" (
+    $wmiAttackProvenance.schema -ceq "r1-wmi-collection-context" -and
+    $wmiAttackProvenance.contract_version -ceq "v0.1" -and
+    $wmiAttackProvenance.context_rule_version -ceq "r1-context-rule-v0.1" -and
+    $wmiAttackProvenance.run_start_inclusive -is [bool] -and $wmiAttackProvenance.run_start_inclusive -and
+    $wmiAttackProvenance.time_fallback -ceq "none" -and
+    $wmiAttackProvenance.selector_raw_input_scope -ceq "raw_collection_window" -and
+    $wmiAttackProvenance.target_boot_utc -ceq $WMI_BOOT_UTC)
+Assert-True "attack: the evaluation window starts at the reference, not at the call" (
+    $wmiAttackProvenance.evaluation_window_start -ceq "2030-01-01T00:00:00.200Z" -and
+    $wmiAttackProvenance.evaluation_window_end -ceq "2030-01-01T00:10:00.200Z" -and
+    $wmiAttackProvenance.created_process.action_utc -ceq "2030-01-01T00:00:00.000Z")
+Assert-True "attack: the provenance states the process the first action created" (
+    $wmiAttackProvenance.created_process.window_start_utc -ceq "2030-01-01T00:00:00.000Z" -and
+    $wmiAttackProvenance.created_process.window_end_utc -ceq "2030-01-01T00:00:02.000Z" -and
+    $wmiAttackProvenance.created_process.selected_record_id -ceq "2" -and
+    $wmiAttackProvenance.created_process.parent_record_id -ceq "10" -and
+    $wmiAttackProvenance.created_process.expected_image -ceq "cmd.exe" -and
+    [int]$wmiAttackProvenance.created_process.process_id -eq 4100 -and
+    $wmiAttackProvenanceText -match '"return_value":\s+0,' -and
+    $wmiAttackProvenanceText -match '"candidate_record_ids":\s+\[\s+"2"\s+\]')
+Assert-True "attack: the sidecar links to the canonical artifact and restates no policy block" (
+    $wmiAttackProvenance.canonical_provenance_linkage.filename -ceq "r1_collection_provenance.json" -and
+    $wmiAttackProvenance.canonical_provenance_linkage.contract_version -ceq "v0.1" -and
+    $wmiAttackProvenance.canonical_provenance_linkage.reference_policy_id -ceq "synthetic-reference" -and
+    $wmiAttackProvenance.canonical_provenance_linkage.reference_policy_version -ceq "synthetic-reference-policy" -and
+    $wmiAttackProvenance.canonical_provenance_linkage.reference_policy_config_hash -ceq ("b2" * 32) -and
+    $null -eq $wmiAttackProvenance.canonical_provenance_linkage.canonical_sha256 -and
+    @($wmiAttackProvenance.canonical_provenance_linkage.PSObject.Properties).Count -eq 6 -and
+    $wmiAttackProvenance.scenario.scenario_id -ceq "R1" -and
+    $wmiAttackProvenance.scenario.family_id -ceq "wmi_management" -and
+    $wmiAttackProvenance.target_host -ceq $TEST_HOST -and
+    $wmiAttackProvenanceText -notmatch '"policy_provenance"' -and
+    $wmiAttackProvenanceText -notmatch '"reference_resolution"')
+$runnerTextForPair = [System.IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) "run-common.ps1"))
+Assert-True "attack: collection writes only the sidecar and does not gate on later Role2 provenance" (
+    (Split-Path -Leaf $wmiAttack.collection_provenance) -ceq "r1_wmi_collection_context.json" -and
+    (Split-Path -Leaf (Split-Path -Parent $wmiAttack.collection_provenance)) -ceq $wmiAttackId -and
+    (Split-Path -Leaf (Split-Path -Parent (Split-Path -Parent $wmiAttack.collection_provenance))) -ceq "operator_trace" -and
+    $wmiAttackProvenance.canonical_provenance_linkage.filename -ceq "r1_collection_provenance.json" -and
+    $runnerTextForPair -notmatch 'Write-R1NewFile[^;]*R1_CANONICAL_PROVENANCE_FILE' -and
+    $runnerTextForPair -notmatch 'check_wmi_provenance_pair' -and
+    $runnerTextForPair -match 'Write-R1NewFile -Path \$path -Bytes')
+Assert-Throws "attack: the sidecar in the Run directory is not overwritten" {
+    Write-R1NewFile -Path $wmiAttack.collection_provenance -Bytes ([byte[]]@(123, 125))
+} "*r1_wmi_collection_context.json*"
+Assert-True "attack: the sidecar was not changed by the refused overwrite" (
+    [int]((Get-Item -LiteralPath $wmiAttack.collection_provenance).Length) -gt 2)
+Assert-True "attack: the provenance states what was planned for each action and when the run started it" (
+    (@($wmiAttackProvenance.actions | ForEach-Object { $_.action_id + "|" + $_.planned_offset_sec + "|" + $_.actual_utc }) -join ",") -ceq
+        ("A01|0|2030-01-01T00:00:00.000Z,A02|300|2030-01-01T00:05:00.000Z," +
+         "A03|480|2030-01-01T00:08:00.000Z,A04|720|2030-01-01T00:12:00.000Z"))
+Assert-True "attack: the provenance names the context record the lineage was restored from, and why" (
+    @($wmiAttackProvenance.context_events).Count -eq 1 -and
+    $wmiAttackProvenance.context_events[0].record_id -ceq "10" -and
+    [int]$wmiAttackProvenance.context_events[0].record_no -eq 2 -and
+    $wmiAttackProvenance.context_events[0].role -ceq "root" -and
+    $wmiAttackProvenance.context_events[0].reason -ceq "parent_of_a_run_process_created_before_the_run")
+$wmiAttackJsonl = Join-Path $wmiAttackRoot ("raw\" + $wmiAttackId + "\telemetry\sysmon-0001.jsonl")
+Assert-True "attack: the provenance names the host, the channel and the raw file its record ids belong to" (
+    $wmiAttackProvenance.raw_source.host -ceq $TEST_HOST -and
+    $wmiAttackProvenance.raw_source.channel -ceq "Microsoft-Windows-Sysmon/Operational" -and
+    $wmiAttackProvenance.raw_source.jsonl_file -ceq "sysmon-0001.jsonl" -and
+    $wmiAttackProvenance.raw_source.jsonl_sha256 -ceq (Get-FileSha256 $wmiAttackJsonl) -and
+    $wmiAttackProvenance.raw_source.raw_log_id -ceq "RAW-002")
+Assert-True "attack: every record of the lineage is named by its record id and its line in that file" (
+    (@($wmiAttackProvenance.lineage.records | ForEach-Object { $_.record_id + "@" + $_.record_no }) -join ",") -ceq
+        "3@6,2@5,10@2" -and
+    ($wmiAttackProvenance.lineage.connection.record_id + "@" + $wmiAttackProvenance.lineage.connection.record_no) -ceq "4@7")
+
+ # --- success case: the normal run ----------------------------------------------------------
+
+Reset-Fakes
+$wmiNormalRoot = New-TempRoot
+$wmiNormal = Invoke-FakeCollectionRun -RunType "normal" -RunId $wmiAttackId -ScenarioPath $wmiScenarioPath `
+    -DataRoot $wmiNormalRoot -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport) `
+    -ObservationSec $WMI_TEST_OBSERVATION_SEC
+$wmiNormalProvenance = Get-Content -LiteralPath $wmiNormal.collection_provenance -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True "normal: the collection run completes with the same steps and records no reference" (
+    $wmiNormal.mode -eq "collection" -and $wmiNormal.lineage.status -eq "matched" -and
+    $null -eq $wmiNormal.reference.reference_time -and $null -eq $wmiNormal.reference.reference_action_id -and
+    $null -eq $wmiNormal.reference.reference_source_event_id)
+Assert-True "normal: its provenance states no evaluation window and links to the canonical artifact" (
+    $null -eq $wmiNormalProvenance.evaluation_window_start -and
+    $wmiNormalProvenance.canonical_provenance_linkage.reference_policy_version -ceq "synthetic-reference-policy" -and
+    $wmiNormalProvenance.canonical_provenance_linkage.reference_policy_id -ceq "synthetic-reference")
+Assert-True "normal: it states the one process its first action created, like the attack run" (
+    $wmiNormalProvenance.created_process.action_id -ceq "N01" -and
+    $wmiNormalProvenance.created_process.expected_image -ceq "wscript.exe" -and
+    $wmiNormalProvenance.created_process.selected_record_id -ceq "2" -and
+    (@($wmiNormalProvenance.created_process.candidate_record_ids) -join ",") -ceq "2")
+Assert-True "normal: its launch is held to the same rule and recorded the same way" (
+    @(Import-Csv -LiteralPath (Join-Path $wmiNormalRoot ("ground_truth\" + $wmiAttackId + "\execution_record.csv")) |
+        Where-Object { $_.action_type -ceq "wmi_process_create" -and $_.timestamp -ceq "2030-01-01T00:00:00.000Z" }).Count -eq 1)
+
+ # ---------------------------------------------------------------------------
+ # 14. Get-R1WmiCreatedProcessEvent by itself
+ #
+ # The rule that finds the process the first action created: the planned
+ # program, in the window of the reference policy, as a child of a context
+ # provider host. Every record is synthetic.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== the record a call through WMI created ===" -ForegroundColor Cyan
+
+ # --- fixture -------------------------------------------------------------------
+
+$WMI_CALL_AT = [datetime]::new(2030, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+function Invoke-WmiCreated {
+    <# Look for the created process among the given records: the call and the run start at 00:00:00, the window is two seconds. #>
+    param([object[]]$Records, [string]$ExpectedImage = "cmd.exe", [string]$ExpectedRootImage = "WmiPrvSE.exe",
+        [int]$ReturnedProcessId = 4100, [AllowEmptyString()][string]$FinalProcessGuid = $FINAL_GUID,
+        [string]$ComputerName = $TEST_HOST, [int]$WindowSec = 2)
+
+    return (Get-R1WmiCreatedProcessEvent -Records (ConvertTo-ParsedRecords $Records) -ComputerName $ComputerName `
+        -ExpectedImage $ExpectedImage -ExpectedRootImage $ExpectedRootImage -RunStart $WMI_CALL_AT `
+        -NotBefore $WMI_CALL_AT -NotAfter $WMI_CALL_AT.AddSeconds($WindowSec) `
+        -ReturnedProcessId $ReturnedProcessId -FinalProcessGuid $FinalProcessGuid)
+}
+
+function New-WmiIntact {
+    <# The records of an intact run: the intermediate is created 200 ms after the call. -Edit changes one record. #>
+    param([int]$RecordId = 0, [scriptblock]$Edit, [string]$IntermediateUtcTime = "")
+
+    $records = @(New-TimedRunRecords -FromBoot -IntermediateImage "cmd.exe" -IntermediateUtcTime $IntermediateUtcTime)
+    if ($null -ne $Edit) { & $Edit ($records | Where-Object { $_.RecordId -eq $RecordId }) | Out-Null }
+    return $records
+}
+
+function Assert-NoWmiCreated {
+    param([string]$Name, $Found, [string]$ReasonLike)
+    Assert-True ("undetermined: " + $Name) (
+        $Found.status -eq "undetermined" -and ([string]$Found.reason -like $ReasonLike) -and
+        $null -eq $Found.reference_time -and $null -eq $Found.reference_source_event_id)
+}
+
+$NO_CANDIDATE = "no EID 1 of cmd.exe whose parent is a context WmiPrvSE.exe*"
+
+ # --- failure cases: the parent --------------------------------------------------------
+
+Assert-NoWmiCreated "the record is the child of a process that has no record, whatever ParentImage says" (
+    Invoke-WmiCreated (New-WmiIntact -RecordId 2 -Edit { param($r)
+            $r.EventData.ParentProcessGuid = "{00000000-0000-0000-0000-000000000b00}"
+            $r.EventData["ParentImage"] = "C:\synthetic\WmiPrvSE.exe" })) $NO_CANDIDATE
+Assert-NoWmiCreated "the record names no parent at all" (
+    Invoke-WmiCreated (New-WmiIntact -RecordId 2 -Edit { param($r) $r.EventData.Remove("ParentProcessGuid") })) $NO_CANDIDATE
+Assert-NoWmiCreated "the parent of the record is another program than the planned root" (
+    Invoke-WmiCreated (New-WmiIntact -RecordId 2 -Edit { param($r) $r.EventData.ParentProcessGuid = $OUTSIDE_GUID })) $NO_CANDIDATE
+Assert-NoWmiCreated "the provider host was created in the run: it is not a context record" (
+    Invoke-WmiCreated (New-WmiIntact -RecordId 10 -Edit { param($r) $r.EventData.UtcTime = "2030-01-01 00:00:00.000" })) $NO_CANDIDATE
+Assert-NoWmiCreated "the provider host is recorded twice" (
+    Invoke-WmiCreated (@(New-WmiIntact) + @(New-TimedRecord 14 1 "2029-12-31 23:50:23.000" ([ordered]@{
+                ProcessGuid = $WMI_ROOT_GUID; ProcessId = "901"; Image = "C:\synthetic\WmiPrvSE.exe" })))) `
+    "*of its parent has 2 process-create records*"
+Assert-NoWmiCreated "a record of the provider host has no readable UtcTime" (
+    Invoke-WmiCreated (New-WmiIntact -RecordId 10 -Edit { param($r) $r.EventData.UtcTime = "at boot" })) `
+    "an EID 1 of WmiPrvSE.exe has no readable EventData.UtcTime*TimeCreated is not used in its place*"
+
+ # --- failure cases: the program and the window -------------------------------------------
+
+Assert-NoWmiCreated "the planned program is another one" (Invoke-WmiCreated (New-WmiIntact) -ExpectedImage "wscript.exe") `
+    "no EID 1 of wscript.exe whose parent is a context WmiPrvSE.exe*"
+Assert-NoWmiCreated "the record is of another host" (Invoke-WmiCreated (New-WmiIntact) -ComputerName "TARGET-B") `
+    "no EID 1 of cmd.exe*was recorded on TARGET-B*"
+Assert-NoWmiCreated "the record is a millisecond older than the call" (
+    Invoke-WmiCreated (New-WmiIntact -IntermediateUtcTime "2029-12-31 23:59:59.999")) $NO_CANDIDATE
+Assert-NoWmiCreated "the record is a millisecond younger than the window of the policy" (
+    Invoke-WmiCreated (New-WmiIntact -IntermediateUtcTime "2030-01-01 00:00:02.001")) $NO_CANDIDATE
+Assert-NoWmiCreated "the policy gives a shorter window than the record needs" (
+    Invoke-WmiCreated (New-WmiIntact) -WindowSec 0) $NO_CANDIDATE
+foreach ($unreadable in @("2030-01-01T00:00:00.200Z", "2030-01-01 00:00:00", "soon", "")) {
+    Assert-NoWmiCreated ("the UtcTime of the record cannot be read: '" + $unreadable + "'") (
+        Invoke-WmiCreated (New-WmiIntact -IntermediateUtcTime "placeholder" |
+            ForEach-Object { if ($_.RecordId -eq 2) { $_.EventData.UtcTime = $unreadable }; $_ })) `
+        "an EID 1 of cmd.exe has no readable EventData.UtcTime*TimeCreated is not used in its place*"
+}
+$twoFound = Invoke-WmiCreated (@(New-WmiIntact) + @(New-SameProgramRecord 20 "2030-01-01 00:00:00.500"))
+Assert-NoWmiCreated "two records of the planned program are children of the provider host in the window" $twoFound `
+    "2 EID 1 records of cmd.exe whose parent is a context WmiPrvSE.exe*nothing chooses between them*"
+Assert-True "  ... and both are reported as candidates, in the order of the file" (
+    (@($twoFound.candidate_record_ids) -join ",") -ceq "2,20")
+
+ # --- failure cases: the record that was found ------------------------------------------------
+
+Assert-NoWmiCreated "the record carries another process id than the call returned" (
+    Invoke-WmiCreated (New-WmiIntact) -ReturnedProcessId 4999) `
+    "*(RecordId 2) carries process id '4100', the call returned 4999"
+Assert-NoWmiCreated "the record carries no process id" (
+    Invoke-WmiCreated (New-WmiIntact -RecordId 2 -Edit { param($r) $r.EventData.Remove("ProcessId") })) `
+    "*carries process id '', the call returned 4100"
+Assert-NoWmiCreated "the record carries no ProcessGuid" (
+    Invoke-WmiCreated (New-WmiIntact -RecordId 2 -Edit { param($r) $r.EventData.Remove("ProcessGuid") })) `
+    "*carries no ProcessGuid*"
+Assert-NoWmiCreated "the record carries no usable RecordId" (
+    Invoke-WmiCreated (New-WmiIntact -RecordId 2 -Edit { param($r) $r.RecordId = "two" })) `
+    "*carries no usable RecordId*"
+Assert-NoWmiCreated "the final tool of the run is the child of another process" (
+    Invoke-WmiCreated (New-WmiIntact -RecordId 3 -Edit { param($r) $r.EventData.ParentProcessGuid = $SESSION_GUID })) `
+    "*but the parent of the final tool of this run is*"
+Assert-NoWmiCreated "the lineage of the run gave no final tool" (Invoke-WmiCreated (New-WmiIntact) -FinalProcessGuid "") `
+    "*the final tool of the lineage of this run was not established*"
+Assert-NoWmiCreated "the final tool named for the run has no record" (
+    Invoke-WmiCreated (New-WmiIntact) -FinalProcessGuid "{00000000-0000-0000-0000-000000000c00}") `
+    "*the final tool of the lineage of this run was not established*"
+
+ # --- success cases -------------------------------------------------------------------
+
+$wmiFound = Invoke-WmiCreated (New-WmiIntact)
+Assert-True "selected: the one record of the planned program, created in the window by the context provider host" (
+    $wmiFound.status -eq "selected" -and $wmiFound.reference_source_event_id -ceq "2" -and
+    $wmiFound.reference_source_event_id -is [string] -and $wmiFound.process_guid -ceq $INTERMEDIATE_GUID -and
+    $wmiFound.reference_time -ceq "2030-01-01T00:00:00.200Z" -and $wmiFound.parent_record_id -ceq "10" -and
+    (@($wmiFound.candidate_record_ids) -join ",") -ceq "2")
+foreach ($edge in @("2030-01-01 00:00:00.000", "2030-01-01 00:00:02.000")) {
+    Assert-True ("selected: a record at either end of the window belongs to it: " + $edge) (
+        (Invoke-WmiCreated (New-WmiIntact -IntermediateUtcTime $edge)).status -eq "selected")
+}
+Assert-True "selected: the same program started by another parent is not a candidate" (
+    (Invoke-WmiCreated (@(New-WmiIntact) + @(New-SameProgramRecord 20 "2030-01-01 00:00:00.500" $OUTSIDE_GUID))).status -eq "selected")
+Assert-True "selected: the same program outside the window is not a candidate" (
+    (Invoke-WmiCreated (@(New-WmiIntact) + @(New-SameProgramRecord 20 "2030-01-01 00:00:02.500"))).status -eq "selected")
+Assert-True "selected: an Image is compared without regard to letter case, like the lineage" (
+    (Invoke-WmiCreated (New-WmiIntact) -ExpectedImage "CMD.EXE" -ExpectedRootImage "wmiprvse.exe").status -eq "selected")
+$createdText = (Get-Command Get-R1WmiCreatedProcessEvent).Definition
+Assert-True "the function of the session entry is not called on this path" ($createdText -notmatch 'Get-R1ReferenceEvent\s+-')
+Assert-True "neither ParentImage nor TimeCreated is read as a field of a record" (
+    $createdText -notmatch '"ParentImage"|"TimeCreated"|"ParentProcessId"')
+Assert-True "the process id is compared after the record was found, never to find one" (
+    $createdText.IndexOf('$recordedPid -ne [string]$ReturnedProcessId') -gt $createdText.IndexOf('$chosen = $fitting[0]') -and
+    [regex]::Matches($createdText, 'ReturnedProcessId').Count -eq 3)
+
+ # ---------------------------------------------------------------------------
+ # 15. Nothing connects from the target to the internal destination before the run
+ #
+ # Static checks of the code that runs before the first action, and of the
+ # host block that establishes readiness, plus what a run hands to the target.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== nothing connects before the run ===" -ForegroundColor Cyan
+
+ # --- fixture -------------------------------------------------------------------
+
+$R1_DIR = Split-Path -Parent $PSScriptRoot
+$HOST_BLOCK_PATH = Join-Path $R1_DIR "host\r1_readiness.ps1"
+$hostBlockText = [System.IO.File]::ReadAllText($HOST_BLOCK_PATH)
+$runnerText = [System.IO.File]::ReadAllText((Join-Path $R1_DIR "run-common.ps1"))
+$taskText = [System.IO.File]::ReadAllText((Join-Path $R1_DIR "remote\r1_task.ps1"))
+
+ # Calls that open a connection to an address.
+$OPENS_CONNECTION = 'Test-NetConnection|Test-Connection|TcpClient|UdpClient|Net\.Sockets|WebRequest|RestMethod|WebClient|HttpClient|BitsTransfer'
+ # Calls that reach into another machine or resolve a name.
+$REACHES_OUT = 'New-PSSession|Enter-PSSession|Invoke-Command|New-CimSession|Resolve-DnsName|nslookup|\bping\b|telnet|\bcurl\b|\bftp\b'
+ # Calls of the hypervisor tool that act on a VM or on its guest.
+$ACTS_ON_VM = 'runProgramInGuest|runScriptInGuest|CopyFileFromHostToGuest|CopyFileFromGuestToHost|createDirectoryInGuest|killProcessInGuest|revertToSnapshot|deleteSnapshot|listProcessesInGuest'
+
+function Test-NoMatch {
+    param([string]$Text, [string]$Pattern)
+    return (-not [regex]::IsMatch($Text, $Pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase))
+}
+
+ # --- the checks have teeth ---------------------------------------------------------
+
+Assert-True "the pattern finds the one place of R1 that opens a connection: the task of the final tool" (
+    -not (Test-NoMatch $taskText $OPENS_CONNECTION))
+Assert-True "the pattern finds a probe when one is written" (
+    -not (Test-NoMatch 'if (Test-NetConnection $target -Port $port) { "ready" }' $OPENS_CONNECTION) -and
+    -not (Test-NoMatch '(New-Object System.Net.Sockets.TcpClient).Connect($target, $port)' $OPENS_CONNECTION))
+
+ # --- failure cases a probe would cause ------------------------------------------------
+
+Assert-Throws "a readiness method that probes from the target is not a method a scenario can state" {
+    Get-R1CollectionProfile -Scenario (New-WmiScenarioObject -Change {
+            param($s) $s.collection.readiness_method = "active_tcp_from_target" })
+} "*collection.readiness_method must be out_of_band or null*"
+Reset-Fakes
+Assert-Throws "a readiness record that states a probe starts nothing" {
+    Invoke-FakeCollectionRun -ScenarioPath $wmiScenarioPath -DataRoot (New-TempRoot) -Transport (New-CollectionFakeTransport) `
+        -ReadinessRecordPath (Save-ReadinessRecord -Change { param($r) $r.active_tcp_probe_used = $true }) -Rehearsal
+} "*must state active_tcp_probe_used as false*"
+Assert-True "  ... not even the pre-run session" ($script:FakeCalls.Count -eq 0)
+
+ # --- success cases: the code ------------------------------------------------------------
+
+Assert-True "the runner opens no connection to an address anywhere" (Test-NoMatch $runnerText $OPENS_CONNECTION)
+Assert-True "the pre-run check on the target opens no connection and reaches no other machine" (
+    (Test-NoMatch $R1_REMOTE_STEPS["probe"].ToString() $OPENS_CONNECTION) -and
+    (Test-NoMatch $R1_REMOTE_STEPS["probe"].ToString() $REACHES_OUT))
+foreach ($stepName in @("begin", "prepare", "open_gate", "launch_wmi", "start_tool", "end_run")) {
+    Assert-True ("the step '" + $stepName + "' opens no connection and reaches no other machine") (
+        (Test-NoMatch $R1_REMOTE_STEPS[$stepName].ToString() $OPENS_CONNECTION) -and
+        (Test-NoMatch $R1_REMOTE_STEPS[$stepName].ToString() $REACHES_OUT))
+}
+Assert-True "reading the readiness record opens no connection" (
+    (Test-NoMatch (Get-Command Read-R1ReadinessRecord).Definition $OPENS_CONNECTION) -and
+    (Test-NoMatch (Get-Command Read-R1ReadinessRecord).Definition $REACHES_OUT))
+Assert-True "the host block opens no connection, reaches into no machine and acts on no VM" (
+    (Test-NoMatch $hostBlockText $OPENS_CONNECTION) -and (Test-NoMatch $hostBlockText $REACHES_OUT) -and
+    (Test-NoMatch $hostBlockText $ACTS_ON_VM))
+Assert-True "the host block makes two calls of the hypervisor tool, and both read state" (
+    $hostBlockText -match '\$R1_READINESS_VMRUN_CALLS = @\("list", "getGuestIPAddress"\)' -and
+    @([regex]::Matches($hostBlockText, '& \$Vmrun @\("(\w+)"') | ForEach-Object { $_.Groups[1].Value } |
+        Sort-Object -Unique | Where-Object { @("list", "getGuestIPAddress") -cnotcontains $_ }).Count -eq 0 -and
+    [regex]::Matches($hostBlockText, '& \$Vmrun @\("(\w+)"').Count -eq 2)
+Assert-True "the host block and the runner are ASCII, like the rest of R1" (
+    (Test-NoMatch $hostBlockText '[^\x00-\x7F]') -and (Test-NoMatch $runnerText '[^\x00-\x7F]'))
+
+ # --- success cases: what a run hands to the target ------------------------------------------
+
+Reset-Fakes
+Invoke-FakeCollectionRun -ScenarioPath $wmiScenarioPath -DataRoot (New-TempRoot) -ReadinessRecordPath $readinessPath `
+    -Transport (New-CollectionFakeTransport) -Rehearsal | Out-Null
+$callsOfRun = ($script:FakeCalls -join ",")
+Assert-True "before the run starts the target is asked one thing: the pre-run check" (
+    $callsOfRun.StartsWith("open,invoke:probe,close,open,"))
+Assert-True "before the first action the run only writes its files and opens the gate of its intermediate" (
+    $callsOfRun.StartsWith("open,invoke:probe,close,open,invoke:prepare,invoke:open_gate,invoke:launch_wmi,"))
+Assert-True "the gate is a pipe of the target: it is opened by name, with no host and no address" (
+    (@($script:FakeArguments["open_gate"].Keys) -join ",") -ceq "pipe_name" -and
+    [string]$script:FakeArguments["open_gate"].pipe_name -ceq "r1_gate" -and
+    $R1_REMOTE_STEPS["open_gate"].ToString() -match 'NamedPipeServerStream' -and
+    $R1_REMOTE_STEPS["open_gate"].ToString() -notmatch 'NamedPipeClientStream')
+Assert-True "the pre-run check is handed no address and no port" (
+    (@($script:FakeArguments["probe"].Keys | Sort-Object) -join ",") -ceq "log_name,read_boot_time,sysmon_binary,sysmon_config_path" -and
+    @($script:FakeArguments["probe"].Values | Where-Object { [string]$_ -like ("*" + $TEST_TARGET + "*") }).Count -eq 0)
+Assert-True "the launch is handed no address and no port either" (
+    @($script:FakeArguments["launch_wmi"].Values | Where-Object {
+            [string]$_ -like ("*" + $TEST_TARGET + "*") -or [string]$_ -eq [string]$TEST_PORT }).Count -eq 0)
+Assert-True "the destination reaches the target in the preparation, and the connection is made once, when it is triggered" (
+    [string]$script:FakeArguments["prepare"].channel_config -like ("*" + $TEST_TARGET + "*") -and
+    (Get-CallCount "invoke:trigger") -eq 1 -and
+    $callsOfRun.IndexOf("invoke:trigger") -gt $callsOfRun.IndexOf("invoke:launch_wmi"))
+
+ # ---------------------------------------------------------------------------
+ # 16. The host block that establishes readiness out of band
+ #
+ # The hypervisor tool is a stand-in and every VM file, address and time is
+ # synthetic. Nothing here asks a hypervisor or a VM anything.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== out-of-band readiness (host block) ===" -ForegroundColor Cyan
+
+ # --- fixture -------------------------------------------------------------------
+
+. $HOST_BLOCK_PATH
+
+ # A minute before the start of the fake runs, which start at 2030-01-01T00:00:00Z.
+$HOST_NOW = [datetime]::new(2029, 12, 31, 23, 59, 0, [System.DateTimeKind]::Utc)
+$HOST_ADAPTER = "02:00:00:00:00:01"
+$HOST_VMX_LINES = @('ethernet0.connectionType = "hostonly"', 'ethernet0.generatedAddress = "02:00:00:00:00:01"')
+$script:VmrunCalls = New-Object System.Collections.Generic.List[string]
+
+function New-VmxFile {
+    <# A VM configuration file with the lines the check reads. #>
+    param([string[]]$Lines = $HOST_VMX_LINES)
+    $path = Join-Path (New-TempRoot) "synthetic.vmx"
+    [System.IO.File]::WriteAllLines($path, [string[]](@('.encoding = "UTF-8"') + $Lines))
+    return $path
+}
+
+function New-FakeVmrun {
+    <# A stand-in for the hypervisor tool. It records the calls it gets and answers the two that read state. #>
+    param([string[]]$Running = @(), [string]$GuestAddress = $TEST_TARGET, [string]$FailOn = "")
+
+    $script:VmrunCalls = New-Object System.Collections.Generic.List[string]
+    $calls = $script:VmrunCalls
+    return {
+        param([string[]]$CallArguments)
+        $calls.Add($CallArguments[0])
+        if ($CallArguments[0] -eq $FailOn) { throw ("synthetic failure of the call " + $FailOn) }
+        if ($CallArguments[0] -eq "list") { return (@("Total running VMs: " + $Running.Count) + $Running) }
+        if ($CallArguments[0] -eq "getGuestIPAddress") { return $GuestAddress }
+        throw ("unexpected call of the hypervisor tool: " + $CallArguments[0])
+    }.GetNewClosure()
+}
+
+function Invoke-HostReadiness {
+    <# One readiness check of an intact destination VM, unless something is replaced. #>
+    param([string[]]$VmxLines = $HOST_VMX_LINES, [switch]$NotRunning, [switch]$NoVmxFile,
+        [string]$GuestAddress = $TEST_TARGET, [string]$FailOn = "", [hashtable]$With = @{})
+
+    $vmx = New-VmxFile -Lines $VmxLines
+    $running = @($vmx)
+    if ($NotRunning) { $running = @() }
+    if ($NoVmxFile) { Remove-Item -LiteralPath $vmx -Force }
+    $arguments = @{
+        Vmrun                  = (New-FakeVmrun -Running $running -GuestAddress $GuestAddress -FailOn $FailOn)
+        DestinationVmx         = $vmx
+        ExpectedAddress        = $TEST_TARGET
+        ExpectedAdapterAddress = $HOST_ADAPTER
+        ExpectedConnectionType = "hostonly"
+        StartRequestedUtc      = $HOST_NOW.AddSeconds(-600)
+        NowProvider            = { $HOST_NOW }
+    }
+    foreach ($name in $With.Keys) { $arguments[$name] = $With[$name] }
+    return (Get-R1OutOfBandReadiness @arguments)
+}
+
+function Assert-NotReady {
+    <# The record is not ready because of exactly the named check, and still states that nothing was probed. #>
+    param([string]$Name, $Record, [string]$FailedCheck)
+    $failedNames = @($Record.checks | Where-Object { -not $_.ok } | ForEach-Object { $_.name })
+    Assert-True ("not ready: " + $Name) (
+        $Record.result -ceq "not_ready" -and ($failedNames -join ",") -ceq $FailedCheck -and
+        $Record.method -ceq "out_of_band" -and $Record.active_tcp_probe_used -is [bool] -and
+        -not $Record.active_tcp_probe_used)
+}
+
+ # --- failure cases: the destination VM ------------------------------------------------
+
+Assert-NotReady "the destination VM is not listed as running" (Invoke-HostReadiness -NotRunning) `
+    "destination_vm_running,destination_guest_address"
+Assert-True "  ... and the guest tools of a VM that is not running are not asked" (
+    ($script:VmrunCalls -join ",") -ceq "list")
+Assert-NotReady "the guest tools report another address" (Invoke-HostReadiness -GuestAddress "10.20.30.99") `
+    "destination_guest_address"
+Assert-NotReady "the guest tools report no address" (Invoke-HostReadiness -GuestAddress "") "destination_guest_address"
+Assert-NotReady "the adapter is of another kind than stated" (
+    Invoke-HostReadiness -VmxLines @('ethernet0.connectionType = "custom"', $HOST_VMX_LINES[1])) "destination_adapter_kind"
+Assert-NotReady "the adapter reaches outside the lab" (
+    Invoke-HostReadiness -VmxLines @('ethernet0.connectionType = "nat"', $HOST_VMX_LINES[1])) "destination_adapter_kind"
+Assert-NotReady "the configuration states no adapter kind" (Invoke-HostReadiness -VmxLines @($HOST_VMX_LINES[1])) `
+    "destination_adapter_kind"
+Assert-NotReady "the adapter has another address" (
+    Invoke-HostReadiness -VmxLines @($HOST_VMX_LINES[0], 'ethernet0.generatedAddress = "02:00:00:00:00:02"')) `
+    "destination_adapter_address"
+Assert-NotReady "the configuration states no adapter address" (Invoke-HostReadiness -VmxLines @($HOST_VMX_LINES[0])) `
+    "destination_adapter_address"
+Assert-NotReady "the configuration file is not there" (Invoke-HostReadiness -NoVmxFile) `
+    "destination_adapter_kind,destination_adapter_address"
+Assert-NotReady "the start of the VM was requested too recently" (
+    Invoke-HostReadiness -With @{ StartRequestedUtc = $HOST_NOW.AddSeconds(-239) }) "destination_up_long_enough"
+Assert-NotReady "the start of the VM is in the future" (
+    Invoke-HostReadiness -With @{ StartRequestedUtc = $HOST_NOW.AddSeconds(30) }) "destination_up_long_enough"
+Assert-NotReady "the list of running VMs cannot be read" (Invoke-HostReadiness -FailOn "list") `
+    "destination_vm_running,destination_guest_address"
+Assert-NotReady "the guest tools cannot be asked" (Invoke-HostReadiness -FailOn "getGuestIPAddress") `
+    "destination_guest_address"
+
+ # --- failure cases: the target VM, when it is checked too ---------------------------------
+
+$otherVmx = New-VmxFile
+Assert-NotReady "the target VM is not listed as running" (
+    Invoke-HostReadiness -With @{ TargetVmx = $otherVmx; TargetStartRequestedUtc = $HOST_NOW.AddSeconds(-600) }) `
+    "target_vm_running"
+Assert-Throws "a target VM without the time its start was requested is refused" {
+    Invoke-HostReadiness -With @{ TargetVmx = $otherVmx }
+} "*TargetStartRequestedUtc is required when TargetVmx is given*"
+
+ # --- failure cases: what the block refuses to do --------------------------------------------
+
+foreach ($kind in @("nat", "bridged", "NAT")) {
+    Assert-Throws ("an adapter of the kind '" + $kind + "' cannot be the expected one") {
+        Invoke-HostReadiness -With @{ ExpectedConnectionType = $kind }
+    } "*reaches outside the lab*"
+}
+Assert-Throws "the hypervisor tool has to exist" {
+    New-R1VmrunCaller -VmrunPath (Join-Path (New-TempRoot) "absent.exe")
+} "*the hypervisor command line tool was not found*"
+ # The file given as the tool is never started here: every call below is refused first.
+$refusingCaller = New-R1VmrunCaller -VmrunPath $HOST_BLOCK_PATH
+foreach ($call in @("start", "stop", "reset", "suspend", "revertToSnapshot", "snapshot", "runProgramInGuest",
+        "runScriptInGuest", "CopyFileFromHostToGuest", "List", "getguestipaddress")) {
+    Assert-Throws ("the block makes no '" + $call + "' call of the hypervisor tool") {
+        & $refusingCaller @($call, "synthetic.vmx")
+    } ("*makes no '" + $call + "' call of the hypervisor tool*")
+}
+Assert-Throws "a call without a name is refused too" { & $refusingCaller @() } "*makes no*call of the hypervisor tool*"
+
+$notReadyRecord = Invoke-HostReadiness -NotRunning
+$notReadyPath = Join-Path (New-TempRoot) "readiness.json"
+Write-R1ReadinessRecord -Record $notReadyRecord -Path $notReadyPath | Out-Null
+Assert-Throws "a record that is not ready is written, and the runner refuses it" {
+    Read-R1ReadinessRecord -Path $notReadyPath
+} "*the run is not started unless it is ready*"
+Assert-Throws "a readiness record is never replaced" {
+    Write-R1ReadinessRecord -Record (Invoke-HostReadiness) -Path $notReadyPath
+}
+Assert-True "  ... and the first record is still the one in the file" (
+    (Get-Content -LiteralPath $notReadyPath -Raw -Encoding UTF8) -match '"result":\s+"not_ready"')
+$probed = Invoke-HostReadiness
+$probed.active_tcp_probe_used = $true
+Assert-Throws "a record that states a probe is not written" {
+    Write-R1ReadinessRecord -Record $probed -Path (Join-Path (New-TempRoot) "readiness.json")
+} "*a readiness record that states an active TCP probe is not written*"
+
+ # --- success cases: the record ------------------------------------------------------------
+
+$readyRecord = Invoke-HostReadiness
+Assert-True "ready: every check of an intact destination VM holds" (
+    $readyRecord.result -ceq "ready" -and @($readyRecord.checks | Where-Object { -not $_.ok }).Count -eq 0 -and
+    (@($readyRecord.checks | ForEach-Object { $_.name }) -join ",") -ceq
+        "destination_vm_running,destination_adapter_kind,destination_adapter_address,destination_guest_address,destination_up_long_enough")
+Assert-True "ready: the record states the method, the time of the check as UTC and that nothing was probed" (
+    $readyRecord.method -ceq "out_of_band" -and $readyRecord.checked_at -ceq "2029-12-31T23:59:00.000Z" -and
+    $readyRecord.active_tcp_probe_used -is [bool] -and -not $readyRecord.active_tcp_probe_used)
+Assert-True "ready: the record says what it did not verify" (
+    [string]$readyRecord.not_verified -like "*the listener of the internal destination*verified only by the connect action*")
+Assert-True "ready: the hypervisor tool was asked two things, both of them read-only" (
+    ($script:VmrunCalls -join ",") -ceq "list,getGuestIPAddress")
+Assert-True "ready: each check names where its answer came from" (
+    (@($readyRecord.checks | ForEach-Object { $_.source }) -join ",") -ceq
+        "hypervisor,vm_configuration,vm_configuration,hypervisor,orchestrator")
+
+Assert-True "ready: an adapter address is compared without regard to separators and letter case" (
+    (Invoke-HostReadiness -With @{ ExpectedAdapterAddress = "02-00-00-00-00-01" }).result -ceq "ready" -and
+    (Invoke-HostReadiness -VmxLines @($HOST_VMX_LINES[0], 'ethernet0.address = "02:00:00:00:00:0a"') `
+        -With @{ ExpectedAdapterAddress = "02:00:00:00:00:0A" }).result -ceq "ready")
+Assert-True "ready: a VM that was started exactly the minimum time ago" (
+    (Invoke-HostReadiness -With @{ StartRequestedUtc = $HOST_NOW.AddSeconds(-240) }).result -ceq "ready")
+Assert-True "ready: another minimum is an argument of the check" (
+    (Invoke-HostReadiness -With @{ StartRequestedUtc = $HOST_NOW.AddSeconds(-30); MinimumSecondsSinceStart = 30 }).result -ceq "ready")
+
+$targetVmx = New-VmxFile
+$bothVmx = New-VmxFile
+$bothRecord = Get-R1OutOfBandReadiness -Vmrun (New-FakeVmrun -Running @($bothVmx, $targetVmx)) -DestinationVmx $bothVmx `
+    -ExpectedAddress $TEST_TARGET -ExpectedAdapterAddress $HOST_ADAPTER -ExpectedConnectionType "hostonly" `
+    -StartRequestedUtc $HOST_NOW.AddSeconds(-600) -TargetVmx $targetVmx `
+    -TargetStartRequestedUtc $HOST_NOW.AddSeconds(-300) -NowProvider { $HOST_NOW }
+Assert-True "ready: with the target VM checked too, it has to be running and up long enough" (
+    $bothRecord.result -ceq "ready" -and @($bothRecord.checks).Count -eq 7 -and
+    (@($bothRecord.checks | Select-Object -Last 2 | ForEach-Object { $_.name }) -join ",") -ceq
+        "target_vm_running,target_up_long_enough" -and ($script:VmrunCalls -join ",") -ceq "list,getGuestIPAddress")
+
+ # --- success cases: the stand-in tool behind the caller --------------------------------------
+
+$standInDir = New-TempRoot
+$standInTool = Join-Path $standInDir "tool.cmd"
+[System.IO.File]::WriteAllText($standInTool, "@echo Total running VMs: 1`r`n@echo C:\synthetic\vm.vmx`r`n")
+$standInLines = @(& (New-R1VmrunCaller -VmrunPath $standInTool) @("list"))
+Assert-True "a call that reads state is passed to the tool and its lines come back" (
+    $standInLines.Count -eq 2 -and [string]$standInLines[1] -ceq "C:\synthetic\vm.vmx")
+$failingTool = Join-Path $standInDir "failing.cmd"
+[System.IO.File]::WriteAllText($failingTool, "@exit /b 3`r`n")
+Assert-Throws "a tool that ends with another exit code is not taken for an answer" {
+    & (New-R1VmrunCaller -VmrunPath $failingTool) @("list")
+} "*the hypervisor tool exited with code 3*"
+
+ # --- success cases: the record reaches a run ----------------------------------------------------
+
+$hostRecordPath = Join-Path (New-TempRoot) "readiness.json"
+$hostWritten = Write-R1ReadinessRecord -Record $readyRecord -Path $hostRecordPath
+Assert-True "the record is written once, without a byte order mark, and its hash is returned" (
+    $hostWritten.path -ceq $hostRecordPath -and $hostWritten.sha256 -ceq (Get-FileSha256 $hostRecordPath) -and
+    [System.IO.File]::ReadAllBytes($hostRecordPath)[0] -eq [byte][char]'{')
+$hostRead = Read-R1ReadinessRecord -Path $hostRecordPath
+Assert-True "the runner reads the record of the host block as out of band, ready and not probed" (
+    $hostRead.method -ceq "out_of_band" -and $hostRead.result -ceq "ready" -and
+    -not $hostRead.active_tcp_probe_used -and $hostRead.checked_at -ceq "2029-12-31T23:59:00.000Z" -and
+    $hostRead.record_sha256 -ceq $hostWritten.sha256)
+
+Reset-Fakes
+$hostRunRoot = New-TempRoot
+$hostRun = Invoke-FakeCollectionRun -ScenarioPath $wmiScenarioPath -DataRoot $hostRunRoot `
+    -ReadinessRecordPath $hostRecordPath -Transport (New-CollectionFakeTransport) -Rehearsal
+$hostRunProvenance = Get-Content -LiteralPath $hostRun.collection_provenance -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True "a run started with that record keeps it byte for byte and names it in its provenance" (
+    $hostRunProvenance.readiness.record_sha256 -ceq $hostWritten.sha256 -and
+    $hostRunProvenance.readiness.checked_at -ceq "2029-12-31T23:59:00.000Z" -and
+    (Get-FileSha256 (Join-Path (Split-Path -Parent $hostRun.collection_provenance) "r1_readiness_record.json")) -ceq
+        $hostWritten.sha256)
+
+ # ---------------------------------------------------------------------------
+ # 17. Who leaves a failure record
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== failure records ===" -ForegroundColor Cyan
+
+ # --- failure cases -------------------------------------------------------------------
+
+ # The session entry with a declared collection leaves one too.
+Reset-Fakes @{ ExtraRecords = @((New-DestinationConnection 12 "2029-12-31 23:59:58.000")) }
+$declaredFailRoot = New-TempRoot
+Assert-Throws "a failing run of the session entry with a declared collection is stopped as before" {
+    Invoke-FakeCollectionRun -ScenarioPath $declaredPath -DataRoot $declaredFailRoot -Transport (New-CollectionFakeTransport)
+} "*collection provenance check failed*before the start of the run*"
+$declaredFailure = Join-Path $declaredFailRoot "operator_trace\RUN-20300101-001\r1_run_failure.json"
+$declaredFailureRecord = $null
+if (Test-Path -LiteralPath $declaredFailure) {
+    $declaredFailureRecord = Get-Content -LiteralPath $declaredFailure -Raw -Encoding UTF8 | ConvertFrom-Json
+}
+Assert-True "  ... and it leaves a failure record that names its entry and no launch through WMI" (
+    $null -ne $declaredFailureRecord -and $declaredFailureRecord.entry_kind -ceq "remoting_session" -and
+    $declaredFailureRecord.stage -ceq "collection_provenance" -and $null -eq $declaredFailureRecord.launch_returned -and
+    -not $declaredFailureRecord.run_completed -and
+    (Test-SuccessArtifactsAbsent -Root $declaredFailRoot -RunId "RUN-20300101-001"))
+
+ # A scenario that declares no collection block fails as it always did: no record.
+Reset-Fakes @{ ConnectionGuid = $INTERMEDIATE_GUID }
+$plainFailRoot = New-TempRoot
+Assert-Throws "a failing run that declares no collection is stopped as before" {
+    Invoke-FakeRun -ScenarioPath $goodScenario -DataRoot $plainFailRoot -Transport (New-FakeTransport)
+} "*lineage check failed*"
+Assert-True "  ... and it leaves no failure record: its trace holds the two files it always held" (
+    (@(Get-ChildItem -LiteralPath (Join-Path $plainFailRoot "operator_trace\RUN-20300101-001") -Force |
+            ForEach-Object { $_.Name } | Sort-Object) -join ",") -ceq "r1_run_trace.json,scenario.json" -and
+    (Test-SuccessArtifactsAbsent -Root $plainFailRoot -RunId "RUN-20300101-001"))
+
+ # A failed run is not replaced by a second run of the same run id.
+Reset-Fakes @{ WmiReturnValue = [uint32]8 }
+$onceRoot = New-TempRoot
+Assert-Throws "the first run of a run id fails at its launch" {
+    Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $wmiScenarioPath -DataRoot $onceRoot `
+        -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport) -ObservationSec $WMI_TEST_OBSERVATION_SEC
+} "*the launch action succeeded only when it returns 0*"
+$onceFailure = Join-Path $onceRoot "operator_trace\RUN-20300101-001\r1_run_failure.json"
+$onceHash = Get-FileSha256 $onceFailure
+Reset-Fakes
+Assert-Throws "a second run of that run id is refused, although nothing is wrong with it" {
+    Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $wmiScenarioPath -DataRoot $onceRoot `
+        -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport) -ObservationSec $WMI_TEST_OBSERVATION_SEC
+}
+Assert-True "  ... it opens no session, and the failure record and the absence of run files stay as they were" (
+    $script:FakeCalls.Count -eq 0 -and (Get-FileSha256 $onceFailure) -ceq $onceHash -and
+    (Test-SuccessArtifactsAbsent -Root $onceRoot -RunId "RUN-20300101-001"))
+
+ # A failure record that cannot be written does not replace the failure it is about.
+$unwritten = Write-R1RunFailure -TraceDir (Join-Path (New-TempRoot) "absent") -EffectiveRoot (New-TempRoot) `
+    -RunId "RUN-20300101-001" -RunType "attack" -Mode "collection" -EntryKind "wmi_process" `
+    -Stage "reference" -Reason "synthetic reason" -LaunchReturned $null -Reference $null
+Assert-True "a failure record that cannot be written gives no path and raises nothing" ($null -eq $unwritten)
+
+ # --- success cases -------------------------------------------------------------------
+
+$writtenDir = New-TempRoot
+$writtenFailure = Write-R1RunFailure -TraceDir $writtenDir -EffectiveRoot (New-TempRoot) `
+    -RunId "RUN-20300101-001" -RunType "attack" -Mode "collection" -EntryKind "wmi_process" `
+    -Stage "reference" -Reason "synthetic reason" `
+    -LaunchReturned (New-WmiAnswer -Set @{ return_value = "not a number" }) `
+    -Reference ([ordered]@{ status = "undetermined"; reason = "synthetic"; candidate_record_ids = [string[]]@("2", "20") })
+$writtenText = Get-Content -LiteralPath $writtenFailure -Raw -Encoding UTF8
+$writtenRecord = $writtenText | ConvertFrom-Json
+Assert-True "a failure record keeps what the launch returned as it was, even when it is not a number" (
+    $writtenRecord.launch_returned.return_value -ceq "not a number" -and
+    [int]$writtenRecord.launch_returned.process_id -eq 4100 -and
+    $writtenRecord.launch_returned.action_utc -ceq "2030-01-01T00:05:00.000Z")
+Assert-True "a failure record is a draft like the provenance, says the run is not complete and lists its candidates" (
+    $writtenRecord.failure_version -ceq "r1-run-failure-v0.1" -and $writtenRecord.run_completed -is [bool] -and
+    $writtenRecord.record_kind -ceq "diagnostic" -and $writtenRecord.canonical_artifact -is [bool] -and
+    -not $writtenRecord.canonical_artifact -and [string]$writtenRecord.note -like "*not Ground Truth*" -and
+    -not $writtenRecord.run_completed -and $writtenText -match '"candidate_record_ids":\s+\[\s+"2",\s+"20"\s+\]')
+Assert-Throws "a failure record is written once" {
+    Write-R1NewFile -Path $writtenFailure -Bytes ([byte[]]@(1))
+}
+
+ # ---------------------------------------------------------------------------
+ # 18. How long a run is, and when it has observed enough
+ #
+ # The plan is checked before anything starts: the observation has to reach the
+ # evaluation horizon after the action the reference is taken from. The run is
+ # then held to the reference_time it actually recorded.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== the length of a run and the evaluation horizon ===" -ForegroundColor Cyan
+
+ # --- fixture -------------------------------------------------------------------
+
+function New-WmiOffsetScenario {
+    <# The fixture with other offsets, and with no length stated unless -ObservationSec gives one. #>
+    param([int[]]$Offsets, [AllowNull()]$ObservationSec = $null)
+
+    return (New-WmiScenarioObject -Change {
+            param($s)
+            foreach ($runType in @("normal", "attack")) {
+                for ($index = 0; $index -lt 4; $index++) { $s.runs.$runType.actions[$index].offset_sec = $Offsets[$index] }
+            }
+            $s.run_length.observation_sec = $ObservationSec
+        })
+}
+
+function Invoke-WmiInputs {
+    param($Scenario, [int]$ObservationSec, [string]$RunType = "attack")
+    return (Assert-R1RunInputs -RunType $RunType -RunId "RUN-20300101-001" -ScenarioJsonPath (Save-Scenario $Scenario) `
+        -DataRoot (New-TempRoot) -WorkDir $TEST_WORK -ObservationSec $ObservationSec)
+}
+
+ # --- failure cases: the plan -----------------------------------------------------
+
+foreach ($runType in @("normal", "attack")) {
+    Assert-Throws ("a " + $runType + " run that is observed for less than the horizon after its reference action is refused") {
+        Invoke-WmiInputs (New-WmiOffsetScenario -Offsets @(300, 400, 480, 720)) 899 $runType
+    } "*ObservationSec 899 does not reach the evaluation horizon of 600 s after the invoke action at 300 s; it has to be 900 or more*"
+}
+Assert-Throws "a run that is shorter than the horizon is refused as it always was" {
+    Invoke-WmiInputs (New-WmiOffsetScenario -Offsets @(0, 1, 2, 3)) 599
+} "*ObservationSec 599 is shorter than the evaluation horizon of 600 s*"
+Assert-Throws "a run that ends before its last action is refused as it always was" {
+    Invoke-WmiInputs (New-WmiOffsetScenario -Offsets @(0, 300, 480, 720)) 700
+} "*ObservationSec 700 does not cover the last action at 720 s*"
+foreach ($other in @(779, 781, 960)) {
+    Assert-Throws ("a run of " + $other + " s is refused when the scenario states 780") {
+        Invoke-WmiInputs (New-WmiScenarioObject) $other
+    } ("*ObservationSec " + $other + " is not the length this scenario states: run_length.observation_sec is 780*")
+}
+Assert-Throws "a length that is stated as text is refused" {
+    Invoke-WmiInputs (New-WmiOffsetScenario -Offsets @(0, 300, 480, 720) -ObservationSec "780") 780
+} "*run_length.observation_sec must be an integer of 1 or more or null*"
+Reset-Fakes
+$refusedRoot = New-TempRoot
+Assert-Throws "a run of another length than its scenario states starts nothing" {
+    Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $wmiScenarioPath -DataRoot $refusedRoot `
+        -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport) -ObservationSec 960
+} "*is not the length this scenario states*"
+Assert-True "  ... no session, no file" (
+    $script:FakeCalls.Count -eq 0 -and @(Get-ChildItem -LiteralPath $refusedRoot -Recurse -Force).Count -eq 0)
+
+ # --- failure case: the run itself ----------------------------------------------------
+ # The plan holds: the reference action is planned at 0 s and the run is observed
+ # for 600 s. Opening a session takes 5 s on this fake target, so the launch is
+ # made 10 s into the run and the collection ends 0.2 s before the reference
+ # plus the horizon.
+
+$tightPath = Save-Scenario (New-WmiOffsetScenario -Offsets @(0, 1, 2, 3))
+Reset-Fakes @{ OpenSeconds = 5 }
+$tightRoot = New-TempRoot
+Assert-Throws "an attack run whose collection ends before reference_time plus the horizon is refused" {
+    Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $tightPath -DataRoot $tightRoot `
+        -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport) -ObservationSec 600
+} "*the collection ended at 2030-01-01T00:10:10.000Z, before reference_time + 600 s (2030-01-01T00:10:10.200Z)*"
+$tightFailure = Get-Content -LiteralPath (Join-Path $tightRoot "operator_trace\RUN-20300101-001\r1_run_failure.json") `
+    -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True "  ... it is stopped where its reference is judged and leaves no file of a completed run" (
+    $tightFailure.stage -ceq "reference" -and -not $tightFailure.run_completed -and
+    (Test-SuccessArtifactsAbsent -Root $tightRoot -RunId "RUN-20300101-001"))
+
+ # --- success cases ---------------------------------------------------------------------
+
+$plannedInputs = Invoke-WmiInputs (New-WmiScenarioObject) 780
+Assert-True "the decided run is observed for 780 s: past its last action at 720 s and past the horizon after its first" (
+    $plannedInputs.last_offset -eq 720 -and $plannedInputs.evaluation_horizon_sec -eq 600 -and
+    $plannedInputs.reference_step -ceq "invoke" -and
+    [int]($plannedInputs.actions | Where-Object { $_.step -eq "invoke" }).offset_sec -eq 0)
+Assert-True "a run whose reference action is planned later is accepted when it is observed long enough" (
+    (Invoke-WmiInputs (New-WmiOffsetScenario -Offsets @(300, 400, 480, 720)) 900).reference_step -ceq "invoke")
+
+ # The same fake target, a second longer: the collection reaches the horizon.
+Reset-Fakes @{ OpenSeconds = 5 }
+$reachedRoot = New-TempRoot
+$reached = Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $tightPath -DataRoot $reachedRoot `
+    -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport) -ObservationSec 601
+Assert-True "an attack run whose collection reaches reference_time plus the horizon completes" (
+    $reached.mode -eq "collection" -and $reached.reference.reference_time -ceq "2030-01-01T00:00:10.200Z" -and
+    (Test-Path -LiteralPath (Join-Path $reachedRoot "ground_truth\RUN-20300101-001\run_metadata.json")))
+ # A normal run records no reference, so the same telemetry does not stop it.
+Reset-Fakes @{ OpenSeconds = 5 }
+$normalTight = Invoke-FakeCollectionRun -RunType "normal" -ScenarioPath $tightPath -DataRoot (New-TempRoot) `
+    -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport) -ObservationSec 600
+Assert-True "a normal run has no evaluation window to reach" (
+    $normalTight.mode -eq "collection" -and $null -eq $normalTight.reference.reference_time)
+
+ # ---------------------------------------------------------------------------
+ # 19. The final tool the second action started, and the connection it makes
+ #
+ # The process-create record of the tool is found by what the step returned.
+ # What is compared with the lineage and with the connection is its ProcessGuid.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== the final tool of the second action and its connection ===" -ForegroundColor Cyan
+
+ # --- fixture -------------------------------------------------------------------
+
+$TOOL_TOLD_AT = [datetime]::new(2030, 1, 1, 0, 5, 0, [System.DateTimeKind]::Utc)
+$TEST_APPROVAL = @{ target = $TEST_TARGET; port = $TEST_PORT; protocol = "TCP" }
+
+function Invoke-ToolIdentity {
+    <# Hold the given records to a tool that was told to start at 300 s and was ready a second later. #>
+    param([object[]]$Records, [int]$FinalPid = 4200, [AllowEmptyString()][string]$FinalProcessGuid = $FINAL_GUID,
+        [AllowNull()]$Approval = $TEST_APPROVAL)
+
+    return (Test-R1ToolConnectionIdentity -Records (ConvertTo-ParsedRecords $Records) -ComputerName $TEST_HOST `
+        -FinalPid $FinalPid -NotBefore $TOOL_TOLD_AT -NotAfter $TOOL_TOLD_AT.AddSeconds(1) `
+        -FinalProcessGuid $FinalProcessGuid -Approval $Approval)
+}
+
+function New-ToolRecords {
+    <# The records of an intact run, the final tool created 400 ms after it was told to start. #>
+    param([string]$FinalUtcTime = "", [switch]$NoConnection, [object[]]$Extra = @())
+    return (@(New-TimedRunRecords -FromBoot -IntermediateImage "cmd.exe" -ToolOffsetSec 300 -ConnectOffsetSec 480 `
+            -FinalToolUtcTime $FinalUtcTime -NoConnection:$NoConnection) + @($Extra))
+}
+
+function New-ToolConnection {
+    <# A connection to a destination, by the process with the given ProcessGuid. #>
+    param([int]$RecordId, [string]$ProcessGuid, [string]$Port = [string]$TEST_PORT)
+    return (New-TimedRecord $RecordId 3 "2030-01-01 00:08:00.700" ([ordered]@{
+        ProcessGuid = $ProcessGuid; ProcessId = "4200"; Image = "C:\synthetic\powershell.exe"
+        Protocol = "tcp"; DestinationIp = $TEST_TARGET; DestinationPort = $Port }))
+}
+
+function Assert-ToolMismatch {
+    param([string]$Name, $Found, [string]$ReasonLike)
+    Assert-True ("mismatched: " + $Name) (
+        $Found.status -eq "mismatched" -and ([string]$Found.reason -like $ReasonLike) -and
+        $null -eq $Found.connection_record_id)
+}
+
+ # --- failure cases: the record of the tool -----------------------------------------
+
+Assert-ToolMismatch "the final tool already existed when it was told to start" (
+    Invoke-ToolIdentity (New-ToolRecords -FinalUtcTime "2030-01-01 00:00:00.400")) `
+    "0 EID 1 record(s) with the process id the final tool reported (4200)*exactly one is the tool the launch action started"
+Assert-ToolMismatch "the final tool was created a millisecond before it was told to start" (
+    Invoke-ToolIdentity (New-ToolRecords -FinalUtcTime "2030-01-01 00:04:59.999")) "0 EID 1 record(s)*"
+Assert-ToolMismatch "the final tool was created after it had reported ready" (
+    Invoke-ToolIdentity (New-ToolRecords -FinalUtcTime "2030-01-01 00:05:01.001")) "0 EID 1 record(s)*"
+Assert-ToolMismatch "another process id was reported" (Invoke-ToolIdentity (New-ToolRecords) -FinalPid 4999) `
+    "0 EID 1 record(s) with the process id the final tool reported (4999)*"
+Assert-ToolMismatch "two records carry the reported process id in the time of the action" (
+    Invoke-ToolIdentity (New-ToolRecords -Extra @((New-TimedRecord 21 1 "2030-01-01 00:05:00.800" ([ordered]@{
+                    ProcessGuid = "{00000000-0000-0000-0000-000000000d00}"; ProcessId = "4200"
+                    Image = "C:\synthetic\powershell.exe"; ParentProcessGuid = $OUTSIDE_GUID }))))) `
+    "2 EID 1 record(s)*"
+Assert-ToolMismatch "the UtcTime of the record cannot be read" (
+    Invoke-ToolIdentity (New-ToolRecords -FinalUtcTime "2030-01-01T00:05:00.400Z")) `
+    "*has no readable EventData.UtcTime*TimeCreated is not used in its place*"
+Assert-ToolMismatch "the lineage of the run ends in another process" (
+    Invoke-ToolIdentity (New-ToolRecords) -FinalProcessGuid $INTERMEDIATE_GUID) `
+    ("the tool the launch action started has ProcessGuid " + $FINAL_GUID + ", the final tool of the lineage of this run is*")
+Assert-ToolMismatch "the lineage of the run gave no final tool" (Invoke-ToolIdentity (New-ToolRecords) -FinalProcessGuid "") `
+    "*the final tool of the lineage of this run is ''"
+
+ # --- failure cases: the connection ----------------------------------------------------
+
+Assert-ToolMismatch "the one connection to the destination carries another ProcessGuid" (
+    Invoke-ToolIdentity (New-ToolRecords -NoConnection -Extra @((New-ToolConnection 4 $INTERMEDIATE_GUID)))) `
+    ("0 of 1 connection(s) to the approved destination carry the ProcessGuid of the final tool*" + $FINAL_GUID + "*")
+Assert-ToolMismatch "no connection reaches the destination" (Invoke-ToolIdentity (New-ToolRecords -NoConnection)) `
+    "0 of 0 connection(s) to the approved destination carry the ProcessGuid of the final tool*"
+Assert-ToolMismatch "the tool connected to another port" (
+    Invoke-ToolIdentity (New-ToolRecords -NoConnection -Extra @((New-ToolConnection 4 $FINAL_GUID "9999")))) `
+    "0 of 0 connection(s)*"
+Assert-ToolMismatch "two connections carry the ProcessGuid of the tool" (
+    Invoke-ToolIdentity (New-ToolRecords -Extra @((New-ToolConnection 22 $FINAL_GUID)))) "2 of 2 connection(s)*"
+
+ # --- failure cases: whole runs -----------------------------------------------------------
+
+foreach ($runType in @("normal", "attack")) {
+    Assert-WmiFailedRun ("a " + $runType + " run whose final tool existed before its second action fails") `
+        @{ TelemetryFinalUtcTime = "2030-01-01 00:00:00.400" } `
+        "*tool identity check failed: 0 EID 1 record(s) with the process id the final tool reported*" `
+        "tool_identity" -RunType $runType | Out-Null
+}
+Assert-WmiFailedRun "a connection that another process reported is not the one of the run" @{ StatusPid = 4100 } `
+    "*the connection was reported by process id 4100, the final tool this run started is process id 4200*" `
+    "action:connect" | Out-Null
+Assert-WmiFailedRun "a connection that carries the ProcessGuid of the intermediate fails the run" `
+    @{ Records = (New-ToolRecords -NoConnection -Extra @((New-ToolConnection 4 $INTERMEDIATE_GUID))) } `
+    "*lineage check failed*no EID 3 with the final tool's ProcessGuid*" "lineage" | Out-Null
+$WMI_CALLS_UNTIL_TOOL = ($WMI_CALLS_UNTIL_LAUNCH -replace ",close$", "") + ",invoke:start_tool,close"
+Assert-WmiFailedRun "a final tool that reports no process id stops the run at its second action" `
+    @{ ToolFinalPid = $null } "*the final tool reported no usable process id*" "action:launch" `
+    -ExpectedCalls $WMI_CALLS_UNTIL_TOOL | Out-Null
+Assert-WmiFailedRun "an intermediate that does not start the final tool stops the run at its second action" `
+    @{ FailStep = "start_tool" } "*synthetic failure in step start_tool*" "action:launch" `
+    -ExpectedCalls $WMI_CALLS_UNTIL_TOOL | Out-Null
+Assert-WmiFailedRun "a second action whose stamp does not say UTC stops the run" `
+    @{ ToolActionUtc = "2030-01-01T00:05:00.000" } "*launch utc must be ISO 8601 UTC ending in 'Z'*" `
+    "action:launch" | Out-Null
+
+ # --- success cases ------------------------------------------------------------------------
+
+$toolFound = Invoke-ToolIdentity (New-ToolRecords)
+Assert-True "matched: the record of the tool, the lineage and the connection carry one ProcessGuid" (
+    $toolFound.status -eq "matched" -and $toolFound.tool_process_guid -ceq $FINAL_GUID -and
+    $toolFound.tool_record_id -ceq "3" -and $toolFound.connection_record_id -ceq "4")
+foreach ($edge in @("2030-01-01 00:05:00.000", "2030-01-01 00:05:01.000")) {
+    Assert-True ("matched: a tool created at the edge of its action belongs to it: " + $edge) (
+        (Invoke-ToolIdentity (New-ToolRecords -FinalUtcTime $edge)).status -eq "matched")
+}
+Assert-True "matched: a connection of another process does not change which one is the tool's" (
+    (Invoke-ToolIdentity (New-ToolRecords -Extra @((New-ToolConnection 23 $INTERMEDIATE_GUID)))).connection_record_id -ceq "4")
+$toolOnly = Invoke-ToolIdentity (New-ToolRecords -NoConnection) -Approval $null
+Assert-True "tool_only: without a requested connection the tool is still the one the action started" (
+    $toolOnly.status -eq "tool_only" -and $toolOnly.tool_process_guid -ceq $FINAL_GUID)
+
+Reset-Fakes
+$toolRunRoot = New-TempRoot
+$toolRun = Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $wmiScenarioPath -DataRoot $toolRunRoot `
+    -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport)
+Assert-True "run: the tool the second action started is the final tool of the lineage and made the connection" (
+    $toolRun.tool_identity.status -eq "matched" -and
+    $toolRun.tool_identity.tool_process_guid -ceq [string]$toolRun.lineage.final_process_guid -and
+    $toolRun.tool_identity.tool_process_guid -ceq $FINAL_GUID -and $toolRun.tool_identity.connection_record_id -ceq "4")
+$toolRows = @(Import-Csv -LiteralPath (Join-Path $toolRunRoot "ground_truth\RUN-20300101-001\execution_record.csv"))
+Assert-True "run: the four actions are recorded at their times, with the types that were decided" (
+    (@($toolRows | ForEach-Object { $_.action_id + "|" + $_.timestamp + "|" + $_.action_type }) -join ",") -ceq
+        ("A01|2030-01-01T00:00:00.000Z|wmi_process_create,A02|2030-01-01T00:05:00.000Z|process_create," +
+         "A03|2030-01-01T00:08:00.000Z|network_connection,A04|2030-01-01T00:12:00.000Z|run_end"))
+Assert-True "run: the second action hands the intermediate the word of the gate and waits for the tool" (
+    (@($script:FakeArguments["start_tool"].Keys | Sort-Object) -join ",") -ceq
+        "channel_dir,gate_timeout_sec,gate_word,ready_file,timeout_sec" -and
+    [string]$script:FakeArguments["start_tool"].gate_word -ceq "go" -and
+    (@($script:FakeArguments["launch_wmi"].Keys | Sort-Object) -join ",") -ceq "command_line,work_dir")
+$toolProvenance = Get-Content -LiteralPath $toolRun.collection_provenance -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True "run: in the provenance the connection carries the ProcessGuid of the final tool of the lineage" (
+    $toolProvenance.lineage.connection.process_guid -ceq $toolProvenance.lineage.records[0].process_guid -and
+    $toolProvenance.lineage.records[0].utc_time -ceq "2030-01-01 00:05:00.400" -and
+    $toolProvenance.lineage.records[1].utc_time -ceq "2030-01-01 00:00:00.200")
+
+ # ---------------------------------------------------------------------------
+ # 20. The end of a run through WMI
+ #
+ # The run ends the two processes it started, by process id, and nothing else.
+ # The provider host belongs to the target and is never ended.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== the end of a run through WMI ===" -ForegroundColor Cyan
+
+ # --- fixture -------------------------------------------------------------------
+
+function New-EndAnswer {
+    <# What the step that ends a run hands back when it ended what the run started. -Set replaces values. #>
+    param([hashtable]$Set = @{})
+
+    $answer = @{
+        utc           = "2030-01-01T00:12:00.000Z"
+        completed_utc = "2030-01-01T00:12:01.000Z"
+        ended         = @(
+            @{ process_id = 4100; image = "cmd.exe"; outcome = "exited_by_itself" },
+            @{ process_id = 4200; image = "powershell.exe"; outcome = "stopped" })
+        provider_host = @{ process_id = 900; name = "WmiPrvSE.exe"; running_before = $true; running_after = $true }
+    }
+    foreach ($name in $Set.Keys) { $answer[$name] = $Set[$name] }
+    return $answer
+}
+
+function Invoke-RunEnd {
+    param($Answer)
+    return (Get-R1RunEndResult -Ended $Answer -OwnedProcessIds ([int[]]@(4100, 4200)) -RootImage "WmiPrvSE.exe")
+}
+
+$OWNED_ENDED = @(
+    @{ process_id = 4100; image = "cmd.exe"; outcome = "exited_by_itself" },
+    @{ process_id = 4200; image = "powershell.exe"; outcome = "stopped" })
+$endRunText = $R1_REMOTE_STEPS["end_run"].ToString()
+
+ # --- failure cases: what the step may not have done -----------------------------------
+
+Assert-Throws "a step that ended the provider host is refused" {
+    Invoke-RunEnd (New-EndAnswer -Set @{ ended = ($OWNED_ENDED + @(@{ process_id = 900; image = "WmiPrvSE.exe"; outcome = "stopped" })) })
+} "*ended process id 900, which this run did not start: a run ends only what it started*"
+Assert-Throws "a step that ended any other process is refused" {
+    Invoke-RunEnd (New-EndAnswer -Set @{ ended = ($OWNED_ENDED + @(@{ process_id = 700; image = "svchost.exe"; outcome = "stopped" })) })
+} "*ended process id 700, which this run did not start*"
+Assert-Throws "a process of the run that turns out to be the root of the lineage is refused" {
+    Invoke-RunEnd (New-EndAnswer -Set @{ ended = @(
+            @{ process_id = 4100; image = "wmiprvse.exe"; outcome = "stopped" }, $OWNED_ENDED[1]) })
+} "*the root of the lineage belongs to the target, not to the run*"
+Assert-Throws "a provider host that was running before the step and is not after it is refused" {
+    Invoke-RunEnd (New-EndAnswer -Set @{ provider_host = @{
+            process_id = 900; name = "WmiPrvSE.exe"; running_before = $true; running_after = $false } })
+} "*the provider host (process id 900) was running before the run ended its processes and is not running after*"
+Assert-Throws "a provider host that is named as a process of the run is refused" {
+    Invoke-RunEnd (New-EndAnswer -Set @{ provider_host = @{
+            process_id = 4100; name = "WmiPrvSE.exe"; running_before = $true; running_after = $true } })
+} "*both as the provider host and as a process of the run*"
+foreach ($case in @(
+    @{ name = "says nothing about the provider host"; provider = $null },
+    @{ name = "states the provider host as text"; provider = @{ process_id = 900; running_before = "true"; running_after = "true" } },
+    @{ name = "does not say whether the provider host is running after"; provider = @{ process_id = 900; running_before = $true } })) {
+
+    Assert-Throws ("a step that " + $case.name + " is refused") {
+        Invoke-RunEnd (New-EndAnswer -Set @{ provider_host = $case.provider })
+    } "*did not state whether the provider host was running before and after it*"
+}
+foreach ($case in @(
+    @{ name = "only one of the two processes"; ended = @($OWNED_ENDED[1]) },
+    @{ name = "none of the processes"; ended = @() },
+    @{ name = "one process twice"; ended = @($OWNED_ENDED[1], $OWNED_ENDED[1]) })) {
+
+    Assert-Throws ("a step that accounts for " + $case.name + " is refused") {
+        Invoke-RunEnd (New-EndAnswer -Set @{ ended = $case.ended })
+    } "*the run_end step accounted for process id(s)*the run started 4100, 4200*"
+}
+foreach ($outcome in @("skipped", "", $null, "running")) {
+    Assert-Throws ("a process left with the outcome '" + [string]$outcome + "' is refused") {
+        Invoke-RunEnd (New-EndAnswer -Set @{ ended = @(
+                $OWNED_ENDED[0], @{ process_id = 4200; image = "powershell.exe"; outcome = $outcome }) })
+    } "*left process id 4200 with the outcome*a process of the run is ended or was already gone*"
+}
+Assert-Throws "a process named without a usable process id is refused" {
+    Invoke-RunEnd (New-EndAnswer -Set @{ ended = @($OWNED_ENDED[0], @{ process_id = "4200"; image = "powershell.exe"; outcome = "stopped" }) })
+} "*named a process without a usable process id*"
+Assert-Throws "a step whose stamp does not say UTC is refused" {
+    Invoke-RunEnd (New-EndAnswer -Set @{ utc = "2030-01-01T00:12:00.000" })
+} "*run_end utc must be ISO 8601 UTC ending in 'Z'*"
+
+ # --- failure cases: whole runs -------------------------------------------------------------
+
+$WMI_CALLS_UNTIL_END = ("open,invoke:probe,close,open,invoke:prepare,invoke:open_gate,invoke:launch_wmi," +
+    "invoke:start_tool,invoke:trigger,invoke:end_run,close")
+Assert-WmiFailedRun "a run whose end ended the provider host too fails" `
+    @{ EndRunEnded = ($OWNED_ENDED + @(@{ process_id = 900; image = "WmiPrvSE.exe"; outcome = "stopped" })) } `
+    "*ended process id 900, which this run did not start*" "action:run_end" -ExpectedCalls $WMI_CALLS_UNTIL_END | Out-Null
+Assert-WmiFailedRun "a run after whose end the provider host is gone fails" `
+    @{ EndRunProvider = @{ process_id = 900; name = "WmiPrvSE.exe"; running_before = $true; running_after = $false } } `
+    "*was running before the run ended its processes and is not running after*" "action:run_end" `
+    -ExpectedCalls $WMI_CALLS_UNTIL_END | Out-Null
+Assert-WmiFailedRun "a run whose end could not end its processes fails" @{ FailStep = "end_run" } `
+    "*synthetic failure in step end_run*" "action:run_end" -RunType "normal" -ExpectedCalls $WMI_CALLS_UNTIL_END | Out-Null
+
+ # --- success cases: the result -----------------------------------------------------------------
+
+$ended = Invoke-RunEnd (New-EndAnswer)
+Assert-True "a step that ended the two processes of the run and left the provider host running is accepted" (
+    @($ended.ended).Count -eq 2 -and $ended.provider_host.running_before -and $ended.provider_host.running_after -and
+    $ended.action_utc -ceq "2030-01-01T00:12:00.000Z" -and $ended.action_time.Kind -eq [System.DateTimeKind]::Utc)
+Assert-True "a provider host that was already gone before the step is not something the run did" (
+    (Invoke-RunEnd (New-EndAnswer -Set @{ provider_host = @{
+                process_id = $null; name = $null; running_before = $false; running_after = $false } })).provider_host.running_after -eq $false)
+Assert-True "processes that were already gone are accounted for as such" (
+    @((Invoke-RunEnd (New-EndAnswer -Set @{ ended = @(
+                    @{ process_id = 4100; image = "cmd.exe"; outcome = "already_exited" },
+                    @{ process_id = 4200; image = "powershell.exe"; outcome = "already_exited" }) })).ended).Count -eq 2)
+
+ # --- success cases: the step -------------------------------------------------------------------
+
+Assert-True "the step ends a process in one place, by its process id" (
+    [regex]::Matches($endRunText, 'Stop-Process').Count -eq 1 -and
+    $endRunText.Contains('Stop-Process -Id ([int]$Item.entry.process_id) -Force'))
+Assert-True "the step ends nothing by name, by parent or through another tool" (
+    $endRunText -notmatch 'Stop-Process -Name|Get-Process|taskkill|wmic|\.Terminate\(|\.Kill\(|Stop-Service|Stop-Computer|Restart-|WmiPrvSE')
+Assert-True "a process is shown to be the one the run started before anything is ended" (
+    $endRunText.IndexOf('is not the process this run started') -gt 0 -and
+    $endRunText.IndexOf('is not the process this run started') -lt $endRunText.IndexOf('Stop-Process') -and
+    $endRunText.IndexOf('is the provider host; a run does not end it') -lt $endRunText.IndexOf('Stop-Process'))
+Assert-True "no other step and no other part of the runner ends a process" (
+    [regex]::Matches($runnerText, 'Stop-Process|taskkill|\.Kill\(').Count -eq 1)
+
+ # --- success cases: a whole run ------------------------------------------------------------------
+
+Reset-Fakes
+$endRunRoot = New-TempRoot
+$endRun = Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $wmiScenarioPath -DataRoot $endRunRoot `
+    -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport)
+$endArguments = $script:FakeArguments["end_run"]
+$endOwned = @($endArguments.owned)
+Assert-True "run: the end is handed the two processes the run started, and nothing else" (
+    (@($endArguments.Keys | Sort-Object) -join ",") -ceq "owned,wait_sec" -and $endOwned.Count -eq 2 -and
+    [int]$endOwned[0].process_id -eq 4100 -and [string]$endOwned[0].image -ceq "cmd.exe" -and
+    [int]$endOwned[1].process_id -eq 4200 -and [string]$endOwned[1].image -ceq "powershell.exe")
+Assert-True "run: each of them is named with the action that started it, so another process with its id is not ended" (
+    [string]$endOwned[0].created_not_before_utc -ceq "2030-01-01T00:00:00.000Z" -and
+    [string]$endOwned[1].created_not_before_utc -ceq "2030-01-01T00:05:00.000Z")
+Assert-True "run: the root of the lineage is not among them" (
+    @($endOwned | Where-Object { [string]$_.image -eq "WmiPrvSE.exe" -or [int]$_.process_id -eq 900 }).Count -eq 0)
+Assert-True "run: the provider host is still running after the run ended its processes" (
+    $endRun.run_end.provider_host.running_before -and $endRun.run_end.provider_host.running_after -and
+    @($endRun.run_end.ended).Count -eq 2)
+Assert-True "run: the session is closed right after the end, and the run goes on to its collection" (
+    ($script:FakeCalls -join ",").Contains("invoke:end_run,close,open,invoke:export,") -and
+    (Get-CallCount "open") -eq (Get-CallCount "close") -and (Get-CallCount "invoke:end") -eq 0)
+Assert-True "run: the end is recorded as the fourth action, 720 s into the run" (
+    @(Import-Csv -LiteralPath (Join-Path $endRunRoot "ground_truth\RUN-20300101-001\execution_record.csv") |
+        Where-Object { $_.action_id -ceq "A04" -and $_.action_type -ceq "run_end" -and
+            $_.timestamp -ceq "2030-01-01T00:12:00.000Z" }).Count -eq 1)
+
+ # The session entry ends as it always did: its last action closes the session.
+Reset-Fakes
+Invoke-FakeRun -RunType "attack" -ScenarioPath $goodScenario -DataRoot (New-TempRoot) -Transport (New-FakeTransport) | Out-Null
+Assert-True "the session entry is not given an end of this kind" (
+    (Get-CallCount "invoke:end") -eq 1 -and -not ($script:FakeCalls -contains "invoke:end_run") -and
+    -not ($script:FakeCalls -contains "invoke:open_gate") -and -not ($script:FakeCalls -contains "invoke:start_tool"))
+
+ # ---------------------------------------------------------------------------
+ # 21. The four steps of a run through WMI, as the runner reads them
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== the four steps of a run through WMI ===" -ForegroundColor Cyan
+
+ # --- fixture -------------------------------------------------------------------
+
+function Set-WmiAction {
+    <# Change one value of one action of one run of the fixture. #>
+    param($Scenario, [string]$OfRun, [int]$Index, [string]$Name, $Value)
+    $Scenario.runs.$OfRun.actions[$Index].$Name = $Value
+}
+
+$startToolText = $R1_REMOTE_STEPS["start_tool"].ToString()
+$startToolLines = @($startToolText -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+
+ # --- failure cases ---------------------------------------------------------------
+
+foreach ($whichRun in @("normal", "attack")) {
+    foreach ($case in @(
+        @{ name = "records its launch as a plain process create"; index = 0; type = "process_create"; step = "invoke" },
+        @{ name = "records the start of its tool as a launch through WMI"; index = 1; type = "wmi_process_create"; step = "launch" },
+        @{ name = "records its connection as a process create"; index = 2; type = "process_create"; step = "connect" },
+        @{ name = "records its end as a process termination"; index = 3; type = "process_terminate"; step = "run_end" },
+        @{ name = "records its end as a session action"; index = 3; type = "remote_session"; step = "run_end" })) {
+
+        Assert-Throws ("a " + $whichRun + " run through WMI that " + $case.name + " is refused") {
+            Get-R1CollectionProfile -Scenario (New-WmiScenarioObject -Change {
+                    param($s) Set-WmiAction $s $whichRun $case.index "action_type" $case.type })
+        } ("*runs." + $whichRun + ": the " + $case.step + " action of a wmi_process scenario is recorded as*")
+    }
+    Assert-Throws ("a " + $whichRun + " run through WMI with a step of the session entry is refused") {
+        Get-R1CollectionProfile -Scenario (New-WmiScenarioObject -Change {
+                param($s) Set-WmiAction $s $whichRun 1 "step" "prepare" })
+    } ("*runs." + $whichRun + " steps must be invoke, launch, connect, run_end in that order*")
+    Assert-Throws ("a " + $whichRun + " run through WMI without its end is refused") {
+        Get-R1CollectionProfile -Scenario (New-WmiScenarioObject -Change {
+                param($s) $s.runs.$whichRun.actions = @($s.runs.$whichRun.actions | Select-Object -First 3) })
+    } ("*runs." + $whichRun + " steps must be invoke, launch, connect, run_end in that order*")
+}
+Reset-Fakes
+$fiveStepRoot = New-TempRoot
+Assert-Throws "a scenario through WMI that keeps the five steps of the session entry starts nothing" {
+    $fiveSteps = New-WmiScenarioObject -Change { param($s) $s.runs = (New-ScenarioObject).runs }
+    Invoke-FakeCollectionRun -ScenarioPath (Save-Scenario $fiveSteps) -DataRoot $fiveStepRoot `
+        -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport) -Rehearsal
+} "*steps must be invoke, launch, connect, run_end in that order*"
+Assert-True "  ... no session, no file" (
+    $script:FakeCalls.Count -eq 0 -and @(Get-ChildItem -LiteralPath $fiveStepRoot -Recurse -Force).Count -eq 0)
+Assert-Throws "a scenario of the session entry that takes the four steps is refused as it always was" {
+    $fourSteps = New-ScenarioObject
+    $fourSteps.runs = (New-WmiScenarioObject).runs
+    Invoke-FakeRun -ScenarioPath (Save-Scenario $fourSteps) -DataRoot (New-TempRoot) -Transport (New-FakeTransport) -DryRun
+} "*must be the steps session_begin, prepare, launch, connect, session_end in that order*"
+
+ # --- success cases ---------------------------------------------------------------
+
+$fourStepProfile = Get-R1CollectionProfile -Scenario (New-WmiScenarioObject)
+Assert-True "the runner reads four steps for an entry through WMI and five for the session entry" (
+    (@($fourStepProfile.step_order) -join ",") -ceq "invoke,launch,connect,run_end" -and
+    (@((Get-R1CollectionProfile -Scenario (New-ScenarioObject)).step_order) -join ",") -ceq
+        "session_begin,prepare,launch,connect,session_end")
+
+ # The second action: its time is taken right before the intermediate is told.
+$wordAt = -1
+for ($index = 0; $index -lt $startToolLines.Count; $index++) {
+    if ($startToolLines[$index] -ceq '$gate.Write($word, 0, $word.Length)') { $wordAt = $index }
+}
+Assert-True "the time of the second action is taken as UTC on the line right before the word is written" (
+    $wordAt -gt 0 -and
+    $startToolLines[$wordAt - 1] -ceq '$utc = (Get-Date).ToUniversalTime().ToString($stampFormat)' -and
+    $startToolText -match '\$stampFormat = "yyyy-MM-ddTHH:mm:ss\.fffZ"')
+Assert-True "the second action waits for an intermediate that is at the gate, and gives up when none comes" (
+    $startToolText -match 'BeginWaitForConnection' -and $startToolText -match 'AsyncWaitHandle\.WaitOne' -and
+    $startToolText -match 'did not come to the gate' -and $startToolText -match '\$gate\.Dispose\(\)')
+Assert-True "the second action starts nothing itself: only the intermediate starts the final tool" (
+    $startToolText -notmatch 'Start-Process|Invoke-CimMethod|Win32_Process|ProcessStartInfo|cmd\.exe|powershell\.exe')
+Assert-True "the runner calls WMI to create a process in one place only: the first action" (
+    [regex]::Matches($runnerText, 'Invoke-CimMethod').Count -eq 1 -and
+    [regex]::Matches($runnerText, '-MethodName Create').Count -eq 1 -and
+    $runnerText -notmatch 'Invoke-WmiMethod|\[wmiclass\]|wmic\.exe|ManagementClass')
+
+ # The end of the run: the condition that ties a process id to the run.
+Assert-True "the end holds each process to the program and to the action that started it before it ends anything" (
+    $endRunText.Contains('if ([string]$found.Name -ine [string]$entry.image -or $createdAt -lt $notBefore) {') -and
+    $endRunText.Contains('if ($null -ne $provider.process_id -and [int]$item.entry.process_id -eq $provider.process_id) {') -and
+    $endRunText.Contains('if ($owned.Count -ne 2) {'))
+
+ # ---------------------------------------------------------------------------
+ # 22. The registered policies a rendered scenario carries
+ #
+ # The runner cannot read the registries. It holds the block the renderer wrote
+ # to the scenario it is in, uses the window it states and copies it into the
+ # provenance; the validator resolves the names again through the loaders.
+ # ---------------------------------------------------------------------------
+
+Write-Host "`n=== the policies a rendered scenario carries ===" -ForegroundColor Cyan
+
+ # --- fixture -------------------------------------------------------------------
+
+function Invoke-PolicyProvenance {
+    <# Read the policy provenance of the fixture after -Change edited the scenario. #>
+    param([scriptblock]$Change)
+    $changed = New-WmiScenarioObject -Change $Change
+    return (Get-R1PolicyProvenance -Scenario $changed -CollectionProfile (Get-R1CollectionProfile -Scenario $changed))
+}
+
+ # --- failure cases -----------------------------------------------------------------
+
+Assert-Throws "a scenario through WMI that carries no policy provenance is refused" {
+    Invoke-PolicyProvenance { param($s) $s.PSObject.Properties.Remove("policy_provenance") }
+} "*policy_provenance is missing from the scenario*"
+foreach ($mode in @("dry run", "rehearsal", "collection")) {
+    Reset-Fakes
+    $withoutRoot = New-TempRoot
+    $withoutPath = Save-Scenario (New-WmiScenarioObject -Change { param($s) $s.PSObject.Properties.Remove("policy_provenance") })
+    Assert-Throws ("without the policy provenance a " + $mode + " starts nothing") {
+        Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $withoutPath -DataRoot $withoutRoot `
+            -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport) `
+            -DryRun:($mode -eq "dry run") -Rehearsal:($mode -eq "rehearsal")
+    } "*policy_provenance is missing from the scenario*"
+    Assert-True ("  ... no session, no file (" + $mode + ")") (
+        $script:FakeCalls.Count -eq 0 -and @(Get-ChildItem -LiteralPath $withoutRoot -Recurse -Force).Count -eq 0)
+}
+
+foreach ($case in @(
+    @{ name = "of another reference policy version"; like = "*policy_provenance.reference.version is*run_metadata.reference_policy_version is*"
+       change = { param($s) $s.policy_provenance.reference.version = "another-version" } },
+    @{ name = "of another reference action"; like = "*policy_provenance.reference.reference_action_id is 'A02'*"
+       change = { param($s) $s.policy_provenance.reference.reference_action_id = "A02" } },
+    @{ name = "of another horizon"; like = "*policy_provenance.reference.expected_evaluation_horizon_sec is '900'*"
+       change = { param($s) $s.policy_provenance.reference.expected_evaluation_horizon_sec = 900 } },
+    @{ name = "about another program"; like = "*reference_process_name is 'wscript.exe', the attack run is planned to start 'cmd.exe'*"
+       change = { param($s) $s.policy_provenance.reference.reference_process_name = "wscript.exe" } },
+    @{ name = "of another family"; like = "*policy_provenance.reference.family_id is 'remote_management'*"
+       change = { param($s) $s.policy_provenance.reference.family_id = "remote_management" } },
+    @{ name = "whose approved policy is of another family"; like = "*policy_provenance.approved_lineage.family_id is 'remote_management'*"
+       change = { param($s) $s.policy_provenance.approved_lineage.family_id = "remote_management" } },
+    @{ name = "with a window of zero seconds"; like = "*states no usable window*"
+       change = { param($s) $s.policy_provenance.reference.candidate_window_sec = 0 } },
+    @{ name = "with a window stated as text"; like = "*states no usable window*"
+       change = { param($s) $s.policy_provenance.reference.candidate_window_sec = "2" } },
+    @{ name = "with a window that starts before the call"; like = "*states no usable window*"
+       change = { param($s) $s.policy_provenance.reference.candidate_start_offset_sec = -2 } },
+    @{ name = "with a window that ends before it starts"; like = "*states no usable window*"
+       change = { param($s) $s.policy_provenance.reference.candidate_start_offset_sec = 5 } },
+    @{ name = "without a window"; like = "*policy_provenance.reference is missing: candidate_window_sec*"
+       change = { param($s) $s.policy_provenance.reference.PSObject.Properties.Remove("candidate_window_sec") } },
+    @{ name = "that does not require a process id"; like = "*require_process_id must be true*"
+       change = { param($s) $s.policy_provenance.reference.require_process_id = $false } },
+    @{ name = "whose hash is not a hash"; like = "*policy_provenance.reference.config_hash is not a SHA-256*"
+       change = { param($s) $s.policy_provenance.reference.config_hash = "pending" } },
+    @{ name = "whose approved hash is in upper case"; like = "*policy_provenance.approved_lineage.config_hash is not a SHA-256*"
+       change = { param($s) $s.policy_provenance.approved_lineage.config_hash = ("A1" * 32) } },
+    @{ name = "without the path of its configuration"; like = "*policy_provenance.reference.config_path must be a non-blank string*"
+       change = { param($s) $s.policy_provenance.reference.config_path = "" } },
+    @{ name = "without its approved lineage policy"; like = "*policy_provenance is missing: approved_lineage*"
+       change = { param($s) $s.policy_provenance.PSObject.Properties.Remove("approved_lineage") } },
+    @{ name = "with a key the block does not have"; like = "*policy_provenance.reference states unknown key*"
+       change = { param($s) $s.policy_provenance.reference | Add-Member -NotePropertyName "approved" -NotePropertyValue $true } })) {
+
+    Assert-Throws ("a policy provenance " + $case.name + " is refused") { Invoke-PolicyProvenance $case.change } $case.like
+}
+
+ # The window is the one the scenario was rendered with. With one second the
+ # record written 1.5 s after the call is not the created process; with two it is.
+$lateRecords = @(New-TimedRunRecords -FromBoot -IntermediateImage "cmd.exe" -ToolOffsetSec 300 -ConnectOffsetSec 480 `
+    -IntermediateUtcTime "2030-01-01 00:00:01.500")
+$oneSecondPath = Save-Scenario (New-WmiScenarioObject -Change { param($s) $s.policy_provenance.reference.candidate_window_sec = 1 })
+Reset-Fakes @{ Records = $lateRecords }
+$oneSecondRoot = New-TempRoot
+Assert-Throws "with a window of one second a record written 1.5 s after the call is not the created process" {
+    Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $oneSecondPath -DataRoot $oneSecondRoot `
+        -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport)
+} "*created process undetermined: no EID 1 of cmd.exe*2030-01-01T00:00:00.000Z .. 2030-01-01T00:00:01.000Z*"
+Assert-True "  ... and the run leaves no file of a completed run" (
+    Test-SuccessArtifactsAbsent -Root $oneSecondRoot -RunId "RUN-20300101-001")
+
+ # --- success cases ---------------------------------------------------------------
+
+$carried = Invoke-PolicyProvenance $null
+Assert-True "the block of the fixture is accepted as it is" (
+    $carried.reference.policy_id -ceq "synthetic-reference" -and [int]$carried.reference.candidate_window_sec -eq 2 -and
+    $carried.approved_lineage.policy_id -ceq "synthetic-approved-lineage")
+Assert-True "a scenario of the session entry carries none and needs none" (
+    $null -eq (Get-R1PolicyProvenance -Scenario (New-ScenarioObject) `
+            -CollectionProfile (Get-R1CollectionProfile -Scenario (New-ScenarioObject))))
+
+Reset-Fakes @{ Records = $lateRecords }
+$twoSecondRun = Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $wmiScenarioPath -DataRoot (New-TempRoot) `
+    -ReadinessRecordPath $readinessPath -Transport (New-CollectionFakeTransport)
+$twoSecondProvenance = Get-Content -LiteralPath $twoSecondRun.collection_provenance -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True "with the window of two seconds the same record is the created process and the reference" (
+    $twoSecondRun.reference.reference_time -ceq "2030-01-01T00:00:01.500Z" -and
+    $twoSecondProvenance.created_process.window_end_utc -ceq "2030-01-01T00:00:02.000Z")
+Assert-True "the sidecar links to the canonical artifact by policy identity and copies no policy block" (
+    $twoSecondProvenance.canonical_provenance_linkage.reference_policy_id -ceq
+        [string](New-WmiScenarioObject).policy_provenance.reference.policy_id -and
+    $twoSecondProvenance.canonical_provenance_linkage.reference_policy_config_hash -ceq
+        [string](New-WmiScenarioObject).policy_provenance.reference.config_hash -and
+    -not (@($twoSecondProvenance.PSObject.Properties.Name) -contains "policy_provenance"))
+Assert-True "the runner states no hash and no window of its own: both come from the scenario" (
+    $runnerText -notmatch '[0-9a-f]{64}' -and $runnerText -notmatch 'candidate_window_sec\s*=\s*[0-9]')
+
+Reset-Fakes
+$policyDry = Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $wmiScenarioPath -DataRoot (New-TempRoot) -DryRun
+Assert-True "a dry run of a scenario that carries its policies still shows its plan" (
+    $policyDry.mode -eq "dry_run" -and $script:FakeCalls.Count -eq 0)
 
 Write-Host ""
 if ($script:Failures -eq 0) {

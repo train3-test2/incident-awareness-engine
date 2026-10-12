@@ -698,3 +698,48 @@ R1 의 로컬 실험 환경과 수집은 역할 4 가, AWS 쪽 입력 · 실행 
   그 값이다. 실제 값은 저장소에 두지 않는다.
 - §8 의 rehearsal 과 거기서 확인하는 가정(실험 VM 정책, Sysmon 수집, 내부 연결)도 역할 4 가 맡는다.
 - 이 폴더의 스크립트는 AWS 를 호출하지 않으며, 역할 3 이 맡는 항목을 입력으로 받지 않는다.
+
+## 11. 다른 진입 방식의 scenario (`wmi_management`) — 정적 구현, 수집 전
+
+§1 ~ §10 은 `scenarios/R1/scenario.yaml`(`remote_management`)의 계약이고 그대로 유효하다. scenario 는 선택 블록
+(`planned_lineage.entry`, `collection`, `reference_rule`, `policies`)으로 다른 진입 방식을 적을 수 있다. 블록을 적지
+않은 scenario 는 지금까지와 똑같이 렌더링 · 실행 · 검증된다. 규칙과 근거, 미정 값은
+[`docs/scenarios/r1-collection-profile.md`](../../docs/scenarios/r1-collection-profile.md) 가 정본이다.
+
+`scenarios/R1/scenario.wmi-management.template.yaml` 은 **템플릿**이다. 확정된 네 action(`01`~`04`, offset
+0 / 300 / 480 / 720 초, Run 길이 780 초, reference action `A01`)과 등록된 두 정책의 이름을 적었다. 정책의 hash 와
+후보 window 는 적지 않으며, 렌더러가 registry loader 로 읽어 렌더링 결과의 `policy_provenance` 에 넣는다. 그래서
+loader 를 import 할 수 있는 환경(최신 develop, Python 3.12 이상)에서만 렌더링된다. 이 파일로 수집한 Run 은 없고,
+Run ID · Pair ID 도 발급하지 않았다.
+
+| 항목 | `remote_management` | `wmi_management` (템플릿) |
+| --- | --- | --- |
+| 중간 프로세스를 시작하는 것 | 세션 host | WMI provider host (세션은 호출만 한다) |
+| raw export 의 시작 | Run 시작 − 10 초 | Target-A 부팅 시각. Run 시작 전 레코드는 모두 context 이고 계보 복원에만 쓴다 |
+| readiness | 실행 입력 없음 | `-ReadinessRecordPath`: 호스트에서 만든 out-of-band 기록. Run 전에 Target-A 에서 목적지로 연결하지 않는다 |
+| action | 다섯(세션 수립 · 준비 · 실행 · 연결 · 세션 종료) | 넷: `invoke`(WMI 로 중간 프로세스만 시작, 0 초) · `launch`(그 중간 프로세스가 도구 시작, 300 초) · `connect`(480 초) · `run_end`(720 초). 세션 수립과 준비는 action 이 아니다. step 이름은 내부 식별자이고 계약값은 action_type 이다 |
+| reference 를 얻는 action | `session_begin` (세션 host 의 EID 1) | 첫 action `invoke` 가 만든 프로세스의 EID 1. 호출 반환값이 0 이고 PID 가 있을 때만 성공. 레코드는 Image · 정책의 window · context 인 provider host 를 부모로 가진 것 하나로 정하고, PID 는 정한 뒤에 대조한다 |
+| 첫 action 이 만든 프로세스 | — | Normal · Attack 모두 하나로 정해져야 Run 이 성립한다 |
+| 등록된 정책 | scenario 의 `reference_policy_version` 만 | 렌더링된 `policy_provenance`(approved lineage policy · reference policy 의 ID · version · hash · window). 없으면 dry run 도 시작하지 않는다 |
+| 최종 도구를 시작하는 시점 | 중간 프로세스가 곧바로 | 중간 프로세스가 300 초 뒤, Run 이 신호를 줄 때(Target-A 의 로컬 pipe 에서 대기) |
+| Run 의 끝 | 세션을 닫으면 세션이 시작한 프로세스가 끝난다 | Run 이 시작한 두 프로세스만 PID 로 종료한다. `WmiPrvSE.exe` 는 끝내지 않는다 |
+| `ObservationSec` | horizon 이상 | 780. (reference action 의 offset + horizon) 이상이어야 하고 scenario 가 적은 값과 같아야 한다 |
+| operator trace | `r1_run_trace.json`, `scenario.json` | + 수집 시 Role4 sidecar `r1_wmi_collection_context.json`(schema `r1-wmi-collection-context`), `r1_readiness_record.json`. Role2 canonical `r1_collection_provenance.json`은 이후 Evidence 단계에서 같은 Run 폴더에 별도로 생성한다. 실패하면 `r1_run_failure.json` |
+
+실패한 Run 은 어느 scenario 든 `execution_record.csv` · `run_metadata.json` · `manifest.json` 을 남기지 않는다(§5).
+`r1_run_failure.json` 은 기존 계약에 없는 진단 기록이다(`record_kind: diagnostic`, `canonical_artifact: false`).
+Ground Truth 도 Run 의 결과도 아니다.
+
+readiness 기록은 `scenarios/R1/host/r1_readiness.ps1` 로 만든다. hypervisor 도구의 읽기 전용 호출과 VM 설정 파일만
+읽고, guest 에 로그인하거나 VM 을 시작 · 종료 · 복원하지 않으며, 연결을 열지 않는다. 주소와 경로는 모두 인자이고
+저장소에 두지 않는다. 목적지 listener 가 연결을 받는지는 scenario 의 connect action 만이 확인한다: 그 연결이 없으면
+Run 은 실패하고, 같은 부팅에서 다시 시도하지 않는다.
+
+**검증 상태.** Python 쪽(프로필 · window · 검증기 · 렌더러)과 실행기의 WMI 경로 · 호스트 블록 모두 합성 fixture 로
+테스트한다(`tests/Test-R1RunGuards.ps1` 10 ~ 22 번 구간, `r1-collection-profile.md` §10). 그래도 이 경로는 아직
+Pilot 실행 준비가 된 것이 아니다. 후보 구간은 canonical `wmi-ref-v0.1` 의 `[A01, A01 + 2 초]`(양끝 포함)로 확정했고
+(`±2 초` 표현 폐기), 수집 provenance 를 Role2 canonical `r1_collection_provenance.json` 과 분리해 Role4 sidecar
+`r1_wmi_collection_context.json` 로 바꿨다. 수집은 sidecar 만 봉인하고 Role2 Evidence 단계가 canonical 을 같은
+`operator_trace/<run_id>/` 에 만든 뒤 post-Evidence 검증이 둘을 대조한다. raw manifest 는 telemetry 전용이라 이 두
+파일을 목록화하지 않는다. 남은 것: Python 3.13
+공식 검증, 실제 scenario 의 dry-run, VM rehearsal. 원격 step 본문과 300 초 대기 장치를 실제 세션에서 돌린 적이 없다.

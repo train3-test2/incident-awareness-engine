@@ -82,10 +82,25 @@ gives. Ground Truth times are only checked against each other.
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PureWindowsPath
 
+from incident_awareness.collection.collector.sysmon_jsonl import read_sysmon_jsonl
+from incident_awareness.collection.r1_collection_profile import (
+    ENTRY_WMI_PROCESS,
+    REFERENCE_SOURCE_WMI_CREATED,
+    R1CollectionProfile,
+    R1CollectionProfileError,
+    R1ReferenceRule,
+    check_run_steps,
+    read_collection_profile,
+)
+from incident_awareness.collection.r1_collection_window import (
+    PROVENANCE_FILENAME,
+    R1ProvenanceInputs,
+    check_collection_provenance,
+)
 from incident_awareness.collection.r1_destination import (
     validate_internal_port,
     validate_internal_target,
@@ -111,6 +126,11 @@ from incident_awareness.collection.r1_pair_identity import (
     R1PairIdentityError,
     read_dataset_tier,
     read_pair_identity,
+)
+from incident_awareness.collection.r1_policy_provenance import (
+    POLICIES_KEY,
+    POLICY_PROVENANCE_KEY,
+    check_policy_provenance,
 )
 
 # The contract checks below are the S0 ones, reused as issue #73 asks. They only
@@ -144,8 +164,12 @@ EVENT_UTC_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 CONNECTION_PROTOCOL = "tcp"
 PLANNED_LINEAGE_KEY = "planned_lineage"
 LINEAGE_ROLES = ("final tool", "intermediate", "session host")
+# What the third node is called when the scenario states an entry whose root is
+# not the session host.
+LINEAGE_ROOT_ROLE = "lineage root"
 REFERENCE_FIELDS = ("reference_time", "reference_action_id", "reference_source_event_id")
 WMI_REFERENCE_CANDIDATE_WINDOW_SEC = 2
+WMI_FAMILY_ID = "wmi_management"
 IDENTITY_FIELDS = ("family_id", "variation_id", "repetition")
 # What a Pair states once, at the top level of its rendered scenario, for both
 # of its runs. The renderer and the runner refuse a run block that states one of
@@ -204,14 +228,21 @@ class R1PilotExpectation:
     reference_action_id: str | None
     evaluation_horizon_sec: int
     reference_policy_version: str | None
+    profile: R1CollectionProfile
+    # The parsed scenario: the policies it names are resolved from it again.
+    scenario: dict = field(default_factory=dict, compare=False, repr=False)
 
     @property
     def images(self) -> tuple[str, ...]:
-        """Lowercased file names, closest first: the order a parent walk returns."""
+        """Lowercased file names, closest first: the order a parent walk returns.
+
+        The third is the root of the planned lineage. That is the session host
+        unless the scenario states another entry.
+        """
         return (
             self.final_image.lower(),
             self.intermediate_image.lower(),
-            self.session_host_image.lower(),
+            self.profile.root_image.lower(),
         )
 
 
@@ -222,6 +253,7 @@ class R1ObservedLineage:
     host: str
     nodes: tuple[ProcessRecord, ...]
     connections: tuple[ConnectionRecord, ...]
+    roles: tuple[str, ...] = LINEAGE_ROLES
 
     @property
     def process_guids(self) -> tuple[str, ...]:
@@ -464,6 +496,11 @@ def _read_expectation(scenario_bytes: bytes, run_type: str) -> R1PilotExpectatio
     identity = _load_identity(scenario)
     actions = _load_actions(run, f"runs.{run_type}")
     run_metadata = _mapping(scenario.get("run_metadata"), "run_metadata")
+    session_host_image = _text(
+        _mapping(lineage.get("session_host"), f"{key}.session_host").get("image"),
+        f"{key}.session_host.image",
+    )
+    profile = _load_profile(scenario)
 
     return R1PilotExpectation(
         target_host=_text(run_metadata.get("target_host"), "run_metadata.target_host"),
@@ -472,10 +509,7 @@ def _read_expectation(scenario_bytes: bytes, run_type: str) -> R1PilotExpectatio
             f"{key}.final_tool.image",
         ),
         intermediate_image=_text(intermediate.get("image"), f"{key}.intermediate.{run_type}.image"),
-        session_host_image=_text(
-            _mapping(lineage.get("session_host"), f"{key}.session_host").get("image"),
-            f"{key}.session_host.image",
-        ),
+        session_host_image=session_host_image,
         actions=actions,
         destination_ip=destination_ip,
         destination_port=destination_port,
@@ -485,20 +519,53 @@ def _read_expectation(scenario_bytes: bytes, run_type: str) -> R1PilotExpectatio
             run,
             run_type,
             actions,
-            identity.family_id,
+            profile.reference_rule,
+            _reads_wmi_by_family(scenario, identity.family_id),
         ),
         evaluation_horizon_sec=_load_horizon(scenario),
         reference_policy_version=_load_reference_policy_version(scenario, run_metadata),
+        profile=profile,
+        scenario=scenario,
     )
+
+
+def _load_profile(scenario: dict) -> R1CollectionProfile:
+    """How the scenario says its raw telemetry is collected, held to its reference rule."""
+    try:
+        profile = read_collection_profile(scenario)
+        check_run_steps(scenario, profile)
+    except R1CollectionProfileError as error:
+        raise R1ScenarioError(str(error)) from error
+    return profile
+
+
+def _reads_wmi_by_family(scenario: dict, family_id: str) -> bool:
+    """Whether a scenario is read as a WMI scenario by its family alone.
+
+    A scenario that states `planned_lineage.entry` is read by the blocks it
+    states, whatever its family. One of the family `wmi_management` that states
+    no entry is read by the family: its reference is the action `A01` and the
+    intermediate attributed to it.
+    """
+    lineage = scenario.get(PLANNED_LINEAGE_KEY)
+    states_entry = isinstance(lineage, dict) and "entry" in lineage
+    return family_id == WMI_FAMILY_ID and not states_entry
 
 
 def _load_reference_action(
     run: dict,
     run_type: str,
     actions: tuple[R1ScenarioAction, ...],
-    family_id: str,
+    rule: R1ReferenceRule,
+    wmi_by_family: bool,
 ) -> str | None:
-    """Load the family-specific attack reference, or require no normal reference."""
+    """The reference action of one run type: none for a normal run, one action for an attack run.
+
+    Which step an attack run takes its reference from is the reference rule of
+    the scenario: the session action unless the scenario states another entry.
+    A scenario of the WMI family that states no entry is read by its family:
+    its reference action is `A01`, recorded as `wmi_process_create`.
+    """
     stated = run.get("reference_action_id")
     if run_type != "attack":
         if stated is not None:
@@ -508,7 +575,7 @@ def _load_reference_action(
             )
         return None
 
-    if family_id == "wmi_management":
+    if wmi_by_family:
         a01 = [action for action in actions if action.action_id == "A01"]
         if stated != "A01":
             raise R1ScenarioError(
@@ -520,12 +587,13 @@ def _load_reference_action(
             )
         return "A01"
 
-    begin = [action.action_id for action in actions if action.step == REFERENCE_STEP]
+    step = rule.action_step
+    begin = [action.action_id for action in actions if action.step == step]
     if len(begin) != 1:
-        raise R1ScenarioError(f"runs.attack.actions must hold exactly one {REFERENCE_STEP!r} step")
+        raise R1ScenarioError(f"runs.attack.actions must hold exactly one {step!r} step")
     if stated != begin[0]:
         raise R1ScenarioError(
-            f"runs.attack.reference_action_id must be the {REFERENCE_STEP} action {begin[0]!r}, "
+            f"runs.attack.reference_action_id must be the {step} action {begin[0]!r}, "
             f"found {stated!r}"
         )
     return begin[0]
@@ -1019,17 +1087,27 @@ def _check_reference(
     if metadata.reference_action_id != expectation.reference_action_id:
         return
 
-    reference_node = (
-        report.lineage.nodes[1]
-        if expectation.identity.family_id == "wmi_management"
-        else report.lineage.nodes[-1]
-    )
-    role = (
-        "A01-attributed intermediate"
-        if expectation.identity.family_id == "wmi_management"
-        else "session host"
-    )
-    described = f"the EID 1 of the {role} of this run ({reference_node.key.process_guid})"
+    # Which node of the lineage the reference is. A scenario that states its
+    # entry is read by its reference rule: the session host the session action
+    # created, or the process the invoke action created through WMI, which is
+    # the intermediate. A scenario of the WMI family that states no entry is
+    # read by its family: the intermediate attributed to A01.
+    wmi_by_family = _reads_wmi_by_family(expectation.scenario, expectation.identity.family_id)
+    if wmi_by_family:
+        reference_node = report.lineage.nodes[1]
+        role = "A01-attributed intermediate"
+        described = f"the EID 1 of the {role} of this run ({reference_node.key.process_guid})"
+    elif expectation.profile.reference_rule.source == REFERENCE_SOURCE_WMI_CREATED:
+        reference_node = report.lineage.nodes[1]
+        described = (
+            "the EID 1 of the process the reference action created through WMI "
+            f"({reference_node.key.process_guid})"
+        )
+        role = "the process its reference action created"
+    else:
+        reference_node = report.lineage.nodes[-1]
+        described = f"the EID 1 of the session host of this run ({reference_node.key.process_guid})"
+        role = "its session host"
     before = len(report.errors)
 
     if (
@@ -1060,7 +1138,7 @@ def _check_reference(
         )
 
     if len(report.errors) == before:
-        if expectation.identity.family_id == "wmi_management":
+        if wmi_by_family:
             report.passed(
                 f"the reference of the run is {described}: RecordId "
                 f"{reference_node.record_id}, ProcessGuid {reference_node.key.process_guid}, "
@@ -1068,7 +1146,7 @@ def _check_reference(
             )
         else:
             report.passed(
-                "the reference of the run is the EID 1 of its session host: RecordId "
+                f"the reference of the run is the EID 1 of {role}: RecordId "
                 f"{reference_node.record_id}, ProcessGuid {reference_node.key.process_guid}, "
                 f"EventData.UtcTime {reference_node.event_utc_time}"
             )
@@ -1112,6 +1190,71 @@ def _check_reference(
         report.passed(
             f"the collection reached the evaluation horizon: end_time is {observed:.3f} s after "
             f"reference_time, the horizon is {horizon} s"
+        )
+
+
+# Which action of a run through WMI creates which process of its lineage, and
+# the action that follows it. A process is created by its action: not before
+# that action was started and not after the next one was.
+_WMI_STEP_OF_PROCESS = (
+    ("intermediate", 1, "invoke", "launch"),
+    ("final tool", 0, "launch", "connect"),
+)
+
+
+def _check_step_times(
+    records: list[ExecutionRecordRow],
+    expectation: R1PilotExpectation,
+    report: R1PilotValidationReport,
+) -> None:
+    """Hold the two processes a run through WMI starts to the actions that start them.
+
+    The invoke action creates the intermediate and, later, the launch
+    action makes it start the final tool. The connection of the run is then
+    made by that instance of the final tool, which the lineage check holds by
+    ProcessGuid. Here the two process-create records are placed in time: each
+    is created after its action was started and before the next action was.
+    A final tool that already existed when its action was started was not
+    started by it. Only EventData.UtcTime is read. A scenario of the session
+    entry has no such actions and is not checked here.
+    """
+    if expectation.profile.entry_kind != ENTRY_WMI_PROCESS or report.lineage is None:
+        return
+
+    step_of = {action.action_id: action.step for action in expectation.actions}
+    started = {step_of[row.action_id]: row.timestamp for row in records if row.action_id in step_of}
+    before = len(report.errors)
+    for role, index, begins, ends in _WMI_STEP_OF_PROCESS:
+        node = report.lineage.nodes[index]
+        if begins not in started:
+            continue
+        try:
+            created = datetime.strptime(node.event_utc_time or "", EVENT_UTC_FORMAT).replace(
+                tzinfo=UTC
+            )
+        except ValueError:
+            report.fail(
+                f"the {role} of the lineage (RecordId {node.record_id}) carries no readable "
+                f"EventData.UtcTime ({node.event_utc_time!r}), so it cannot be held to the "
+                f"{begins} action"
+            )
+            continue
+        if created < started[begins]:
+            report.fail(
+                f"the {role} of the lineage (RecordId {node.record_id}) was created at "
+                f"{node.event_utc_time}, before the {begins} action that starts it was started "
+                f"({_stamp(started[begins])})"
+            )
+        if ends in started and created > started[ends]:
+            report.fail(
+                f"the {role} of the lineage (RecordId {node.record_id}) was created at "
+                f"{node.event_utc_time}, after the {ends} action was started "
+                f"({_stamp(started[ends])})"
+            )
+    if len(report.errors) == before:
+        report.passed(
+            "the intermediate was created after the invoke action was started and the final "
+            "tool after the launch action was, each before the action that follows"
         )
 
 
@@ -1238,13 +1381,189 @@ def validate_r1_pilot_run(
     _check_run_metadata(metadata, expectation, report)
     _check_actions(metadata, records, expectation, rehearsal, report)
     _check_lineage(jsonl_path, expectation, rehearsal, report)
+    if report.lineage is not None and not expectation.profile.root_is_session_host:
+        report.lineage = replace(report.lineage, roles=(*LINEAGE_ROLES[:2], LINEAGE_ROOT_ROLE))
     _check_reference(metadata, records, expectation, rehearsal, report)
+    _check_step_times(records, expectation, report)
+    if expectation.profile.collection_declared:
+        _check_collection_provenance(
+            artifact_root,
+            run_id,
+            metadata,
+            records,
+            expectation,
+            trace,
+            manifest_path,
+            jsonl_path,
+            report,
+        )
     return report
+
+
+def _check_collection_provenance(
+    artifact_root: Path,
+    run_id: str,
+    metadata: RunMetadata,
+    records: list[ExecutionRecordRow],
+    expectation: R1PilotExpectation,
+    trace: R1RunTrace,
+    manifest_path: Path,
+    jsonl_path: Path,
+    report: R1PilotValidationReport,
+) -> None:
+    """Hold the collection provenance of a run to what this validator established itself.
+
+    Only a scenario that declares a `collection` block has one. Such a run is
+    not accepted without it: the record is what says where the raw export starts
+    and which of its records are context. The raw collection window, the
+    observation and the evaluation window are checked as three separate things,
+    every record is placed by EventData.UtcTime alone, and a connection to the
+    internal destination before the run fails the run.
+    """
+    label = f"{TRACE_DIRNAME}/{run_id}/{PROVENANCE_FILENAME}"
+    path = artifact_root / TRACE_DIRNAME / run_id / PROVENANCE_FILENAME
+    if not path.is_file():
+        report.fail(
+            f"collection provenance is missing: {label}. The scenario declares a collection "
+            "block, so the run has to state what its raw export covers"
+        )
+        return
+    try:
+        provenance = json.loads(path.read_bytes().decode("utf-8"))
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        report.fail(f"collection provenance or manifest is not readable JSON ({label}): {error}")
+        return
+
+    reading = R1LineageReport()
+    loaded = read_r1_lineage_records(jsonl_path, reading)
+    if loaded is None:
+        # Reported where the lineage is looked for; nothing can be placed in a window.
+        return
+    processes, connections = loaded
+
+    sysmon = manifest.get("sysmon") if isinstance(manifest, dict) else None
+    lineage = report.lineage
+    # The raw file the RecordIds belong to, as the manifest lists it, and the
+    # process id each process-create record carries.
+    items = manifest.get("items") if isinstance(manifest, dict) else None
+    listed = [
+        item
+        for item in (items if isinstance(items, list) else [])
+        if isinstance(item, dict) and PureWindowsPath(str(item.get("path"))).name == JSONL_FILENAME
+    ]
+    process_ids = {
+        str(record.data["RecordId"]): str(record.data["EventData"]["ProcessId"])
+        for record in read_sysmon_jsonl(jsonl_path)
+        if isinstance(record.data.get("EventData"), dict)
+        and "RecordId" in record.data
+        and "ProcessId" in record.data["EventData"]
+    }
+    # When the execution record says each planned action was started.
+    recorded_at = {record.action_id: record.timestamp for record in records}
+    planned_actions = tuple(
+        (a.action_id, a.step, a.action_type, a.offset_sec, recorded_at.get(a.action_id))
+        for a in expectation.actions
+    )
+    # An entry through WMI: the action that creates the intermediate, and the
+    # window and the return value of the reference policy the scenario was
+    # rendered with. Whether those values are the registered ones is checked
+    # below, against the loaders.
+    scenario = expectation.scenario
+    rendered_policies = scenario.get(POLICY_PROVENANCE_KEY)
+    reference_policy = (
+        rendered_policies.get("reference") if isinstance(rendered_policies, dict) else None
+    )
+    reference_policy = reference_policy if isinstance(reference_policy, dict) else {}
+    created = [
+        a
+        for a in expectation.actions
+        if expectation.profile.entry_kind == ENTRY_WMI_PROCESS
+        and a.step == expectation.profile.reference_rule.action_step
+    ]
+    window = [
+        reference_policy.get(name)
+        for name in ("candidate_start_offset_sec", "candidate_window_sec")
+    ]
+    window_stated = all(isinstance(v, int) and not isinstance(v, bool) for v in window)
+    inputs = R1ProvenanceInputs(
+        run_id=run_id,
+        family_id=expectation.identity.family_id,
+        profile=expectation.profile,
+        target_host=expectation.target_host,
+        start_time=metadata.start_time,
+        end_time=metadata.end_time,
+        reference_time=metadata.reference_time,
+        evaluation_horizon_sec=expectation.evaluation_horizon_sec,
+        destination_ip=expectation.destination_ip,
+        destination_port=expectation.destination_port,
+        scenario_sha256=trace.scenario_sha256,
+        manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+        sysmon_config_sha256=sysmon.get("config_sha256") if isinstance(sysmon, dict) else None,
+        lineage_nodes=lineage.nodes if lineage is not None else (),
+        lineage_connections=lineage.connections if lineage is not None else (),
+        reference_action_id=metadata.reference_action_id,
+        reference_source_event_id=metadata.reference_source_event_id,
+        actions=planned_actions,
+        created_action_id=created[0].action_id if len(created) == 1 else None,
+        created_action_time=recorded_at.get(created[0].action_id) if len(created) == 1 else None,
+        intermediate_image=expectation.intermediate_image,
+        candidate_start_offset_sec=window[0] if window_stated else None,
+        candidate_window_sec=window[1] if window_stated else None,
+        success_return_value=reference_policy.get("success_return_value", 0),
+        jsonl_file=JSONL_FILENAME,
+        jsonl_sha256=hashlib.sha256(jsonl_path.read_bytes()).hexdigest(),
+        raw_log_id=listed[0].get("raw_log_id") if len(listed) == 1 else None,
+        process_ids=process_ids,
+        scenario_id=str(scenario.get("scenario_id", "")),
+        variation_id=expectation.identity.variation_id,
+        scenario_version=str(scenario.get("scenario_version", "")),
+        reference_policy_id=str(reference_policy.get("policy_id", "")),
+        reference_policy_version=str(reference_policy.get("version", "")),
+        reference_policy_config_hash=str(reference_policy.get("config_hash", "")),
+    )
+    problems = check_collection_provenance(provenance, inputs, processes, connections)
+    # The policies a scenario names are resolved again, through their loaders.
+    # Neither the rendered scenario nor the provenance is taken at its word.
+    if expectation.profile.entry_kind == ENTRY_WMI_PROCESS and POLICIES_KEY not in scenario:
+        problems.append(
+            "a scenario whose intermediate is started through WMI names its registered "
+            f"policies ({POLICIES_KEY}.approved_lineage and {POLICIES_KEY}.reference); this one "
+            "names none"
+        )
+    problems += check_policy_provenance(
+        scenario, rendered_policies, f"the {POLICY_PROVENANCE_KEY} of the rendered scenario"
+    )
+    # The sidecar does not restate the policies; it links to the canonical
+    # artifact (canonical_provenance_linkage), checked above.
+    for problem in problems:
+        report.fail(f"collection provenance ({label}): {problem}")
+    if problems:
+        return
+
+    counts = provenance["record_counts"]
+    report.passed(
+        f"the collection provenance states the raw window {provenance['raw_window']} from "
+        f"{provenance['raw_collection_start']} and the observation from "
+        f"{provenance['observation_start']}; they are recorded separately from the evaluation "
+        "window"
+    )
+    report.passed(
+        f"{counts['context']} of {counts['total']} record(s) are context (before the start of "
+        f"the run, by EventData.UtcTime) and {counts['observation']} belong to the run; context "
+        "restores the lineage and is not an evaluation input"
+    )
+    if expectation.profile.readiness_method is not None:
+        report.passed(
+            f"readiness was established {expectation.profile.readiness_method} and the record "
+            "states that nothing connected from the target before the run"
+        )
 
 
 def _lineage_lines(lineage: R1ObservedLineage) -> list[str]:
     lines = [f"lineage record (extracted from {JSONL_FILENAME})", f"  host: {lineage.host}"]
-    for role, node in zip(LINEAGE_ROLES, lineage.nodes, strict=True):
+    for role, node in zip(lineage.roles, lineage.nodes, strict=True):
         lines.append(f"  {role}: {_image_name(node.image) or '(no Image)'}")
         lines.append(f"    Image             : {node.image}")
         lines.append(f"    ProcessGuid       : {node.key.process_guid}")
