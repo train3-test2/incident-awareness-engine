@@ -8,8 +8,9 @@
 > fixture 와 가짜 transport 로 통과한다(§10). develop(PR #259 · #263 · #265 · #267 병합 뒤) 위로 옮겼고, 수집
 > provenance 를 Role2 canonical 아티팩트와 분리해 Role4 sidecar `r1_wmi_collection_context.json` 로 바꿨다(§6 · §11).
 > 후보 구간은 canonical `[A01, A01 + 2 초]`(양끝 포함)로 확정했고(§3), Role3 가 정한 Run 단위 경로를 두 아티팩트에
-> 반영했다(§6 · §7). 남은 것: Python 3.13 공식 검증, 실제 scenario 의 dry-run, VM rehearsal. 원격 step 본문과 300 초
-> 대기 장치(§4-1)를 실제 세션에서 돌린 적이 없다.
+> 반영했다(§6 · §7). Python 3.13.15 공식 검증은 기준 commit `4ee119069b33470a1cd4a34626f1a1d0a88c4662`
+> 에서 1,135 passed · 1 expected skip 로 통과했다(§10). 남은 것: 실제 scenario 의 dry-run, VM rehearsal.
+> 원격 step 본문과 300 초 대기 장치(§4-1)를 실제 세션에서 돌린 적이 없다.
 >
 > 실행기 계약의 정본은 `scenarios/R1/README.md`, scenario 의 정의는 `docs/scenarios/r1.md` 다. 이 문서는 그 위에
 > 더해진 선택 블록과, 아직 정해지지 않았거나 확인하지 못한 것(§7 · §10)을 적는다.
@@ -295,7 +296,7 @@ evaluation window 의 끝은 `min(reference_time + horizon, run_end)` 로 적는
 
 | 미정 | 누가 | 채울 곳 | 지금 |
 | --- | --- | --- | --- |
-| reference policy 의 등록 | 역할 2 PR #259 (develop 에 병합됨) | `policies` → `policy_provenance` (§3-1) | 값을 loader 로 읽는다. 템플릿이 병합된 loader 로 렌더링되는 것은 Python 3.11 에 문법 변환 shim 을 얹은 **참고 실행**으로만 봤다. Python 3.13 에서 확인해야 한다 |
+| reference policy 의 등록 | 역할 2 PR #259 (develop 에 병합됨) | `policies` → `policy_provenance` (§3-1) | **확인됨.** Python 3.13.15 공식 검증에서 실제 registry loader 를 import 해 정책을 해석했고, WMI 렌더와 loader 회귀 검사가 통과했다 |
 | 후보 구간 | — | 등록된 정책 값 | **확정됨.** canonical `wmi-ref-v0.1` 의 `[A01, A01 + 2 초]`(양끝 포함). `±2 초` 표현 폐기(§3) |
 | step 이름(`invoke` · `launch` · `connect` · `run_end`) | 역할 1 · 2 · 4 | `STEP_ORDERS`, `$R1_WMI_STEP_ORDER`, 템플릿 | 내부 이름. action_type 만 확정값이다 |
 | sidecar 의 schema · 필드 이름, context rule version | 역할 2 · 3 · 4 | `SCHEMA_NAME`, `CONTRACT_VERSION`, `CONTEXT_RULE_VERSION`, `PROVENANCE_FIELDS`, `$R1_SCHEMA_NAME` | 이 구현이 붙인 `r1-wmi-collection-context` / `v0.1`. 합의해 동결한 값이 아니다. 공통 schema 는 고치지 않았다 |
@@ -346,10 +347,10 @@ VM 을 시작 · 종료 · 복원하지 않으며, 연결을 열지 않는다. �
 | 04 가 Run 소유 프로세스만 종료, provider host 미종료 | guard 20 번(반환값 판정 + step 본문 정적 검사 + 넘기는 인자) |
 | 네 step 의 순서 · action_type | guard 21 번 |
 | 실행기가 쓴 provenance 를 검증기가 받아들이는지 | guard 의 합성 산출물을 검증기로 대조했다(자동화된 테스트는 아니고, 정책 registry 는 대역이다) |
-| 실제 registry loader 로 렌더링 · 검증 | **참고 실행만 했다.** 작업 PC 는 Python 3.11 이라 loader 를 그대로는 import 하지 못한다. `type` 별칭 문법만 메모리에서 바꿔 읽는 shim(저장소 밖)으로 돌렸을 때 템플릿이 `wmi-ref-v0.1` 로 렌더링되고 loader 를 쓰는 테스트가 통과했다. Python 3.13 의 결과가 아니다 |
+| 실제 registry loader 로 렌더링 · 검증 | **공식 검증 통과.** Python 3.13.15 에서 실제 loader 를 import 해 템플릿을 렌더링했고, 정책 provenance · loader 회귀와 `remote_management` 렌더 byte 불변 검사가 통과했다 |
 | 원격 step 본문(`launch_wmi` · `open_gate` · `start_tool` · `end_run`)의 실제 동작 | **확인하지 않았다.** guard 에서는 가짜 transport 가 대신 답하고, step 본문은 글자로만 검사한다 |
 | boot-to-end export 의 크기, WmiPrvSE 의 idle 종료 · 재생성이 Run 에 주는 영향(§3) | **확인하지 않았다.** VM rehearsal 전 |
-| Python 3.13 에서의 실행 | **하지 않았다.** 이 표의 Python 결과는 다른 버전의 참고용이다 |
+| Python 3.13 에서의 실행 | **공식 검증 통과.** 기준 commit `4ee119069b33470a1cd4a34626f1a1d0a88c4662`, Python 3.13.15, `uv --frozen` 환경에서 1,135 passed · 1 expected skip, exit 0 이다. skip 은 loader import 불가 환경을 검사하는 음성 테스트이며 실제 loader 두 개가 import 되어 기대대로 건너뛰었다 |
 | 실제 registry 로 렌더링한 scenario 의 dry-run, VM rehearsal | **하지 않았다.** guard 의 dry run 은 합성 scenario 로 한 것이다 |
 
 ```bash

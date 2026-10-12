@@ -741,5 +741,7 @@ Pilot 실행 준비가 된 것이 아니다. 후보 구간은 canonical `wmi-ref
 (`±2 초` 표현 폐기), 수집 provenance 를 Role2 canonical `r1_collection_provenance.json` 과 분리해 Role4 sidecar
 `r1_wmi_collection_context.json` 로 바꿨다. 수집은 sidecar 만 봉인하고 Role2 Evidence 단계가 canonical 을 같은
 `operator_trace/<run_id>/` 에 만든 뒤 post-Evidence 검증이 둘을 대조한다. raw manifest 는 telemetry 전용이라 이 두
-파일을 목록화하지 않는다. 남은 것: Python 3.13
-공식 검증, 실제 scenario 의 dry-run, VM rehearsal. 원격 step 본문과 300 초 대기 장치를 실제 세션에서 돌린 적이 없다.
+파일을 목록화하지 않는다. Python 3.13.15 공식 검증은 기준 commit
+`4ee119069b33470a1cd4a34626f1a1d0a88c4662`에서 1,135 passed · 1 expected skip 로 통과했다. skip 은
+실제 loader 두 개가 import 되는 환경에서 loader import 불가 음성 테스트를 기대대로 건너뛴 것이다. 남은 것은 실제
+scenario 의 dry-run 과 VM rehearsal 이다. 원격 step 본문과 300 초 대기 장치를 실제 세션에서 돌린 적이 없다.
