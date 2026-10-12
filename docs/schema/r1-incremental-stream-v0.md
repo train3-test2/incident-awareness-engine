@@ -74,7 +74,8 @@ chunk를 수락하거나 기록하지 않고 fail-closed한다.
 ### Chunk 재전달
 
 Role3 consumer는 partition별 chunk dedup ledger에 `chunk_id`, `chunk_sequence`,
-`chunk_content_sha256`을 함께 저장한다.
+`chunk_content_sha256`을 함께 저장한다. 별도로 Event identity ledger에 `event_id`와 canonical
+Event payload SHA-256을 저장해 다른 chunk 사이의 Event 재전달·충돌도 확인한다.
 
 | 수신 상태 | 처리 |
 | --- | --- |

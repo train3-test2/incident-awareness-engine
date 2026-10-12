@@ -23,6 +23,7 @@ MIGRATION_IDS = (
     "007_r1_archive_publications",
     "008_r1_stream_delivery_ledger",
     "009_r1_stream_close_watermark_binding",
+    "010_r1_stream_event_delivery_ledger",
 )
 
 
@@ -81,6 +82,9 @@ class _Connection:
             self.existing_tables.update(
                 {"r1_stream_chunks", "r1_stream_watermarks", "r1_stream_run_closes"}
             )
+
+        if "CREATE TABLE r1_stream_events" in query:
+            self.existing_tables.add("r1_stream_events")
 
         if query == "INSERT INTO schema_migrations (migration_id) VALUES (%s)":
             self.applied_migrations.add(str(params[0]))

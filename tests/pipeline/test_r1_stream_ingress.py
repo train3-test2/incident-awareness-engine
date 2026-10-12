@@ -4,6 +4,7 @@ from incident_awareness.common.models.r1_stream import R1EventChunk, R1RunClosed
 from incident_awareness.pipeline.r1_stream_ingress import (
     R1StreamDeliveryDisposition,
     R1StreamIngress,
+    _canonical_event_sha256,
     _canonical_sha256,
 )
 
@@ -12,12 +13,18 @@ class _Ledger:
     def __init__(self) -> None:
         self.accepted: set[tuple[str, str]] = set()
         self.chunk_hashes: list[str] = []
+        self.event_hashes: list[tuple[str, str]] = []
         self.watermark_hashes: list[str] = []
         self.close_hashes: list[str] = []
 
     def save_chunk(self, *, chunk_id: str, content_sha256: str, **_: object) -> bool:
         self.chunk_hashes.append(content_sha256)
         return self._save("chunk", chunk_id)
+
+    def save_events(
+        self, *, event_content_sha256s: tuple[tuple[str, str], ...], **_: object
+    ) -> None:
+        self.event_hashes.extend(event_content_sha256s)
 
     def save_watermark(self, watermark: R1SourceWatermark, *, content_sha256: str) -> bool:
         self.watermark_hashes.append(content_sha256)
@@ -63,6 +70,17 @@ def test_chunk_canonical_digest_excludes_only_the_provided_digest_field() -> Non
     changed_digest = chunk.model_copy(update={"chunk_content_sha256": "b" * 64})
 
     assert _canonical_sha256(chunk) == _canonical_sha256(changed_digest)
+
+
+def test_records_canonical_event_identities_before_its_chunk() -> None:
+    ledger = _Ledger()
+    chunk = _valid_chunk()
+
+    R1StreamIngress(ledger).accept_chunk(chunk)  # type: ignore[arg-type]
+
+    assert ledger.event_hashes == [
+        (chunk.events[0].event_id, _canonical_event_sha256(chunk.events[0]))
+    ]
 
 
 def test_watermark_and_close_replays_are_idempotent() -> None:

@@ -42,3 +42,13 @@ def test_close_watermark_binding_migration_requires_complete_values_or_legacy_nu
     assert "r1_stream_watermarks_binding_values_complete" in migration
     assert "BEGIN;" not in migration
     assert "COMMIT;" not in migration
+
+
+def test_event_delivery_migration_preserves_partitioned_event_identities() -> None:
+    migration_path = MIGRATION_PATH.with_name("010_r1_stream_event_delivery_ledger.sql")
+    migration = migration_path.read_text(encoding="utf-8")
+
+    assert "CREATE TABLE r1_stream_events" in migration
+    assert "PRIMARY KEY (run_id, host_id, source, source_channel, event_id)" in migration
+    assert "BEGIN;" not in migration
+    assert "COMMIT;" not in migration

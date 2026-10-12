@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from enum import StrEnum
 
+from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.common.models.r1_stream import (
     R1EventChunk,
     R1RunClosed,
@@ -43,6 +44,12 @@ class R1StreamIngress:
         content_sha256 = _canonical_sha256(chunk)
         if content_sha256 != chunk.chunk_content_sha256:
             raise ValueError("chunk_content_sha256 does not match the canonical chunk payload")
+        self._ledger.save_events(
+            partition=chunk.partition,
+            event_content_sha256s=tuple(
+                (event.event_id, _canonical_event_sha256(event)) for event in chunk.events
+            ),
+        )
         accepted = self._ledger.save_chunk(
             partition=chunk.partition,
             chunk_id=chunk.chunk_id,
@@ -77,6 +84,14 @@ def _canonical_sha256(message: R1EventChunk | R1SourceWatermark | R1RunClosed) -
     payload = message.model_dump(mode="json", by_alias=True)
     if isinstance(message, R1EventChunk):
         del payload["chunk_content_sha256"]
+    return _canonical_payload_sha256(payload)
+
+
+def _canonical_event_sha256(event: NormalizedEvent) -> str:
+    return _canonical_payload_sha256(event.model_dump(mode="json", by_alias=True))
+
+
+def _canonical_payload_sha256(payload: object) -> str:
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

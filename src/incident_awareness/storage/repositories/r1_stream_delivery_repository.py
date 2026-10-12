@@ -37,6 +37,19 @@ SELECT chunk_id, chunk_sequence, content_sha256
 FROM r1_stream_chunks
 WHERE run_id = %s AND host_id = %s AND source = %s AND source_channel = %s AND chunk_sequence = %s
 """
+_INSERT_EVENT = """
+INSERT INTO r1_stream_events (
+    run_id, host_id, source, source_channel, event_id, content_sha256
+)
+VALUES (%s, %s, %s, %s, %s, %s)
+ON CONFLICT DO NOTHING
+RETURNING event_id
+"""
+_SELECT_EVENT_BY_ID = """
+SELECT event_id, content_sha256
+FROM r1_stream_events
+WHERE run_id = %s AND host_id = %s AND source = %s AND source_channel = %s AND event_id = %s
+"""
 _INSERT_WATERMARK = """
 INSERT INTO r1_stream_watermarks (
     run_id, host_id, source, source_channel, watermark_id, watermark_sequence, content_sha256,
@@ -143,6 +156,38 @@ class R1StreamDeliveryRepository:
             content_sha256=content_sha256,
             label="chunk",
         )
+
+    def save_events(
+        self,
+        *,
+        partition: R1StreamPartition,
+        event_content_sha256s: tuple[tuple[str, str], ...],
+    ) -> None:
+        """Persist immutable Event identities before their containing chunk.
+
+        The caller commits this with the chunk ledger entry, so an Event conflict
+        rolls back the new chunk rather than allowing conflicting Event content.
+        """
+        partition_params = _partition_params(partition)
+        for event_id, content_sha256 in event_content_sha256s:
+            inserted = self._connection.execute(
+                _INSERT_EVENT,
+                (*partition_params, event_id, content_sha256),
+            ).fetchone()
+            if inserted is not None:
+                continue
+            existing = self._row_to_delivery(
+                self._connection.execute(
+                    _SELECT_EVENT_BY_ID,
+                    (*partition_params, event_id),
+                ).fetchone(),
+                label="event",
+                has_sequence=False,
+            )
+            if existing is None:
+                raise ValueError("event delivery conflicts with an unavailable ledger record")
+            if existing.content_sha256 != content_sha256:
+                raise ValueError("event identity conflicts with previously accepted content")
 
     def save_watermark(self, watermark: R1SourceWatermark, *, content_sha256: str) -> bool:
         partition_params = _partition_params(watermark.partition)

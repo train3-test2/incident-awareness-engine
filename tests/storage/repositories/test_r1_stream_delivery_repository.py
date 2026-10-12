@@ -46,6 +46,16 @@ def test_rejects_a_chunk_identity_reused_with_different_content() -> None:
         )
 
 
+def test_rejects_an_event_identity_reused_with_different_content() -> None:
+    connection = _Connection(rows=[None, ("evt-001", "a" * 64)])
+
+    with pytest.raises(ValueError, match="event identity conflicts"):
+        R1StreamDeliveryRepository(connection).save_events(
+            partition=_partition(),
+            event_content_sha256s=(("evt-001", "b" * 64),),
+        )
+
+
 def test_rejects_a_watermark_sequence_reused_by_another_identity() -> None:
     existing = _watermark(watermark_id="WM-001")
     connection = _Connection(
