@@ -226,7 +226,32 @@ watermark의 재전달 idempotency, chunk sequence 누락 검증은 transport re
 `allowed_lateness_ms`는 telemetry 전달 순서에 대한 Role3 collector 정책이며, Role4
 candidate-generation seal이나 Role2 Evidence 확정 경계를 대체하지 않는다.
 
-## 9. 소유 경계
+## 9. Late Event fail-closed와 dead letter
+
+Role3 stream ingress는 partition별로 수락한 최신 source watermark를 유지한다. 아직 수락하지
+않은 신규 chunk에 `timestamp <= watermark_at`인 Event가 하나라도 있으면 chunk 전체를 수락하지
+않는다. 일부 Event만 제거한 뒤 나머지를 전달하거나, 기존 Evidence를 보정하지 않는다.
+
+이 경우 ingress는 아래 dead-letter record를 durable sink에 먼저 기록하고 `LateStreamEventError`
+로 처리 중단한다. sink 기록에 실패해도 chunk를 수락하지 않으며, transport는 오류를 재시도 또는
+자신의 DLQ 정책으로 처리해야 한다. 현행 #228 S3/SQS batch Worker는 이 stream ingress를 사용하지
+않으므로 변경하지 않는다.
+
+| 필드 | 규칙 |
+| --- | --- |
+| `schema` | `r1-incremental-stream-dead-letter` |
+| `contract_version` | `v0.1` |
+| `message_type` | `late_event` |
+| `chunk_id`, `partition` | 거부한 chunk의 identity와 범위 |
+| `watermark_id`, `watermark_at` | late 판정에 사용한 수락 watermark |
+| `violating_event_ids` | `timestamp <= watermark_at`인 Event ID 목록 |
+| `rejected_at` | ingress가 거부를 기록한 UTC 밀리초 시각 |
+
+dead-letter sink의 실제 SQS/S3/PostgreSQL 배치와 retry recovery는 transport 구현에서 연결한다.
+동일 chunk 또는 watermark의 재전달 dedup과 Worker 장애 뒤 상태 복구는 다음 idempotency 작업의
+범위다.
+
+## 10. 소유 경계
 
 Role3는 envelope validation, partition validation, chunk/Event identity, 재전달 dedup과
 transport recovery를 소유한다. Role2는 유효한 Event chunk를 소비해 selector 상태를

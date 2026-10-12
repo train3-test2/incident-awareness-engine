@@ -1,0 +1,103 @@
+"""R1 incremental stream에서 watermark 뒤 Event를 fail-closed로 거부한다."""
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Protocol
+
+from incident_awareness.common.models.r1_stream import (
+    R1EventChunk,
+    R1LateEventDeadLetter,
+    R1SourceWatermark,
+    R1StreamPartition,
+)
+
+
+class R1StreamDeadLetterSink(Protocol):
+    """Stream transport가 제공하는 durable dead-letter writer 경계."""
+
+    def write(self, dead_letter: R1LateEventDeadLetter) -> None: ...
+
+
+class LateStreamEventError(ValueError):
+    """새 Event가 이미 선언된 source watermark보다 늦게 도착했다."""
+
+
+@dataclass(frozen=True, slots=True)
+class _AcceptedWatermark:
+    watermark_id: str
+    watermark_at: datetime
+
+
+class R1LateEventGuard:
+    """수락한 watermark 이하의 새 Event chunk 전체를 거부한다.
+
+    이 클래스는 transport 내구성이나 재전달 dedup ledger를 소유하지 않는다. caller는
+    durable sink를 제공해야 하고, 이후 recovery 계층이 동일 chunk 재전달을 분리한다.
+    """
+
+    def __init__(
+        self,
+        dead_letter_sink: R1StreamDeadLetterSink,
+        *,
+        clock: Callable[[], datetime],
+    ) -> None:
+        self._dead_letter_sink = dead_letter_sink
+        self._clock = clock
+        self._watermarks: dict[tuple[str, str, str, str], _AcceptedWatermark] = {}
+
+    def accept_watermark(self, watermark: R1SourceWatermark) -> None:
+        """Record the current frontier for the watermark partition.
+
+        Sequence monotonicity and duplicate recovery are validated by the later
+        durable transport-recovery layer; this guard only supplies the late-event
+        fail-closed boundary.
+        """
+        self._watermarks[_partition_key(watermark.partition)] = _AcceptedWatermark(
+            watermark_id=watermark.watermark_id,
+            watermark_at=watermark.watermark_at,
+        )
+
+    def accept_chunk(self, chunk: R1EventChunk) -> None:
+        """Accept a chunk only when none of its Events are at or before the frontier."""
+        watermark = self._watermarks.get(_partition_key(chunk.partition))
+        if watermark is None:
+            return
+
+        violating_event_ids = tuple(
+            event.event_id for event in chunk.events if event.timestamp <= watermark.watermark_at
+        )
+        if not violating_event_ids:
+            return
+
+        dead_letter = R1LateEventDeadLetter(
+            schema="r1-incremental-stream-dead-letter",
+            contract_version="v0.1",
+            message_type="late_event",
+            chunk_id=chunk.chunk_id,
+            partition=chunk.partition,
+            watermark_id=watermark.watermark_id,
+            watermark_at=watermark.watermark_at,
+            violating_event_ids=violating_event_ids,
+            rejected_at=_utc_milliseconds(self._clock()),
+        )
+        self._dead_letter_sink.write(dead_letter)
+        raise LateStreamEventError(
+            f"chunk {chunk.chunk_id!r} contains Event(s) at or before watermark "
+            f"{watermark.watermark_id!r}"
+        )
+
+
+def _partition_key(partition: R1StreamPartition) -> tuple[str, str, str, str]:
+    return (
+        partition.run_id,
+        partition.host_id,
+        partition.source,
+        partition.source_channel,
+    )
+
+
+def _utc_milliseconds(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("clock must return a timezone-aware datetime")
+    return value.astimezone(UTC).replace(microsecond=value.microsecond // 1000 * 1000)

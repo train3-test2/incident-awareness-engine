@@ -133,6 +133,64 @@ class R1SourceWatermark(BaseModel):
         return value.astimezone(UTC)
 
 
+class R1LateEventDeadLetter(BaseModel):
+    """Watermark 뒤에 새로 도착한 Event chunk의 fail-closed 기록."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        validate_by_name=True,
+        serialize_by_alias=True,
+    )
+
+    schema_id: Literal["r1-incremental-stream-dead-letter"] = Field(
+        validation_alias="schema",
+        serialization_alias="schema",
+    )
+    contract_version: Literal["v0.1"]
+    message_type: Literal["late_event"]
+    chunk_id: StrictStr = Field(min_length=1)
+    partition: R1StreamPartition
+    watermark_id: StrictStr = Field(min_length=1)
+    watermark_at: datetime
+    violating_event_ids: tuple[StrictStr, ...] = Field(min_length=1)
+    rejected_at: datetime
+
+    @field_validator("chunk_id", "watermark_id")
+    @classmethod
+    def validate_identity(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("dead-letter identity must not contain leading or trailing whitespace")
+        return value
+
+    @field_validator("violating_event_ids")
+    @classmethod
+    def validate_violating_event_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not event_id.strip() or event_id != event_id.strip() for event_id in value):
+            raise ValueError("violating_event_ids must contain only non-blank unpadded values")
+        if len(value) != len(set(value)):
+            raise ValueError("violating_event_ids must not contain duplicates")
+        return value
+
+    @field_validator("watermark_at", "rejected_at", mode="before")
+    @classmethod
+    def reject_numeric_datetime(cls, value: object) -> object:
+        if isinstance(value, int | float) or (isinstance(value, str) and _is_numeric_string(value)):
+            raise ValueError("dead-letter datetime must not be a numeric Unix timestamp")
+        return value
+
+    @field_validator("watermark_at", "rejected_at")
+    @classmethod
+    def validate_utc_milliseconds(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("dead-letter datetime must include a timezone")
+        if value.utcoffset() != timedelta(0):
+            raise ValueError("dead-letter datetime must be UTC")
+        if value.microsecond % 1000 != 0:
+            raise ValueError("dead-letter datetime must use millisecond precision")
+        return value.astimezone(UTC)
+
+
 def _is_numeric_string(value: str) -> bool:
     try:
         float(value)
@@ -146,6 +204,7 @@ __all__ = [
     "R1_INCREMENTAL_STREAM_CONTRACT_VERSION",
     "R1_INCREMENTAL_STREAM_SCHEMA",
     "R1EventChunk",
+    "R1LateEventDeadLetter",
     "R1SourceWatermark",
     "R1StreamPartition",
 ]
