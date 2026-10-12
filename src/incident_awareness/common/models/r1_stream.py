@@ -1,0 +1,90 @@
+"""R1 incremental stream의 chunk 단위 입력 계약."""
+
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
+
+from incident_awareness.common.models.event import NORMALIZED_EVENT_SCHEMA_VERSION, NormalizedEvent
+from incident_awareness.common.models.run import RunMetadata
+
+R1_INCREMENTAL_STREAM_SCHEMA = "r1-incremental-stream"
+R1_INCREMENTAL_STREAM_CONTRACT_VERSION = "v0.1"
+
+
+class R1StreamPartition(BaseModel):
+    """하나의 source event-time frontier가 적용되는 전달 범위."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    run_id: StrictStr = Field(min_length=1)
+    host_id: StrictStr = Field(min_length=1)
+    source: StrictStr = Field(min_length=1)
+    source_channel: StrictStr = Field(min_length=1)
+
+    @field_validator("run_id")
+    @classmethod
+    def validate_run_id(cls, value: str) -> str:
+        RunMetadata.validate_required_identifier(value)
+        return RunMetadata.validate_run_id(value)
+
+    @field_validator("host_id", "source", "source_channel")
+    @classmethod
+    def validate_identifier(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("partition identifier must not contain leading or trailing whitespace")
+        return value
+
+
+class R1EventChunk(BaseModel):
+    """재전달되어도 같은 논리 입력으로 식별되는 immutable Event chunk."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        validate_by_name=True,
+        serialize_by_alias=True,
+    )
+
+    schema_id: Literal["r1-incremental-stream"] = Field(
+        validation_alias="schema",
+        serialization_alias="schema",
+    )
+    contract_version: Literal["v0.1"]
+    message_type: Literal["event_chunk"]
+    chunk_id: StrictStr = Field(min_length=1)
+    partition: R1StreamPartition
+    chunk_sequence: int = Field(strict=True, ge=1)
+    event_contract_version: Literal["v0.3"]
+    events: tuple[NormalizedEvent, ...] = Field(min_length=1)
+
+    @field_validator("chunk_id")
+    @classmethod
+    def validate_chunk_id(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("chunk_id must not contain leading or trailing whitespace")
+        return value
+
+    @model_validator(mode="after")
+    def validate_event_scope_and_identity(self) -> "R1EventChunk":
+        event_ids = [event.event_id for event in self.events]
+        if len(event_ids) != len(set(event_ids)):
+            raise ValueError("events must not contain duplicate event_id values")
+
+        for event in self.events:
+            if event.run_id != self.partition.run_id:
+                raise ValueError("every Event run_id must match the chunk partition")
+            if event.host_id != self.partition.host_id:
+                raise ValueError("every Event host_id must match the chunk partition")
+            if event.source != self.partition.source:
+                raise ValueError("every Event source must match the chunk partition")
+
+        return self
+
+
+__all__ = [
+    "NORMALIZED_EVENT_SCHEMA_VERSION",
+    "R1_INCREMENTAL_STREAM_CONTRACT_VERSION",
+    "R1_INCREMENTAL_STREAM_SCHEMA",
+    "R1EventChunk",
+    "R1StreamPartition",
+]
