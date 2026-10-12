@@ -225,7 +225,7 @@ def test_rejects_a_close_watermark_with_different_frontier_values() -> None:
         )
 
 
-def test_rejects_a_close_that_omits_an_accepted_partition() -> None:
+def test_rejects_a_close_that_omits_a_partition_known_from_another_chunk() -> None:
     watermark = _watermark()
     connection = _Connection(rows=[_accepted_watermark_row(watermark), (2,)])
 
@@ -233,6 +233,11 @@ def test_rejects_a_close_that_omits_an_accepted_partition() -> None:
         R1StreamDeliveryRepository(connection).assert_final_watermarks_match(
             _close_final_watermarks()
         )
+
+    count_query, count_params = connection.statements[-1]
+    assert "FROM r1_stream_chunks" in count_query
+    assert "UNION" in count_query
+    assert count_params == (watermark.partition.run_id, watermark.partition.run_id)
 
 
 def test_rejects_a_close_that_references_an_older_partition_watermark() -> None:

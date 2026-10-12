@@ -98,14 +98,17 @@ ORDER BY watermark_sequence DESC
 LIMIT 1
 FOR UPDATE
 """
-_SELECT_WATERMARK_PARTITION_COUNT_FOR_RUN = """
+_SELECT_STREAM_PARTITION_COUNT_FOR_RUN = """
 SELECT COUNT(*)
 FROM (
-    SELECT 1
+    SELECT host_id, source, source_channel
+    FROM r1_stream_chunks
+    WHERE run_id = %s
+    UNION
+    SELECT host_id, source, source_channel
     FROM r1_stream_watermarks
     WHERE run_id = %s
-    GROUP BY host_id, source, source_channel
-) AS accepted_partitions
+) AS known_partitions
 """
 _INSERT_CLOSE = """
 INSERT INTO r1_stream_run_closes (run_id, close_id, content_sha256)
@@ -321,8 +324,8 @@ class R1StreamDeliveryRepository:
                 )
         partition_count = self._partition_count_from_row(
             self._connection.execute(
-                _SELECT_WATERMARK_PARTITION_COUNT_FOR_RUN,
-                (run_id,),
+                _SELECT_STREAM_PARTITION_COUNT_FOR_RUN,
+                (run_id, run_id),
             ).fetchone()
         )
         if partition_count != len(final_watermarks):
@@ -411,10 +414,10 @@ class R1StreamDeliveryRepository:
     @staticmethod
     def _partition_count_from_row(row: tuple[object, ...] | None) -> int:
         if row is None or len(row) != 1:
-            raise TypeError("watermark partition count row has an invalid column count")
+            raise TypeError("stream partition count row has an invalid column count")
         count = row[0]
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
-            raise TypeError("watermark partition count must be a non-negative integer")
+            raise TypeError("stream partition count must be a non-negative integer")
         return count
 
     @staticmethod

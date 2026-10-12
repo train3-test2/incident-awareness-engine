@@ -288,6 +288,10 @@ Role4 candidate-generation seal 없이는 R1 terminal candidate 종료나 Eviden
 없거나 값이 하나라도 다르면 `run_closed` 전체를 기록하지 않고 fail-closed한다. 다른 partition의
 동일 `watermark_id`로 대체할 수 없다.
 
+final watermark 집합은 해당 Run에서 이미 수락한 Event chunk 또는 source watermark가 식별한 모든
+partition을 빠짐없이 포함해야 한다. chunk만 수락되고 watermark가 아직 없는 partition이 하나라도
+있으면 `run_closed`를 기록하지 않고 fail-closed한다.
+
 ```json
 {
   "schema": "r1-incremental-stream",
