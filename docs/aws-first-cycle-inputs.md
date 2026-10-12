@@ -184,6 +184,9 @@ v0 stream 계약은 watermark 이후 late Event의 처리 방식(예: fail-close
 Evidence의 철회·보정·재계산과 Fusion·Decision·Evaluation 변경은 이 transport boundary의
 범위 밖이며 각각의 소비 계약에서 다룬다.
 
+Event chunk envelope와 Event 전달의 v0.1 필드·identity·partition 규칙은
+[R1 Incremental Stream v0.1](schema/r1-incremental-stream-v0.md)에 정의한다.
+
 S3 Event Notification은 prefix `incoming/first-cycle/sysmon/`와 suffix `sysmon.jsonl`로
 필터링한다. 이후 Worker는 Event에 포함된 bucket·object key만 신뢰 경계 입력으로 받고,
 객체를 로컬의 `telemetry/sysmon-0001.jsonl`로 내려받아 standalone CLI를 호출한다.
