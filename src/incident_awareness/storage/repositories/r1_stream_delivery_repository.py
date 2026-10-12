@@ -162,6 +162,13 @@ class R1StreamDeliveryRepository:
     def save_chunk(
         self, *, partition: R1StreamPartition, chunk_id: str, sequence: int, content_sha256: str
     ) -> bool:
+        if self._protect_run(partition.run_id):
+            return self._resolve_closed_chunk_replay(
+                partition=partition,
+                chunk_id=chunk_id,
+                sequence=sequence,
+                content_sha256=content_sha256,
+            )
         inserted = self._connection.execute(
             _INSERT_CHUNK,
             (*_partition_params(partition), chunk_id, sequence, content_sha256),
@@ -190,6 +197,9 @@ class R1StreamDeliveryRepository:
         rolls back the new chunk rather than allowing conflicting Event content.
         """
         partition_params = _partition_params(partition)
+        if self._protect_run(partition.run_id):
+            self._assert_closed_run_event_replays(partition, event_content_sha256s)
+            return ()
         new_event_ids: list[str] = []
         for event_id, content_sha256 in event_content_sha256s:
             inserted = self._connection.execute(
@@ -215,11 +225,7 @@ class R1StreamDeliveryRepository:
 
     def save_watermark(self, watermark: R1SourceWatermark, *, content_sha256: str) -> bool:
         partition_params = _partition_params(watermark.partition)
-        self._lock_run(watermark.partition.run_id)
-        if (
-            self._connection.execute(_SELECT_CLOSE_EXISTS, (watermark.partition.run_id,)).fetchone()
-            is not None
-        ):
+        if self._protect_run(watermark.partition.run_id):
             raise ValueError("cannot accept a watermark after run_closed is accepted")
         # The advisory lock also serializes the first watermark, when no table row
         # exists yet. The caller owns the surrounding database transaction.
@@ -352,6 +358,63 @@ class R1StreamDeliveryRepository:
     def _lock_run(self, run_id: str) -> None:
         """Serialize watermark and close transitions for one Run until commit."""
         self._connection.execute(_LOCK_RUN, (run_id,)).fetchone()
+
+    def _protect_run(self, run_id: str) -> bool:
+        """Lock a Run and report whether a close already made it immutable."""
+        self._lock_run(run_id)
+        return self._connection.execute(_SELECT_CLOSE_EXISTS, (run_id,)).fetchone() is not None
+
+    def _resolve_closed_chunk_replay(
+        self,
+        *,
+        partition: R1StreamPartition,
+        chunk_id: str,
+        sequence: int,
+        content_sha256: str,
+    ) -> bool:
+        partition_params = _partition_params(partition)
+        existing_by_id = self._row_to_delivery(
+            self._connection.execute(_SELECT_CHUNK_BY_ID, (*partition_params, chunk_id)).fetchone(),
+            label="chunk",
+            has_sequence=True,
+        )
+        if existing_by_id is not None:
+            if (
+                existing_by_id.sequence == sequence
+                and existing_by_id.content_sha256 == content_sha256
+            ):
+                return False
+            raise ValueError("chunk identity conflicts with previously accepted content")
+        existing_by_sequence = self._row_to_delivery(
+            self._connection.execute(
+                _SELECT_CHUNK_BY_SEQUENCE, (*partition_params, sequence)
+            ).fetchone(),
+            label="chunk",
+            has_sequence=True,
+        )
+        if existing_by_sequence is not None:
+            raise ValueError("chunk sequence conflicts with previously accepted identity")
+        raise ValueError("cannot accept a new chunk after run_closed is accepted")
+
+    def _assert_closed_run_event_replays(
+        self,
+        partition: R1StreamPartition,
+        event_content_sha256s: tuple[tuple[str, str], ...],
+    ) -> None:
+        partition_params = _partition_params(partition)
+        for event_id, content_sha256 in event_content_sha256s:
+            existing = self._row_to_delivery(
+                self._connection.execute(
+                    _SELECT_EVENT_BY_ID,
+                    (*partition_params, event_id),
+                ).fetchone(),
+                label="event",
+                has_sequence=False,
+            )
+            if existing is None:
+                raise ValueError("cannot accept a new event after run_closed is accepted")
+            if existing.content_sha256 != content_sha256:
+                raise ValueError("event identity conflicts with previously accepted content")
 
     def _resolve_partition_conflict(
         self,

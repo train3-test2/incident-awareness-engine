@@ -26,11 +26,14 @@ def test_saves_a_new_chunk_once() -> None:
         partition=_partition(), chunk_id="CHK-001", sequence=1, content_sha256="a" * 64
     )
 
-    assert "ON CONFLICT DO NOTHING" in connection.statements[0][0]
+    chunk_insert_query = next(
+        query for query, _ in connection.statements if "INSERT INTO r1_stream_chunks" in query
+    )
+    assert "ON CONFLICT DO NOTHING" in chunk_insert_query
 
 
 def test_recovers_an_exact_chunk_replay_after_a_worker_restart() -> None:
-    connection = _Connection(rows=[None, ("CHK-001", 1, "a" * 64)])
+    connection = _Connection(rows=[None, None, ("CHK-001", 1, "a" * 64)])
 
     assert not R1StreamDeliveryRepository(connection).save_chunk(
         partition=_partition(), chunk_id="CHK-001", sequence=1, content_sha256="a" * 64
@@ -38,7 +41,7 @@ def test_recovers_an_exact_chunk_replay_after_a_worker_restart() -> None:
 
 
 def test_rejects_a_chunk_identity_reused_with_different_content() -> None:
-    connection = _Connection(rows=[None, ("CHK-001", 1, "a" * 64)])
+    connection = _Connection(rows=[None, None, ("CHK-001", 1, "a" * 64)])
 
     with pytest.raises(ValueError, match="identity conflicts"):
         R1StreamDeliveryRepository(connection).save_chunk(
@@ -47,7 +50,7 @@ def test_rejects_a_chunk_identity_reused_with_different_content() -> None:
 
 
 def test_rejects_an_event_identity_reused_with_different_content() -> None:
-    connection = _Connection(rows=[None, ("evt-001", "a" * 64)])
+    connection = _Connection(rows=[None, None, ("evt-001", "a" * 64)])
 
     with pytest.raises(ValueError, match="event identity conflicts"):
         R1StreamDeliveryRepository(connection).save_events(
@@ -65,6 +68,39 @@ def test_returns_only_new_event_ids_for_an_exact_event_replay() -> None:
     )
 
     assert new_event_ids == ("evt-001",)
+
+
+def test_allows_an_exact_chunk_replay_after_its_run_is_closed() -> None:
+    connection = _Connection(rows=[(1,), ("CHK-001", 1, "a" * 64)])
+
+    assert not R1StreamDeliveryRepository(connection).save_chunk(
+        partition=_partition(), chunk_id="CHK-001", sequence=1, content_sha256="a" * 64
+    )
+
+
+def test_rejects_a_new_chunk_after_its_run_is_closed() -> None:
+    connection = _Connection(rows=[(1,), None, None])
+
+    with pytest.raises(ValueError, match="new chunk after run_closed"):
+        R1StreamDeliveryRepository(connection).save_chunk(
+            partition=_partition(), chunk_id="CHK-002", sequence=2, content_sha256="b" * 64
+        )
+
+
+def test_allows_only_exact_event_replays_after_its_run_is_closed() -> None:
+    repository = R1StreamDeliveryRepository(_Connection(rows=[(1,), ("evt-001", "a" * 64)]))
+
+    assert (
+        repository.save_events(
+            partition=_partition(), event_content_sha256s=(("evt-001", "a" * 64),)
+        )
+        == ()
+    )
+
+    with pytest.raises(ValueError, match="new event after run_closed"):
+        R1StreamDeliveryRepository(_Connection(rows=[(1,), None])).save_events(
+            partition=_partition(), event_content_sha256s=(("evt-002", "b" * 64),)
+        )
 
 
 def test_rejects_a_watermark_sequence_reused_by_another_identity() -> None:
@@ -146,7 +182,10 @@ def test_chunk_identity_is_scoped_to_its_partition() -> None:
         partition=other_partition, chunk_id="CHK-001", sequence=1, content_sha256="a" * 64
     )
 
-    assert connection.statements[0][1][:4] != connection.statements[1][1][:4]
+    chunk_insert_params = [
+        params for query, params in connection.statements if "INSERT INTO r1_stream_chunks" in query
+    ]
+    assert chunk_insert_params[0][:4] != chunk_insert_params[1][:4]
 
 
 def test_recovers_an_exact_run_close_replay() -> None:
@@ -317,5 +356,7 @@ class _Connection:
         if "SELECT pg_advisory_xact_lock" in query:
             return _Cursor(None)
         if "SELECT 1\nFROM r1_stream_run_closes" in query:
-            return _Cursor(self._rows.pop(0))
+            if self._rows and self._rows[0] in (None, (1,)):
+                return _Cursor(self._rows.pop(0))
+            return _Cursor(None)
         return _Cursor(self._rows.pop(0))
