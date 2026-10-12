@@ -22,6 +22,7 @@ from incident_awareness.pipeline.r1_causal_availability import (
     R1CausalAvailabilityEnvelope,
     R1CausalEvidenceAvailability,
     build_r1_causal_availability_envelope,
+    build_r1_causal_availability_envelope_from_artifacts,
     r1_causal_availability_sort_key,
 )
 from incident_awareness.pipeline.r1_evidence import R1LineageInput
@@ -221,6 +222,32 @@ def _build(output_directory: Path, *, run_metadata: RunMetadata | None = None):
         selector_policy=_selector_policy(),
         approved_policy=_approved_policy(),
     )
+
+
+def test_builds_from_already_loaded_artifacts_without_reading_files_again(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    _write_artifacts(tmp_path)
+    artifact_run = load_r1_evidence_artifacts(tmp_path)
+    expected = _build(tmp_path)
+
+    def fail_if_reloaded(*_args, **_kwargs):
+        raise AssertionError("preloaded artifact path must not read artifact files again")
+
+    monkeypatch.setattr(causal_availability, "load_r1_evidence_artifacts", fail_if_reloaded)
+
+    # When
+    actual = build_r1_causal_availability_envelope_from_artifacts(
+        artifact_run,
+        run_metadata=_run_metadata(),
+        selector_policy=_selector_policy(),
+        approved_policy=_approved_policy(),
+    )
+
+    # Then
+    assert actual == expected
 
 
 def _availability_payload() -> dict[str, object]:

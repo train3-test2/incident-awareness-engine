@@ -1,4 +1,5 @@
 from collections import deque
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 
 from incident_awareness.common.models.evidence import Evidence
@@ -86,6 +87,21 @@ class WindowEngine:
             return list(state)
 
         return [evidence for evidence in state if evidence.timestamp <= last_advance_timestamp]
+
+    def filter_by_event_time_window(
+        self,
+        evidences: Iterable[Evidence],
+        *,
+        timestamp: datetime,
+    ) -> list[Evidence]:
+        """이미 활성화된 Evidence에 기존 inclusive event-time window를 적용한다."""
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            raise ValueError("timestamp must include timezone information")
+        if timestamp.utcoffset() != timedelta(0):
+            raise ValueError("timestamp must be UTC")
+
+        cutoff = timestamp - self.window_size
+        return [evidence for evidence in evidences if cutoff <= evidence.timestamp <= timestamp]
 
     def reset(
         self,
