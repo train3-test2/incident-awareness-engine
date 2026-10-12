@@ -56,6 +56,17 @@ def test_rejects_an_event_identity_reused_with_different_content() -> None:
         )
 
 
+def test_returns_only_new_event_ids_for_an_exact_event_replay() -> None:
+    connection = _Connection(rows=[("evt-001",), None, ("evt-002", "b" * 64)])
+
+    new_event_ids = R1StreamDeliveryRepository(connection).save_events(
+        partition=_partition(),
+        event_content_sha256s=(("evt-001", "a" * 64), ("evt-002", "b" * 64)),
+    )
+
+    assert new_event_ids == ("evt-001",)
+
+
 def test_rejects_a_watermark_sequence_reused_by_another_identity() -> None:
     existing = _watermark(watermark_id="WM-001")
     connection = _Connection(

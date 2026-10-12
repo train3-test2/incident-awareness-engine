@@ -23,9 +23,10 @@ class R1StreamDeliveryDisposition(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class R1StreamDeliveryResult:
-    """The worker can commit either result and acknowledge the transport message."""
+    """The worker can commit either result and forward only newly accepted Events."""
 
     disposition: R1StreamDeliveryDisposition
+    new_event_ids: tuple[str, ...] = ()
 
 
 class R1StreamIngress:
@@ -44,7 +45,7 @@ class R1StreamIngress:
         content_sha256 = _canonical_sha256(chunk)
         if content_sha256 != chunk.chunk_content_sha256:
             raise ValueError("chunk_content_sha256 does not match the canonical chunk payload")
-        self._ledger.save_events(
+        new_event_ids = self._ledger.save_events(
             partition=chunk.partition,
             event_content_sha256s=tuple(
                 (event.event_id, _canonical_event_sha256(event)) for event in chunk.events
@@ -56,7 +57,7 @@ class R1StreamIngress:
             sequence=chunk.chunk_sequence,
             content_sha256=content_sha256,
         )
-        return _result(accepted)
+        return _result(accepted, new_event_ids=new_event_ids)
 
     def accept_watermark(self, watermark: R1SourceWatermark) -> R1StreamDeliveryResult:
         accepted = self._ledger.save_watermark(
@@ -74,9 +75,10 @@ class R1StreamIngress:
         return _result(accepted)
 
 
-def _result(accepted: bool) -> R1StreamDeliveryResult:
+def _result(accepted: bool, *, new_event_ids: tuple[str, ...] = ()) -> R1StreamDeliveryResult:
     return R1StreamDeliveryResult(
-        R1StreamDeliveryDisposition.ACCEPTED if accepted else R1StreamDeliveryDisposition.DUPLICATE
+        R1StreamDeliveryDisposition.ACCEPTED if accepted else R1StreamDeliveryDisposition.DUPLICATE,
+        new_event_ids,
     )
 
 

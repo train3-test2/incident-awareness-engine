@@ -180,19 +180,21 @@ class R1StreamDeliveryRepository:
         *,
         partition: R1StreamPartition,
         event_content_sha256s: tuple[tuple[str, str], ...],
-    ) -> None:
+    ) -> tuple[str, ...]:
         """Persist immutable Event identities before their containing chunk.
 
         The caller commits this with the chunk ledger entry, so an Event conflict
         rolls back the new chunk rather than allowing conflicting Event content.
         """
         partition_params = _partition_params(partition)
+        new_event_ids: list[str] = []
         for event_id, content_sha256 in event_content_sha256s:
             inserted = self._connection.execute(
                 _INSERT_EVENT,
                 (*partition_params, event_id, content_sha256),
             ).fetchone()
             if inserted is not None:
+                new_event_ids.append(event_id)
                 continue
             existing = self._row_to_delivery(
                 self._connection.execute(
@@ -206,6 +208,7 @@ class R1StreamDeliveryRepository:
                 raise ValueError("event delivery conflicts with an unavailable ledger record")
             if existing.content_sha256 != content_sha256:
                 raise ValueError("event identity conflicts with previously accepted content")
+        return tuple(new_event_ids)
 
     def save_watermark(self, watermark: R1SourceWatermark, *, content_sha256: str) -> bool:
         partition_params = _partition_params(watermark.partition)

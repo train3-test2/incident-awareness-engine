@@ -104,6 +104,9 @@ GUID는 Run·host·segment 범위 밖에서 충돌할 수 있으므로, stream �
 - 동일 partition에서 동일 `event_id`가 재전달되면 Event 전체 canonical payload가 같아야 한다.
   같은 `event_id`에 다른 내용이 오면 consumer는 기존 Event를 덮어쓰지 않고 계약 위반으로
   처리한다.
+- 다른 chunk가 기존 Event와 신규 Event를 함께 담을 수 있다. envelope는 chunk sequence 보존을 위해
+  수락할 수 있지만, Role3 ingress는 **처음 수락한 `event_id`만** downstream으로 전달한다. 따라서
+  consumer는 ingress 결과의 `new_event_ids`에 없는 Event로 selector state를 다시 변경하면 안 된다.
 - Event의 `timestamp`는 event-time 의미를 유지한다. chunk 수신·발급 시각이나 SQS 수신
   시각으로 바꾸지 않는다.
 - Event의 정렬은 `timestamp`, `source_event_id`, `raw_ref.record_no` 오름차순을 권장한다.
