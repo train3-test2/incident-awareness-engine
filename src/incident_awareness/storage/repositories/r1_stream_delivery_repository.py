@@ -80,6 +80,15 @@ SELECT pg_advisory_xact_lock(
     hashtextextended(concat_ws(E'\\x1f', %s, %s, %s, %s), 0)
 )
 """
+_LOCK_RUN = """
+SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))
+"""
+_SELECT_CLOSE_EXISTS = """
+SELECT 1
+FROM r1_stream_run_closes
+WHERE run_id = %s
+FOR KEY SHARE
+"""
 _SELECT_LATEST_WATERMARK_FOR_UPDATE = """
 SELECT watermark_id, watermark_sequence, watermark_at, allowed_lateness_ms,
        covered_through_chunk_sequence
@@ -200,8 +209,14 @@ class R1StreamDeliveryRepository:
 
     def save_watermark(self, watermark: R1SourceWatermark, *, content_sha256: str) -> bool:
         partition_params = _partition_params(watermark.partition)
+        self._lock_run(watermark.partition.run_id)
+        if (
+            self._connection.execute(_SELECT_CLOSE_EXISTS, (watermark.partition.run_id,)).fetchone()
+            is not None
+        ):
+            raise ValueError("cannot accept a watermark after run_closed is accepted")
         # The advisory lock also serializes the first watermark, when no table row
-        # exists yet.  The caller owns the surrounding database transaction.
+        # exists yet. The caller owns the surrounding database transaction.
         self._connection.execute(_LOCK_WATERMARK_PARTITION, partition_params).fetchone()
         latest = self._accepted_watermark_from_row(
             self._connection.execute(
@@ -277,6 +292,8 @@ class R1StreamDeliveryRepository:
         run_ids = {watermark.partition.run_id for watermark in final_watermarks}
         if len(run_ids) != 1:
             raise ValueError("run close final watermarks must belong to one run")
+        run_id = next(iter(run_ids))
+        self._lock_run(run_id)
         for final_watermark in final_watermarks:
             partition_params = _partition_params(final_watermark.partition)
             existing = self._accepted_watermark_from_row(
@@ -302,13 +319,14 @@ class R1StreamDeliveryRepository:
         partition_count = self._partition_count_from_row(
             self._connection.execute(
                 _SELECT_WATERMARK_PARTITION_COUNT_FOR_RUN,
-                (next(iter(run_ids)),),
+                (run_id,),
             ).fetchone()
         )
         if partition_count != len(final_watermarks):
             raise ValueError("run close final watermarks do not cover every accepted partition")
 
     def save_run_close(self, *, run_id: str, close_id: str, content_sha256: str) -> bool:
+        self._lock_run(run_id)
         inserted = self._connection.execute(
             _INSERT_CLOSE, (run_id, close_id, content_sha256)
         ).fetchone()
@@ -324,6 +342,10 @@ class R1StreamDeliveryRepository:
                 return False
             raise ValueError("run close identity conflicts with previously accepted content")
         raise ValueError("run already has a different accepted close_id")
+
+    def _lock_run(self, run_id: str) -> None:
+        """Serialize watermark and close transitions for one Run until commit."""
+        self._connection.execute(_LOCK_RUN, (run_id,)).fetchone()
 
     def _resolve_partition_conflict(
         self,

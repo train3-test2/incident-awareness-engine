@@ -105,7 +105,17 @@ def test_rejects_a_watermark_that_regresses_or_mutates_the_durable_frontier(
         R1StreamDeliveryRepository(connection).save_watermark(candidate, content_sha256="b" * 64)
 
     assert "pg_advisory_xact_lock" in connection.statements[0][0]
-    assert "FOR UPDATE" in connection.statements[1][0]
+    assert "FROM r1_stream_run_closes" in connection.statements[1][0]
+    assert "FOR UPDATE" in connection.statements[3][0]
+
+
+def test_rejects_a_watermark_after_its_run_is_closed() -> None:
+    connection = _Connection(rows=[(1,)])
+
+    with pytest.raises(ValueError, match="after run_closed"):
+        R1StreamDeliveryRepository(connection).save_watermark(_watermark(), content_sha256="a" * 64)
+
+    assert "pg_advisory_xact_lock" in connection.statements[0][0]
 
 
 def test_chunk_identity_is_scoped_to_its_partition() -> None:
@@ -134,6 +144,24 @@ def test_recovers_an_exact_run_close_replay() -> None:
     assert not R1StreamDeliveryRepository(connection).save_run_close(
         run_id="RUN-20261012-001", close_id="CLOSE-001", content_sha256="a" * 64
     )
+
+
+def test_holds_the_same_run_lock_from_close_validation_through_close_recording() -> None:
+    watermark = _watermark()
+    connection = _Connection(rows=[_accepted_watermark_row(watermark), (1,), ("CLOSE-001",)])
+    repository = R1StreamDeliveryRepository(connection)
+
+    repository.assert_final_watermarks_match(_close_final_watermarks())
+    assert repository.save_run_close(
+        run_id=watermark.partition.run_id,
+        close_id="CLOSE-001",
+        content_sha256="a" * 64,
+    )
+
+    run_lock_queries = [
+        query for query, _ in connection.statements if "hashtextextended(%s, 0)" in query
+    ]
+    assert len(run_lock_queries) == 2
 
 
 def test_rejects_a_run_close_identity_reused_with_different_content() -> None:
@@ -270,4 +298,8 @@ class _Connection:
 
     def execute(self, query: str, params: tuple[object, ...]) -> _Cursor:
         self.statements.append((query, params))
+        if "SELECT pg_advisory_xact_lock" in query:
+            return _Cursor(None)
+        if "SELECT 1\nFROM r1_stream_run_closes" in query:
+            return _Cursor(self._rows.pop(0))
         return _Cursor(self._rows.pop(0))
