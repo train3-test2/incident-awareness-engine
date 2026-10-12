@@ -1,5 +1,6 @@
 """R1 incremental stream의 chunk 단위 입력 계약."""
 
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
@@ -82,10 +83,68 @@ class R1EventChunk(BaseModel):
         return self
 
 
+class R1SourceWatermark(BaseModel):
+    """Collector가 한 partition의 event-time frontier를 선언하는 control message."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        validate_by_name=True,
+        serialize_by_alias=True,
+    )
+
+    schema_id: Literal["r1-incremental-stream"] = Field(
+        validation_alias="schema",
+        serialization_alias="schema",
+    )
+    contract_version: Literal["v0.1"]
+    message_type: Literal["source_watermark"]
+    watermark_id: StrictStr = Field(min_length=1)
+    partition: R1StreamPartition
+    watermark_sequence: int = Field(strict=True, ge=1)
+    watermark_at: datetime
+    covered_through_chunk_sequence: int = Field(strict=True, ge=1)
+    emitted_at: datetime
+
+    @field_validator("watermark_id")
+    @classmethod
+    def validate_watermark_id(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("watermark_id must not contain leading or trailing whitespace")
+        return value
+
+    @field_validator("watermark_at", "emitted_at", mode="before")
+    @classmethod
+    def reject_numeric_datetime(cls, value: object) -> object:
+        if isinstance(value, int | float) or (isinstance(value, str) and _is_numeric_string(value)):
+            raise ValueError("watermark datetime must not be a numeric Unix timestamp")
+        return value
+
+    @field_validator("watermark_at", "emitted_at")
+    @classmethod
+    def validate_utc_milliseconds(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("watermark datetime must include a timezone")
+        if value.utcoffset() != timedelta(0):
+            raise ValueError("watermark datetime must be UTC")
+        if value.microsecond % 1000 != 0:
+            raise ValueError("watermark datetime must use millisecond precision")
+        return value.astimezone(UTC)
+
+
+def _is_numeric_string(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+    return True
+
+
 __all__ = [
     "NORMALIZED_EVENT_SCHEMA_VERSION",
     "R1_INCREMENTAL_STREAM_CONTRACT_VERSION",
     "R1_INCREMENTAL_STREAM_SCHEMA",
     "R1EventChunk",
+    "R1SourceWatermark",
     "R1StreamPartition",
 ]

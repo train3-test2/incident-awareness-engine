@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from incident_awareness.common.models.r1_stream import R1EventChunk
+from incident_awareness.common.models.r1_stream import R1EventChunk, R1SourceWatermark
 
 
 def _event(
@@ -47,6 +47,22 @@ def _chunk(**updates: object) -> dict[str, object]:
         "chunk_content_sha256": "a" * 64,
         "event_contract_version": "v0.3",
         "events": [_event()],
+    }
+    value.update(updates)
+    return value
+
+
+def _watermark(**updates: object) -> dict[str, object]:
+    value: dict[str, object] = {
+        "schema": "r1-incremental-stream",
+        "contract_version": "v0.1",
+        "message_type": "source_watermark",
+        "watermark_id": "WM-000001",
+        "partition": _chunk()["partition"],
+        "watermark_sequence": 1,
+        "watermark_at": "2026-10-12T01:02:03.456Z",
+        "covered_through_chunk_sequence": 1,
+        "emitted_at": "2026-10-12T01:02:04.000Z",
     }
     value.update(updates)
     return value
@@ -100,3 +116,26 @@ def test_rejects_event_outside_the_chunk_partition(
 def test_rejects_unknown_contract_or_invalid_chunk_identity(field: str, value: object) -> None:
     with pytest.raises(ValidationError):
         R1EventChunk.model_validate(_chunk(**{field: value}))
+
+
+def test_accepts_a_partition_scoped_source_watermark() -> None:
+    watermark = R1SourceWatermark.model_validate(_watermark())
+
+    assert watermark.watermark_at == datetime(2026, 10, 12, 1, 2, 3, 456000, tzinfo=UTC)
+    assert watermark.covered_through_chunk_sequence == 1
+    assert watermark.model_dump(by_alias=True)["message_type"] == "source_watermark"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("watermark_at", 0),
+        ("watermark_at", "2026-10-12T10:02:03.456+09:00"),
+        ("watermark_at", "2026-10-12T01:02:03.456789Z"),
+        ("watermark_sequence", 0),
+        ("watermark_id", " WM-000001"),
+    ],
+)
+def test_rejects_invalid_source_watermark(field: str, value: object) -> None:
+    with pytest.raises(ValidationError):
+        R1SourceWatermark.model_validate(_watermark(**{field: value}))

@@ -8,8 +8,9 @@
 [AWS First Cycle 입력 Artifact 계약](../aws-first-cycle-inputs.md#현행-batch-경계와-향후-증분-stream-경계)을
 따른다.
 
-이 문서는 `event_chunk`만 정의한다. source watermark, allowed lateness, late Event 처리,
-`run_closed` 메시지는 동일 partition·identity 규칙을 공유하지만 별도 계약에서 정의한다.
+이 문서는 `event_chunk`와 source event-time `source_watermark`를 정의한다. allowed lateness,
+late Event 처리, `run_closed` 메시지는 동일 partition·identity 규칙을 공유하지만 별도 계약에서
+정의한다.
 
 ## 2. 공통 규칙
 
@@ -153,7 +154,53 @@ GUID는 Run·host·segment 범위 밖에서 충돌할 수 있으므로, stream �
 }
 ```
 
-## 7. 소유 경계
+## 7. Source event-time watermark
+
+`source_watermark`는 collector가 특정 partition에서 `watermark_at` 이하의 Event를
+수신·정규화·chunk로 flush했음을 선언하는 control message다. 이는 해당 collector 범위의
+telemetry 전달 완결성만 뜻하며, 원본 telemetry 자체에 누락이 없다는 보장, R1 terminal
+candidate 종료, Evidence 확정을 뜻하지 않는다.
+
+Role3 collector가 watermark를 발급한다. Role2는 유효한 watermark를 소비할 수 있지만 Event의
+최댓값, SQS 수신 시각, S3 업로드 시각 또는 timeout으로 watermark를 만들어서는 안 된다.
+watermark의 allowed lateness 및 watermark 이후 late Event 처리 방식은 별도 계약에서 정한다.
+
+| 필드 | 타입 | 필수 | 규칙 |
+| --- | --- | --- | --- |
+| `schema` | string | O | 정확히 `r1-incremental-stream` |
+| `contract_version` | string | O | 정확히 `v0.1` |
+| `message_type` | string | O | 정확히 `source_watermark` |
+| `watermark_id` | string | O | 비어 있지 않고 앞뒤 공백 없음; 동일 watermark 재전달 시 유지 |
+| `partition` | object | O | `event_chunk.partition`과 같은 `(run_id, host_id, source, source_channel)` 범위 |
+| `watermark_sequence` | integer | O | partition별 1 이상 증가하는 source 발급 순서 |
+| `watermark_at` | datetime | O | collector가 flush 완료를 보장하는 UTC event-time frontier; 밀리초 정밀도 |
+| `covered_through_chunk_sequence` | integer | O | watermark 발급 전에 flush 완료한 마지막 chunk sequence; 1 이상 |
+| `emitted_at` | datetime | O | control message 발급 시각; UTC·밀리초 정밀도이며 event-time frontier가 아님 |
+
+동일 partition에서 watermark sequence와 `watermark_at`은 감소할 수 없다. 이 단조성, 동일
+watermark의 재전달 idempotency, chunk sequence 누락 검증은 transport recovery 구현에서
+검증한다.
+
+```json
+{
+  "schema": "r1-incremental-stream",
+  "contract_version": "v0.1",
+  "message_type": "source_watermark",
+  "watermark_id": "WM-RUN-20261012-001-WIN-01-000001",
+  "partition": {
+    "run_id": "RUN-20261012-001",
+    "host_id": "WIN-01",
+    "source": "sysmon",
+    "source_channel": "Microsoft-Windows-Sysmon/Operational"
+  },
+  "watermark_sequence": 1,
+  "watermark_at": "2026-10-12T01:02:03.456Z",
+  "covered_through_chunk_sequence": 1,
+  "emitted_at": "2026-10-12T01:02:04.000Z"
+}
+```
+
+## 8. 소유 경계
 
 Role3는 envelope validation, partition validation, chunk/Event identity, 재전달 dedup과
 transport recovery를 소유한다. Role2는 유효한 Event chunk를 소비해 selector 상태를
