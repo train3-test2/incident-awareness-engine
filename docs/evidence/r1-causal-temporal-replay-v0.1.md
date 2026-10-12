@@ -41,6 +41,7 @@ Terminal partial tick은 일반 replay point와 동일하게 score 및 stopping 
 - `timestamp`, `event_ids`, `run_id`, `entity_id`
 - Evidence count, extractor version, Evidence artifact hash, extraction summary hash
 - selector와 approved policy identity
+- `RunMetadata.family_id`와 실제 로드한 family-bound approved policy의 family 일치
 - authoritative `RunMetadata`의 run/entity/start/end 경계
 - context provenance와 lineage provenance
 - `timestamp <= available_at` 및 Run 시간 경계
@@ -63,7 +64,9 @@ available_at = authoritative run_end
 
 ## 5. Causal replay provenance
 
-`r1_causal_replay_provenance.json`은 Role1/Role5 전달 경계의 별도 versioned artifact다. 다음을 기록한다.
+Causal replay output directory에는 canonical `r1_causal_fusion_result.json`, `r1_causal_fusion_stopping_trace.json`, `r1_causal_replay_provenance.json`을 immutable하게 함께 게시한다. Provenance를 마지막 완료 표식으로 게시하며, 기록한 FusionResult/FusionStoppingTrace SHA-256은 실제 저장한 canonical bytes의 해시다. 저장 후 loader는 세 파일을 다시 읽어 hash binding을 검증할 수 있다.
+
+`r1_causal_replay_provenance.json`은 Role1/Role5 전달 경계의 별도 versioned artifact로 다음을 기록한다.
 
 - Run/entity와 source causal envelope version
 - source Evidence 및 extraction summary SHA-256
