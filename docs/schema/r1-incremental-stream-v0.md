@@ -178,9 +178,11 @@ watermark의 allowed lateness 및 watermark 이후 late Event 처리 방식은 �
 | `covered_through_chunk_sequence` | integer | O | watermark 발급 전에 flush 완료한 마지막 chunk sequence; 1 이상 |
 | `emitted_at` | datetime | O | control message 발급 시각; UTC·밀리초 정밀도이며 event-time frontier가 아님 |
 
-동일 partition에서 watermark sequence와 `watermark_at`은 감소할 수 없다. 이 단조성, 동일
-watermark의 재전달 idempotency, chunk sequence 누락 검증은 transport recovery 구현에서
-검증한다.
+동일 partition에서 watermark sequence와 `watermark_at`은 감소할 수 없고,
+`allowed_lateness_ms`는 바꿀 수 없다. late-event guard는 sequence·frontier·lateness와
+watermark identity·covered chunk sequence·발급 시각이 모두 같은 exact duplicate만 무변경 수락한다.
+그 외 sequence 중복·후퇴, frontier 후퇴, lateness 변경은 현재 frontier를 덮어쓰지 않고
+fail-closed한다. chunk sequence 누락 검증은 transport recovery 구현에서 검증한다.
 
 ```json
 {

@@ -53,21 +53,21 @@ def _chunk(*, events: list[dict[str, object]], chunk_id: str = "CHK-001") -> R1E
     )
 
 
-def _watermark(*, host_id: str = "WIN-01") -> R1SourceWatermark:
-    return R1SourceWatermark.model_validate(
-        {
-            "schema": "r1-incremental-stream",
-            "contract_version": "v0.1",
-            "message_type": "source_watermark",
-            "watermark_id": "WM-001",
-            "partition": _partition(host_id=host_id),
-            "watermark_sequence": 1,
-            "watermark_at": "2026-10-12T01:02:03.456Z",
-            "allowed_lateness_ms": 30_000,
-            "covered_through_chunk_sequence": 1,
-            "emitted_at": "2026-10-12T01:02:04.000Z",
-        }
-    )
+def _watermark(*, host_id: str = "WIN-01", **updates: object) -> R1SourceWatermark:
+    payload: dict[str, object] = {
+        "schema": "r1-incremental-stream",
+        "contract_version": "v0.1",
+        "message_type": "source_watermark",
+        "watermark_id": "WM-001",
+        "partition": _partition(host_id=host_id),
+        "watermark_sequence": 1,
+        "watermark_at": "2026-10-12T01:02:03.456Z",
+        "allowed_lateness_ms": 30_000,
+        "covered_through_chunk_sequence": 1,
+        "emitted_at": "2026-10-12T01:02:04.000Z",
+    }
+    payload.update(updates)
+    return R1SourceWatermark.model_validate(payload)
 
 
 class _DeadLetterSink:
@@ -124,6 +124,58 @@ def test_does_not_apply_a_watermark_to_another_partition() -> None:
     guard.accept_chunk(_chunk(events=[_event("evt-before", "2026-10-12T01:02:03.000Z")]))
 
     assert sink.messages == []
+
+
+def test_accepts_an_exact_watermark_duplicate_without_changing_the_frontier() -> None:
+    sink = _DeadLetterSink()
+    guard = _guard(sink)
+    watermark = _watermark()
+    guard.accept_watermark(watermark)
+    guard.accept_watermark(watermark)
+
+    with pytest.raises(LateStreamEventError, match="WM-001"):
+        guard.accept_chunk(_chunk(events=[_event("evt-before", "2026-10-12T01:02:03.000Z")]))
+
+
+@pytest.mark.parametrize(
+    ("updated_watermark", "error"),
+    (
+        (
+            {
+                "watermark_id": "WM-000",
+                "watermark_sequence": 1,
+                "watermark_at": "2026-10-12T01:02:02.000Z",
+            },
+            "watermark sequence",
+        ),
+        (
+            {
+                "watermark_id": "WM-002",
+                "watermark_sequence": 3,
+                "watermark_at": "2026-10-12T01:02:02.000Z",
+            },
+            "watermark_at",
+        ),
+        (
+            {"watermark_id": "WM-002", "watermark_sequence": 3, "allowed_lateness_ms": 0},
+            "allowed_lateness_ms",
+        ),
+        ({"watermark_id": "WM-002", "watermark_sequence": 2}, "watermark sequence"),
+        ({"emitted_at": "2026-10-12T01:02:05.000Z"}, "watermark sequence"),
+    ),
+)
+def test_rejects_conflicting_watermark_without_regressing_the_current_frontier(
+    updated_watermark: dict[str, object], error: str
+) -> None:
+    sink = _DeadLetterSink()
+    guard = _guard(sink)
+    guard.accept_watermark(_watermark(watermark_sequence=2))
+
+    with pytest.raises(ValueError, match=error):
+        guard.accept_watermark(_watermark(**updated_watermark))
+
+    with pytest.raises(LateStreamEventError, match="WM-001"):
+        guard.accept_chunk(_chunk(events=[_event("evt-before", "2026-10-12T01:02:03.000Z")]))
 
 
 def test_propagates_dead_letter_write_failure_without_accepting_the_late_chunk() -> None:

@@ -26,7 +26,11 @@ class LateStreamEventError(ValueError):
 @dataclass(frozen=True, slots=True)
 class _AcceptedWatermark:
     watermark_id: str
+    watermark_sequence: int
     watermark_at: datetime
+    allowed_lateness_ms: int
+    covered_through_chunk_sequence: int
+    emitted_at: datetime
 
 
 class R1LateEventGuard:
@@ -47,16 +51,31 @@ class R1LateEventGuard:
         self._watermarks: dict[tuple[str, str, str, str], _AcceptedWatermark] = {}
 
     def accept_watermark(self, watermark: R1SourceWatermark) -> None:
-        """Record the current frontier for the watermark partition.
-
-        Sequence monotonicity and duplicate recovery are validated by the later
-        durable transport-recovery layer; this guard only supplies the late-event
-        fail-closed boundary.
-        """
-        self._watermarks[_partition_key(watermark.partition)] = _AcceptedWatermark(
+        """Advance one partition frontier without permitting regression or mutation."""
+        partition_key = _partition_key(watermark.partition)
+        accepted = _AcceptedWatermark(
             watermark_id=watermark.watermark_id,
+            watermark_sequence=watermark.watermark_sequence,
             watermark_at=watermark.watermark_at,
+            allowed_lateness_ms=watermark.allowed_lateness_ms,
+            covered_through_chunk_sequence=watermark.covered_through_chunk_sequence,
+            emitted_at=watermark.emitted_at,
         )
+        existing = self._watermarks.get(partition_key)
+        if existing is None:
+            self._watermarks[partition_key] = accepted
+            return
+        if accepted == existing:
+            return
+        if accepted.watermark_sequence <= existing.watermark_sequence:
+            raise ValueError(
+                "watermark sequence must increase unless the watermark is an exact duplicate"
+            )
+        if accepted.watermark_at < existing.watermark_at:
+            raise ValueError("watermark_at must not move backwards")
+        if accepted.allowed_lateness_ms != existing.allowed_lateness_ms:
+            raise ValueError("allowed_lateness_ms must remain constant within a partition")
+        self._watermarks[partition_key] = accepted
 
     def accept_chunk(self, chunk: R1EventChunk) -> None:
         """Accept a chunk only when none of its Events are at or before the frontier."""
