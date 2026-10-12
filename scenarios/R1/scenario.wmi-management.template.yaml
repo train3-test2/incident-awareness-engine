@@ -134,11 +134,13 @@ collection:
 
 # The session host is not in this lineage, so the rule of
 # scenarios/R1/scenario.yaml does not apply. A run that records a reference
-# takes it from the process-create record of the process its launch action
-# creates: the one record that carries the process id the call returned, was
-# written between the time taken right before the call and the end of the
-# action, and is the intermediate of the lineage found by ProcessGuid. Which
-# run records a reference is as in every R1 scenario (runs.*.reference_action_id).
+# takes it from the process-create record of the process its invoke action
+# creates through WMI: the one record of the planned intermediate whose
+# EventData.UtcTime lies in the window of the registered reference policy
+# (both ends included) and whose ParentProcessGuid is a context record of the
+# root. The process id the call returned is compared after the record is
+# found; it never finds it. Which run records a reference is as in every R1
+# scenario (runs.*.reference_action_id).
 reference_rule:
   action_step: invoke
   source: wmi_created_process_create

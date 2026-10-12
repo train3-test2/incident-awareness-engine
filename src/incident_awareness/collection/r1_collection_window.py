@@ -1324,6 +1324,11 @@ def _check_canonical_linkage(document: dict, canonical_path: Path) -> None:
     or a canonical artifact that cannot be read, fails closed.
     """
     linkage = document["canonical_provenance_linkage"]
+    if canonical_path.name != CANONICAL_PROVENANCE_FILENAME:
+        raise R1WmiCollectionContextError(
+            f"a canonical artifact is named {CANONICAL_PROVENANCE_FILENAME!r}, found "
+            f"{canonical_path.name!r}"
+        )
     try:
         content = canonical_path.read_bytes()
     except OSError as error:
@@ -1344,7 +1349,12 @@ def _check_canonical_linkage(document: dict, canonical_path: Path) -> None:
             "the canonical loader (incident_awareness.pipeline.r1_artifacts) cannot be imported "
             f"here, so the linkage cannot be held to the canonical artifact: {error}"
         ) from error
-    canonical = load_r1_collection_provenance(canonical_path.parent)
+    try:
+        canonical = load_r1_collection_provenance(canonical_path.parent)
+    except ValueError as error:
+        raise R1WmiCollectionContextError(
+            f"the canonical artifact {canonical_path} does not match its contract: {error}"
+        ) from error
     identity = canonical.loader_selected_policy_identity
     for name, recorded_value, canonical_value in (
         ("reference_policy_id", linkage["reference_policy_id"], identity.policy_id),
@@ -1461,14 +1471,16 @@ def write_r1_wmi_collection_context(document: Mapping[str, object], path: Path) 
         raise R1WmiCollectionContextError(
             f"a sidecar is named {PROVENANCE_FILENAME!r}, found {path.name!r}"
         )
-    if path.exists():
-        raise R1WmiCollectionContextError(
-            f"the sidecar {path} already exists: a published artifact is not overwritten"
-        )
     problems = _structural_problems(dict(document))
     if problems:
         raise R1WmiCollectionContextError("; ".join(problems))
     payload = _canonical_sidecar_bytes(document)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(payload)
+    try:
+        with path.open("xb") as stream:
+            stream.write(payload)
+    except FileExistsError as error:
+        raise R1WmiCollectionContextError(
+            f"the sidecar {path} already exists: a published artifact is not overwritten"
+        ) from error
     return path, hashlib.sha256(payload).hexdigest()

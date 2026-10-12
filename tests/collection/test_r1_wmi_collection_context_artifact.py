@@ -145,12 +145,20 @@ def test_the_canonical_serialization_is_deterministic(tmp_path: Path) -> None:
     assert first == second
 
 
-def test_the_writer_does_not_overwrite_a_published_sidecar(tmp_path: Path) -> None:
+def test_the_writer_does_not_overwrite_a_published_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = tmp_path / PROVENANCE_FILENAME
-    write_r1_wmi_collection_context(valid_document(), path)
+    original = b"already published\n"
+    path.write_bytes(original)
+
+    # An exists-then-write implementation can be raced. Pretend its pre-check
+    # saw no file; exclusive creation must still protect the published bytes.
+    monkeypatch.setattr(Path, "exists", lambda _path: False)
 
     with pytest.raises(R1WmiCollectionContextError, match="already exists"):
         write_r1_wmi_collection_context(valid_document(), path)
+    assert path.read_bytes() == original
 
 
 def test_a_file_that_is_not_named_like_the_sidecar_is_refused(tmp_path: Path) -> None:
@@ -401,11 +409,31 @@ def test_a_canonical_artifact_of_another_run_fails_closed(tmp_path: Path) -> Non
         check_wmi_provenance_pair(tmp_path, RUN_ID)
 
 
+def test_an_explicit_canonical_path_with_another_name_fails_closed(tmp_path: Path) -> None:
+    write_pair(tmp_path, canonical=canonical_document(), sidecar=valid_document())
+    renamed = tmp_path / "renamed-reference-provenance.json"
+    renamed.write_text(
+        json.dumps(canonical_document(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(R1WmiCollectionContextError, match="canonical artifact is named"):
+        check_wmi_provenance_pair(tmp_path, RUN_ID, canonical_path=renamed)
+
+
 def _skip_without_role2_loader() -> None:
     try:
         import incident_awareness.pipeline.r1_artifacts  # noqa: F401
     except (ImportError, SyntaxError) as error:
         pytest.skip(f"the Role2 canonical loader cannot be imported here: {type(error).__name__}")
+
+
+def test_a_canonical_loader_contract_error_uses_the_sidecar_exception(tmp_path: Path) -> None:
+    _skip_without_role2_loader()
+    malformed = {"run_id": RUN_ID}
+    write_pair(tmp_path, canonical=malformed, sidecar=valid_document())
+
+    with pytest.raises(R1WmiCollectionContextError, match="does not match its contract"):
+        check_wmi_provenance_pair(tmp_path, RUN_ID)
 
 
 def test_the_two_artifacts_of_one_run_in_one_directory_pass(tmp_path: Path) -> None:

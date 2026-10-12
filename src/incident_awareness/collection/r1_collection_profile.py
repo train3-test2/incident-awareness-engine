@@ -35,10 +35,12 @@ kind has one source. `session_host_process_create` is the process-create record
 of the session host the session action creates; it needs the session host to be
 in the lineage and is the rule of a scenario that states none.
 `wmi_created_process_create` is the process-create record of the process the
-invoke action creates through WMI: the one record that carries the process id
-the call returned, was written at or after the time of the call, and is the
-intermediate of the lineage found by ProcessGuid. A scenario whose entry is
-`wmi_process` has no rule by default and has to state it.
+invoke action creates through WMI: the one record of the planned intermediate
+whose EventData.UtcTime lies in the registered policy window (both ends
+included) and whose ParentProcessGuid is a context record of the root. The
+process id the call returned is compared only after that record is selected; it
+does not select the record. A scenario whose entry is `wmi_process` has no rule
+by default and has to state it.
 
 A run of a `wmi_process` scenario has four actions, in both run types: the call
 through WMI that starts the intermediate (`invoke`, recorded as
