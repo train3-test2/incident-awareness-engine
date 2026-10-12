@@ -1,3 +1,5 @@
+import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -12,6 +14,7 @@ from incident_awareness.decision.fusion.config import (
     StoppingConfig,
     WindowConfig,
 )
+from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
 from incident_awareness.pipeline.r1_artifacts import (
     R1EvidenceArtifactRun,
     R1ExtractionSummary,
@@ -29,7 +32,10 @@ from incident_awareness.pipeline.r1_causal_replay import (
     run_r1_causal_replay,
 )
 from incident_awareness.pipeline.r1_causal_replay_artifacts import (
+    R1_CAUSAL_FUSION_RESULT_FILENAME,
+    R1_CAUSAL_FUSION_STOPPING_TRACE_FILENAME,
     R1_CAUSAL_REPLAY_PROVENANCE_FILENAME,
+    load_r1_causal_replay_artifacts,
     load_r1_causal_replay_provenance,
     serialize_r1_causal_replay_provenance,
     write_r1_causal_replay_provenance,
@@ -165,7 +171,11 @@ def _envelope(
     )
 
 
-def _metadata(*, run_type: RunType = RunType.ATTACK) -> RunMetadata:
+def _metadata(
+    *,
+    run_type: RunType = RunType.ATTACK,
+    family_id: str | None = "remote_management",
+) -> RunMetadata:
     return RunMetadata(
         run_id=_RUN_ID,
         scenario_id="R1",
@@ -173,7 +183,7 @@ def _metadata(*, run_type: RunType = RunType.ATTACK) -> RunMetadata:
         target_host=_HOST_ID,
         start_time=_START,
         end_time=_END,
-        family_id="remote_management",
+        family_id=family_id,
         schema_versions=SchemaVersions(
             run_metadata="v0.2",
             event="v0.3",
@@ -185,6 +195,17 @@ def _metadata(*, run_type: RunType = RunType.ATTACK) -> RunMetadata:
             execution_record="v0.1",
             evaluation_input="v0.1",
         ),
+    )
+
+
+def _approved_policy(*, family_id: str = "remote_management") -> ApprovedLineagePolicy:
+    return ApprovedLineagePolicy(
+        policy_id="approved-policy",
+        version="v0.3",
+        config_hash="approved-hash",
+        approved_lineage=("anchor.exe", "middle.exe", "terminal.exe"),
+        family_id=family_id,
+        lifecycle="frozen",
     )
 
 
@@ -212,11 +233,16 @@ def _config() -> FusionConfig:
 
 
 def test_strict_join_and_whole_episode_causal_replay() -> None:
+    # Given
+    artifact_run = _artifact_run()
+    envelope = _envelope()
+
     # When
     result = run_r1_causal_replay(
-        _artifact_run(),
-        _envelope(),
+        artifact_run,
+        envelope,
         run_metadata=_metadata(),
+        approved_policy=_approved_policy(),
         config=_config(),
         execution_commit="4ee119069b33470a1cd4a34626f1a1d0a88c4662",
     )
@@ -230,18 +256,24 @@ def test_strict_join_and_whole_episode_causal_replay() -> None:
 
 
 def test_runtime_does_not_branch_on_attack_or_normal_label() -> None:
+    # Given
+    artifact_run = _artifact_run()
+    envelope = _envelope()
+
     # When
     attack = run_r1_causal_replay(
-        _artifact_run(),
-        _envelope(),
+        artifact_run,
+        envelope,
         run_metadata=_metadata(run_type=RunType.ATTACK),
+        approved_policy=_approved_policy(),
         config=_config(),
         execution_commit="4ee119069b33470a1cd4a34626f1a1d0a88c4662",
     )
     normal = run_r1_causal_replay(
-        _artifact_run(),
-        _envelope(),
+        artifact_run,
+        envelope,
         run_metadata=_metadata(run_type=RunType.NORMAL),
+        approved_policy=_approved_policy(),
         config=_config(),
         execution_commit="4ee119069b33470a1cd4a34626f1a1d0a88c4662",
     )
@@ -273,6 +305,7 @@ def test_join_uses_canonical_availability_timestamp_id_order() -> None:
         artifact_run,
         _envelope(evidences=availability),
         run_metadata=_metadata(),
+        approved_policy=_approved_policy(),
     )
 
     # Then
@@ -312,49 +345,172 @@ def test_join_uses_canonical_availability_timestamp_id_order() -> None:
     ],
 )
 def test_strict_join_rejects_invalid_envelope(invalid_envelope) -> None:
-    # When / Then
-    with pytest.raises(ValueError):
+    # Given
+    invalid = invalid_envelope(_envelope())
+
+    # When
+    with pytest.raises(ValueError) as error_info:
         prepare_r1_causal_replay_input(
             _artifact_run(),
-            invalid_envelope(_envelope()),
+            invalid,
             run_metadata=_metadata(),
+            approved_policy=_approved_policy(),
         )
 
+    # Then
+    assert str(error_info.value)
 
-def test_strict_join_rejects_timestamp_and_event_id_mismatch() -> None:
+
+def test_strict_join_rejects_timestamp_mismatch() -> None:
     # Given
     first = _envelope().evidences[0]
     timestamp_mismatch = first.model_copy(
         update={"timestamp": first.timestamp + timedelta(seconds=1)}
     )
-    event_ids_mismatch = first.model_copy(update={"event_ids": ("different-event",)})
 
-    # When / Then
-    with pytest.raises(ValueError, match="timestamp"):
+    # When
+    with pytest.raises(ValueError, match="timestamp") as error_info:
         prepare_r1_causal_replay_input(
             _artifact_run(),
             _envelope(evidences=(timestamp_mismatch, _envelope().evidences[1])),
             run_metadata=_metadata(),
+            approved_policy=_approved_policy(),
         )
-    with pytest.raises(ValueError, match="event_ids"):
+
+    # Then
+    assert "timestamp" in str(error_info.value)
+
+
+def test_strict_join_rejects_event_id_mismatch() -> None:
+    # Given
+    first = _envelope().evidences[0]
+    event_ids_mismatch = first.model_copy(update={"event_ids": ("different-event",)})
+
+    # When
+    with pytest.raises(ValueError, match="event_ids") as error_info:
         prepare_r1_causal_replay_input(
             _artifact_run(),
             _envelope(evidences=(event_ids_mismatch, _envelope().evidences[1])),
             run_metadata=_metadata(),
+            approved_policy=_approved_policy(),
         )
+
+    # Then
+    assert "event_ids" in str(error_info.value)
 
 
 def test_strict_join_rejects_duplicate_loaded_evidence_id() -> None:
     # Given
     duplicated = (_evidences()[0], _evidences()[0])
 
-    # When / Then
-    with pytest.raises(ValueError, match="unique"):
+    # When
+    with pytest.raises(ValueError, match="unique") as error_info:
         prepare_r1_causal_replay_input(
             _artifact_run(evidences=duplicated),
             _envelope(),
             run_metadata=_metadata(),
+            approved_policy=_approved_policy(),
         )
+
+    # Then
+    assert "unique" in str(error_info.value)
+
+
+def test_strict_join_requires_matching_family_bound_policy() -> None:
+    # Given
+    artifact_run = _artifact_run()
+    envelope = _envelope()
+
+    # When
+    causal_input = prepare_r1_causal_replay_input(
+        artifact_run,
+        envelope,
+        run_metadata=_metadata(),
+        approved_policy=_approved_policy(),
+    )
+
+    # Then
+    assert len(causal_input.scheduled_evidences) == 2
+
+
+def test_strict_join_rejects_approved_policy_family_mismatch() -> None:
+    # Given
+    policy = _approved_policy(family_id="wmi_management")
+
+    # When
+    with pytest.raises(ValueError, match="family_id") as error_info:
+        prepare_r1_causal_replay_input(
+            _artifact_run(),
+            _envelope(),
+            run_metadata=_metadata(),
+            approved_policy=policy,
+        )
+
+    # Then
+    assert "does not match" in str(error_info.value)
+
+
+def test_strict_join_rejects_loaded_approved_policy_identity_mismatch() -> None:
+    # Given
+    policy = ApprovedLineagePolicy(
+        policy_id="different-policy",
+        version="v0.3",
+        config_hash="approved-hash",
+        approved_lineage=("anchor.exe", "middle.exe", "terminal.exe"),
+        family_id="remote_management",
+        lifecycle="frozen",
+    )
+
+    # When
+    with pytest.raises(ValueError, match="loaded approved policy identity") as error_info:
+        prepare_r1_causal_replay_input(
+            _artifact_run(),
+            _envelope(),
+            run_metadata=_metadata(),
+            approved_policy=policy,
+        )
+
+    # Then
+    assert "must match" in str(error_info.value)
+
+
+def test_strict_join_rejects_missing_run_family() -> None:
+    # Given
+    metadata = _metadata(family_id=None)
+
+    # When
+    with pytest.raises(ValueError, match="family_id") as error_info:
+        prepare_r1_causal_replay_input(
+            _artifact_run(),
+            _envelope(),
+            run_metadata=metadata,
+            approved_policy=_approved_policy(),
+        )
+
+    # Then
+    assert "requires" in str(error_info.value)
+
+
+def test_strict_join_rejects_legacy_policy_without_family_binding() -> None:
+    # Given
+    policy = ApprovedLineagePolicy(
+        policy_id="approved-policy",
+        version="v0.3",
+        config_hash="approved-hash",
+        approved_lineage=("anchor.exe", "middle.exe", "terminal.exe"),
+    )
+
+    # When
+    with pytest.raises(ValueError, match="legacy unbound") as error_info:
+        prepare_r1_causal_replay_input(
+            _artifact_run(),
+            _envelope(),
+            run_metadata=_metadata(),
+            approved_policy=policy,
+        )
+
+    # Then
+    assert "not eligible" in str(error_info.value)
 
 
 def test_provenance_artifact_is_deterministic_and_immutable(tmp_path: Path) -> None:
@@ -363,6 +519,7 @@ def test_provenance_artifact_is_deterministic_and_immutable(tmp_path: Path) -> N
         _artifact_run(),
         _envelope(),
         run_metadata=_metadata(),
+        approved_policy=_approved_policy(),
         config=_config(),
         execution_commit="4ee119069b33470a1cd4a34626f1a1d0a88c4662",
     )
@@ -375,6 +532,11 @@ def test_provenance_artifact_is_deterministic_and_immutable(tmp_path: Path) -> N
         output_directory=tmp_path,
     )
     restored = load_r1_causal_replay_provenance(artifact.path)
+    with pytest.raises(FileExistsError) as error_info:
+        write_r1_causal_replay_provenance(
+            result.provenance,
+            output_directory=tmp_path,
+        )
 
     # Then
     assert first_bytes == second_bytes == artifact.path.read_bytes()
@@ -384,29 +546,103 @@ def test_provenance_artifact_is_deterministic_and_immutable(tmp_path: Path) -> N
     assert artifact.provenance.source_evidence_artifact_sha256 == _EVIDENCE_HASH
     assert artifact.provenance.source_extraction_summary_sha256 == _SUMMARY_HASH
     assert artifact.provenance.execution_commit == "4ee119069b33470a1cd4a34626f1a1d0a88c4662"
-    with pytest.raises(FileExistsError):
-        write_r1_causal_replay_provenance(
-            result.provenance,
-            output_directory=tmp_path,
-        )
+    assert "already exists" in str(error_info.value)
 
 
-def test_run_and_write_pipeline_publishes_separate_provenance_artifact(
+def test_run_and_write_pipeline_publishes_reloadable_causal_output_artifacts(
     tmp_path: Path,
 ) -> None:
+    # Given
+    artifact_run = _artifact_run()
+    envelope = _envelope()
+
     # When
     result = run_and_write_r1_causal_replay(
-        _artifact_run(),
-        _envelope(),
+        artifact_run,
+        envelope,
         run_metadata=_metadata(),
+        approved_policy=_approved_policy(),
         config=_config(),
         execution_commit="4ee119069b33470a1cd4a34626f1a1d0a88c4662",
         output_directory=tmp_path,
     )
+    restored_provenance = load_r1_causal_replay_provenance(result.provenance_artifact.path)
+    restored = load_r1_causal_replay_artifacts(tmp_path)
 
     # Then
+    assert result.artifacts.fusion_result.path == (tmp_path / R1_CAUSAL_FUSION_RESULT_FILENAME)
+    assert result.artifacts.fusion_stopping_trace.path == (
+        tmp_path / R1_CAUSAL_FUSION_STOPPING_TRACE_FILENAME
+    )
     assert result.provenance_artifact.path == (tmp_path / R1_CAUSAL_REPLAY_PROVENANCE_FILENAME)
     assert result.provenance_artifact.provenance == result.pipeline_result.provenance
-    assert load_r1_causal_replay_provenance(result.provenance_artifact.path) == (
-        result.pipeline_result.provenance
+    assert restored_provenance == result.pipeline_result.provenance
+    assert restored.fusion_result == result.pipeline_result.fusion_result
+    assert restored.fusion_stopping_trace == result.pipeline_result.stopping_trace
+    assert restored.provenance == result.pipeline_result.provenance
+    assert result.artifacts.fusion_result.sha256 == restored.provenance.fusion_result_sha256
+    assert (
+        result.artifacts.fusion_stopping_trace.sha256
+        == restored.provenance.fusion_stopping_trace_sha256
     )
+    assert (
+        result.artifacts.fusion_result.sha256
+        == hashlib.sha256(result.artifacts.fusion_result.path.read_bytes()).hexdigest()
+    )
+    assert (
+        result.artifacts.fusion_stopping_trace.sha256
+        == hashlib.sha256(result.artifacts.fusion_stopping_trace.path.read_bytes()).hexdigest()
+    )
+
+
+def test_provenance_serializes_all_external_times_as_utc_milliseconds() -> None:
+    # Given
+    result = run_r1_causal_replay(
+        _artifact_run(),
+        _envelope(),
+        run_metadata=_metadata(),
+        approved_policy=_approved_policy(),
+        config=_config(),
+        execution_commit="4ee119069b33470a1cd4a34626f1a1d0a88c4662",
+    )
+    payload = result.provenance.model_dump()
+    shifted = tuple(
+        point + timedelta(milliseconds=999) for point in result.provenance.evaluated_replay_points
+    )
+    payload.update(
+        watermark_at=result.provenance.watermark_at + timedelta(milliseconds=999),
+        replay_start=result.provenance.replay_start + timedelta(milliseconds=999),
+        replay_end=result.provenance.replay_end + timedelta(milliseconds=999),
+        fusion_time=result.provenance.fusion_time + timedelta(milliseconds=999),
+        evaluated_replay_points=shifted,
+    )
+    provenance = type(result.provenance).model_validate(payload)
+
+    # When
+    serialized = json.loads(serialize_r1_causal_replay_provenance(provenance))
+
+    # Then
+    assert serialized["replay_start"] == "2026-10-12T01:00:00.999Z"
+    assert serialized["replay_end"] == "2026-10-12T01:00:35.999Z"
+    assert serialized["watermark_at"] == "2026-10-12T01:00:35.999Z"
+    assert serialized["fusion_time"] == "2026-10-12T01:00:35.999Z"
+    assert serialized["evaluated_replay_points"][0] == "2026-10-12T01:00:00.999Z"
+
+
+def test_provenance_serializes_whole_seconds_with_milliseconds() -> None:
+    # Given
+    result = run_r1_causal_replay(
+        _artifact_run(),
+        _envelope(),
+        run_metadata=_metadata(),
+        approved_policy=_approved_policy(),
+        config=_config(),
+        execution_commit="4ee119069b33470a1cd4a34626f1a1d0a88c4662",
+    )
+
+    # When
+    serialized = json.loads(serialize_r1_causal_replay_provenance(result.provenance))
+
+    # Then
+    assert serialized["replay_start"] == "2026-10-12T01:00:00.000Z"
+    assert serialized["replay_end"] == "2026-10-12T01:00:35.000Z"

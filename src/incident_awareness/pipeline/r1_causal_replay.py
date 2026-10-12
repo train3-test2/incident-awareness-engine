@@ -19,6 +19,10 @@ from incident_awareness.decision.fusion.temporal_replay import (
     ScheduledEvidence,
     TemporalReplayResult,
 )
+from incident_awareness.evidence.r1_approved_lineage_policy import (
+    validate_r1_policy_family_binding,
+)
+from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
 from incident_awareness.pipeline.fusion import build_fusion_runtime_config_snapshot
 from incident_awareness.pipeline.r1_artifacts import R1EvidenceArtifactRun
 from incident_awareness.pipeline.r1_causal_availability import (
@@ -29,10 +33,11 @@ from incident_awareness.pipeline.r1_causal_replay_artifacts import (
     R1_CAUSAL_AVAILABILITY_GATE_CONTRACT,
     R1_CAUSAL_REPLAY_ORDERING_CONTRACT,
     R1_CAUSAL_REPLAY_PROVENANCE_CONTRACT_VERSION,
+    R1CausalReplayArtifactSet,
     R1CausalReplayProvenance,
     R1CausalReplayProvenanceArtifact,
     canonical_model_sha256,
-    write_r1_causal_replay_provenance,
+    write_r1_causal_replay_artifacts,
 )
 
 
@@ -55,6 +60,7 @@ class R1CausalReplayPipelineResult:
 @dataclass(frozen=True, slots=True)
 class R1CausalReplayArtifactPipelineResult:
     pipeline_result: R1CausalReplayPipelineResult
+    artifacts: R1CausalReplayArtifactSet
     provenance_artifact: R1CausalReplayProvenanceArtifact
 
 
@@ -63,6 +69,7 @@ def prepare_r1_causal_replay_input(
     envelope: R1CausalAvailabilityEnvelope,
     *,
     run_metadata: RunMetadata,
+    approved_policy: ApprovedLineagePolicy,
 ) -> R1CausalReplayInput:
     """검증된 artifact와 envelope를 evidence_id 기준으로 정확히 결합한다."""
     if not isinstance(artifact_run, R1EvidenceArtifactRun):
@@ -71,6 +78,8 @@ def prepare_r1_causal_replay_input(
         raise TypeError("envelope must be an R1CausalAvailabilityEnvelope")
     if not isinstance(run_metadata, RunMetadata):
         raise TypeError("run_metadata must be a RunMetadata")
+    if not isinstance(approved_policy, ApprovedLineagePolicy):
+        raise TypeError("approved_policy must be an ApprovedLineagePolicy")
 
     # model_copy 등으로 우회된 값도 version-specific envelope validator로 다시 막는다.
     envelope = R1CausalAvailabilityEnvelope.model_validate(
@@ -87,6 +96,9 @@ def prepare_r1_causal_replay_input(
         raise ValueError("causal envelope run_start must match RunMetadata start_time")
     if envelope.run_end != run_metadata.end_time:
         raise ValueError("causal envelope run_end must match RunMetadata end_time")
+    if run_metadata.family_id is None:
+        raise ValueError("causal replay requires RunMetadata.family_id")
+    validate_r1_policy_family_binding(run_metadata.family_id, approved_policy)
 
     summary = artifact_run.summary
     if summary.status != "completed":
@@ -128,6 +140,12 @@ def prepare_r1_causal_replay_input(
     )
     if approved_identity != envelope.approved_policy_identity:
         raise ValueError("approved policy identity must match the causal envelope")
+    if approved_identity != R1CausalPolicyIdentity(
+        policy_id=approved_policy.policy_id,
+        version=approved_policy.version,
+        config_hash=approved_policy.config_hash,
+    ):
+        raise ValueError("loaded approved policy identity must match the causal envelope")
 
     evidences_by_id = {}
     for evidence in artifact_run.evidences:
@@ -180,6 +198,7 @@ def run_r1_causal_replay(
     envelope: R1CausalAvailabilityEnvelope,
     *,
     run_metadata: RunMetadata,
+    approved_policy: ApprovedLineagePolicy,
     config: FusionConfig,
     execution_commit: str,
 ) -> R1CausalReplayPipelineResult:
@@ -190,6 +209,7 @@ def run_r1_causal_replay(
         artifact_run,
         envelope,
         run_metadata=run_metadata,
+        approved_policy=approved_policy,
     )
     runner = config.build_runner()
     replay_result = runner.run_causal(
@@ -272,6 +292,7 @@ def run_and_write_r1_causal_replay(
     envelope: R1CausalAvailabilityEnvelope,
     *,
     run_metadata: RunMetadata,
+    approved_policy: ApprovedLineagePolicy,
     config: FusionConfig,
     execution_commit: str,
     output_directory: Path,
@@ -281,16 +302,20 @@ def run_and_write_r1_causal_replay(
         artifact_run,
         envelope,
         run_metadata=run_metadata,
+        approved_policy=approved_policy,
         config=config,
         execution_commit=execution_commit,
     )
-    provenance_artifact = write_r1_causal_replay_provenance(
+    artifacts = write_r1_causal_replay_artifacts(
+        pipeline_result.fusion_result,
+        pipeline_result.stopping_trace,
         pipeline_result.provenance,
         output_directory=output_directory,
     )
     return R1CausalReplayArtifactPipelineResult(
         pipeline_result=pipeline_result,
-        provenance_artifact=provenance_artifact,
+        artifacts=artifacts,
+        provenance_artifact=artifacts.provenance,
     )
 
 
