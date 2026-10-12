@@ -9,8 +9,8 @@
 따른다.
 
 이 문서는 `event_chunk`, source event-time `source_watermark`, allowed lateness와
-out-of-order Event 처리 규칙을 정의한다. watermark 이후 late Event의 fail-closed/DLQ 처리와
-`run_closed` 메시지는 동일 partition·identity 규칙을 공유하지만 별도 계약에서 정의한다.
+out-of-order Event 처리 규칙, final watermark를 포함한 `run_closed` 메시지를 정의한다.
+watermark 이후 late Event의 fail-closed/DLQ 처리도 이 계약을 따른다.
 
 ## 2. 공통 규칙
 
@@ -251,7 +251,61 @@ dead-letter sink의 실제 SQS/S3/PostgreSQL 배치와 retry recovery는 transpo
 동일 chunk 또는 watermark의 재전달 dedup과 Worker 장애 뒤 상태 복구는 다음 idempotency 작업의
 범위다.
 
-## 10. 소유 경계
+## 10. `run_closed`와 final watermark
+
+`run_closed`는 collector가 한 Run에서 연 모든 partition의 final source watermark를 함께
+선언하는 control message다. 각 final watermark는 해당 partition에 더 이상의 새 Event chunk가
+없다는 collector의 telemetry 전달 완결성 경계다. final watermark와 `run_closed`가 있어도
+Role4 candidate-generation seal 없이는 R1 terminal candidate 종료나 Evidence 최종 확정을
+의미하지 않는다.
+
+| 필드 | 타입 | 필수 | 규칙 |
+| --- | --- | --- | --- |
+| `schema` | string | O | 정확히 `r1-incremental-stream` |
+| `contract_version` | string | O | 정확히 `v0.1` |
+| `message_type` | string | O | 정확히 `run_closed` |
+| `close_id` | string | O | 비어 있지 않고 앞뒤 공백 없음; 같은 close 재전달 시 유지 |
+| `run_id` | string | O | `RUN-YYYYMMDD-NNN` 및 달력 유효성 |
+| `final_watermarks` | array | O | 하나 이상; Run의 각 partition마다 정확히 하나 |
+| `final_watermarks[].partition` | object | O | 상위 `run_id`와 같은 partition |
+| `final_watermarks[].watermark_id` | string | O | 앞서 발급했거나 같은 message에서 확정하는 final watermark identity |
+| `final_watermarks[].watermark_sequence` | integer | O | partition별 final source watermark sequence |
+| `final_watermarks[].watermark_at` | datetime | O | partition의 final UTC event-time frontier, 밀리초 정밀도 |
+| `final_watermarks[].allowed_lateness_ms` | integer | O | final watermark에 적용한 0 이상 lateness budget |
+| `final_watermarks[].covered_through_chunk_sequence` | integer | O | final watermark 전에 flush한 마지막 chunk sequence |
+| `emitted_at` | datetime | O | `run_closed` 발급 시각, UTC·밀리초 정밀도 |
+
+`run_closed`는 모든 final watermark가 준비된 뒤에만 발급한다. 누락 partition이 없는지,
+final watermark가 기존 source watermark와 단조적으로 일치하는지, 동일 `close_id` 재전달을
+어떻게 처리하는지는 다음 transport idempotency 구현에서 검증한다.
+
+```json
+{
+  "schema": "r1-incremental-stream",
+  "contract_version": "v0.1",
+  "message_type": "run_closed",
+  "close_id": "CLOSE-RUN-20261012-001-000001",
+  "run_id": "RUN-20261012-001",
+  "final_watermarks": [
+    {
+      "partition": {
+        "run_id": "RUN-20261012-001",
+        "host_id": "WIN-01",
+        "source": "sysmon",
+        "source_channel": "Microsoft-Windows-Sysmon/Operational"
+      },
+      "watermark_id": "WM-RUN-20261012-001-WIN-01-000002",
+      "watermark_sequence": 2,
+      "watermark_at": "2026-10-12T01:10:00.000Z",
+      "allowed_lateness_ms": 30000,
+      "covered_through_chunk_sequence": 24
+    }
+  ],
+  "emitted_at": "2026-10-12T01:10:01.000Z"
+}
+```
+
+## 11. 소유 경계
 
 Role3는 envelope validation, partition validation, chunk/Event identity, 재전달 dedup과
 transport recovery를 소유한다. Role2는 유효한 Event chunk를 소비해 selector 상태를

@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from incident_awareness.common.models.r1_stream import R1EventChunk, R1SourceWatermark
+from incident_awareness.common.models.r1_stream import R1EventChunk, R1RunClosed, R1SourceWatermark
 
 
 def _event(
@@ -63,6 +63,29 @@ def _watermark(**updates: object) -> dict[str, object]:
         "watermark_at": "2026-10-12T01:02:03.456Z",
         "allowed_lateness_ms": 30_000,
         "covered_through_chunk_sequence": 1,
+        "emitted_at": "2026-10-12T01:02:04.000Z",
+    }
+    value.update(updates)
+    return value
+
+
+def _run_closed(**updates: object) -> dict[str, object]:
+    value: dict[str, object] = {
+        "schema": "r1-incremental-stream",
+        "contract_version": "v0.1",
+        "message_type": "run_closed",
+        "close_id": "CLOSE-000001",
+        "run_id": "RUN-20261012-001",
+        "final_watermarks": [
+            {
+                "partition": _chunk()["partition"],
+                "watermark_id": "WM-000001",
+                "watermark_sequence": 1,
+                "watermark_at": "2026-10-12T01:02:03.456Z",
+                "allowed_lateness_ms": 30_000,
+                "covered_through_chunk_sequence": 1,
+            }
+        ],
         "emitted_at": "2026-10-12T01:02:04.000Z",
     }
     value.update(updates)
@@ -143,3 +166,34 @@ def test_accepts_a_partition_scoped_source_watermark() -> None:
 def test_rejects_invalid_source_watermark(field: str, value: object) -> None:
     with pytest.raises(ValidationError):
         R1SourceWatermark.model_validate(_watermark(**{field: value}))
+
+
+def test_accepts_run_closed_with_its_final_partition_watermark() -> None:
+    closed = R1RunClosed.model_validate(_run_closed())
+
+    assert closed.final_watermarks[0].watermark_id == "WM-000001"
+    assert closed.model_dump(by_alias=True)["message_type"] == "run_closed"
+
+
+def test_rejects_run_closed_when_a_final_watermark_belongs_to_another_run() -> None:
+    payload = _run_closed()
+    payload["final_watermarks"] = [
+        {
+            **payload["final_watermarks"][0],  # type: ignore[index]
+            "partition": {**_chunk()["partition"], "run_id": "RUN-20261012-002"},
+        }
+    ]
+
+    with pytest.raises(ValidationError, match="must match run_closed run_id"):
+        R1RunClosed.model_validate(payload)
+
+
+def test_rejects_duplicate_final_watermark_partitions() -> None:
+    payload = _run_closed()
+    payload["final_watermarks"] = [
+        payload["final_watermarks"][0],  # type: ignore[index]
+        payload["final_watermarks"][0],  # type: ignore[index]
+    ]
+
+    with pytest.raises(ValidationError, match="duplicate partitions"):
+        R1RunClosed.model_validate(payload)
