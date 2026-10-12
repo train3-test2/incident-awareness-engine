@@ -62,6 +62,20 @@ SELECT watermark_id, watermark_sequence, content_sha256
 FROM r1_stream_watermarks
 WHERE run_id = %s AND host_id = %s AND source = %s AND source_channel = %s AND watermark_sequence = %s
 """
+_LOCK_WATERMARK_PARTITION = """
+SELECT pg_advisory_xact_lock(
+    hashtextextended(concat_ws(E'\\x1f', %s, %s, %s, %s), 0)
+)
+"""
+_SELECT_LATEST_WATERMARK_FOR_UPDATE = """
+SELECT watermark_id, watermark_sequence, watermark_at, allowed_lateness_ms,
+       covered_through_chunk_sequence
+FROM r1_stream_watermarks
+WHERE run_id = %s AND host_id = %s AND source = %s AND source_channel = %s
+ORDER BY watermark_sequence DESC
+LIMIT 1
+FOR UPDATE
+"""
 _INSERT_CLOSE = """
 INSERT INTO r1_stream_run_closes (run_id, close_id, content_sha256)
 VALUES (%s, %s, %s)
@@ -132,6 +146,50 @@ class R1StreamDeliveryRepository:
 
     def save_watermark(self, watermark: R1SourceWatermark, *, content_sha256: str) -> bool:
         partition_params = _partition_params(watermark.partition)
+        # The advisory lock also serializes the first watermark, when no table row
+        # exists yet.  The caller owns the surrounding database transaction.
+        self._connection.execute(_LOCK_WATERMARK_PARTITION, partition_params).fetchone()
+        latest = self._accepted_watermark_from_row(
+            self._connection.execute(
+                _SELECT_LATEST_WATERMARK_FOR_UPDATE, partition_params
+            ).fetchone()
+        )
+        existing_by_id = self._row_to_delivery(
+            self._connection.execute(
+                _SELECT_WATERMARK_BY_ID,
+                (*partition_params, watermark.watermark_id),
+            ).fetchone(),
+            label="watermark",
+            has_sequence=True,
+        )
+        if existing_by_id is not None:
+            if (
+                existing_by_id.sequence == watermark.watermark_sequence
+                and existing_by_id.content_sha256 == content_sha256
+            ):
+                return False
+            raise ValueError("watermark identity conflicts with previously accepted content")
+        existing_by_sequence = self._row_to_delivery(
+            self._connection.execute(
+                _SELECT_WATERMARK_BY_SEQUENCE,
+                (*partition_params, watermark.watermark_sequence),
+            ).fetchone(),
+            label="watermark",
+            has_sequence=True,
+        )
+        if existing_by_sequence is not None:
+            raise ValueError("watermark sequence conflicts with previously accepted identity")
+        if latest is not None:
+            if watermark.watermark_sequence <= latest.watermark_sequence:
+                raise ValueError(
+                    "watermark sequence must advance beyond the latest durable watermark"
+                )
+            if watermark.watermark_at < latest.watermark_at:
+                raise ValueError(
+                    "watermark_at must not move backwards from the latest durable watermark"
+                )
+            if watermark.allowed_lateness_ms != latest.allowed_lateness_ms:
+                raise ValueError("allowed_lateness_ms must remain constant within a partition")
         inserted = self._connection.execute(
             _INSERT_WATERMARK,
             (

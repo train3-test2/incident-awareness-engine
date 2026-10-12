@@ -47,7 +47,15 @@ def test_rejects_a_chunk_identity_reused_with_different_content() -> None:
 
 
 def test_rejects_a_watermark_sequence_reused_by_another_identity() -> None:
-    connection = _Connection(rows=[None, None])
+    existing = _watermark(watermark_id="WM-001")
+    connection = _Connection(
+        rows=[
+            None,
+            _accepted_watermark_row(existing),
+            None,
+            (existing.watermark_id, existing.watermark_sequence, "b" * 64),
+        ]
+    )
 
     with pytest.raises(ValueError, match="sequence conflicts"):
         R1StreamDeliveryRepository(connection).save_watermark(_watermark(), content_sha256="a" * 64)
@@ -55,11 +63,39 @@ def test_rejects_a_watermark_sequence_reused_by_another_identity() -> None:
 
 def test_recovers_an_exact_watermark_replay_after_a_worker_restart() -> None:
     watermark = _watermark()
-    connection = _Connection(rows=[None, (watermark.watermark_id, 2, "a" * 64)])
+    connection = _Connection(
+        rows=[
+            None,
+            _accepted_watermark_row(watermark),
+            (watermark.watermark_id, 2, "a" * 64),
+        ]
+    )
 
     assert not R1StreamDeliveryRepository(connection).save_watermark(
         watermark, content_sha256="a" * 64
     )
+
+
+@pytest.mark.parametrize(
+    ("updates", "error"),
+    [
+        ({"watermark_sequence": 1}, "sequence must advance"),
+        ({"watermark_at": "2026-10-12T01:02:03.455Z"}, "watermark_at must not move backwards"),
+        ({"allowed_lateness_ms": 30_001}, "allowed_lateness_ms must remain constant"),
+    ],
+)
+def test_rejects_a_watermark_that_regresses_or_mutates_the_durable_frontier(
+    updates: dict[str, object], error: str
+) -> None:
+    current = _watermark()
+    candidate = _watermark(**{"watermark_id": "WM-003", "watermark_sequence": 3, **updates})
+    connection = _Connection(rows=[None, _accepted_watermark_row(current), None, None])
+
+    with pytest.raises(ValueError, match=error):
+        R1StreamDeliveryRepository(connection).save_watermark(candidate, content_sha256="b" * 64)
+
+    assert "pg_advisory_xact_lock" in connection.statements[0][0]
+    assert "FOR UPDATE" in connection.statements[1][0]
 
 
 def test_chunk_identity_is_scoped_to_its_partition() -> None:
@@ -145,20 +181,30 @@ def test_rejects_a_close_watermark_with_different_frontier_values() -> None:
         )
 
 
-def _watermark() -> R1SourceWatermark:
-    return R1SourceWatermark.model_validate(
-        {
-            "schema": "r1-incremental-stream",
-            "contract_version": "v0.1",
-            "message_type": "source_watermark",
-            "watermark_id": "WM-002",
-            "partition": _partition().model_dump(),
-            "watermark_sequence": 2,
-            "watermark_at": "2026-10-12T01:02:03.456Z",
-            "allowed_lateness_ms": 30_000,
-            "covered_through_chunk_sequence": 2,
-            "emitted_at": "2026-10-12T01:02:04.000Z",
-        }
+def _watermark(**updates: object) -> R1SourceWatermark:
+    payload: dict[str, object] = {
+        "schema": "r1-incremental-stream",
+        "contract_version": "v0.1",
+        "message_type": "source_watermark",
+        "watermark_id": "WM-002",
+        "partition": _partition().model_dump(),
+        "watermark_sequence": 2,
+        "watermark_at": "2026-10-12T01:02:03.456Z",
+        "allowed_lateness_ms": 30_000,
+        "covered_through_chunk_sequence": 2,
+        "emitted_at": "2026-10-12T01:02:04.000Z",
+    }
+    payload.update(updates)
+    return R1SourceWatermark.model_validate(payload)
+
+
+def _accepted_watermark_row(watermark: R1SourceWatermark) -> tuple[object, ...]:
+    return (
+        watermark.watermark_id,
+        watermark.watermark_sequence,
+        watermark.watermark_at,
+        watermark.allowed_lateness_ms,
+        watermark.covered_through_chunk_sequence,
     )
 
 
