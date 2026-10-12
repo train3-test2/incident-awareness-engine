@@ -56,7 +56,18 @@ class _Ledger:
                 new_event_ids.append(event_id)
             elif existing_event != event_content_sha256:
                 raise ValueError("event identity conflicts with previously accepted content")
-        return R1ChunkAdmission(False, tuple(new_event_ids), self.latest_watermark)
+        active_watermark = self.latest_watermark
+        if active_watermark is not None:
+            received_sequences = {
+                existing_sequence
+                for existing_sequence in self._chunk_ids_by_sequence
+                if existing_sequence <= active_watermark.covered_through_chunk_sequence
+            }
+            if received_sequences != set(
+                range(1, active_watermark.covered_through_chunk_sequence + 1)
+            ):
+                active_watermark = None
+        return R1ChunkAdmission(False, tuple(new_event_ids), active_watermark)
 
     def save_chunk(self, *, chunk_id: str, sequence: int, content_sha256: str, **_: object) -> bool:
         self.chunk_hashes.append(content_sha256)
@@ -80,7 +91,10 @@ class _Ledger:
 
     def save_watermark(self, watermark: R1SourceWatermark, *, content_sha256: str) -> bool:
         self.watermark_hashes.append(content_sha256)
-        return self._save("watermark", watermark.watermark_id)
+        accepted = self._save("watermark", watermark.watermark_id)
+        if accepted:
+            self.latest_watermark = _accepted_watermark(watermark)
+        return accepted
 
     def assert_final_watermarks_match(self, _: object) -> None:
         return None
@@ -130,16 +144,43 @@ def test_chunk_replay_is_a_duplicate_not_a_second_delivery() -> None:
 
 def test_rejects_new_events_at_or_before_the_durable_watermark_without_saving() -> None:
     ledger = _Ledger()
-    ledger.latest_watermark = _accepted_watermark(_watermark())
     sink = _DeadLetterSink()
+    ingress = _ingress(ledger, sink)
+    covered_chunk = _valid_chunk()
+    late_new_event = covered_chunk.events[0].model_copy(
+        update={"event_id": "evt-002", "source_event_id": "2"}
+    )
+    late_chunk = _with_digest(
+        covered_chunk.model_copy(
+            update={"chunk_id": "CHK-002", "chunk_sequence": 2, "events": (late_new_event,)}
+        )
+    )
+
+    ingress.accept_chunk(covered_chunk)
+    ingress.accept_watermark(_watermark())
+
+    with pytest.raises(LateStreamEventError, match="CHK-002"):
+        ingress.accept_chunk(late_chunk)
+
+    assert ledger.event_hashes == [
+        (covered_chunk.events[0].event_id, _canonical_event_sha256(covered_chunk.events[0]))
+    ]
+    assert ledger.chunk_hashes == [covered_chunk.chunk_content_sha256]
+    assert sink.messages[0].violating_event_ids == ("evt-002",)
+
+
+def test_allows_a_chunk_covered_by_a_watermark_that_arrives_first() -> None:
+    ledger = _Ledger()
+    sink = _DeadLetterSink()
+    ingress = _ingress(ledger, sink)
     chunk = _valid_chunk()
 
-    with pytest.raises(LateStreamEventError, match="CHK-001"):
-        _ingress(ledger, sink).accept_chunk(chunk)
+    ingress.accept_watermark(_watermark())
+    result = ingress.accept_chunk(chunk)
 
-    assert ledger.event_hashes == []
-    assert ledger.chunk_hashes == []
-    assert sink.messages[0].violating_event_ids == ("evt-001",)
+    assert result.disposition is R1StreamDeliveryDisposition.ACCEPTED
+    assert result.new_event_ids == ("evt-001",)
+    assert sink.messages == []
 
 
 def test_allows_an_exact_chunk_replay_after_its_events_are_behind_the_watermark() -> None:

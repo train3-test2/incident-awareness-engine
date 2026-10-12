@@ -14,6 +14,8 @@ from incident_awareness.common.models.r1_stream import (
 class _Cursor(Protocol):
     def fetchone(self) -> tuple[object, ...] | None: ...
 
+    def fetchall(self) -> list[tuple[object, ...]]: ...
+
 
 class _Connection(Protocol):
     def execute(self, query: str, params: tuple[object, ...]) -> _Cursor: ...
@@ -97,6 +99,14 @@ WHERE run_id = %s AND host_id = %s AND source = %s AND source_channel = %s
 ORDER BY watermark_sequence DESC
 LIMIT 1
 FOR UPDATE
+"""
+_SELECT_COVERED_CHUNK_SEQUENCES = """
+SELECT chunk_sequence
+FROM r1_stream_chunks
+WHERE run_id = %s AND host_id = %s AND source = %s AND source_channel = %s
+  AND chunk_sequence <= %s
+ORDER BY chunk_sequence
+FOR KEY SHARE
 """
 _SELECT_STREAM_PARTITION_COUNT_FOR_RUN = """
 SELECT COUNT(*)
@@ -250,7 +260,13 @@ class R1StreamDeliveryRepository:
                 _SELECT_LATEST_WATERMARK_FOR_UPDATE, partition_params
             ).fetchone()
         )
-        return R1ChunkAdmission(False, tuple(new_event_ids), latest_watermark)
+        active_watermark = None
+        if latest_watermark is not None and self._watermark_covers_received_chunks(
+            partition,
+            latest_watermark,
+        ):
+            active_watermark = latest_watermark
+        return R1ChunkAdmission(False, tuple(new_event_ids), active_watermark)
 
     def save_events(
         self,
@@ -483,6 +499,25 @@ class R1StreamDeliveryRepository:
                 raise ValueError("cannot accept a new event after run_closed is accepted")
             if existing.content_sha256 != content_sha256:
                 raise ValueError("event identity conflicts with previously accepted content")
+
+    def _watermark_covers_received_chunks(
+        self,
+        partition: R1StreamPartition,
+        watermark: R1AcceptedWatermark,
+    ) -> bool:
+        """Activate a frontier only after all source-covered chunks are present."""
+        received_sequences = {
+            int(row[0])
+            for row in self._connection.execute(
+                _SELECT_COVERED_CHUNK_SEQUENCES,
+                (*_partition_params(partition), watermark.covered_through_chunk_sequence),
+            ).fetchall()
+        }
+        return (
+            len(received_sequences) == watermark.covered_through_chunk_sequence
+            and min(received_sequences, default=0) == 1
+            and max(received_sequences, default=0) == watermark.covered_through_chunk_sequence
+        )
 
     def _resolve_partition_conflict(
         self,

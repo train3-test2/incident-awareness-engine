@@ -226,7 +226,9 @@ fail-closed한다. chunk sequence 누락 검증은 transport recovery 구현에�
   또는 SQS 수신 순서와 같을 필요는 없다. consumer는 source 발급 순서인 `chunk_sequence`과
   Event의 event-time을 구분한다.
 - 새로 수락하는 Event의 `timestamp`가 직전 유효 watermark 이하이면 late Event다. 단, 이미
-  수락한 동일 chunk 또는 동일 Event의 idempotent 재전달은 late Event가 아니다.
+  수락한 동일 chunk 또는 동일 Event의 idempotent 재전달은 late Event가 아니다. transport가
+  watermark를 covered chunk보다 먼저 전달할 수 있으므로, ingress는 `covered_through_chunk_sequence`
+  이하의 연속 chunk가 모두 durable하게 수락될 때까지 해당 watermark를 late frontier로 적용하지 않는다.
 - late Event의 fail-closed/DLQ 상태 전이와 운영 처리 방식은 다음 계약 항목에서 구현한다.
   이 절은 late Event를 조용히 Event batch에 합치거나 기존 Evidence를 보정할 수 없다는
   입력 규칙만 정의한다.
@@ -236,9 +238,11 @@ candidate-generation seal이나 Role2 Evidence 확정 경계를 대체하지 않
 
 ## 9. Late Event fail-closed와 dead letter
 
-Role3 stream ingress는 partition별로 수락한 최신 source watermark를 유지한다. 아직 수락하지
-않은 신규 chunk에 `timestamp <= watermark_at`인 Event가 하나라도 있으면 chunk 전체를 수락하지
-않는다. 일부 Event만 제거한 뒤 나머지를 전달하거나, 기존 Evidence를 보정하지 않는다.
+Role3 stream ingress는 partition별로 수락한 최신 source watermark를 유지한다. 다만 해당 watermark의
+`covered_through_chunk_sequence` 이하 chunk가 모두 durable하게 수락되기 전에는 frontier 적용을
+보류한다. frontier가 유효해진 뒤 아직 수락하지 않은 신규 chunk에 `timestamp <= watermark_at`인
+Event가 하나라도 있으면 chunk 전체를 수락하지 않는다. 일부 Event만 제거한 뒤 나머지를 전달하거나,
+기존 Evidence를 보정하지 않는다.
 이미 수락한 exact chunk 또는 Event 재전달은 새 Event가 아니므로 late 판정 대상이 아니다. 서로 다른
 chunk에 기존 Event와 신규 Event가 섞인 경우에는 신규 Event만 late 판정하고, 하나라도 위반하면
 chunk 전체를 수락하지 않는다.

@@ -79,7 +79,7 @@ def test_allows_an_exact_chunk_replay_after_its_run_is_closed() -> None:
 
 
 def test_inspects_new_events_against_the_latest_durable_watermark_before_writes() -> None:
-    watermark = _watermark()
+    watermark = _watermark(covered_through_chunk_sequence=1)
     connection = _Connection(
         rows=[
             None,
@@ -87,6 +87,7 @@ def test_inspects_new_events_against_the_latest_durable_watermark_before_writes(
             None,
             None,
             _accepted_watermark_row(watermark),
+            [(1,)],
         ]
     )
 
@@ -102,8 +103,24 @@ def test_inspects_new_events_against_the_latest_durable_watermark_before_writes(
     assert admission.new_event_ids == ("evt-002",)
     assert admission.latest_watermark is not None
     assert admission.latest_watermark.watermark_id == watermark.watermark_id
-    assert "FOR UPDATE" in connection.statements[-1][0]
+    assert any("FOR UPDATE" in query for query, _ in connection.statements)
+    assert "FOR KEY SHARE" in connection.statements[-1][0]
     assert not any("INSERT INTO" in query for query, _ in connection.statements)
+
+
+def test_defers_a_watermark_until_its_covered_chunks_are_durable() -> None:
+    watermark = _watermark(covered_through_chunk_sequence=1)
+    connection = _Connection(rows=[None, None, None, None, _accepted_watermark_row(watermark), []])
+
+    admission = R1StreamDeliveryRepository(connection).inspect_chunk_admission(
+        partition=_partition(),
+        chunk_id="CHK-001",
+        sequence=1,
+        content_sha256="a" * 64,
+        event_content_sha256s=(("evt-001", "b" * 64),),
+    )
+
+    assert admission.latest_watermark is None
 
 
 def test_rejects_a_new_chunk_after_its_run_is_closed() -> None:
@@ -382,15 +399,18 @@ def _final_watermark(watermark: R1SourceWatermark) -> R1FinalPartitionWatermark:
 
 
 class _Cursor:
-    def __init__(self, row: tuple[object, ...] | None) -> None:
+    def __init__(self, row: tuple[object, ...] | list[tuple[object, ...]] | None) -> None:
         self._row = row
 
     def fetchone(self) -> tuple[object, ...] | None:
-        return self._row
+        return self._row if isinstance(self._row, tuple) else None
+
+    def fetchall(self) -> list[tuple[object, ...]]:
+        return self._row if isinstance(self._row, list) else []
 
 
 class _Connection:
-    def __init__(self, *, rows: list[tuple[object, ...] | None]) -> None:
+    def __init__(self, *, rows: list[tuple[object, ...] | list[tuple[object, ...]] | None]) -> None:
         self._rows = rows
         self.statements: list[tuple[str, tuple[object, ...]]] = []
 
