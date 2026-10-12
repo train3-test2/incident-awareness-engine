@@ -248,8 +248,6 @@ Role3 stream ingress는 partition별로 수락한 최신 source watermark를 유
 | `rejected_at` | ingress가 거부를 기록한 UTC 밀리초 시각 |
 
 dead-letter sink의 실제 SQS/S3/PostgreSQL 배치와 retry recovery는 transport 구현에서 연결한다.
-동일 chunk 또는 watermark의 재전달 dedup과 Worker 장애 뒤 상태 복구는 다음 idempotency 작업의
-범위다.
 
 ## 10. `run_closed`와 final watermark
 
@@ -276,8 +274,8 @@ Role4 candidate-generation seal 없이는 R1 terminal candidate 종료나 Eviden
 | `emitted_at` | datetime | O | `run_closed` 발급 시각, UTC·밀리초 정밀도 |
 
 `run_closed`는 모든 final watermark가 준비된 뒤에만 발급한다. 누락 partition이 없는지,
-final watermark가 기존 source watermark와 단조적으로 일치하는지, 동일 `close_id` 재전달을
-어떻게 처리하는지는 다음 transport idempotency 구현에서 검증한다.
+final watermark가 기존 source watermark와 단조적으로 일치하는지 검증은 별도 결속 검증
+항목에서 수행한다.
 
 ```json
 {
@@ -305,7 +303,31 @@ final watermark가 기존 source watermark와 단조적으로 일치하는지, �
 }
 ```
 
-## 11. 소유 경계
+## 11. 재전달과 Worker 장애 복구
+
+Role3 stream ingress는 PostgreSQL의 append-only delivery ledger에 수락한 `event_chunk`,
+`source_watermark`, `run_closed` identity와 immutable content hash를 함께 기록한다. ledger
+기록과 downstream 상태 변경은 한 DB transaction에서 commit하고, transport(SQS 등)는 commit
+뒤에만 acknowledge한다.
+
+| 메시지 | 논리 identity | 같은 identity·같은 content | 같은 identity·다른 content |
+| --- | --- | --- | --- |
+| `event_chunk` | partition + `chunk_id` | `duplicate`; Event를 다시 전달하지 않음 | fail-closed |
+| `source_watermark` | partition + `watermark_id` | `duplicate`; frontier를 다시 적용하지 않음 | fail-closed |
+| `run_closed` | `run_id` + `close_id` | `duplicate`; Run close를 다시 적용하지 않음 | fail-closed |
+
+partition 내 `chunk_sequence` 또는 `watermark_sequence`를 다른 identity가 재사용한 경우도
+fail-closed다. Run에 다른 `close_id`를 추가로 수락하지 않는다. 이러한 충돌은 기존 ledger를
+덮어쓰지 않으며 transport의 오류/DLQ 경로로 전달한다.
+
+- Worker가 transaction commit **전** 실패하면 ledger 상태가 남지 않으므로 재전달은 새 입력으로
+  수락할 수 있다.
+- commit **후**, transport acknowledge 전 실패하면 재전달은 `duplicate`로 수렴한다.
+- 이 규칙은 at-least-once transport의 재시도에만 적용한다. SQS `MessageId`나 receipt handle은
+  ledger identity가 아니다.
+- 현행 #228 S3/SQS whole-JSONL batch Worker는 이 ingress를 호출하지 않는다.
+
+## 12. 소유 경계
 
 Role3는 envelope validation, partition validation, chunk/Event identity, 재전달 dedup과
 transport recovery를 소유한다. Role2는 유효한 Event chunk를 소비해 selector 상태를

@@ -21,6 +21,7 @@ MIGRATION_IDS = (
     "005_pipeline_runtime_status",
     "006_s3_object_receipts",
     "007_r1_archive_publications",
+    "008_r1_stream_delivery_ledger",
 )
 
 
@@ -74,6 +75,11 @@ class _Connection:
 
         if "CREATE TABLE r1_archive_publications" in query:
             self.existing_tables.add("r1_archive_publications")
+
+        if "CREATE TABLE r1_stream_chunks" in query:
+            self.existing_tables.update(
+                {"r1_stream_chunks", "r1_stream_watermarks", "r1_stream_run_closes"}
+            )
 
         if query == "INSERT INTO schema_migrations (migration_id) VALUES (%s)":
             self.applied_migrations.add(str(params[0]))
@@ -138,6 +144,11 @@ def test_applies_all_migrations_in_filename_order() -> None:
         for index, (query, _) in enumerate(connection.queries)
         if "CREATE TABLE r1_archive_publications" in query
     )
+    eighth_index = next(
+        index
+        for index, (query, _) in enumerate(connection.queries)
+        if "CREATE TABLE r1_stream_chunks" in query
+    )
     assert (
         first_index
         < second_index
@@ -146,6 +157,7 @@ def test_applies_all_migrations_in_filename_order() -> None:
         < fifth_index
         < sixth_index
         < seventh_index
+        < eighth_index
     )
 
 
@@ -175,6 +187,7 @@ def test_skips_migrations_that_are_already_recorded() -> None:
     assert not any(
         "CREATE TABLE r1_archive_publications" in query for query, _ in connection.queries
     )
+    assert not any("CREATE TABLE r1_stream_chunks" in query for query, _ in connection.queries)
 
 
 def test_applies_only_second_migration_when_first_is_recorded() -> None:
@@ -292,6 +305,9 @@ def test_baselines_complete_docker_initdb_schema_without_reapplying_migrations()
             "pipeline_runtime_status",
             "s3_object_receipts",
             "r1_archive_publications",
+            "r1_stream_chunks",
+            "r1_stream_watermarks",
+            "r1_stream_run_closes",
         }
     )
 
