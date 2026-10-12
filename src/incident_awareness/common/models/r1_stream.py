@@ -54,6 +54,7 @@ class R1EventChunk(BaseModel):
     chunk_id: StrictStr = Field(min_length=1)
     partition: R1StreamPartition
     chunk_sequence: int = Field(strict=True, ge=1)
+    chunk_content_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     event_contract_version: Literal["v0.3"]
     events: tuple[NormalizedEvent, ...] = Field(min_length=1)
 

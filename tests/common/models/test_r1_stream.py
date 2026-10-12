@@ -44,6 +44,7 @@ def _chunk(**updates: object) -> dict[str, object]:
             "source_channel": "Microsoft-Windows-Sysmon/Operational",
         },
         "chunk_sequence": 1,
+        "chunk_content_sha256": "a" * 64,
         "event_contract_version": "v0.3",
         "events": [_event()],
     }
@@ -92,6 +93,7 @@ def test_rejects_event_outside_the_chunk_partition(
         ("message_type", "watermark"),
         ("event_contract_version", "v0.2"),
         ("chunk_sequence", 0),
+        ("chunk_content_sha256", "A" * 64),
         ("chunk_id", " CHK-000001"),
     ],
 )
