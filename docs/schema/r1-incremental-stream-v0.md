@@ -330,9 +330,47 @@ fail-closed다. Run에 다른 `close_id`를 추가로 수락하지 않는다. �
   ledger identity가 아니다.
 - 현행 #228 S3/SQS whole-JSONL batch Worker는 이 ingress를 호출하지 않는다.
 
-## 12. 소유 경계
+## 12. Role4 candidate-generation seal 참조·결속
+
+Role3의 `source_watermark`와 `run_closed`는 telemetry 전달 frontier만 닫는다. 이것만으로
+Role2가 terminal candidate 집합이 닫혔다거나 Evidence를 최종 확정했다고 판단할 수 없다.
+Role4가 candidate generation을 완료한 뒤 별도의 versioned **candidate-generation seal**을
+발급하고, Role2는 아래 결속을 모두 확인한 경우에만 그 seal을 Evidence 확정의 추가 입력으로
+소비한다.
+
+seal의 정식 schema와 candidate-generation 알고리즘은 Role4 소유다. 다만 Role3 stream consumer와
+결속하려면 seal은 최소 아래의 immutable reference를 가져야 한다.
+
+| seal reference | 결속 규칙 |
+| --- | --- |
+| `seal_id`, schema, contract version | 재전달 시 변하지 않는 seal identity와 versioned schema |
+| `run_id` | 수신한 `run_closed.run_id`와 정확히 같음 |
+| `input_close_id` | Role3가 수락한 `run_closed.close_id`를 정확히 참조 |
+| sealed partition 목록 | `run_closed.final_watermarks`의 `(run_id, host_id, source, source_channel)` 전체와 정확히 일치 |
+| partition별 final watermark reference | 각 partition의 `watermark_id`, sequence, `watermark_at`, lateness, covered chunk sequence가 `run_closed`와 정확히 일치 |
+| candidate policy identity | candidate-generation policy ID·version·configuration hash 등 재현 가능한 고정 identity |
+| seal 발급 시각 | telemetry event-time이나 Evidence timestamp와 혼동하지 않는 UTC provenance 시각 |
+
+Role3/Role2 consumer는 다음을 fail-closed로 처리한다.
+
+- `input_close_id`가 없는 수락 close를 가리키거나, 다른 Run의 close를 가리키는 경우
+- seal의 partition 집합이 close의 final partition 집합보다 부족하거나 추가된 경우
+- 같은 partition의 final watermark reference가 하나라도 다른 경우
+- 같은 `seal_id`가 재전달되었는데 schema/version/reference/policy identity가 달라진 경우
+
+Role2는 Event timestamp, `max(Event.timestamp)`, SQS 수신 시각, timeout으로 seal 또는 seal의
+결속 값을 보완 추론하지 않는다. seal은 Role4 candidate-generation 완료의 증명일 뿐이며,
+`run_closed`를 대체하거나 telemetry completeness를 넓히지 않는다. 반대로 `run_closed`만으로
+seal을 만들어서는 안 된다.
+
+이 절은 seal을 EvidenceResult에 저장하는 필드, `available_at` 값, Evidence 철회·보정, Fusion과
+Decision의 소비 시점은 정의하지 않는다. 해당 의미는 Role2·Role4의 versioned Evidence/selector
+계약에서 별도로 확정한다.
+
+## 13. 소유 경계
 
 Role3는 envelope validation, partition validation, chunk/Event identity, 재전달 dedup과
-transport recovery를 소유한다. Role2는 유효한 Event chunk를 소비해 selector 상태를
-누적할 수 있으나, 이 문서만으로 Evidence를 최종 확정하지 않는다. Evidence 확정에는 이후
-정의될 telemetry watermark와 Role4 candidate-generation seal이 모두 필요하다.
+transport recovery를 소유한다. Role4는 candidate-generation seal의 schema·발급·재전달
+identity를 소유한다. Role2는 유효한 Event chunk를 소비해 selector 상태를 누적할 수 있으나,
+이 문서만으로 Evidence를 최종 확정하지 않는다. Evidence 확정에는 Role3 telemetry close와
+Role4 candidate-generation seal의 결속 검증이 모두 필요하다.

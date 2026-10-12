@@ -178,6 +178,10 @@ batch 계약에 추가하지 않는다. 도입 PR은 최소 아래의 계약을 
 - **Role2 / consumer**: Role3가 제공한 watermark·close만 소비해 증분 selector 상태와
   Evidence 확정 시점을 판단한다. Event timestamp, 수신 시각 또는 timeout으로 경계를
   보완 추론하지 않는다.
+- **Role4 / candidate generation**: Role3가 수락한 `run_closed`와 final watermark 전체를
+  참조하는 versioned candidate-generation seal을 발급한다. Role2는 telemetry close와 이 seal의
+  partition·watermark 결속이 모두 검증되기 전에는 terminal candidate 또는 Evidence를 최종
+  확정하지 않는다.
 
 v0 stream 계약은 watermark 이후 late Event의 처리 방식(예: fail-closed/DLQ 또는 명시적
 보정), final close의 재전달 규칙, partition별 순서 보장 범위를 명시해야 한다. 이미 확정한
