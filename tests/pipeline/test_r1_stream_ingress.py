@@ -1,11 +1,23 @@
+from datetime import UTC, datetime
+
 import pytest
 
-from incident_awareness.common.models.r1_stream import R1EventChunk, R1RunClosed, R1SourceWatermark
+from incident_awareness.common.models.r1_stream import (
+    R1EventChunk,
+    R1LateEventDeadLetter,
+    R1RunClosed,
+    R1SourceWatermark,
+)
+from incident_awareness.pipeline.r1_stream_boundary import LateStreamEventError
 from incident_awareness.pipeline.r1_stream_ingress import (
     R1StreamDeliveryDisposition,
     R1StreamIngress,
     _canonical_event_sha256,
     _canonical_sha256,
+)
+from incident_awareness.storage.repositories.r1_stream_delivery_repository import (
+    R1AcceptedWatermark,
+    R1ChunkAdmission,
 )
 
 
@@ -13,13 +25,43 @@ class _Ledger:
     def __init__(self) -> None:
         self.accepted: set[tuple[str, str]] = set()
         self.chunk_hashes: list[str] = []
+        self._chunk_hashes_by_id: dict[str, tuple[int, str]] = {}
+        self._chunk_ids_by_sequence: dict[int, str] = {}
         self.event_hashes: list[tuple[str, str]] = []
         self._event_hashes_by_id: dict[str, str] = {}
         self.watermark_hashes: list[str] = []
         self.close_hashes: list[str] = []
+        self.latest_watermark: R1AcceptedWatermark | None = None
 
-    def save_chunk(self, *, chunk_id: str, content_sha256: str, **_: object) -> bool:
+    def inspect_chunk_admission(
+        self,
+        *,
+        chunk_id: str,
+        sequence: int,
+        content_sha256: str,
+        event_content_sha256s: tuple[tuple[str, str], ...],
+        **_: object,
+    ) -> R1ChunkAdmission:
+        existing_chunk = self._chunk_hashes_by_id.get(chunk_id)
+        if existing_chunk is not None:
+            if existing_chunk == (sequence, content_sha256):
+                return R1ChunkAdmission(True, (), None)
+            raise ValueError("chunk identity conflicts with previously accepted content")
+        if sequence in self._chunk_ids_by_sequence:
+            raise ValueError("chunk sequence conflicts with previously accepted identity")
+        new_event_ids: list[str] = []
+        for event_id, event_content_sha256 in event_content_sha256s:
+            existing_event = self._event_hashes_by_id.get(event_id)
+            if existing_event is None:
+                new_event_ids.append(event_id)
+            elif existing_event != event_content_sha256:
+                raise ValueError("event identity conflicts with previously accepted content")
+        return R1ChunkAdmission(False, tuple(new_event_ids), self.latest_watermark)
+
+    def save_chunk(self, *, chunk_id: str, sequence: int, content_sha256: str, **_: object) -> bool:
         self.chunk_hashes.append(content_sha256)
+        self._chunk_hashes_by_id[chunk_id] = (sequence, content_sha256)
+        self._chunk_ids_by_sequence[sequence] = chunk_id
         return self._save("chunk", chunk_id)
 
     def save_events(
@@ -55,9 +97,25 @@ class _Ledger:
         return True
 
 
+class _DeadLetterSink:
+    def __init__(self) -> None:
+        self.messages: list[R1LateEventDeadLetter] = []
+
+    def write(self, dead_letter: R1LateEventDeadLetter) -> None:
+        self.messages.append(dead_letter)
+
+
+def _ingress(ledger: _Ledger, sink: _DeadLetterSink | None = None) -> R1StreamIngress:
+    return R1StreamIngress(
+        ledger,  # type: ignore[arg-type]
+        dead_letter_sink=sink or _DeadLetterSink(),
+        clock=lambda: datetime(2026, 10, 12, 1, 2, 5, 123456, tzinfo=UTC),
+    )
+
+
 def test_chunk_replay_is_a_duplicate_not_a_second_delivery() -> None:
     ledger = _Ledger()
-    ingress = R1StreamIngress(ledger)  # type: ignore[arg-type]
+    ingress = _ingress(ledger)
     chunk = _valid_chunk()
 
     first = ingress.accept_chunk(chunk)
@@ -67,14 +125,73 @@ def test_chunk_replay_is_a_duplicate_not_a_second_delivery() -> None:
     assert first.new_event_ids == ("evt-001",)
     assert replay.disposition is R1StreamDeliveryDisposition.DUPLICATE
     assert replay.new_event_ids == ()
-    assert ledger.chunk_hashes == [chunk.chunk_content_sha256, chunk.chunk_content_sha256]
+    assert ledger.chunk_hashes == [chunk.chunk_content_sha256]
+
+
+def test_rejects_new_events_at_or_before_the_durable_watermark_without_saving() -> None:
+    ledger = _Ledger()
+    ledger.latest_watermark = _accepted_watermark(_watermark())
+    sink = _DeadLetterSink()
+    chunk = _valid_chunk()
+
+    with pytest.raises(LateStreamEventError, match="CHK-001"):
+        _ingress(ledger, sink).accept_chunk(chunk)
+
+    assert ledger.event_hashes == []
+    assert ledger.chunk_hashes == []
+    assert sink.messages[0].violating_event_ids == ("evt-001",)
+
+
+def test_allows_an_exact_chunk_replay_after_its_events_are_behind_the_watermark() -> None:
+    ledger = _Ledger()
+    sink = _DeadLetterSink()
+    ingress = _ingress(ledger, sink)
+    chunk = _valid_chunk()
+
+    ingress.accept_chunk(chunk)
+    ledger.latest_watermark = _accepted_watermark(_watermark())
+    replay = ingress.accept_chunk(chunk)
+
+    assert replay.disposition is R1StreamDeliveryDisposition.DUPLICATE
+    assert sink.messages == []
+
+
+def test_rejects_a_mixed_chunk_when_its_new_event_is_behind_the_watermark() -> None:
+    ledger = _Ledger()
+    sink = _DeadLetterSink()
+    ingress = _ingress(ledger, sink)
+    first_chunk = _valid_chunk()
+    late_new_event = first_chunk.events[0].model_copy(
+        update={"event_id": "evt-002", "source_event_id": "2"}
+    )
+    mixed_chunk = _with_digest(
+        first_chunk.model_copy(
+            update={
+                "chunk_id": "CHK-002",
+                "chunk_sequence": 2,
+                "events": (first_chunk.events[0], late_new_event),
+            }
+        )
+    )
+
+    ingress.accept_chunk(first_chunk)
+    ledger.latest_watermark = _accepted_watermark(_watermark())
+
+    with pytest.raises(LateStreamEventError, match="CHK-002"):
+        ingress.accept_chunk(mixed_chunk)
+
+    assert ledger.chunk_hashes == [first_chunk.chunk_content_sha256]
+    assert ledger.event_hashes == [
+        (first_chunk.events[0].event_id, _canonical_event_sha256(first_chunk.events[0]))
+    ]
+    assert sink.messages[0].violating_event_ids == ("evt-002",)
 
 
 def test_rejects_a_chunk_when_the_provided_digest_is_not_canonical() -> None:
     ledger = _Ledger()
 
     with pytest.raises(ValueError, match="chunk_content_sha256"):
-        R1StreamIngress(ledger).accept_chunk(_chunk())  # type: ignore[arg-type]
+        _ingress(ledger).accept_chunk(_chunk())
 
     assert ledger.chunk_hashes == []
     assert ledger.accepted == set()
@@ -91,7 +208,7 @@ def test_records_canonical_event_identities_before_its_chunk() -> None:
     ledger = _Ledger()
     chunk = _valid_chunk()
 
-    R1StreamIngress(ledger).accept_chunk(chunk)  # type: ignore[arg-type]
+    _ingress(ledger).accept_chunk(chunk)
 
     assert ledger.event_hashes == [
         (chunk.events[0].event_id, _canonical_event_sha256(chunk.events[0]))
@@ -99,7 +216,7 @@ def test_records_canonical_event_identities_before_its_chunk() -> None:
 
 
 def test_returns_only_new_event_ids_when_a_new_chunk_mixes_replayed_and_new_events() -> None:
-    ingress = R1StreamIngress(_Ledger())  # type: ignore[arg-type]
+    ingress = _ingress(_Ledger())
     first_chunk = _valid_chunk()
     new_event = first_chunk.events[0].model_copy(
         update={"event_id": "evt-002", "source_event_id": "2"}
@@ -122,7 +239,7 @@ def test_returns_only_new_event_ids_when_a_new_chunk_mixes_replayed_and_new_even
 
 
 def test_watermark_and_close_replays_are_idempotent() -> None:
-    ingress = R1StreamIngress(_Ledger())  # type: ignore[arg-type]
+    ingress = _ingress(_Ledger())
 
     assert (
         ingress.accept_watermark(_watermark()).disposition is R1StreamDeliveryDisposition.ACCEPTED
@@ -143,14 +260,14 @@ def test_does_not_record_a_close_when_partition_watermark_binding_is_rejected() 
 
     ledger = _RejectingLedger()
     with pytest.raises(ValueError, match="not accepted"):
-        R1StreamIngress(ledger).accept_run_closed(_close())  # type: ignore[arg-type]
+        _ingress(ledger).accept_run_closed(_close())
 
     assert ("close", "CLOSE-001") not in ledger.accepted
 
 
 def test_control_message_hashes_change_when_the_immutable_payload_changes() -> None:
     ledger = _Ledger()
-    ingress = R1StreamIngress(ledger)  # type: ignore[arg-type]
+    ingress = _ingress(ledger)
     changed_watermark = _watermark().model_copy(update={"allowed_lateness_ms": 1})
     changed_close = _close().model_copy(update={"close_id": "CLOSE-002"})
 
@@ -226,6 +343,16 @@ def _watermark() -> R1SourceWatermark:
             "covered_through_chunk_sequence": 1,
             "emitted_at": "2026-10-12T01:02:04.000Z",
         }
+    )
+
+
+def _accepted_watermark(watermark: R1SourceWatermark) -> R1AcceptedWatermark:
+    return R1AcceptedWatermark(
+        watermark_id=watermark.watermark_id,
+        watermark_sequence=watermark.watermark_sequence,
+        watermark_at=watermark.watermark_at,
+        allowed_lateness_ms=watermark.allowed_lateness_ms,
+        covered_through_chunk_sequence=watermark.covered_through_chunk_sequence,
     )
 
 

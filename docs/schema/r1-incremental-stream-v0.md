@@ -239,6 +239,9 @@ candidate-generation seal이나 Role2 Evidence 확정 경계를 대체하지 않
 Role3 stream ingress는 partition별로 수락한 최신 source watermark를 유지한다. 아직 수락하지
 않은 신규 chunk에 `timestamp <= watermark_at`인 Event가 하나라도 있으면 chunk 전체를 수락하지
 않는다. 일부 Event만 제거한 뒤 나머지를 전달하거나, 기존 Evidence를 보정하지 않는다.
+이미 수락한 exact chunk 또는 Event 재전달은 새 Event가 아니므로 late 판정 대상이 아니다. 서로 다른
+chunk에 기존 Event와 신규 Event가 섞인 경우에는 신규 Event만 late 판정하고, 하나라도 위반하면
+chunk 전체를 수락하지 않는다.
 
 이 경우 ingress는 아래 dead-letter record를 durable sink에 먼저 기록하고 `LateStreamEventError`
 로 처리 중단한다. sink 기록에 실패해도 chunk를 수락하지 않으며, transport는 오류를 재시도 또는

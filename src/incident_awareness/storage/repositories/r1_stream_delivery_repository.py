@@ -148,6 +148,15 @@ class R1AcceptedWatermark:
     covered_through_chunk_sequence: int
 
 
+@dataclass(frozen=True, slots=True)
+class R1ChunkAdmission:
+    """Durable chunk/Event dedup state observed under one Run lock."""
+
+    is_exact_chunk_replay: bool
+    new_event_ids: tuple[str, ...]
+    latest_watermark: R1AcceptedWatermark | None
+
+
 class R1StreamDeliveryRepository:
     """Append-only ledger used by a transactional stream worker.
 
@@ -184,6 +193,64 @@ class R1StreamDeliveryRepository:
             content_sha256=content_sha256,
             label="chunk",
         )
+
+    def inspect_chunk_admission(
+        self,
+        *,
+        partition: R1StreamPartition,
+        chunk_id: str,
+        sequence: int,
+        content_sha256: str,
+        event_content_sha256s: tuple[tuple[str, str], ...],
+    ) -> R1ChunkAdmission:
+        """Classify a chunk before writes under the caller's transaction lock."""
+        partition_params = _partition_params(partition)
+        is_closed = self._protect_run(partition.run_id)
+        existing_chunk = self._row_to_delivery(
+            self._connection.execute(_SELECT_CHUNK_BY_ID, (*partition_params, chunk_id)).fetchone(),
+            label="chunk",
+            has_sequence=True,
+        )
+        if existing_chunk is not None:
+            if (
+                existing_chunk.sequence == sequence
+                and existing_chunk.content_sha256 == content_sha256
+            ):
+                return R1ChunkAdmission(True, (), None)
+            raise ValueError("chunk identity conflicts with previously accepted content")
+        existing_sequence = self._row_to_delivery(
+            self._connection.execute(
+                _SELECT_CHUNK_BY_SEQUENCE, (*partition_params, sequence)
+            ).fetchone(),
+            label="chunk",
+            has_sequence=True,
+        )
+        if existing_sequence is not None:
+            raise ValueError("chunk sequence conflicts with previously accepted identity")
+        if is_closed:
+            raise ValueError("cannot accept a new chunk after run_closed is accepted")
+
+        new_event_ids: list[str] = []
+        for event_id, event_content_sha256 in event_content_sha256s:
+            existing_event = self._row_to_delivery(
+                self._connection.execute(
+                    _SELECT_EVENT_BY_ID, (*partition_params, event_id)
+                ).fetchone(),
+                label="event",
+                has_sequence=False,
+            )
+            if existing_event is None:
+                new_event_ids.append(event_id)
+                continue
+            if existing_event.content_sha256 != event_content_sha256:
+                raise ValueError("event identity conflicts with previously accepted content")
+
+        latest_watermark = self._accepted_watermark_from_row(
+            self._connection.execute(
+                _SELECT_LATEST_WATERMARK_FOR_UPDATE, partition_params
+            ).fetchone()
+        )
+        return R1ChunkAdmission(False, tuple(new_event_ids), latest_watermark)
 
     def save_events(
         self,
@@ -510,4 +577,9 @@ def _partition_params(partition: R1StreamPartition) -> tuple[str, str, str, str]
     return (partition.run_id, partition.host_id, partition.source, partition.source_channel)
 
 
-__all__ = ["R1AcceptedWatermark", "R1StreamDelivery", "R1StreamDeliveryRepository"]
+__all__ = [
+    "R1AcceptedWatermark",
+    "R1ChunkAdmission",
+    "R1StreamDelivery",
+    "R1StreamDeliveryRepository",
+]

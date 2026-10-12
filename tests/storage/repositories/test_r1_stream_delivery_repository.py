@@ -78,6 +78,34 @@ def test_allows_an_exact_chunk_replay_after_its_run_is_closed() -> None:
     )
 
 
+def test_inspects_new_events_against_the_latest_durable_watermark_before_writes() -> None:
+    watermark = _watermark()
+    connection = _Connection(
+        rows=[
+            None,
+            None,
+            None,
+            None,
+            _accepted_watermark_row(watermark),
+        ]
+    )
+
+    admission = R1StreamDeliveryRepository(connection).inspect_chunk_admission(
+        partition=_partition(),
+        chunk_id="CHK-002",
+        sequence=2,
+        content_sha256="b" * 64,
+        event_content_sha256s=(("evt-002", "c" * 64),),
+    )
+
+    assert not admission.is_exact_chunk_replay
+    assert admission.new_event_ids == ("evt-002",)
+    assert admission.latest_watermark is not None
+    assert admission.latest_watermark.watermark_id == watermark.watermark_id
+    assert "FOR UPDATE" in connection.statements[-1][0]
+    assert not any("INSERT INTO" in query for query, _ in connection.statements)
+
+
 def test_rejects_a_new_chunk_after_its_run_is_closed() -> None:
     connection = _Connection(rows=[(1,), None, None])
 
