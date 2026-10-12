@@ -2507,14 +2507,16 @@ function New-CollectionFakeTransport {
                 $script:FakeNow = $script:FakeNow.AddSeconds(1)
                 return $toolAnswer
             }
-            # end_run: the final tool is ended, the intermediate then ends by
-            # itself, and the provider host is still running afterwards.
+            # end_run: every confirmed Run-owned process is accounted for, and
+            # the provider host is still running afterwards. A failure path may
+            # know only the intermediate or both intermediate and final tool.
             $owned = @($Arguments.owned)
+            $defaultEnded = @($owned | ForEach-Object {
+                    @{ process_id = [int]$_.process_id; image = [string]$_.image; outcome = "stopped" }
+                })
             return @{
                 utc           = $stamp
-                ended         = (Get-FakeOption "EndRunEnded" @(
-                    @{ process_id = [int]$owned[0].process_id; image = [string]$owned[0].image; outcome = "exited_by_itself" },
-                    @{ process_id = [int]$owned[1].process_id; image = [string]$owned[1].image; outcome = "stopped" }))
+                ended         = (Get-FakeOption "EndRunEnded" $defaultEnded)
                 provider_host = (Get-FakeOption "EndRunProvider" @{
                     process_id = 900; name = "WmiPrvSE.exe"; running_before = $true; running_after = $true })
                 completed_utc = $stamp
@@ -2908,9 +2910,10 @@ Assert-True "wmi: records are placed by EventData.UtcTime, and context only rest
     $wmiProvenance.time_field -ceq "EventData.UtcTime" -and
     $wmiProvenance.context_rule -ceq "EventData.UtcTime < observation_start" -and
     $wmiProvenance.context_use -ceq "lineage_restoration_only")
-Assert-True "wmi: everything before the run is context, the margin included" (
+Assert-True "wmi: rehearsal records are still bounded by its actual end" (
     [int]$wmiProvenance.record_counts.total -eq 7 -and [int]$wmiProvenance.record_counts.context -eq 3 -and
-    [int]$wmiProvenance.record_counts.observation -eq 4)
+    [int]$wmiProvenance.record_counts.observation -eq 3 -and
+    [int]$wmiProvenance.record_counts.after_observation -eq 1)
 Assert-True "wmi: a normal run has no evaluation window, whatever its raw window is" (
     $null -eq $wmiProvenance.evaluation_window_start -and $null -eq $wmiProvenance.evaluation_window_end -and
     [int]$wmiProvenance.evaluation_horizon_sec -eq 600 -and
@@ -2927,8 +2930,8 @@ Assert-True "wmi: the provenance names the context record and the record of the 
     $wmiLineage.references_to_context[0].context_record_id -ceq "10" -and
     $wmiLineage.references_to_context[0].parent_process_guid -ceq $WMI_ROOT_GUID -and
     $wmiProvenance.evidence_link_key -ceq "RecordId")
-Assert-True "wmi: the one connection of the run is the final tool's, made in the run" (
-    $wmiLineage.connection.record_id -ceq "4" -and $wmiLineage.connection.zone -ceq "observation" -and
+Assert-True "wmi: a connection after the shortened rehearsal stays raw but is not observed" (
+    $wmiLineage.connection.record_id -ceq "4" -and $wmiLineage.connection.zone -ceq "after_observation" -and
     $wmiLineage.connection.process_guid -ceq $FINAL_GUID)
 Assert-True "wmi: record ids are written as text and lists stay lists" (
     $wmiProvenanceText -match '"record_id":\s+"10"' -and $wmiProvenanceText -match '"context_record_ids":\s+\[' -and
@@ -2981,7 +2984,16 @@ Assert-True "provenance: a record at the very start of the run belongs to the ru
 $justBefore = Get-TestProvenance (New-TimedRunRecords -FromBoot -IntermediateUtcTime "2029-12-31 23:59:59.999")
 Assert-True "provenance: a millisecond earlier it is context, and an intermediate older than the run fails" (
     $justBefore.provenance.lineage.records[1].zone -ceq "context" -and
-    (@($justBefore.problems) -join "|") -like "*the intermediate of the lineage (RecordId 2) was created before the start of the run*")
+    (@($justBefore.problems) -join "|") -like "*the intermediate of the lineage (RecordId 2) was created outside the observation interval*")
+
+$justAfter = Get-TestProvenance (@(New-TimedRunRecords -FromBoot) + @(
+        New-DestinationConnection 15 "2030-01-01 00:11:00.001"))
+Assert-True "provenance: a record just after the run stays raw but is not observed" (
+    @($justAfter.problems).Count -eq 0 -and
+    [int]$justAfter.provenance.record_counts.total -eq 8 -and
+    [int]$justAfter.provenance.record_counts.observation -eq 4 -and
+    [int]$justAfter.provenance.record_counts.after_observation -eq 1 -and
+    $justAfter.provenance.raw_collection_end -ceq "2030-01-01T00:11:00.001Z")
 
 $unreadable = New-TimedRunRecords -FromBoot
 $unreadable[2].EventData.UtcTime = "2029-12-31T23:59:55.000Z"
@@ -3059,6 +3071,7 @@ Assert-True "declared: the run window is recorded as it always was exported, the
     -not $script:FakeArguments["probe"].ContainsKey("read_boot_time"))
 Assert-True "declared: the record of the margin is context, and the root is in the run" (
     [int]$declaredProvenance.record_counts.context -eq 1 -and [int]$declaredProvenance.record_counts.total -eq 5 -and
+    [int]$declaredProvenance.record_counts.after_observation -eq 0 -and
     @($declaredProvenance.lineage.context_record_ids).Count -eq 0 -and
     $declaredProvenance.lineage.records[2].zone -ceq "observation")
 Assert-True "declared: the evaluation window of the attack run is its reference plus the horizon" (
@@ -3296,7 +3309,8 @@ function Assert-WmiFailedRun {
     Assert-True ($Name + " - no execution_record, run_metadata, manifest or provenance") (
         (Test-SuccessArtifactsAbsent -Root $effective -RunId $runId) -and
         -not (Test-Path -LiteralPath (Join-Path $trace "r1_wmi_collection_context.json")) -and
-        @(Get-ChildItem -LiteralPath (Join-Path $effective ("ground_truth\" + $runId)) -Force).Count -eq 0)
+        @(Get-ChildItem -LiteralPath (Join-Path $effective ("ground_truth\" + $runId)) -Force).Count -eq 0 -and
+        @(Get-ChildItem -LiteralPath $effective -Directory -Filter ".r1-completion-*" -Force).Count -eq 0)
     Assert-True ($Name + " - the trace holds the scenario, the trace record and the failure record only") (
         (@(Get-ChildItem -LiteralPath $trace -Force | ForEach-Object { $_.Name } | Sort-Object) -join ",") -ceq
             "r1_run_failure.json,r1_run_trace.json,scenario.json")
@@ -3353,6 +3367,15 @@ Assert-WmiFailedRun "the launch of a normal run is held to the same rule" @{ Wmi
 
 Assert-WmiFailedRun "a rehearsal does not go on after a failed launch either" @{ WmiProcessId = [uint32]0 } `
     "*returned no usable ProcessId*" "action:invoke" -Rehearsal | Out-Null
+
+$realCollectionProvenanceWriter = ${function:Write-R1CollectionProvenance}
+try {
+    function Write-R1CollectionProvenance { throw "synthetic sidecar writer failure" }
+    Assert-WmiFailedRun "a sidecar writer failure publishes no partial completed run" @{} `
+        "*synthetic sidecar writer failure*" "artifacts" | Out-Null
+} finally {
+    Set-Item -Path function:Write-R1CollectionProvenance -Value $realCollectionProvenanceWriter
+}
 
  # ---------------------------------------------------------------------------
  # 13. The reference and the connection of a whole run through WMI
@@ -3426,8 +3449,19 @@ foreach ($runType in @("normal", "attack")) {
     Assert-WmiFailedRun ("a " + $runType + " run whose final tool could not connect fails") `
         @{ TriggerSuccess = $false } "*internal connection did not succeed*" "action:connect" -RunType $runType `
         -ExpectedCalls ("open,invoke:probe,close,open,invoke:prepare,invoke:open_gate,invoke:launch_wmi," +
-            "invoke:start_tool,invoke:trigger,close") | Out-Null
+            "invoke:start_tool,invoke:trigger,invoke:end_run,close") | Out-Null
 }
+
+Assert-WmiFailedRun "a trigger exception cleans up only the two confirmed Run-owned processes" `
+    @{ FailStep = "trigger" } "*synthetic failure in step trigger*" "action:connect" `
+    -ExpectedCalls ("open,invoke:probe,close,open,invoke:prepare,invoke:open_gate,invoke:launch_wmi," +
+        "invoke:start_tool,invoke:trigger,invoke:end_run,close") | Out-Null
+$failedTriggerOwned = @($script:FakeArguments["end_run"].owned)
+Assert-True "  ... the provider host and every unconfirmed process are excluded from failure cleanup" (
+    $failedTriggerOwned.Count -eq 2 -and
+    (@($failedTriggerOwned | ForEach-Object { [int]$_.process_id }) -join ",") -ceq "4100,4200" -and
+    @($failedTriggerOwned | Where-Object {
+            [int]$_.process_id -eq 900 -or [string]$_.image -ieq "WmiPrvSE.exe" }).Count -eq 0)
 
 Assert-WmiFailedRun "a connection to the destination before the run fails the run" `
     @{ ExtraRecords = @((New-DestinationConnection 12 "2029-12-31 23:59:30.000")) } `
@@ -3891,18 +3925,24 @@ Assert-NotReady "the guest tools report another address" (Invoke-HostReadiness -
     "destination_guest_address"
 Assert-NotReady "the guest tools report no address" (Invoke-HostReadiness -GuestAddress "") "destination_guest_address"
 Assert-NotReady "the adapter is of another kind than stated" (
-    Invoke-HostReadiness -VmxLines @('ethernet0.connectionType = "custom"', $HOST_VMX_LINES[1])) "destination_adapter_kind"
+    Invoke-HostReadiness -VmxLines @('ethernet0.connectionType = "custom"', $HOST_VMX_LINES[1])) `
+    "destination_adapter_kind,destination_active_adapters_isolated"
 Assert-NotReady "the adapter reaches outside the lab" (
-    Invoke-HostReadiness -VmxLines @('ethernet0.connectionType = "nat"', $HOST_VMX_LINES[1])) "destination_adapter_kind"
+    Invoke-HostReadiness -VmxLines @('ethernet0.connectionType = "nat"', $HOST_VMX_LINES[1])) `
+    "destination_adapter_kind,destination_active_adapters_isolated"
 Assert-NotReady "the configuration states no adapter kind" (Invoke-HostReadiness -VmxLines @($HOST_VMX_LINES[1])) `
-    "destination_adapter_kind"
+    "destination_adapter_kind,destination_active_adapters_isolated"
+Assert-NotReady "another active adapter reaches outside the lab" (
+    Invoke-HostReadiness -VmxLines @($HOST_VMX_LINES + @(
+            'ethernet1.present = "TRUE"', 'ethernet1.connectionType = "bridged"'))) `
+    "destination_active_adapters_isolated"
 Assert-NotReady "the adapter has another address" (
     Invoke-HostReadiness -VmxLines @($HOST_VMX_LINES[0], 'ethernet0.generatedAddress = "02:00:00:00:00:02"')) `
     "destination_adapter_address"
 Assert-NotReady "the configuration states no adapter address" (Invoke-HostReadiness -VmxLines @($HOST_VMX_LINES[0])) `
     "destination_adapter_address"
 Assert-NotReady "the configuration file is not there" (Invoke-HostReadiness -NoVmxFile) `
-    "destination_adapter_kind,destination_adapter_address"
+    "destination_adapter_kind,destination_active_adapters_isolated,destination_adapter_address"
 Assert-NotReady "the start of the VM was requested too recently" (
     Invoke-HostReadiness -With @{ StartRequestedUtc = $HOST_NOW.AddSeconds(-239) }) "destination_up_long_enough"
 Assert-NotReady "the start of the VM is in the future" (
@@ -3918,6 +3958,17 @@ $otherVmx = New-VmxFile
 Assert-NotReady "the target VM is not listed as running" (
     Invoke-HostReadiness -With @{ TargetVmx = $otherVmx; TargetStartRequestedUtc = $HOST_NOW.AddSeconds(-600) }) `
     "target_vm_running"
+$targetWithBridge = New-VmxFile -Lines @($HOST_VMX_LINES + @(
+        'ethernet1.present = "TRUE"', 'ethernet1.connectionType = "bridged"'))
+$destinationForTargetCheck = New-VmxFile
+$targetBridgeRecord = Get-R1OutOfBandReadiness `
+    -Vmrun (New-FakeVmrun -Running @($destinationForTargetCheck, $targetWithBridge)) `
+    -DestinationVmx $destinationForTargetCheck -ExpectedAddress $TEST_TARGET `
+    -ExpectedAdapterAddress $HOST_ADAPTER -ExpectedConnectionType "hostonly" `
+    -StartRequestedUtc $HOST_NOW.AddSeconds(-600) -TargetVmx $targetWithBridge `
+    -TargetStartRequestedUtc $HOST_NOW.AddSeconds(-600) -NowProvider { $HOST_NOW }
+Assert-NotReady "another active adapter of Target-A reaches outside the lab" $targetBridgeRecord `
+    "target_active_adapters_isolated"
 Assert-Throws "a target VM without the time its start was requested is refused" {
     Invoke-HostReadiness -With @{ TargetVmx = $otherVmx }
 } "*TargetStartRequestedUtc is required when TargetVmx is given*"
@@ -3965,7 +4016,7 @@ $readyRecord = Invoke-HostReadiness
 Assert-True "ready: every check of an intact destination VM holds" (
     $readyRecord.result -ceq "ready" -and @($readyRecord.checks | Where-Object { -not $_.ok }).Count -eq 0 -and
     (@($readyRecord.checks | ForEach-Object { $_.name }) -join ",") -ceq
-        "destination_vm_running,destination_adapter_kind,destination_adapter_address,destination_guest_address,destination_up_long_enough")
+        "destination_vm_running,destination_adapter_kind,destination_active_adapters_isolated,destination_adapter_address,destination_guest_address,destination_up_long_enough")
 Assert-True "ready: the record states the method, the time of the check as UTC and that nothing was probed" (
     $readyRecord.method -ceq "out_of_band" -and $readyRecord.checked_at -ceq "2029-12-31T23:59:00.000Z" -and
     $readyRecord.active_tcp_probe_used -is [bool] -and -not $readyRecord.active_tcp_probe_used)
@@ -3975,7 +4026,11 @@ Assert-True "ready: the hypervisor tool was asked two things, both of them read-
     ($script:VmrunCalls -join ",") -ceq "list,getGuestIPAddress")
 Assert-True "ready: each check names where its answer came from" (
     (@($readyRecord.checks | ForEach-Object { $_.source }) -join ",") -ceq
-        "hypervisor,vm_configuration,vm_configuration,hypervisor,orchestrator")
+        "hypervisor,vm_configuration,vm_configuration,vm_configuration,hypervisor,orchestrator")
+
+Assert-True "ready: an explicitly absent bridged adapter is not active" (
+    (Invoke-HostReadiness -VmxLines @($HOST_VMX_LINES + @(
+                'ethernet1.present = "FALSE"', 'ethernet1.connectionType = "bridged"'))).result -ceq "ready")
 
 Assert-True "ready: an adapter address is compared without regard to separators and letter case" (
     (Invoke-HostReadiness -With @{ ExpectedAdapterAddress = "02-00-00-00-00-01" }).result -ceq "ready" -and
@@ -3993,9 +4048,10 @@ $bothRecord = Get-R1OutOfBandReadiness -Vmrun (New-FakeVmrun -Running @($bothVmx
     -StartRequestedUtc $HOST_NOW.AddSeconds(-600) -TargetVmx $targetVmx `
     -TargetStartRequestedUtc $HOST_NOW.AddSeconds(-300) -NowProvider { $HOST_NOW }
 Assert-True "ready: with the target VM checked too, it has to be running and up long enough" (
-    $bothRecord.result -ceq "ready" -and @($bothRecord.checks).Count -eq 7 -and
-    (@($bothRecord.checks | Select-Object -Last 2 | ForEach-Object { $_.name }) -join ",") -ceq
-        "target_vm_running,target_up_long_enough" -and ($script:VmrunCalls -join ",") -ceq "list,getGuestIPAddress")
+    $bothRecord.result -ceq "ready" -and @($bothRecord.checks).Count -eq 9 -and
+    (@($bothRecord.checks | Select-Object -Last 3 | ForEach-Object { $_.name }) -join ",") -ceq
+        "target_vm_running,target_active_adapters_isolated,target_up_long_enough" -and
+    ($script:VmrunCalls -join ",") -ceq "list,getGuestIPAddress")
 
  # --- success cases: the stand-in tool behind the caller --------------------------------------
 
@@ -4321,7 +4377,8 @@ Assert-WmiFailedRun "a connection that another process reported is not the one o
 Assert-WmiFailedRun "a connection that carries the ProcessGuid of the intermediate fails the run" `
     @{ Records = (New-ToolRecords -NoConnection -Extra @((New-ToolConnection 4 $INTERMEDIATE_GUID))) } `
     "*lineage check failed*no EID 3 with the final tool's ProcessGuid*" "lineage" | Out-Null
-$WMI_CALLS_UNTIL_TOOL = ($WMI_CALLS_UNTIL_LAUNCH -replace ",close$", "") + ",invoke:start_tool,close"
+$WMI_CALLS_UNTIL_TOOL = (($WMI_CALLS_UNTIL_LAUNCH -replace ",close$", "") +
+    ",invoke:start_tool,invoke:end_run,close")
 Assert-WmiFailedRun "a final tool that reports no process id stops the run at its second action" `
     @{ ToolFinalPid = $null } "*the final tool reported no usable process id*" "action:launch" `
     -ExpectedCalls $WMI_CALLS_UNTIL_TOOL | Out-Null
@@ -4463,7 +4520,7 @@ Assert-Throws "a step whose stamp does not say UTC is refused" {
  # --- failure cases: whole runs -------------------------------------------------------------
 
 $WMI_CALLS_UNTIL_END = ("open,invoke:probe,close,open,invoke:prepare,invoke:open_gate,invoke:launch_wmi," +
-    "invoke:start_tool,invoke:trigger,invoke:end_run,close")
+    "invoke:start_tool,invoke:trigger,invoke:end_run,invoke:end_run,close")
 Assert-WmiFailedRun "a run whose end ended the provider host too fails" `
     @{ EndRunEnded = ($OWNED_ENDED + @(@{ process_id = 900; image = "WmiPrvSE.exe"; outcome = "stopped" })) } `
     "*ended process id 900, which this run did not start*" "action:run_end" -ExpectedCalls $WMI_CALLS_UNTIL_END | Out-Null

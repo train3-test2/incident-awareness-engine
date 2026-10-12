@@ -1551,8 +1551,9 @@ def _check_collection_provenance(
     )
     report.passed(
         f"{counts['context']} of {counts['total']} record(s) are context (before the start of "
-        f"the run, by EventData.UtcTime) and {counts['observation']} belong to the run; context "
-        "restores the lineage and is not an evaluation input"
+        f"the run, by EventData.UtcTime), {counts['observation']} belong to the inclusive run "
+        f"interval, and {counts['after_observation']} are after it; records outside the interval "
+        "are preserved but are not evaluation inputs"
     )
     if expectation.profile.readiness_method is not None:
         report.passed(

@@ -59,7 +59,12 @@ def valid_document() -> dict:
         "evaluation_window_start": "2030-01-02T00:00:00.200Z",
         "evaluation_horizon_sec": 600,
         "evaluation_window_end": "2030-01-02T00:10:00.200Z",
-        "record_counts": {"total": 7, "context": 3, "observation": 4},
+        "record_counts": {
+            "total": 7,
+            "context": 3,
+            "observation": 4,
+            "after_observation": 0,
+        },
         "lineage": {
             "linked_by": ["ProcessGuid", "ParentProcessGuid"],
             "records": [],

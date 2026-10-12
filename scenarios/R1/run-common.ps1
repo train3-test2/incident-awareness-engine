@@ -1071,9 +1071,9 @@ function Get-R1CollectionProvenance {
         Build the collection provenance of one run from its collected records.
 
         Three things are kept apart. The raw collection window is what the
-        export holds. The observation starts at the start of the run, and that
-        moment belongs to it: a record whose EventData.UtcTime is before it is a
-        context record, the records of the export margin included. The
+        export holds. The observation is the inclusive interval from the start
+        to the end of the run: a record before it is context, and a record after
+        it stays raw but is not an evaluation input. The
         evaluation of a run that has a reference ends at its reference time plus
         the evaluation horizon; a run without a reference has none.
 
@@ -1124,6 +1124,8 @@ function Get-R1CollectionProvenance {
 
     $problems = New-Object System.Collections.Generic.List[string]
     $start = $StartTime.ToUniversalTime()
+    $end = $EndTime.ToUniversalTime()
+    $rawEnd = $end
     # The line of each record in the raw file, 1-based. Without the lines the
     # records are taken to be one per line, in order.
     if ($null -ne $RecordLines -and $RecordLines.Count -ne $Records.Count) {
@@ -1133,6 +1135,7 @@ function Get-R1CollectionProvenance {
 
     # --- every record is placed by EventData.UtcTime alone ----------------------
     $contextCount = 0
+    $afterObservationCount = 0
     $creates = @{}
     $duplicates = New-Object System.Collections.Generic.List[string]
     $reaching = New-Object System.Collections.Generic.List[object]
@@ -1145,6 +1148,8 @@ function Get-R1CollectionProvenance {
         $moment = ConvertTo-R1EventUtc (Get-R1Value $data "UtcTime") ("record " + $recordId)
         $zone = "observation"
         if ($moment -lt $start) { $zone = "context"; $contextCount++ }
+        elseif ($moment -gt $end) { $zone = "after_observation"; $afterObservationCount++ }
+        if ($moment -gt $rawEnd) { $rawEnd = $moment }
 
         if ([string](Get-R1Value $record "Computer") -ne $ComputerName) { continue }
         $eventId = [string](Get-R1Value $record "EventId")
@@ -1208,7 +1213,7 @@ function Get-R1CollectionProvenance {
         foreach ($index in @(0, 1)) {
             if ($lineageRecords[$index].zone -ne "observation") {
                 $problems.Add("the " + $lineageRecords[$index].role + " of the lineage (RecordId " +
-                    $lineageRecords[$index].record_id + ") was created before the start of the run")
+                    $lineageRecords[$index].record_id + ") was created outside the observation interval")
             }
         }
     }
@@ -1343,7 +1348,7 @@ function Get-R1CollectionProvenance {
         entry_kind                         = $CollectionProfile.entry_kind
         raw_window                         = $CollectionProfile.raw_window
         raw_collection_start               = (Get-UtcStamp $RawCollectionStart)
-        raw_collection_end                 = (Get-UtcStamp $EndTime)
+        raw_collection_end                 = (Get-UtcStamp $rawEnd)
         collection_window_extension_reason = $extensionReason
         export_margin_ms                   = [int]$EVTX_WINDOW_MARGIN_MS
         target_boot_utc                    = $bootUtc
@@ -1361,9 +1366,10 @@ function Get-R1CollectionProvenance {
         evaluation_horizon_sec             = $EvaluationHorizonSec
         evaluation_window_end              = $evaluationEnd
         record_counts                      = [ordered]@{
-            total       = [int]$Records.Count
-            context     = [int]$contextCount
-            observation = [int]($Records.Count - $contextCount)
+            total             = [int]$Records.Count
+            context           = [int]$contextCount
+            observation       = [int]($Records.Count - $contextCount - $afterObservationCount)
+            after_observation = [int]$afterObservationCount
         }
         lineage                            = [ordered]@{
             linked_by             = [string[]]@("ProcessGuid", "ParentProcessGuid")
@@ -3173,6 +3179,80 @@ function Wait-R1Until {
     }
 }
 
+function New-R1CompletionStage {
+    <# A same-volume private tree in which every completion artifact is built first. #>
+    param(
+        [Parameter(Mandatory = $true)]$Context,
+        [Parameter(Mandatory = $true)][string]$EffectiveRoot,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+
+    $root = Join-Path $EffectiveRoot (".r1-completion-" + $RunId + "-" + [guid]::NewGuid().ToString("N"))
+    $groundTruth = Join-Path $root ("ground_truth\" + $RunId)
+    $telemetry = Join-Path $root ("raw\" + $RunId + "\telemetry")
+    $trace = Join-Path $root ("operator_trace\" + $RunId)
+    foreach ($dir in @($groundTruth, $telemetry, $trace)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    $stagedContext = [ordered]@{}
+    foreach ($key in $Context.Keys) { $stagedContext[$key] = $Context[$key] }
+    $stagedContext.ground_truth_dir = $groundTruth
+    $stagedContext.telemetry_dir = $telemetry
+    return [ordered]@{
+        root       = $root
+        trace_dir  = $trace
+        context    = $stagedContext
+    }
+}
+
+function Publish-R1CompletionFile {
+    <# Atomically move one staged file into an empty final run directory. #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)]$Published
+    )
+
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+        throw ("a staged completion file is missing: " + $Source)
+    }
+    [System.IO.File]::Move($Source, $Destination)
+    $Published.Add($Destination)
+    return $Destination
+}
+
+function Remove-R1CompletionStage {
+    <# Remove only a private completion tree created by New-R1CompletionStage. #>
+    param([AllowNull()]$Stage)
+
+    if ($null -ne $Stage -and -not [string]::IsNullOrWhiteSpace([string]$Stage.root) -and
+        (Test-Path -LiteralPath ([string]$Stage.root))) {
+        [System.IO.Directory]::Delete([string]$Stage.root, $true)
+    }
+}
+
+function Get-R1FailureCleanupOwnedProcesses {
+    <# Only PIDs returned by successful WMI actions are owned by this failed run. #>
+    param([AllowNull()]$WmiCall, [AllowNull()]$ToolStart, [Parameter(Mandatory = $true)]$Plan)
+
+    $owned = New-Object System.Collections.Generic.List[object]
+    if ($null -ne $WmiCall -and [int]$WmiCall.process_id -gt 0) {
+        $owned.Add([ordered]@{
+            process_id            = [int]$WmiCall.process_id
+            image                 = [string]$Plan.expected_lineage[1]
+            created_not_before_utc = [string]$WmiCall.action_utc
+        })
+    }
+    if ($null -ne $ToolStart -and [int]$ToolStart.final_pid -gt 0) {
+        $owned.Add([ordered]@{
+            process_id            = [int]$ToolStart.final_pid
+            image                 = [string]$Plan.expected_lineage[0]
+            created_not_before_utc = [string]$ToolStart.action_utc
+        })
+    }
+    return [object[]]$owned.ToArray()
+}
+
 function Invoke-R1PilotRun {
     <#
         Run one R1-V02 run and write its artifacts.
@@ -3328,6 +3408,8 @@ function Invoke-R1PilotRun {
     $runEnd = $null
     $toolIdentity = $null
     $reference = $null
+    $completionStage = $null
+    $publishedCompletionPaths = New-Object System.Collections.Generic.List[string]
     try {
         # --- 3. pre-run session ------------------------------------------------
         Write-Step "pre-run check of Target-A"
@@ -3820,20 +3902,54 @@ function Invoke-R1PilotRun {
 
         # --- 9. artifacts ---------------------------------------------------------
         $stage = "artifacts"
-        Write-ExecutionRecord -Context $context | Out-Null
-        Write-RunMetadata -Context $context -EndTime $endTime `
+        # Build every completion artifact in a private same-volume tree first.
+        # The manifest is moved last and is the existing completion signal for
+        # consumers. A failure before then removes every file already moved.
+        $completionStage = New-R1CompletionStage -Context $context `
+            -EffectiveRoot $effectiveRoot -RunId $RunId
+        $stagedContext = $completionStage.context
+        $stagedExecutionPath = Write-ExecutionRecord -Context $stagedContext
+        $stagedMetadataPath = Write-RunMetadata -Context $stagedContext -EndTime $endTime `
             -ReferenceTime $referenceTime -ReferenceActionId $inputs.reference_action_id `
-            -ReferenceSourceEventId $referenceEventId | Out-Null
-        $manifestPath = Write-RunManifest -Context $context
+            -ReferenceSourceEventId $referenceEventId
+        $stagedManifestPath = Write-RunManifest -Context $stagedContext
 
-        $provenancePath = $null
+        $stagedReadinessPath = $null
+        $stagedProvenancePath = $null
         if ($null -ne $provenance) {
             if ($null -ne $readiness) {
-                Write-R1NewFile -Path (Join-Path $traceDir $R1_READINESS_COPY_FILE) -Bytes $readiness.bytes
+                $stagedReadinessPath = Join-Path $completionStage.trace_dir $R1_READINESS_COPY_FILE
+                Write-R1NewFile -Path $stagedReadinessPath -Bytes $readiness.bytes
             }
-            $provenancePath = Write-R1CollectionProvenance -TraceDir $traceDir -Provenance $provenance `
-                -ScenarioSha256 $inputs.scenario_sha256 -ManifestPath ([string]$manifestPath) `
+            $stagedProvenancePath = Write-R1CollectionProvenance `
+                -TraceDir $completionStage.trace_dir -Provenance $provenance `
+                -ScenarioSha256 $inputs.scenario_sha256 -ManifestPath ([string]$stagedManifestPath) `
                 -SysmonConfigSha256 $configSha256 -ComputerName $targetHost -JsonlPath $jsonlPath
+        }
+
+        $provenancePath = $null
+        if ($null -ne $stagedReadinessPath) {
+            Publish-R1CompletionFile -Source $stagedReadinessPath `
+                -Destination (Join-Path $traceDir $R1_READINESS_COPY_FILE) `
+                -Published $publishedCompletionPaths | Out-Null
+        }
+        if ($null -ne $stagedProvenancePath) {
+            $provenancePath = Publish-R1CompletionFile -Source $stagedProvenancePath `
+                -Destination (Join-Path $traceDir $R1_PROVENANCE_FILE) `
+                -Published $publishedCompletionPaths
+        }
+        Publish-R1CompletionFile -Source $stagedExecutionPath `
+            -Destination (Join-Path $groundTruthDir "execution_record.csv") `
+            -Published $publishedCompletionPaths | Out-Null
+        Publish-R1CompletionFile -Source $stagedMetadataPath `
+            -Destination (Join-Path $groundTruthDir "run_metadata.json") `
+            -Published $publishedCompletionPaths | Out-Null
+        $manifestPath = Publish-R1CompletionFile -Source $stagedManifestPath `
+            -Destination (Join-Path (Split-Path $telemetryDir -Parent) "manifest.json") `
+            -Published $publishedCompletionPaths
+        Remove-R1CompletionStage -Stage $completionStage
+        $completionStage = $null
+        if ($null -ne $provenancePath) {
             Write-Ok ("collection provenance written: " + $provenancePath)
         }
 
@@ -3867,6 +3983,44 @@ function Invoke-R1PilotRun {
         return $result
     }
     catch {
+        $runFailure = $_
+        # No partial publication is a completed run. Remove only files this
+        # invocation moved, then discard its private staging tree.
+        foreach ($path in @($publishedCompletionPaths.ToArray())) {
+            if (Test-Path -LiteralPath $path -PathType Leaf) {
+                try { [System.IO.File]::Delete($path) } catch {
+                    Write-Fail ("removing an incomplete completion file failed: " + $_.Exception.Message)
+                }
+            }
+        }
+        try { Remove-R1CompletionStage -Stage $completionStage } catch {
+            Write-Fail ("removing the completion stage failed: " + $_.Exception.Message)
+        }
+
+        # WMI-created processes outlive the remoting session. On every failure
+        # after a successful create, end only the PIDs whose successful action
+        # results this run already validated. Never end WmiPrvSE.exe.
+        if (-not $entryIsSession -and $null -eq $runEnd) {
+            $cleanupOwned = @(Get-R1FailureCleanupOwnedProcesses `
+                -WmiCall $wmiCall -ToolStart $toolStart -Plan $plan)
+            if ($cleanupOwned.Count -gt 0) {
+                try {
+                    if ($null -eq $session) { $session = & $Transport.open $Connection }
+                    $cleanupReturned = & $Transport.invoke $session "end_run" @{
+                        owned    = $cleanupOwned
+                        wait_sec = $R1_RUN_END_WAIT_SEC
+                    }
+                    $cleanupIds = [int[]]@($cleanupOwned | ForEach-Object { [int]$_.process_id })
+                    $runEnd = Get-R1RunEndResult -Ended $cleanupReturned `
+                        -OwnedProcessIds $cleanupIds -RootImage ([string]$plan.expected_lineage[2])
+                    Write-Ok ("failure cleanup ended or confirmed gone " + $cleanupOwned.Count +
+                        " Run-owned process(es)")
+                } catch {
+                    Write-Fail ("failure cleanup failed: " + $_.Exception.Message)
+                }
+            }
+        }
+
         # A run of a scenario that declares a collection block leaves a record
         # of its failure once its trace exists. None of the files of a
         # completed run is written for it, and the failure itself is thrown on
@@ -3875,14 +4029,15 @@ function Invoke-R1PilotRun {
         if ($null -ne $traceDir -and $collectionProfile.collection_declared) {
             $failurePath = Write-R1RunFailure -TraceDir $traceDir -EffectiveRoot $effectiveRoot `
                 -RunId $RunId -RunType $RunType -Mode $mode -EntryKind $collectionProfile.entry_kind `
-                -Stage $stage -Reason ([string]$_.Exception.Message) `
+                -Stage $stage -Reason ([string]$runFailure.Exception.Message) `
                 -LaunchReturned $launchReturned -Reference $reference
             if ($null -ne $failurePath) { Write-Fail ("failure record written: " + $failurePath) }
         }
-        throw
+        throw $runFailure
     }
     finally {
-        # Closing the scenario session ends every process it started on Target-A.
+        # Session closure is transport cleanup only. WMI-created processes are
+        # ended explicitly by run_end or by the failure cleanup above.
         if ($null -ne $session) {
             try { & $Transport.close $session | Out-Null } catch { Write-Fail ("closing the session failed: " + $_.Exception.Message) }
         }

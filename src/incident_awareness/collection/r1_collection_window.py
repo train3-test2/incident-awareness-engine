@@ -17,9 +17,10 @@ things are kept apart and none of them stands in for another.
   starts a margin before the run, as it always has. With
   `target_boot_to_run_end` it starts at the boot of the target, because the root
   of the lineage was created then.
-- The observation starts at the start of the run, and that moment belongs to
-  it. A record whose EventData.UtcTime is before it is a context record,
-  whatever the raw window is: the records of the margin are context too.
+- The observation is the inclusive RunMetadata interval. A record whose
+  EventData.UtcTime is before its start is a context record, whatever the raw
+  window is; a record after its end stays in the raw export but is not an
+  observation input.
 - The evaluation of a run that has a reference ends at its reference time plus
   the evaluation horizon of the scenario. A run without a reference has none.
 
@@ -83,6 +84,7 @@ EVIDENCE_LINK_KEY = "RecordId"
 LINKED_BY = ("ProcessGuid", "ParentProcessGuid")
 ZONE_CONTEXT = "context"
 ZONE_OBSERVATION = "observation"
+ZONE_AFTER_OBSERVATION = "after_observation"
 # Closest first, the order a parent walk returns.
 LINEAGE_ROLES = ("final_tool", "intermediate", "root")
 READINESS_READY = "ready"
@@ -204,21 +206,29 @@ def format_stamp(moment: datetime) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
 
 
-def record_zone(event_utc_time: object, observation_start: datetime) -> str:
-    """`context` for a record before the start of the run, `observation` from that moment on."""
-    if parse_event_utc_time(event_utc_time) < observation_start:
+def record_zone(
+    event_utc_time: object,
+    observation_start: datetime,
+    observation_end: datetime | None = None,
+) -> str:
+    """Classify one raw record around the inclusive RunMetadata interval."""
+    moment = parse_event_utc_time(event_utc_time)
+    if moment < observation_start:
         return ZONE_CONTEXT
+    if observation_end is not None and moment > observation_end:
+        return ZONE_AFTER_OBSERVATION
     return ZONE_OBSERVATION
 
 
 def observation_records(
-    records: Iterable[RawRecord], observation_start: datetime
+    records: Iterable[RawRecord], observation_start: datetime, observation_end: datetime
 ) -> list[RawRecord]:
-    """The records of the run: the only ones an evaluation may read, count or time."""
+    """Records in the inclusive run interval: the only evaluation inputs."""
     return [
         record
         for record in records
-        if record_zone(record.event_utc_time, observation_start) == ZONE_OBSERVATION
+        if record_zone(record.event_utc_time, observation_start, observation_end)
+        == ZONE_OBSERVATION
     ]
 
 
@@ -256,8 +266,9 @@ def check_evidence_excludes_context(
     timestamps: Iterable[datetime],
     records: Iterable[RawRecord],
     observation_start: datetime,
+    observation_end: datetime,
 ) -> list[str]:
-    """Raw-stage check: an Evidence lists no context RecordId and no time before the run.
+    """Raw-stage check: Evidence names only records and times in the run interval.
 
     This is the collection stage, by raw RecordId. `event_ids` are the RecordIds
     the Evidence lists and `timestamps` every time it states. A context record
@@ -290,6 +301,25 @@ def check_evidence_excludes_context(
         problems.append(
             f"the Evidence states time(s) before the start of the run "
             f"({format_stamp(observation_start)}): {early}"
+        )
+    after = {
+        record.record_id
+        for record in records
+        if record.record_id is not None
+        and record_zone(record.event_utc_time, observation_start, observation_end)
+        == ZONE_AFTER_OBSERVATION
+    }
+    listed_after = [record_id for record_id in listed if record_id in after]
+    if listed_after:
+        problems.append(
+            f"the Evidence lists record(s) after the end of the run {listed_after}: raw records "
+            "outside the observation are preserved but are not Evidence events"
+        )
+    late = [format_stamp(moment) for moment in timestamps if moment > observation_end]
+    if late:
+        problems.append(
+            f"the Evidence states time(s) after the end of the run "
+            f"({format_stamp(observation_end)}): {late}"
         )
     return problems
 
@@ -381,16 +411,23 @@ def _check_windows(provenance: dict, inputs: R1ProvenanceInputs) -> list[str]:
         problems.append(f"export_margin_ms must be an integer of 0 or more, found {margin!r}")
         margin = None
 
-    # The observation starts where the run started and ends where the export ended.
+    # The observation is exactly the inclusive RunMetadata interval. The raw
+    # export may contain records stamped after it while the export is made.
     if not _same_moment(provenance["observation_start"], inputs.start_time):
         problems.append(
             f"observation_start is {provenance['observation_start']!r}, the run started at "
             f"{format_stamp(inputs.start_time)}"
         )
-    for name in ("observation_end", "raw_collection_end"):
-        if inputs.end_time is not None and not _same_moment(provenance[name], inputs.end_time):
+    if inputs.end_time is not None:
+        if not _same_moment(provenance["observation_end"], inputs.end_time):
             problems.append(
-                f"{name} is {provenance[name]!r}, the run ended at {format_stamp(inputs.end_time)}"
+                f"observation_end is {provenance['observation_end']!r}, the run ended at "
+                f"{format_stamp(inputs.end_time)}"
+            )
+        if raw_end is not None and raw_end < inputs.end_time:
+            problems.append(
+                f"raw_collection_end is {provenance['raw_collection_end']!r}, before the run "
+                f"ended at {format_stamp(inputs.end_time)}"
             )
 
     reason = provenance["collection_window_extension_reason"]
@@ -799,6 +836,7 @@ def expected_lineage_provenance(
     nodes: Sequence[ProcessRecord],
     connections: Sequence[ConnectionRecord],
     observation_start: datetime,
+    observation_end: datetime | None = None,
 ) -> dict:
     """The lineage part of a provenance record, built from the lineage found in the raw export.
 
@@ -806,7 +844,7 @@ def expected_lineage_provenance(
     of the run whose parent is a context record is listed as a reference to it:
     that is the link through which a context record reaches the run.
     """
-    zones = [record_zone(node.event_utc_time, observation_start) for node in nodes]
+    zones = [record_zone(node.event_utc_time, observation_start, observation_end) for node in nodes]
     records = [
         _lineage_record(role, node, zone)
         for role, node, zone in zip(LINEAGE_ROLES, nodes, zones, strict=True)
@@ -828,7 +866,7 @@ def expected_lineage_provenance(
             "record_id": found.record_id,
             "process_guid": found.key.process_guid,
             "utc_time": found.event_utc_time,
-            "zone": record_zone(found.event_utc_time, observation_start),
+            "zone": record_zone(found.event_utc_time, observation_start, observation_end),
             "record_no": found.record_no,
         }
     return {
@@ -850,7 +888,7 @@ def _check_lineage(provenance: dict, inputs: R1ProvenanceInputs) -> list[str]:
         return []
 
     expected = expected_lineage_provenance(
-        inputs.lineage_nodes, inputs.lineage_connections, inputs.start_time
+        inputs.lineage_nodes, inputs.lineage_connections, inputs.start_time, inputs.end_time
     )
     problems = [
         f"lineage.{name} is {lineage[name]!r}, the raw export shows {expected[name]!r}"
@@ -869,7 +907,7 @@ def _check_lineage(provenance: dict, inputs: R1ProvenanceInputs) -> list[str]:
         if record["zone"] != ZONE_OBSERVATION:
             problems.append(
                 f"the {record['role']} of the lineage (RecordId {record['record_id']}) was "
-                "created before the start of the run"
+                "created outside the observation interval"
             )
     if inputs.destination_ip is not None and expected["connection"] is None:
         problems.append(
@@ -877,7 +915,9 @@ def _check_lineage(provenance: dict, inputs: R1ProvenanceInputs) -> list[str]:
             "internal destination; a run makes exactly one"
         )
     elif expected["connection"] is not None and expected["connection"]["zone"] != ZONE_OBSERVATION:
-        problems.append("the connection of the final tool was made before the start of the run")
+        problems.append(
+            "the connection of the final tool was made outside the observation interval"
+        )
     return problems
 
 
@@ -888,18 +928,30 @@ def _check_records(
     connections: Sequence[ConnectionRecord],
 ) -> list[str]:
     records: list[RawRecord] = [*processes, *connections]
-    zones = [record_zone(record.event_utc_time, inputs.start_time) for record in records]
+    zones = [
+        record_zone(record.event_utc_time, inputs.start_time, inputs.end_time) for record in records
+    ]
 
     problems: list[str] = []
     counts = {
         "total": len(records),
         "context": zones.count(ZONE_CONTEXT),
         "observation": zones.count(ZONE_OBSERVATION),
+        "after_observation": zones.count(ZONE_AFTER_OBSERVATION),
     }
     if provenance["record_counts"] != counts:
         problems.append(
             f"record_counts is {provenance['record_counts']!r}, the raw export holds {counts!r}"
         )
+
+    if inputs.end_time is not None:
+        record_moments = [parse_event_utc_time(record.event_utc_time) for record in records]
+        expected_raw_end = max([inputs.end_time, *record_moments])
+        if not _same_moment(provenance["raw_collection_end"], expected_raw_end):
+            problems.append(
+                f"raw_collection_end is {provenance['raw_collection_end']!r}, the raw export "
+                f"extends through {format_stamp(expected_raw_end)}"
+            )
 
     if inputs.destination_ip is None:
         return problems

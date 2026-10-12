@@ -143,6 +143,7 @@ EVALUATION_END_STAMP = "2030-01-02T00:10:03.250Z"
 # run types are equally long.
 WMI_END_TIME = "2030-01-02T00:13:05.000Z"
 END_TIMES = {"normal": WMI_END_TIME, "attack": WMI_END_TIME}
+OBSERVATION_END = datetime(2030, 1, 2, 0, 13, 5, tzinfo=UTC)
 PROCESS_IDS = {5: 600, 10: 700, 11: 800, 20: 900, 30: CREATED_PID, 31: 4400}
 
 
@@ -314,7 +315,7 @@ def wmi_provenance(
     records = [*processes, *connections]
     context = len(context_records(records, START))
     attack = run_type == "attack"
-    lineage = expected_lineage_provenance(nodes, reaching, START)
+    lineage = expected_lineage_provenance(nodes, reaching, START, parse_stamp(END_TIMES[run_type]))
     return {
         "schema": SCHEMA_NAME,
         "contract_version": CONTRACT_VERSION,
@@ -350,6 +351,7 @@ def wmi_provenance(
             "total": len(records),
             "context": context,
             "observation": len(records) - context,
+            "after_observation": 0,
         },
         "lineage": lineage,
         "context_events": expected_context_events(lineage),
@@ -471,9 +473,11 @@ def _drop(path: tuple[str, ...]) -> Callable[[dict], None]:
 
 
 def test_the_observation_starts_at_the_start_of_the_run_and_includes_it() -> None:
-    assert record_zone("2030-01-01 23:59:59.999", START) == "context"
-    assert record_zone("2030-01-02 00:00:00.000", START) == "observation"
-    assert record_zone("2030-01-02 00:00:00.001", START) == "observation"
+    assert record_zone("2030-01-01 23:59:59.999", START, OBSERVATION_END) == "context"
+    assert record_zone("2030-01-02 00:00:00.000", START, OBSERVATION_END) == "observation"
+    assert record_zone("2030-01-02 00:00:00.001", START, OBSERVATION_END) == "observation"
+    assert record_zone("2030-01-02 00:13:05.000", START, OBSERVATION_END) == "observation"
+    assert record_zone("2030-01-02 00:13:05.001", START, OBSERVATION_END) == "after_observation"
 
 
 def test_the_margin_before_the_run_is_context_like_everything_before_it(tmp_path: Path) -> None:
@@ -481,7 +485,7 @@ def test_the_margin_before_the_run_is_context_like_everything_before_it(tmp_path
     records = [*processes, *connections]
 
     before = [record.record_id for record in context_records(records, START)]
-    during = [record.record_id for record in observation_records(records, START)]
+    during = [record.record_id for record in observation_records(records, START, OBSERVATION_END)]
 
     # 5 and 10 were created at boot, 11 five seconds before the run
     assert before == ["5", "10", "11"]
@@ -511,7 +515,9 @@ def test_the_root_restored_from_context_is_told_apart_from_the_records_of_the_ru
     # of the three records of the lineage only the root is context
     assert context_record_ids_in(["10", "30", "31"], records, START) == ["10"]
     # what an evaluation reads holds no context record at all
-    evaluation_input = [record.record_id for record in observation_records(records, START)]
+    evaluation_input = [
+        record.record_id for record in observation_records(records, START, OBSERVATION_END)
+    ]
     assert context_record_ids_in(evaluation_input, records, START) == []
 
 
@@ -522,6 +528,7 @@ def _evidence_problems(tmp_path: Path, event_ids: list[str], timestamps: list[st
         timestamps=[parse_event_utc_time(stamp) for stamp in timestamps],
         records=[*processes, *connections],
         observation_start=START,
+        observation_end=OBSERVATION_END,
     )
 
 
@@ -603,7 +610,7 @@ def test_the_lineage_of_a_provenance_names_its_context_root_outside_the_evidence
     # The provenance of a run names the context root; an Evidence built from the
     # records of the run that the lineage lists does not hold it.
     processes, connections = _read(wmi_events("attack"), tmp_path)
-    lineage = expected_lineage_provenance(*_lineage(processes, connections), START)
+    lineage = expected_lineage_provenance(*_lineage(processes, connections), START, OBSERVATION_END)
     in_the_run = [r["record_id"] for r in lineage["records"] if r["zone"] == "observation"]
     times = [
         parse_event_utc_time(r["utc_time"])
@@ -619,6 +626,7 @@ def test_the_lineage_of_a_provenance_names_its_context_root_outside_the_evidence
             timestamps=times,
             records=[*processes, *connections],
             observation_start=START,
+            observation_end=OBSERVATION_END,
         )
         == []
     )
@@ -629,7 +637,7 @@ def test_the_lineage_provenance_names_the_context_root_and_what_refers_to_it(
 ) -> None:
     nodes, reaching = _lineage(*_read(wmi_events(), tmp_path))
 
-    lineage = expected_lineage_provenance(nodes, reaching, START)
+    lineage = expected_lineage_provenance(nodes, reaching, START, OBSERVATION_END)
 
     assert [(r["role"], r["record_id"], r["zone"]) for r in lineage["records"]] == [
         ("final_tool", "31", "observation"),
@@ -658,7 +666,7 @@ def test_every_record_of_the_lineage_is_named_by_its_record_id_and_its_line(
     # the file the provenance names by hash. Both come from the raw export.
     nodes, reaching = _lineage(*_read(wmi_events(), tmp_path))
 
-    lineage = expected_lineage_provenance(nodes, reaching, START)
+    lineage = expected_lineage_provenance(nodes, reaching, START, OBSERVATION_END)
 
     assert [(r["record_id"], r["record_no"]) for r in lineage["records"]] == [
         ("31", 6),
@@ -684,7 +692,9 @@ def test_a_normal_run_through_wmi_passes_with_its_root_restored_from_context(
     assert [node.record_id for node in report.lineage.nodes] == ["31", "30", "10"]
     assert report.lineage.images[-1] == ROOT_IMAGE
     checks = "\n".join(report.checks)
-    assert "3 of 7 record(s) are context" in checks and "4 belong to the run" in checks
+    assert "3 of 7 record(s) are context" in checks
+    assert "4 belong to the inclusive run interval" in checks
+    assert "0 are after it" in checks
     assert "nothing connected from the target before the run" in checks
     assert "run_metadata.json records no reference" in checks
 
@@ -823,11 +833,17 @@ def test_a_provenance_that_mixes_the_windows_is_refused(
     [
         # a context record counted with the run, and the reverse
         (
-            _set(("record_counts",), {"total": 7, "context": 2, "observation": 5}),
+            _set(
+                ("record_counts",),
+                {"total": 7, "context": 2, "observation": 5, "after_observation": 0},
+            ),
             "record_counts is",
         ),
         (
-            _set(("record_counts",), {"total": 7, "context": 0, "observation": 7}),
+            _set(
+                ("record_counts",),
+                {"total": 7, "context": 0, "observation": 7, "after_observation": 0},
+            ),
             "record_counts is",
         ),
         (_set(("lineage", "context_record_ids"), []), "lineage.context_record_ids is []"),
@@ -841,6 +857,49 @@ def test_a_provenance_that_lets_context_into_the_run_is_refused(
     report = validate(build_wmi_run(tmp_path, change=change))
 
     assert message in errors_of(report)
+
+
+def test_a_record_just_after_the_run_is_preserved_but_not_observed(tmp_path: Path) -> None:
+    inputs, processes, connections, provenance = _inputs(tmp_path, "normal")
+    after_time = "2030-01-02 00:13:05.001"
+    late = replace(
+        connections[0],
+        record_id="41",
+        record_no=8,
+        event_utc_time=after_time,
+        destination_ip="192.168.34.99",
+    )
+    extended_connections = [*connections, late]
+    records = [*processes, *extended_connections]
+    provenance["raw_collection_end"] = "2030-01-02T00:13:05.001Z"
+    provenance["record_counts"] = {
+        "total": 8,
+        "context": 3,
+        "observation": 4,
+        "after_observation": 1,
+    }
+
+    assert check_collection_provenance(provenance, inputs, processes, extended_connections) == []
+    assert [
+        record.record_id
+        for record in observation_records(records, inputs.start_time, inputs.end_time)
+    ] == ["20", "30", "31", "40"]
+    evidence_problems = check_evidence_excludes_context(
+        event_ids=["31", "41"],
+        timestamps=[parse_event_utc_time(CREATED_UTC_TIME), parse_event_utc_time(after_time)],
+        records=records,
+        observation_start=inputs.start_time,
+        observation_end=inputs.end_time,
+    )
+    assert any("after the end of the run" in problem for problem in evidence_problems)
+
+    provenance["record_counts"]["after_observation"] = 0
+    assert any(
+        "record_counts is" in problem
+        for problem in check_collection_provenance(
+            provenance, inputs, processes, extended_connections
+        )
+    )
 
 
 def test_a_provenance_that_places_the_root_in_the_run_is_refused(tmp_path: Path) -> None:
@@ -1621,7 +1680,12 @@ def test_both_planned_lineages_are_three_records_whose_root_is_context(
     ]
     assert check_collection_provenance(provenance, inputs, processes, connections) == []
     # the two runs of a Pair differ in one Image and in nothing the windows are made of
-    assert provenance["record_counts"] == {"total": 7, "context": 3, "observation": 4}
+    assert provenance["record_counts"] == {
+        "total": 7,
+        "context": 3,
+        "observation": 4,
+        "after_observation": 0,
+    }
     assert provenance["lineage"]["context_record_ids"] == ["10"]
 
 
@@ -1981,4 +2045,4 @@ def test_the_validator_reads_the_run_events_of_today_the_same_way(tmp_path: Path
     records = [*processes, *connections]
 
     assert context_records(records, START) == []
-    assert len(observation_records(records, START)) == 4
+    assert len(observation_records(records, START, OBSERVATION_END)) == 4

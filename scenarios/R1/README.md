@@ -314,14 +314,16 @@ $credential = Get-Credential
 2. 같은 `run_id` 의 산출물이나 operator trace 가 이미 있으면 중단한다.
 3. 사전 세션으로 Target-A 의 컴퓨터 이름과 Sysmon 설정 해시를 확인하고 닫는다. 통과하면 1 에서 읽은
    scenario 바이트와 그 SHA-256 을 operator trace 로 남긴다(§6). 첫 행위보다 앞이다.
-4. 시나리오 세션에서 다섯 행위를 offset 에 맞춰 실행한다.
+4. 시나리오가 선언한 행위를 offset 에 맞춰 실행한다(remote management 는 다섯, WMI management 는 넷).
 5. 관측 창이 끝날 때까지 기다린다.
 6. 수집 세션으로 Run 구간의 Sysmon 을 export 해 가져오고 JSONL 로 변환한다. 구간은 Target-A 가
    자기 시계로 계산한다(`start_time` 10 초 전부터 export 시점까지).
 7. 수집한 레코드에서 이 Run 이 시작한 프로세스의 계보와 연결을 확인한다.
 8. Attack Run 은 같은 레코드에서 reference 를 정하고, 수집 모드면 관측이 reference 뒤로 평가 horizon
    만큼 이어졌는지 확인한다(§5-1). Normal Run 은 이 단계가 없다.
-9. 그 뒤에만 `execution_record.csv` · `run_metadata.json` · `manifest.json` 을 쓴다.
+9. 그 뒤에만 sidecar와 완료 산출물을 private staging tree에 모두 만들고 검증한다. 검증이 끝나면
+   `execution_record.csv` · `run_metadata.json`을 옮기고 `manifest.json`을 마지막 completion signal로 publish한다.
+   어느 단계에서든 실패하면 이 invocation이 publish한 완료 파일을 제거해 부분 완료본을 남기지 않는다.
 
 세션을 열기 전에 중단하는 조건:
 
@@ -726,12 +728,16 @@ Run ID · Pair ID 도 발급하지 않았다.
 | `ObservationSec` | horizon 이상 | 780. (reference action 의 offset + horizon) 이상이어야 하고 scenario 가 적은 값과 같아야 한다 |
 | operator trace | `r1_run_trace.json`, `scenario.json` | + 수집 시 Role4 sidecar `r1_wmi_collection_context.json`(schema `r1-wmi-collection-context`), `r1_readiness_record.json`. Role2 canonical `r1_collection_provenance.json`은 이후 Evidence 단계에서 같은 Run 폴더에 별도로 생성한다. 실패하면 `r1_run_failure.json` |
 
-실패한 Run 은 어느 scenario 든 `execution_record.csv` · `run_metadata.json` · `manifest.json` 을 남기지 않는다(§5).
+실패한 Run 은 어느 scenario 든 `execution_record.csv` · `run_metadata.json` · `manifest.json` · 수집 sidecar 를
+남기지 않는다(§5). WMI action이 이미 프로세스를 만들었다면 검증된 Run 소유 PID만 실패 cleanup으로 종료하고,
+`WmiPrvSE.exe`는 종료하지 않는다.
 `r1_run_failure.json` 은 기존 계약에 없는 진단 기록이다(`record_kind: diagnostic`, `canonical_artifact: false`).
 Ground Truth 도 Run 의 결과도 아니다.
 
 readiness 기록은 `scenarios/R1/host/r1_readiness.ps1` 로 만든다. hypervisor 도구의 읽기 전용 호출과 VM 설정 파일만
-읽고, guest 에 로그인하거나 VM 을 시작 · 종료 · 복원하지 않으며, 연결을 열지 않는다. 주소와 경로는 모두 인자이고
+읽고, 목적지와 Target VM에 선언된 모든 활성 `ethernetN`이 기대한 Host-only 종류인지 확인한다. 추가 NAT/bridged
+adapter가 하나라도 있으면 fail-closed한다. guest 에 로그인하거나 VM 을 시작 · 종료 · 복원하지 않으며, 연결을 열지
+않는다. 주소와 경로는 모두 인자이고
 저장소에 두지 않는다. 목적지 listener 가 연결을 받는지는 scenario 의 connect action 만이 확인한다: 그 연결이 없으면
 Run 은 실패하고, 같은 부팅에서 다시 시도하지 않는다.
 

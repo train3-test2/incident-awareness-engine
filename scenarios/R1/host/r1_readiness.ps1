@@ -18,7 +18,8 @@
 
       - the hypervisor, through two read-only calls of its command line tool:
         which VMs are running, and the address the guest tools of a VM report,
-      - the configuration file of a VM: the kind and the address of its adapter,
+      - the configuration file of a VM: every active adapter kind, and the
+        address of ethernet0,
       - the clock of this host: how long ago the start of a VM was requested.
 
     No guest is logged in to, no program is run in a guest, no VM is started,
@@ -60,6 +61,49 @@ function Get-R1VmxValue {
         if ($line -match ('^\s*' + [regex]::Escape($Key) + '\s*=\s*"(.*)"\s*$')) { return $Matches[1] }
     }
     return $null
+}
+
+function Get-R1ActiveVmxAdapters {
+    <# Every ethernetN that is not explicitly absent, with its connection type. #>
+    param([AllowEmptyCollection()][string[]]$Lines)
+
+    $indices = New-Object System.Collections.Generic.HashSet[int]
+    foreach ($line in $Lines) {
+        if ($line -match '^\s*ethernet(\d+)\.(present|connectionType)\s*=\s*"(.*)"\s*$') {
+            [void]$indices.Add([int]$Matches[1])
+        }
+    }
+    $active = New-Object System.Collections.Generic.List[object]
+    foreach ($index in @($indices | Sort-Object)) {
+        $present = Get-R1VmxValue -Lines $Lines -Key ("ethernet" + $index + ".present")
+        if ($null -ne $present -and $present -ieq "FALSE") { continue }
+        $active.Add([ordered]@{
+            name            = "ethernet" + $index
+            connection_type = Get-R1VmxValue -Lines $Lines -Key ("ethernet" + $index + ".connectionType")
+        })
+    }
+    return [object[]]$active.ToArray()
+}
+
+function Get-R1AdapterIsolationCheck {
+    <# Fail closed unless every active adapter has exactly the allowed kind. #>
+    param(
+        [AllowEmptyCollection()][object[]]$Adapters,
+        [Parameter(Mandatory = $true)][string]$ExpectedConnectionType
+    )
+
+    $unexpected = @($Adapters | Where-Object {
+            [string]::IsNullOrWhiteSpace([string]$_.connection_type) -or
+            -not [string]::Equals([string]$_.connection_type, $ExpectedConnectionType,
+                [System.StringComparison]::OrdinalIgnoreCase) -or
+            $R1_READINESS_REFUSED_ADAPTERS -contains [string]$_.connection_type
+        })
+    $seen = @($Adapters | ForEach-Object {
+            [string]$_.name + "=" + [string]$_.connection_type }) -join ", "
+    return [ordered]@{
+        ok   = ($Adapters.Count -gt 0 -and $unexpected.Count -eq 0)
+        seen = "active adapters: " + $seen
+    }
 }
 
 function New-R1VmrunCaller {
@@ -167,6 +211,11 @@ function Get-R1OutOfBandReadiness {
     $kindOk = ($null -ne $kind -and $kind -ieq $ExpectedConnectionType -and
         -not ($R1_READINESS_REFUSED_ADAPTERS -contains $kind))
     & $add "destination_adapter_kind" "vm_configuration" $kindOk ("connection type: " + [string]$kind)
+    $destinationIsolation = Get-R1AdapterIsolationCheck `
+        -Adapters @(Get-R1ActiveVmxAdapters -Lines $lines) `
+        -ExpectedConnectionType $ExpectedConnectionType
+    & $add "destination_active_adapters_isolated" "vm_configuration" `
+        ([bool]$destinationIsolation.ok) ([string]$destinationIsolation.seen)
 
     $adapterAddress = Get-R1VmxValue -Lines $lines -Key "ethernet0.address"
     if ([string]::IsNullOrEmpty($adapterAddress)) {
@@ -199,6 +248,15 @@ function Get-R1OutOfBandReadiness {
     if ($checkTarget) {
         $targetRunning = (@($listed | Where-Object { $_ -ieq $TargetVmx }).Count -eq 1)
         & $add "target_vm_running" "hypervisor" $targetRunning ("listed as running: " + $targetRunning)
+        $targetLines = @()
+        if (Test-Path -LiteralPath $TargetVmx -PathType Leaf) {
+            $targetLines = @(Get-Content -LiteralPath $TargetVmx -Encoding UTF8)
+        }
+        $targetIsolation = Get-R1AdapterIsolationCheck `
+            -Adapters @(Get-R1ActiveVmxAdapters -Lines $targetLines) `
+            -ExpectedConnectionType $ExpectedConnectionType
+        & $add "target_active_adapters_isolated" "vm_configuration" `
+            ([bool]$targetIsolation.ok) ([string]$targetIsolation.seen)
         $targetUp = [int][Math]::Floor(($now - ([datetime]$TargetStartRequestedUtc).ToUniversalTime()).TotalSeconds)
         & $add "target_up_long_enough" "orchestrator" ($targetUp -ge $MinimumSecondsSinceStart) (
             "seconds since the start was requested: " + $targetUp + " (minimum " + $MinimumSecondsSinceStart + ")")

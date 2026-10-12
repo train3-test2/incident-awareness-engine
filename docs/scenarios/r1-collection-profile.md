@@ -176,8 +176,11 @@ import 하며, import 할 수 없는 곳에서는 정책을 가리키는 scenari
 
 ## 5. 실패한 Run
 
-실패는 산출물 단계(9) 전에 throw 하므로 `execution_record.csv` · `run_metadata.json` · `manifest.json` · provenance 가
-쓰이지 않는다(종전 동작). `collection` 을 선언한 scenario 의 Run 은 trace 가 만들어진 뒤 실패하면
+완료 산출물은 같은 볼륨의 private staging tree 에 먼저 모두 만들고 sidecar 검증까지 끝낸 뒤 publish 한다.
+`manifest.json` 을 마지막에 옮겨 기존 completion signal 로 유지하며, publish 도중 실패하면 이 invocation 이 옮긴
+완료 파일과 staging tree 를 제거한다. 따라서 sidecar 실패를 포함한 어느 실패도 `execution_record.csv` ·
+`run_metadata.json` · `manifest.json` · sidecar 를 부분 완료본으로 남기지 않는다. `collection` 을 선언한 scenario 의
+Run 은 trace 가 만들어진 뒤 실패하면
 `operator_trace/<run_id>/r1_run_failure.json` 하나를 더 남긴다: 멈춘 단계, 이유, 01 이 돌려준 값, 후보 RecordId.
 **기존 계약에 없는 진단 기록**이다. 파일 자신이 `record_kind: diagnostic`, `canonical_artifact: false` 라고 적으며,
 Manifest · Ground Truth · RunMetadata 가 아니고 어떤 코드도 Run 의 결과로 읽지 않는다. `collection` 을 선언하지
@@ -193,7 +196,9 @@ WMI 로 시작된 프로세스는 세션이 시작한 것이 아니어서, 세�
 - provider host(`WmiPrvSE.exe`, 중간 프로세스의 부모)는 전후로 살아 있는지만 본다. 끝내는 목록에 들어 있으면 중단,
   step 전에 살아 있었는데 step 뒤에 없으면 Run 실패다. step 전에 이미 없었던 것은 Run 이 한 일이 아니므로 허용한다.
 - 최종 도구를 먼저 끝낸다. 중간 프로세스는 그것을 기다리다 스스로 끝나며, 남아 있을 때만 끝낸다.
-- 실패한 Run 은 04 에 닿지 않으므로 프로세스가 남을 수 있다. Run 마다 snapshot 을 복원하는 운영을 전제로 한다.
+- 04 전이나 04 도중 실패해도 이미 성공 결과로 확인한 WMI action 의 Run 소유 PID만 같은 검사를 거쳐 정리한다.
+  최종 도구부터 끝내며, provider host는 절대 정리 목록에 넣지 않는다. 정리 자체가 실패해도 최초 Run 실패 사유를
+  바꾸지 않고 진단에 남긴다.
 
 ## 6. 수집 context sidecar (Role4)
 
@@ -211,8 +216,8 @@ ExecutionRecord · NormalizedEvent)는 고치지 않았다.
 
 | 필드 | 뜻 |
 | --- | --- |
-| `raw_window` · `raw_collection_start` · `raw_collection_end` · `collection_window_extension_reason` · `export_margin_ms` | raw export 가 담는 범위와 넓힌 이유 |
-| `observation_start` · `observation_end` | Run 시작(포함)과 끝 |
+| `raw_window` · `raw_collection_start` · `raw_collection_end` · `collection_window_extension_reason` · `export_margin_ms` | raw export 가 실제로 담는 범위와 넓힌 이유. `raw_collection_end` 는 Run 끝과 마지막 raw Event 시각 중 늦은 값이다 |
+| `observation_start` · `observation_end` | Run 시작과 끝을 모두 포함하는 평가 관측 구간 |
 | `time_field` · `time_fallback` | `EventData.UtcTime`, `none`. `TimeCreated` 로 대신하지 않는다 |
 | `context_rule` · `context_rule_version` · `run_start_inclusive` · `context_use` | `EventData.UtcTime < observation_start`, `r1-context-rule-v0.1`, `true`(Run 시작 시각은 Run 에 속한다), `lineage_restoration_only` |
 | `context_events` | 계보 복원에 쓴 context 레코드: RecordId, JSONL 줄 번호, 역할, 쓴 이유. host · channel · 파일 hash 는 `raw_source` 에 있다 |
@@ -223,7 +228,7 @@ ExecutionRecord · NormalizedEvent)는 고치지 않았다.
 | `scenario` | `scenario_id` · `family_id` · `variation_id` · `scenario_version` |
 | `created_process` | 01 이 만든 프로세스(= context → Run 내부 연결): action 스탬프, window 양끝, 반환값, PID, 계획한 Image, 후보 RecordId, 선택된 RecordId, 부모(context) RecordId. 세션 진입은 null |
 | `evaluation_window_start` · `evaluation_horizon_sec` · `evaluation_window_end` | reference 가 있는 Run 만. raw window 와 따로 적는다. 시작은 reference 시각(값은 canonical 의 reference_time 과 일치해야 한다) |
-| `record_counts` | 전체 · context · observation |
+| `record_counts` | 전체 · context(`event_time < start`) · observation(`start <= event_time <= end`) · after_observation(`event_time > end`) |
 | `lineage` | 세 레코드(역할 · RecordId · JSONL 줄 번호 · GUID · Image · UtcTime · 구역), context 인 RecordId, context 를 참조하는 Run 내 레코드, 최종 도구의 연결 |
 | `raw_source` | RecordId 와 줄 번호가 속한 곳: host, channel, JSONL 파일명 · SHA-256 · manifest 의 `raw_log_id` |
 | `target_boot_utc` · `boot_session_id` | 부팅 시각, boot session 식별자(없으면 null). 둘 중 하나로 boot 를 식별한다 |
@@ -323,8 +328,10 @@ evaluation window 는 종전 규칙 그대로다: 수집이 `reference_time + 60
 ## 9. 호스트 readiness 블록
 
 `scenarios/R1/host/r1_readiness.ps1`. VM 을 돌리는 호스트에서 dot-source 한다. hypervisor 도구의 읽기 전용 호출 두
-가지(실행 중인 VM 목록, guest tools 가 보고한 주소)와 VM 설정 파일, 호스트 시계만 읽는다. guest 에 로그인하지 않고,
-VM 을 시작 · 종료 · 복원하지 않으며, 연결을 열지 않는다. 주소 · 경로 · 시각은 모두 인자다.
+가지(실행 중인 VM 목록, guest tools 가 보고한 주소)와 VM 설정 파일, 호스트 시계만 읽는다. 목적지와 Target 의
+VM 설정에 선언된 모든 활성 `ethernetN`을 열거하고, 하나라도 기대한 Host-only 종류가 아니거나 NAT/bridged이면
+fail-closed한다. `ethernet0`만 검사하고 통과시키지 않는다. guest 에 로그인하지 않고, VM 을 시작 · 종료 · 복원하지
+않으며, 연결을 열지 않는다. 주소 · 경로 · 시각은 모두 인자다.
 목적지 listener 가 연결을 받는지는 확인하지 **않는다** — scenario 의 connect action 만이 그것을 확인한다.
 
 ## 10. 검증 상태와 남은 것
