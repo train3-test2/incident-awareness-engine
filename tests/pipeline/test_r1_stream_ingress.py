@@ -10,17 +10,21 @@ from incident_awareness.pipeline.r1_stream_ingress import (
 class _Ledger:
     def __init__(self) -> None:
         self.accepted: set[tuple[str, str]] = set()
+        self.watermark_hashes: list[str] = []
+        self.close_hashes: list[str] = []
 
     def save_chunk(self, *, chunk_id: str, **_: object) -> bool:
         return self._save("chunk", chunk_id)
 
-    def save_watermark(self, watermark: R1SourceWatermark, **_: object) -> bool:
+    def save_watermark(self, watermark: R1SourceWatermark, *, content_sha256: str) -> bool:
+        self.watermark_hashes.append(content_sha256)
         return self._save("watermark", watermark.watermark_id)
 
     def assert_final_watermarks_match(self, _: object) -> None:
         return None
 
-    def save_run_close(self, *, close_id: str, **_: object) -> bool:
+    def save_run_close(self, *, close_id: str, content_sha256: str, **_: object) -> bool:
+        self.close_hashes.append(content_sha256)
         return self._save("close", close_id)
 
     def _save(self, kind: str, identity: str) -> bool:
@@ -64,6 +68,21 @@ def test_does_not_record_a_close_when_partition_watermark_binding_is_rejected() 
         R1StreamIngress(ledger).accept_run_closed(_close())  # type: ignore[arg-type]
 
     assert ("close", "CLOSE-001") not in ledger.accepted
+
+
+def test_control_message_hashes_change_when_the_immutable_payload_changes() -> None:
+    ledger = _Ledger()
+    ingress = R1StreamIngress(ledger)  # type: ignore[arg-type]
+    changed_watermark = _watermark().model_copy(update={"allowed_lateness_ms": 1})
+    changed_close = _close().model_copy(update={"close_id": "CLOSE-002"})
+
+    ingress.accept_watermark(_watermark())
+    ingress.accept_watermark(changed_watermark)
+    ingress.accept_run_closed(_close())
+    ingress.accept_run_closed(changed_close)
+
+    assert ledger.watermark_hashes[0] != ledger.watermark_hashes[1]
+    assert ledger.close_hashes[0] != ledger.close_hashes[1]
 
 
 def _partition() -> dict[str, str]:

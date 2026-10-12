@@ -53,12 +53,50 @@ def test_rejects_a_watermark_sequence_reused_by_another_identity() -> None:
         R1StreamDeliveryRepository(connection).save_watermark(_watermark(), content_sha256="a" * 64)
 
 
+def test_recovers_an_exact_watermark_replay_after_a_worker_restart() -> None:
+    watermark = _watermark()
+    connection = _Connection(rows=[None, (watermark.watermark_id, 2, "a" * 64)])
+
+    assert not R1StreamDeliveryRepository(connection).save_watermark(
+        watermark, content_sha256="a" * 64
+    )
+
+
+def test_chunk_identity_is_scoped_to_its_partition() -> None:
+    connection = _Connection(rows=[("CHK-001",), ("CHK-001",)])
+    repository = R1StreamDeliveryRepository(connection)
+    other_partition = R1StreamPartition(
+        run_id="RUN-20261012-001",
+        host_id="WIN-02",
+        source="sysmon",
+        source_channel="Microsoft-Windows-Sysmon/Operational",
+    )
+
+    assert repository.save_chunk(
+        partition=_partition(), chunk_id="CHK-001", sequence=1, content_sha256="a" * 64
+    )
+    assert repository.save_chunk(
+        partition=other_partition, chunk_id="CHK-001", sequence=1, content_sha256="a" * 64
+    )
+
+    assert connection.statements[0][1][:4] != connection.statements[1][1][:4]
+
+
 def test_recovers_an_exact_run_close_replay() -> None:
     connection = _Connection(rows=[None, ("CLOSE-001", "a" * 64)])
 
     assert not R1StreamDeliveryRepository(connection).save_run_close(
         run_id="RUN-20261012-001", close_id="CLOSE-001", content_sha256="a" * 64
     )
+
+
+def test_rejects_a_run_close_identity_reused_with_different_content() -> None:
+    connection = _Connection(rows=[None, ("CLOSE-001", "a" * 64)])
+
+    with pytest.raises(ValueError, match="identity conflicts"):
+        R1StreamDeliveryRepository(connection).save_run_close(
+            run_id="RUN-20261012-001", close_id="CLOSE-001", content_sha256="b" * 64
+        )
 
 
 def test_rejects_a_close_when_its_watermark_is_missing_from_the_same_partition() -> None:

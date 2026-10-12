@@ -30,3 +30,15 @@ def test_r1_stream_delivery_migration_allows_only_one_close_per_run() -> None:
     assert "UNIQUE (run_id)" in migration
     assert "BEGIN;" not in migration
     assert "COMMIT;" not in migration
+
+
+def test_close_watermark_binding_migration_requires_complete_values_or_legacy_nulls() -> None:
+    migration_path = MIGRATION_PATH.with_name("009_r1_stream_close_watermark_binding.sql")
+    migration = migration_path.read_text(encoding="utf-8")
+
+    assert "ADD COLUMN watermark_at TIMESTAMPTZ" in migration
+    assert "ADD COLUMN allowed_lateness_ms INTEGER" in migration
+    assert "ADD COLUMN covered_through_chunk_sequence INTEGER" in migration
+    assert "r1_stream_watermarks_binding_values_complete" in migration
+    assert "BEGIN;" not in migration
+    assert "COMMIT;" not in migration
