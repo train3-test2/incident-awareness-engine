@@ -399,18 +399,24 @@ def test_validation_rejects_source_file_tampering(replay_fixture: ReplayFixture)
     )
     normalized_path.write_bytes(normalized_path.read_bytes() + b"tampered\n")
 
-    # When / Then
-    with pytest.raises(ValueError, match="source SHA-256 mismatch"):
+    # When
+    with pytest.raises(ValueError) as exc_info:
         _validate(replay_fixture, run_ids=(replay.TARGET_RUN_IDS[0],))
+
+    # Then
+    assert exc_info.match("source SHA-256 mismatch")
 
 
 def test_validation_rejects_source_manifest_tampering(replay_fixture: ReplayFixture) -> None:
     # Given
     replay_fixture.manifest_path.write_bytes(replay_fixture.manifest_path.read_bytes() + b" \n")
 
-    # When / Then
-    with pytest.raises(ValueError, match="source manifest SHA-256"):
+    # When
+    with pytest.raises(ValueError) as exc_info:
         _validate(replay_fixture, run_ids=(replay.TARGET_RUN_IDS[0],))
+
+    # Then
+    assert exc_info.match("source manifest SHA-256")
 
 
 def test_validation_rejects_usage_approval_manifest_hash_mismatch(
@@ -421,9 +427,12 @@ def test_validation_rejects_usage_approval_manifest_hash_mismatch(
     approval["source_manifest_sha256"] = "0" * 64
     _write_json(replay_fixture.approval_path, approval)
 
-    # When / Then
-    with pytest.raises(ValueError, match="unexpected manifest SHA-256"):
+    # When
+    with pytest.raises(ValueError) as exc_info:
         _validate(replay_fixture, run_ids=(replay.TARGET_RUN_IDS[0],))
+
+    # Then
+    assert exc_info.match("unexpected manifest SHA-256")
 
 
 def test_validation_rejects_selector_payload_hash_mismatch(
@@ -433,9 +442,12 @@ def test_validation_rejects_selector_payload_hash_mismatch(
     # Given
     monkeypatch.setitem(replay.SELECTOR_POLICY_PAYLOAD, "lineage_event_count", 4)
 
-    # When / Then
-    with pytest.raises(ValueError, match="selector policy payload SHA-256"):
+    # When
+    with pytest.raises(ValueError) as exc_info:
         _validate(replay_fixture, run_ids=(replay.TARGET_RUN_IDS[0],))
+
+    # Then
+    assert exc_info.match("selector policy payload SHA-256")
 
 
 def test_validation_rejects_approved_policy_hash_mismatch(
@@ -451,13 +463,16 @@ def test_validation_rejects_approved_policy_hash_mismatch(
         newline="\n",
     )
 
-    # When / Then
-    with pytest.raises(ValueError, match="canonical SHA-256"):
+    # When
+    with pytest.raises(ValueError) as exc_info:
         _validate(
             replay_fixture,
             run_ids=(replay.TARGET_RUN_IDS[0],),
             approved_policy_config=policy_path,
         )
+
+    # Then
+    assert exc_info.match("canonical SHA-256")
 
 
 @pytest.mark.parametrize("mutation", ["missing", "duplicate"])
@@ -474,11 +489,14 @@ def test_validation_rejects_missing_or_duplicate_manifest_runs(
     else:
         runs.append(dict(runs[0]))
     _refresh_manifest_approval(replay_fixture, monkeypatch)
-
-    # When / Then
     expected_message = "Run set mismatch" if mutation == "missing" else "duplicate run_id"
-    with pytest.raises(ValueError, match=expected_message):
+
+    # When
+    with pytest.raises(ValueError) as exc_info:
         _validate(replay_fixture, run_ids=(replay.TARGET_RUN_IDS[0],))
+
+    # Then
+    assert exc_info.match(expected_message)
 
 
 def test_validation_rejects_duplicate_discovered_run_artifacts(
@@ -489,9 +507,12 @@ def test_validation_rejects_duplicate_discovered_run_artifacts(
     duplicate = replay_fixture.extracted_root / "duplicate" / run_id
     shutil.copytree(replay_fixture.run_directories[run_id], duplicate)
 
-    # When / Then
-    with pytest.raises(ValueError, match="exactly one Evidence directory"):
+    # When
+    with pytest.raises(ValueError) as exc_info:
         _validate(replay_fixture, run_ids=(run_id,))
+
+    # Then
+    assert exc_info.match("exactly one Evidence directory")
 
 
 def test_validation_rejects_existing_output_directory(replay_fixture: ReplayFixture) -> None:
@@ -499,9 +520,12 @@ def test_validation_rejects_existing_output_directory(replay_fixture: ReplayFixt
     run_id = replay.TARGET_RUN_IDS[0]
     (replay_fixture.outputs_root / run_id).mkdir()
 
-    # When / Then
-    with pytest.raises(FileExistsError, match="output directory already exists"):
+    # When
+    with pytest.raises(FileExistsError) as exc_info:
         _validate(replay_fixture, run_ids=(run_id,))
+
+    # Then
+    assert exc_info.match("output directory already exists")
 
 
 @pytest.mark.parametrize(
@@ -519,13 +543,16 @@ def test_validation_rejects_outputs_inside_protected_directories(
         "approval": replay_fixture.approval_path.parent / "blocked-development-output",
     }[protected_location]
 
-    # When / Then
-    with pytest.raises(ValueError, match="outputs_root must be outside"):
+    # When
+    with pytest.raises(ValueError) as exc_info:
         _validate(
             replay_fixture,
             run_ids=(replay.TARGET_RUN_IDS[0],),
             outputs_root=protected_outputs,
         )
+
+    # Then
+    assert exc_info.match("outputs_root must be outside")
 
 
 def test_validation_rejects_canonical_path_traversal_into_repository(
@@ -534,13 +561,16 @@ def test_validation_rejects_canonical_path_traversal_into_repository(
     # Given
     outputs_root = replay.REPOSITORY_ROOT / "scripts" / ".." / "blocked-output"
 
-    # When / Then
-    with pytest.raises(ValueError, match="Git repository"):
+    # When
+    with pytest.raises(ValueError) as exc_info:
         _validate(
             replay_fixture,
             run_ids=(replay.TARGET_RUN_IDS[0],),
             outputs_root=outputs_root,
         )
+
+    # Then
+    assert exc_info.match("Git repository")
 
 
 def test_validation_rejects_symlink_into_protected_directory(
@@ -554,13 +584,16 @@ def test_validation_rejects_symlink_into_protected_directory(
     except OSError as error:
         pytest.skip(f"directory symlinks are unavailable: {error}")
 
-    # When / Then
-    with pytest.raises(ValueError, match="Git repository"):
+    # When
+    with pytest.raises(ValueError) as exc_info:
         _validate(
             replay_fixture,
             run_ids=(replay.TARGET_RUN_IDS[0],),
             outputs_root=symlink / "blocked-output",
         )
+
+    # Then
+    assert exc_info.match("Git repository")
 
 
 def test_dirty_execute_is_rejected_before_output_creation(
@@ -580,13 +613,16 @@ def test_dirty_execute_is_rejected_before_output_creation(
         cwd=str(Path.cwd()),
     )
 
-    # When / Then
-    with pytest.raises(ValueError, match="clean Git worktree"):
+    # When
+    with pytest.raises(ValueError) as exc_info:
         replay.execute_development_replays(
             plan,
             revision=revision,
             invocation=invocation,
         )
+
+    # Then
+    assert exc_info.match("clean Git worktree")
     assert not (replay_fixture.outputs_root / run_id).exists()
 
 
@@ -609,13 +645,16 @@ def test_execute_cleans_staging_directory_when_index_validation_fails(
 
     monkeypatch.setattr(replay, "_validate_development_index", reject_index)
 
-    # When / Then
-    with pytest.raises(ValueError, match="injected index validation failure"):
+    # When
+    with pytest.raises(ValueError) as exc_info:
         replay.execute_development_replays(
             plan,
             revision=revision,
             invocation=invocation,
         )
+
+    # Then
+    assert exc_info.match("injected index validation failure")
     assert not (replay_fixture.outputs_root / run_id).exists()
     assert list(replay_fixture.outputs_root.iterdir()) == []
 
@@ -637,13 +676,16 @@ def test_execute_preserves_output_created_after_validation(
         cwd=str(Path.cwd()),
     )
 
-    # When / Then
-    with pytest.raises(FileExistsError, match="output directory already exists"):
+    # When
+    with pytest.raises(FileExistsError) as exc_info:
         replay.execute_development_replays(
             plan,
             revision=revision,
             invocation=invocation,
         )
+
+    # Then
+    assert exc_info.match("output directory already exists")
     assert marker.read_text(encoding="utf-8") == "preserve me\n"
     assert {path.name for path in replay_fixture.outputs_root.iterdir()} == {run_id}
 
