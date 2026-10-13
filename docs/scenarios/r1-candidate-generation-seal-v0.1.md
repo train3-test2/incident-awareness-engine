@@ -43,8 +43,11 @@ identity와 config hash를 seal에 기록한다.
 경계 action이 성공했다는 사실만으로는 부족하다. 발급자는 다음을 모두 확인해야 한다.
 
 1. versioned scenario에서 위 경계가 마지막 action이다.
-2. 경계 완료 시각은 `RunMetadata.start_time + 마지막 action offset`보다 이르지 않고,
-   같은 Run의 실제 `ExecutionRecordRow`에서 action ID/type/UTC 시각이 정확히 일치한다.
+2. 같은 Run의 실제 `ExecutionRecordRow`는 마지막 action의 ID/type과 시작 시각을 증명하고,
+   그 시작 시각은 `RunMetadata.start_time + 마지막 action offset`보다 이르지 않다.
+   Seal의 `boundary.completed_at`은 action 시작 시각이 아니라 별도의 실제 종료 완료 증명과
+   정확히 일치해야 한다. WMI는 `runEnd.completed_utc`, remote-management는 원격 세션을
+   성공적으로 닫은 뒤의 `remote_session.close_completed_at`을 사용한다.
 3. 경계 뒤에는 같은 Run의 어떤 action도 없다. 특히 WMI process-create와 remote launch를
    새로 실행하지 않는다.
 4. `intermediate`와 `final_tool`의 image가 해당 family/run type의 계획과 일치하고, 각각
@@ -184,8 +187,10 @@ authoritative `end_time`도 없으면 아직 사용할 fallback이 없으므로 
   확정하는 #266 로직
 
 `issue_r1_candidate_generation_seal()`은 scenario action 목록, process termination attestation,
-동일 Run의 실제 경계 `ExecutionRecordRow`, RunMetadata, accepted `R1RunClosed`를 모두
-요구한다. `run_closed`만으로 seal을 만들 수 없다. 검증 함수는 이 Ground Truth 결속을 마친 뒤
+동일 Run의 실제 경계 `ExecutionRecordRow`, 실제 종료 완료 증명
+(`R1CandidateBoundaryCompletion`), RunMetadata, accepted `R1RunClosed`를 모두 요구한다.
+`ExecutionRecordRow.timestamp`는 action 시작 시각이며 완료 시각으로 대체할 수 없다.
+`run_closed`만으로 seal을 만들 수 없다. 검증 함수는 이 Ground Truth 결속을 마친 뒤
 프로세스 image와 run type이 없는 `R1VerifiedCandidateBoundary`만 반환한다.
 
 Role2 #266 통합은 모든 resolution에서 `verified_seal` /
