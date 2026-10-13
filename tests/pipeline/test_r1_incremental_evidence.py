@@ -455,6 +455,56 @@ def test_run_end_fallback_matches_the_existing_whole_episode_pipeline() -> None:
     assert incremental.extraction_diagnostics == whole_episode.extraction_diagnostics
 
 
+def test_run_end_fallback_excludes_post_run_tail_from_the_whole_episode_window() -> None:
+    state = _state()
+    events = _events()
+    tail_guid = "{EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE}"
+    post_run_tail = (
+        _event(
+            "evt-post-run-terminal",
+            "process_create",
+            _RUN_END + timedelta(seconds=1),
+            tail_guid,
+            parent_process_guid=_MIDDLE_GUID,
+            process_name="powershell.exe",
+        ),
+        _event(
+            "evt-post-run-network",
+            "network_connection",
+            _RUN_END + timedelta(seconds=2),
+            tail_guid,
+            process_name="powershell.exe",
+        ),
+    )
+    state.accept_chunk(_chunk(events, chunk_id="CHK-001", sequence=1))
+    state.accept_chunk(_chunk(post_run_tail, chunk_id="CHK-002", sequence=2))
+    state.accept_run_closed(
+        _run_closed(watermark_at=post_run_tail[-1].timestamp).model_copy(
+            update={"emitted_at": post_run_tail[-1].timestamp + timedelta(milliseconds=1)}
+        )
+    )
+
+    incremental = state.finalize_at_run_end(_RUN_END)
+    same_window = run_r1_evidence_pipeline_with_selector(
+        events,
+        selector_policy=_selector_policy(),
+        approved_policy=_approved_policy(),
+        run_start=_RUN_START,
+    )
+    including_tail = run_r1_evidence_pipeline_with_selector(
+        events + post_run_tail,
+        selector_policy=_selector_policy(),
+        approved_policy=_approved_policy(),
+        run_start=_RUN_START,
+    )
+
+    assert incremental.status == "finalized"
+    assert incremental.evidences == same_window.evidences
+    assert incremental.selector_result == same_window.selector_result
+    assert including_tail.selector_result.selection is None
+    assert including_tail.selector_result.diagnostics == ("ambiguous_terminal_candidate",)
+
+
 def test_exact_chunk_replay_is_idempotent_and_conflicting_identity_fails() -> None:
     state = _state()
     chunk = _chunk(_events()[:2], chunk_id="CHK-001", sequence=1)

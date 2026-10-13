@@ -55,7 +55,7 @@ verified boundary 부재·불일치
 close 전 `selection`은 관측 상태일 뿐이다. Evidence와 availability는 빈 값으로 유지한다.
 terminal process와 EID 3가 보였다는 이유만으로 Evidence를 조기 발행하지 않는다.
 
-#269 v0.1에서 candidate-generation seal은 accepted `run_closed` 뒤에만 발급된다. 따라서
+PR `#269` v0.1에서 candidate-generation seal은 accepted `run_closed` 뒤에만 발급된다. 따라서
 이 상태 전이는 collector가 계속 Event를 받는 도중의 mid-stream 확정이 아니다. candidate
 boundary의 event-time이 authoritative `run_end`보다 빠를 수 있다는 뜻이며, 실제 Evidence
 availability는 아래 검증 완료 시각보다 앞당길 수 없다.
@@ -111,8 +111,12 @@ context Event는 Evidence count, Evidence timestamp, feature 또는 score의 직
 
 ## 7. 기존 whole-episode 결과와의 관계
 
-같은 final Event 집합과 authoritative `run_end`를 사용한 fallback 결과는 기존
-`run_r1_evidence_pipeline_with_selector()` 결과와 동일해야 한다. 증분 경로는 기존 selector와
+fallback의 whole-episode 입력 범위는 수락된 Event 중 `timestamp <= authoritative run_end`인
+집합이다. pre-Run context는 포함하지만, final watermark가 `run_end` 뒤까지 진행하는 동안 들어온
+post-Run tail Event는 수집 완결성 확인용이며 해당 Run의 selector 입력에서는 제외한다.
+
+위와 같이 같은 authoritative Run window로 제한한 final Event 집합을 사용하면 fallback 결과는
+기존 `run_r1_evidence_pipeline_with_selector()` 결과와 동일해야 한다. 증분 경로는 기존 selector와
 extractor를 다시 구현하지 않고 close 시점에 동일 함수를 호출한다.
 
 `R1IncrementalEvidenceSnapshot.availability`는 Role1 causal consumer에 넘길
