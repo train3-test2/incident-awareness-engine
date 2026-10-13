@@ -609,7 +609,7 @@ def test_an_evidence_time_generator_is_checked_at_both_observation_boundaries(
 ) -> None:
     processes, connections = _read(wmi_events("attack"), tmp_path)
     moments = (
-        parse_event_utc_time(stamp) for stamp in (CREATED_UTC_TIME, "2030-01-02 00:13:00.001")
+        parse_event_utc_time(stamp) for stamp in (CREATED_UTC_TIME, "2030-01-02 00:13:05.001")
     )
 
     problems = check_evidence_excludes_context(
