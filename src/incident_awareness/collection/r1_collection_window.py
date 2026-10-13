@@ -285,6 +285,7 @@ def check_evidence_excludes_context(
     records = list(records)
     known = {record.record_id for record in records if record.record_id is not None}
     listed = list(event_ids)
+    listed_timestamps = tuple(timestamps)
     problems = [
         f"the Evidence lists RecordId {record_id!r}, which is no record of the raw export"
         for record_id in listed
@@ -296,7 +297,7 @@ def check_evidence_excludes_context(
             f"the Evidence lists context record(s) {context}: a record before the start of the "
             "run restores a lineage and is not an event of the Evidence"
         )
-    early = [format_stamp(moment) for moment in timestamps if moment < observation_start]
+    early = [format_stamp(moment) for moment in listed_timestamps if moment < observation_start]
     if early:
         problems.append(
             f"the Evidence states time(s) before the start of the run "
@@ -315,7 +316,7 @@ def check_evidence_excludes_context(
             f"the Evidence lists record(s) after the end of the run {listed_after}: raw records "
             "outside the observation are preserved but are not Evidence events"
         )
-    late = [format_stamp(moment) for moment in timestamps if moment > observation_end]
+    late = [format_stamp(moment) for moment in listed_timestamps if moment > observation_end]
     if late:
         problems.append(
             f"the Evidence states time(s) after the end of the run "

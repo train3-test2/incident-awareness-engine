@@ -91,7 +91,7 @@ Envelope는 별도 model이며 다음 기존 파일을 생성하거나 변경하
 available_at <= replay_time
 ```
 
-현재 `available_at`은 causal availability envelope에서만 제공되며 기존 Role1 Fusion과 Role5 평가 경로는 아직 이를 소비하지 않는다. 따라서 기존 whole-episode R1 `Evidence.timestamp`를 사용 가능 시각으로 간주해 계산한 TTSD는 causal 조기인지 결과로 해석하지 않는다. 실제 causal TTSD 산출은 #232 Temporal Replay가 `available_at <= replay_time` 소비 경계를 연결한 이후부터 유효하다. #231은 Role1 weight·threshold·stopping이나 Role5 TTSD 계산 자체를 구현하지 않는다.
+현재 `available_at`은 causal availability envelope에서 제공되며 #232의 `r1_causal_replay.py`가 `available_at <= replay_time` gate로 소비한다. 상세 activation, event-time window, terminal partial tick과 실행 provenance 계약은 [R1 causal Temporal Replay 계약 v0.1](r1-causal-temporal-replay-v0.1.md)을 따른다. 기존 whole-episode R1 `Evidence.timestamp`만 사용 가능 시각으로 간주해 계산한 TTSD는 causal 조기인지 결과로 해석하지 않는다. Role5의 공식 eligible episode/TTSD 계산 연결은 후속 작업이며, #231은 Role1 weight·threshold·stopping이나 Role5 TTSD 계산 자체를 구현하지 않는다.
 
 동일 `available_at`의 결정적 ordering key는 다음과 같다.
 
@@ -99,7 +99,7 @@ available_at <= replay_time
 (available_at, timestamp, evidence_id)
 ```
 
-`timestamp`는 direct Event 의미와 provenance 검증에 계속 사용한다. `available_at` 이전 replay point에 Evidence를 소급 투입하지 않는다. 실제 replay ingest/window 동작 변경은 #232 책임이며, 이번 계약은 Role1 weight·threshold·stopping이나 Role5 TTSD 계산을 정의하지 않는다.
+`timestamp`는 direct Event 의미와 provenance 검증에 계속 사용한다. `available_at` 이전 replay point에 Evidence를 소급 투입하지 않는다. #232는 activation time과 semantic event-time window를 분리하며, 이번 계약은 Role1 weight·threshold·stopping이나 Role5 TTSD 계산을 정의하지 않는다.
 
 ## 6. 확장 지점
 

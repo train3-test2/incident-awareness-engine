@@ -1970,8 +1970,9 @@ $R1_REMOTE_STEPS = @{
     }
 
     # The last action of an entry through WMI: the run ends the processes it
-    # started, and only those. Closing the session does not end them, because
-    # the session did not start them.
+    # started, and only those. Failure cleanup uses the same step after only the
+    # intermediate was created. Closing the session does not end either case,
+    # because the session did not start those processes.
     #
     # A process is ended by its process id and by nothing else, and only after
     # it was shown to be the one the run started: the planned program, created
@@ -2013,9 +2014,18 @@ $R1_REMOTE_STEPS = @{
             }
             $owned.Add(@{ entry = $entry; found = $found })
         }
-        if ($owned.Count -ne 2) { throw ("a run ends the two processes it started, " + $owned.Count + " were named") }
+        $allowPartial = $false
+        if ($Arguments.ContainsKey("allow_partial")) {
+            if ($Arguments.allow_partial -isnot [bool]) { throw "allow_partial must be boolean" }
+            $allowPartial = [bool]$Arguments.allow_partial
+        }
+        if ((-not $allowPartial -and $owned.Count -ne 2) -or
+            ($allowPartial -and ($owned.Count -lt 1 -or $owned.Count -gt 2))) {
+            throw ("a run ends the two processes it started; failure cleanup may name one or two, " +
+                $owned.Count + " were named")
+        }
         $intermediate = $owned[0]
-        $finalTool = $owned[1]
+        $finalTool = if ($owned.Count -eq 2) { $owned[1] } else { $null }
 
         # --- the provider host: looked at, never ended ------------------------------
         $provider = @{ process_id = $null; name = $null; running_before = $false; running_after = $false }
@@ -2035,7 +2045,7 @@ $R1_REMOTE_STEPS = @{
             }
         }
 
-        # --- the two processes of the run -----------------------------------------------
+        # --- the processes of the run ---------------------------------------------------
         $waitSec = [int]$Arguments.wait_sec
         $gone = {
             param($Item)
@@ -2057,8 +2067,9 @@ $R1_REMOTE_STEPS = @{
             return "stopped"
         }
 
-        $finalOutcome = & $endOwned $finalTool
-        if ($null -ne $intermediate.found) {
+        $finalOutcome = $null
+        if ($null -ne $finalTool) { $finalOutcome = & $endOwned $finalTool }
+        if ($null -ne $finalTool -and $null -ne $intermediate.found) {
             $deadline = (Get-Date).AddSeconds($waitSec)
             while (-not (& $gone $intermediate) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
         }
@@ -2069,13 +2080,17 @@ $R1_REMOTE_STEPS = @{
             $provider.running_after = ($null -ne $after -and $after.CreationDate -eq $providerCreated)
         }
 
+        $ended = New-Object System.Collections.Generic.List[object]
+        $ended.Add(@{ process_id = [int]$intermediate.entry.process_id; image = [string]$intermediate.entry.image
+            outcome = $intermediateOutcome })
+        if ($null -ne $finalTool) {
+            $ended.Add(@{ process_id = [int]$finalTool.entry.process_id; image = [string]$finalTool.entry.image
+                outcome = $finalOutcome })
+        }
+
         return @{
             utc           = $utc
-            ended         = @(
-                @{ process_id = [int]$intermediate.entry.process_id; image = [string]$intermediate.entry.image
-                   outcome = $intermediateOutcome },
-                @{ process_id = [int]$finalTool.entry.process_id; image = [string]$finalTool.entry.image
-                   outcome = $finalOutcome })
+            ended         = [object[]]$ended.ToArray()
             provider_host = $provider
             completed_utc = (Get-Date).ToUniversalTime().ToString($stampFormat)
         }
@@ -4007,8 +4022,9 @@ function Invoke-R1PilotRun {
                 try {
                     if ($null -eq $session) { $session = & $Transport.open $Connection }
                     $cleanupReturned = & $Transport.invoke $session "end_run" @{
-                        owned    = $cleanupOwned
-                        wait_sec = $R1_RUN_END_WAIT_SEC
+                        owned         = $cleanupOwned
+                        wait_sec      = $R1_RUN_END_WAIT_SEC
+                        allow_partial = $true
                     }
                     $cleanupIds = [int[]]@($cleanupOwned | ForEach-Object { [int]$_.process_id })
                     $runEnd = Get-R1RunEndResult -Ended $cleanupReturned `
