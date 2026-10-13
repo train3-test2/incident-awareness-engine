@@ -530,7 +530,7 @@ def test_rejects_boundary_before_planned_action_offset() -> None:
         ("run_id", "RUN-20261013-002", "run_id"),
         ("action_id", "A03", "final scenario action"),
         ("action_type", "network_connection", "final scenario action"),
-        ("timestamp", datetime(2026, 10, 13, 1, 12, 0, 1000, tzinfo=UTC), "completed_at"),
+        ("timestamp", datetime(2026, 10, 13, 1, 12, 0, 1000, tzinfo=UTC), "actual action start"),
     ],
 )
 def test_rejects_boundary_not_bound_to_actual_action_record(
