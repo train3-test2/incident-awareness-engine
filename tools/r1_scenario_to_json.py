@@ -65,6 +65,13 @@ The lineage a scenario states is `planned_lineage`: what each run is planned to
 execute, selected by run type. It is a collection plan. The approved lineage
 policy of a family is not part of a scenario and is not read here
 (`scenarios/R1/README.md` section 1-1).
+
+A scenario may also state how its raw telemetry is collected: how the
+intermediate is started (`planned_lineage.entry`), which window the raw export
+covers and how readiness is established (`collection`), and where an attack run
+takes its reference from (`reference_rule`). All three are optional and a
+scenario that states none renders to the same JSON as before. What may be stated
+together is `incident_awareness.collection.r1_collection_profile`.
 """
 
 import argparse
@@ -79,6 +86,12 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from incident_awareness.collection.r1_collection_profile import (
+    STEP_ORDERS,
+    R1CollectionProfile,
+    check_run_steps,
+    read_collection_profile,
+)
 from incident_awareness.collection.r1_destination import (
     validate_internal_port,
     validate_internal_target,
@@ -95,6 +108,11 @@ from incident_awareness.collection.r1_pair_identity import (
     validate_family_id,
     validate_repetition,
     validate_variation_id,
+)
+from incident_awareness.collection.r1_policy_provenance import (
+    POLICY_PROVENANCE_KEY,
+    R1PolicyProvenanceError,
+    resolve_policy_provenance,
 )
 from tools.scenario_to_json import render_json
 
@@ -277,7 +295,21 @@ def _check_planned_lineage(lineage: object) -> None:
         _reject_label_words(value, label)
 
 
-def _check_runs(scenario: dict) -> None:
+def _check_collection_profile(scenario: dict) -> R1CollectionProfile:
+    """Check how the scenario says its raw telemetry is collected.
+
+    Which entry, raw window, readiness method and reference rule may be stated
+    together is decided in one place, `r1_collection_profile`; the runner and the
+    validator read the same rule. The root of the lineage is recorded on
+    Target-A like every other Image, so it is checked for label words here.
+    """
+    profile = read_collection_profile(scenario)
+    _reject_label_words(profile.root_image, f"{PLANNED_LINEAGE_KEY}.entry.root_image")
+    check_run_steps(scenario, profile)
+    return profile
+
+
+def _check_runs(scenario: dict, profile: R1CollectionProfile) -> None:
     runs = scenario["runs"]
     expected = scenario["shortcut_controls"].get("actions_per_run")
     shapes: dict[str, list[tuple[object, object, object]]] = {}
@@ -305,22 +337,29 @@ def _check_runs(scenario: dict) -> None:
         if len(action_ids) != len(set(action_ids)):
             raise ValueError(f"runs.{run_type} has duplicate action_id values")
 
+        # The steps of the entry kind of the scenario: the five of STEP_ORDER
+        # unless the scenario states another entry.
+        step_order = STEP_ORDERS[profile.entry_kind]
         steps = tuple(action.get("step") for action in actions)
-        if steps != STEP_ORDER:
+        if steps != step_order:
             raise ValueError(
-                f"runs.{run_type} steps must be {list(STEP_ORDER)} in that order, "
+                f"runs.{run_type} steps must be {list(step_order)} in that order, "
                 f"found {list(steps)}"
             )
 
         # The reference of an attack run is the Sysmon record of the session host
         # its first action creates (r1.md section 4-2), so that action is the only
-        # one it can name. A normal run records no reference.
+        # one it can name. A normal run records no reference. Which step that is
+        # comes from the reference rule of the scenario: the session action
+        # unless the scenario states another entry and its rule.
         reference = runs[run_type].get("reference_action_id")
         if run_type == "attack":
-            if reference != action_ids[0]:
+            step = profile.reference_rule.action_step
+            expected_reference = action_ids[step_order.index(step)]
+            if reference != expected_reference:
                 raise ValueError(
-                    f"runs.attack.reference_action_id must be the {STEP_ORDER[0]} action "
-                    f"{action_ids[0]!r}, found {reference!r}"
+                    f"runs.attack.reference_action_id must be the {step} action "
+                    f"{expected_reference!r}, found {reference!r}"
                 )
         elif reference is not None:
             raise ValueError(
@@ -353,6 +392,62 @@ def _check_run_length(scenario: dict) -> None:
     if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon < 1:
         raise ValueError(
             f"run_length.evaluation_horizon_sec must be an integer of 1 or more, found {horizon!r}"
+        )
+
+
+def _attach_policy_provenance(scenario: dict) -> None:
+    """Resolve the policies a scenario names and keep what their loaders said next to them.
+
+    A scenario names a policy by its identity and states nothing else about it.
+    Its hash and the values a run needs from it are read from the registered
+    configuration here, when the scenario is rendered, and never typed into a
+    scenario file. A scenario that names no policy is rendered as it always was.
+    """
+    if POLICY_PROVENANCE_KEY in scenario:
+        raise ValueError(
+            f"{POLICY_PROVENANCE_KEY} is not stated in a scenario: it is resolved from the "
+            "registered policies when the scenario is rendered"
+        )
+    try:
+        provenance = resolve_policy_provenance(scenario)
+    except R1PolicyProvenanceError as error:
+        raise ValueError(str(error)) from error
+    if provenance is not None:
+        scenario[POLICY_PROVENANCE_KEY] = provenance
+
+
+def _check_observation_length(scenario: dict, profile: R1CollectionProfile) -> None:
+    """A scenario may state how long its runs are observed. One that does is held to it.
+
+    The length has to cover the last action and to reach the evaluation horizon
+    after the action an attack run takes its reference from: with less, the
+    collection of an attack run could not reach the end of its evaluation
+    window. A scenario that states none leaves the length to the run input, as
+    it always was.
+    """
+    run_length = scenario["run_length"]
+    stated = run_length.get("observation_sec")
+    if stated is None:
+        return
+    if isinstance(stated, bool) or not isinstance(stated, int) or stated < 1:
+        raise ValueError(
+            f"run_length.observation_sec must be an integer of 1 or more or null, found {stated!r}"
+        )
+
+    horizon = run_length["evaluation_horizon_sec"]
+    offsets = {a["step"]: a["offset_sec"] for a in scenario["runs"]["attack"]["actions"]}
+    reference_step = profile.reference_rule.action_step
+    needed = offsets[reference_step] + horizon
+    if stated < needed:
+        raise ValueError(
+            f"run_length.observation_sec {stated} does not reach the evaluation horizon of "
+            f"{horizon} s after the {reference_step} action at {offsets[reference_step]} s; it "
+            f"has to be {needed} or more"
+        )
+    last = max(offsets.values())
+    if stated < last:
+        raise ValueError(
+            f"run_length.observation_sec {stated} does not cover the last action at {last} s"
         )
 
 
@@ -432,11 +527,14 @@ def load_r1_scenario(path: Path) -> dict:
         raise ValueError(f"scenario_id must be {SCENARIO_ID!r}, found {scenario['scenario_id']!r}")
 
     _check_planned_lineage(scenario[PLANNED_LINEAGE_KEY])
-    _check_runs(scenario)
+    profile = _check_collection_profile(scenario)
+    _check_runs(scenario, profile)
     _check_run_length(scenario)
+    _check_observation_length(scenario, profile)
     _check_reference_policy(scenario)
     _check_identity(scenario)
     _check_dataset_tier(scenario)
+    _attach_policy_provenance(scenario)
     return scenario
 
 
