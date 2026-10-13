@@ -154,7 +154,7 @@ provenance는 `boundary`에 보존한다. 이 세 범위를 서로 대신하거�
 다음은 모두 seal 검증 실패다.
 
 - family/run type/action ID/step/type 불일치
-- boundary 완료 시각이 RunMetadata의 start/end 범위 밖이거나 계획 offset보다 이름
+- boundary 완료 시각이 RunMetadata의 start/end 범위 밖이거나 계획 offset보다 이름이 이르면
 - 실제 경계 action 기록의 Run/action/type/timestamp와 boundary가 불일치
 - 경계 뒤 action 존재
 - Run 소유 프로세스 role 누락·중복, ProcessGuid 중복, 비종료 상태
