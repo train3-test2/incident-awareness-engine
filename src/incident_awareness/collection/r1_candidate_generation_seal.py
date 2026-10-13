@@ -28,6 +28,7 @@ from yaml.constructor import ConstructorError
 from yaml.resolver import BaseResolver
 
 from incident_awareness.collection.r1_pair_identity import validate_family_id
+from incident_awareness.common.models.execution_record import ExecutionRecordRow
 from incident_awareness.common.models.r1_stream import R1FinalPartitionWatermark, R1RunClosed
 from incident_awareness.common.models.run import RunMetadata, RunType
 
@@ -316,15 +317,42 @@ class R1CandidateGenerationSeal(BaseModel):
         return self
 
 
+class R1VerifiedCandidateBoundary(BaseModel):
+    """Role4 검증 뒤 Role2에 전달하는 Ground Truth 비포함 경계."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    run_id: StrictStr = Field(min_length=1)
+    seal_id: StrictStr = Field(min_length=1)
+    input_close_id: StrictStr = Field(min_length=1)
+    candidate_boundary_at: datetime
+    verified_seal_at: datetime
+
+    @field_validator("run_id", "seal_id", "input_close_id")
+    @classmethod
+    def validate_identity(cls, value: str) -> str:
+        return _validate_unpadded("verified boundary identity", value)
+
+    @field_validator("candidate_boundary_at", "verified_seal_at", mode="before")
+    @classmethod
+    def reject_numeric_datetime(cls, value: object) -> object:
+        return _reject_numeric_datetime("verified boundary timestamp", value)
+
+    @field_validator("candidate_boundary_at", "verified_seal_at")
+    @classmethod
+    def validate_timestamp(cls, value: datetime) -> datetime:
+        return _validate_utc_milliseconds("verified boundary timestamp", value)
+
+
 @dataclass(frozen=True, slots=True)
 class R1CandidateCloseResolution:
-    """Seal 사용 가능 여부와 authoritative whole-episode fallback 결과."""
+    """Ground Truth 없이 검증된 경계 또는 whole-episode fallback을 반환한다."""
 
     mode: Literal["verified_seal", "authoritative_run_end_fallback"]
     candidate_boundary_at: datetime
     verified_seal_at: datetime | None
     diagnostics: tuple[str, ...]
-    seal: R1CandidateGenerationSeal | None
+    verified_boundary: R1VerifiedCandidateBoundary | None
 
 
 def load_r1_candidate_generation_policies(
@@ -367,6 +395,7 @@ def issue_r1_candidate_generation_seal(
     run_closed: R1RunClosed,
     scenario_actions: tuple[R1ScenarioAction, ...],
     boundary: R1CandidateBoundaryAttestation,
+    boundary_action_record: ExecutionRecordRow,
     policy: R1CandidateGenerationPolicy,
     emitted_at: datetime,
 ) -> R1CandidateGenerationSeal:
@@ -384,6 +413,12 @@ def issue_r1_candidate_generation_seal(
         else policy.normal_owned_processes
     )
     _validate_boundary_attestation(boundary, expected_boundary, expected_processes, policy)
+    _validate_boundary_action_completion(
+        boundary,
+        scenario_actions[-1],
+        boundary_action_record,
+        run_metadata,
+    )
     emitted = _validate_utc_milliseconds("seal emitted_at", emitted_at)
     if emitted < run_closed.emitted_at:
         raise ValueError("seal cannot be emitted before the accepted run_closed")
@@ -411,6 +446,8 @@ def issue_r1_candidate_generation_seal(
         seal,
         run_metadata=run_metadata,
         run_closed=run_closed,
+        scenario_actions=scenario_actions,
+        boundary_action_record=boundary_action_record,
         policy=policy,
     )
     return seal
@@ -421,9 +458,11 @@ def validate_r1_candidate_generation_seal_binding(
     *,
     run_metadata: RunMetadata,
     run_closed: R1RunClosed,
+    scenario_actions: tuple[R1ScenarioAction, ...],
+    boundary_action_record: ExecutionRecordRow,
     policy: R1CandidateGenerationPolicy,
-) -> None:
-    """Seal의 close·partition·watermark·policy 결속을 fail-closed 검증한다."""
+) -> R1VerifiedCandidateBoundary:
+    """Role4에서 Ground Truth 결속을 검증하고 비정답 경계만 반환한다."""
     _validate_run_binding(run_metadata, run_closed, policy)
     if seal.run_id != run_closed.run_id:
         raise ValueError("seal run_id does not match run_closed")
@@ -456,6 +495,7 @@ def validate_r1_candidate_generation_seal_binding(
     expected_boundary = (
         policy.attack_boundary if seal.run_type is RunType.ATTACK else policy.normal_boundary
     )
+    _validate_scenario_boundary(scenario_actions, expected_boundary)
     expected_processes = (
         policy.attack_owned_processes
         if seal.run_type is RunType.ATTACK
@@ -467,54 +507,57 @@ def validate_r1_candidate_generation_seal_binding(
         expected_processes,
         policy,
     )
+    _validate_boundary_action_completion(
+        seal.boundary,
+        scenario_actions[-1],
+        boundary_action_record,
+        run_metadata,
+    )
     _validate_boundary_within_run(seal.boundary, run_metadata)
     if seal.emitted_at < run_closed.emitted_at:
         raise ValueError("seal emitted_at must not precede run_closed")
+    return R1VerifiedCandidateBoundary(
+        run_id=seal.run_id,
+        seal_id=seal.seal_id,
+        input_close_id=seal.input_close_id,
+        candidate_boundary_at=seal.boundary.completed_at,
+        verified_seal_at=seal.emitted_at,
+    )
 
 
 def resolve_r1_candidate_close(
     *,
-    run_metadata: RunMetadata,
-    run_closed: R1RunClosed | None,
-    seal: R1CandidateGenerationSeal | None,
-    policy: R1CandidateGenerationPolicy,
+    authoritative_run_end: datetime | None,
+    verified_boundary: R1VerifiedCandidateBoundary | None,
+    validation_diagnostics: tuple[str, ...] = (),
 ) -> R1CandidateCloseResolution:
-    """유효 seal+close만 조기 경계로 인정하고 그 외에는 end_time으로 fallback한다."""
-    if run_metadata.family_id != policy.family_id:
-        raise ValueError("RunMetadata family_id does not match candidate-generation policy")
+    """Role2 runtime에서 Ground Truth 없이 후보 close 시각만 결정한다."""
+    if verified_boundary is not None:
+        return R1CandidateCloseResolution(
+            mode="verified_seal",
+            candidate_boundary_at=verified_boundary.candidate_boundary_at,
+            verified_seal_at=verified_boundary.verified_seal_at,
+            diagnostics=(),
+            verified_boundary=verified_boundary,
+        )
 
-    diagnostics: list[str] = []
-    if run_closed is None or seal is None:
-        diagnostics.append("candidate-generation seal or run_closed is absent")
-    else:
-        try:
-            validate_r1_candidate_generation_seal_binding(
-                seal,
-                run_metadata=run_metadata,
-                run_closed=run_closed,
-                policy=policy,
-            )
-        except (TypeError, ValueError) as error:
-            diagnostics.append(str(error))
-        else:
-            return R1CandidateCloseResolution(
-                mode="verified_seal",
-                candidate_boundary_at=seal.boundary.completed_at,
-                verified_seal_at=seal.emitted_at,
-                diagnostics=(),
-                seal=seal,
-            )
-
-    if run_metadata.end_time is None:
+    diagnostics = validation_diagnostics or (
+        "verified candidate-generation boundary is absent",
+    )
+    if authoritative_run_end is None:
         raise ValueError(
             "authoritative RunMetadata.end_time is required when verified seal close is unavailable"
         )
+    validated_run_end = _validate_utc_milliseconds(
+        "authoritative RunMetadata.end_time",
+        authoritative_run_end,
+    )
     return R1CandidateCloseResolution(
         mode="authoritative_run_end_fallback",
-        candidate_boundary_at=run_metadata.end_time,
+        candidate_boundary_at=validated_run_end,
         verified_seal_at=None,
         diagnostics=tuple(diagnostics),
-        seal=None,
+        verified_boundary=None,
     )
 
 
@@ -680,6 +723,28 @@ def _validate_boundary_within_run(
         raise ValueError("candidate-generation boundary exceeds RunMetadata.end_time")
 
 
+def _validate_boundary_action_completion(
+    boundary: R1CandidateBoundaryAttestation,
+    scenario_boundary: R1ScenarioAction,
+    action_record: ExecutionRecordRow,
+    run_metadata: RunMetadata,
+) -> None:
+    if action_record.run_id != run_metadata.run_id:
+        raise ValueError("boundary action record run_id does not match RunMetadata")
+    if (action_record.action_id, action_record.action_type) != (
+        scenario_boundary.action_id,
+        scenario_boundary.action_type,
+    ):
+        raise ValueError("boundary action record does not match the final scenario action")
+    if action_record.timestamp != boundary.completed_at:
+        raise ValueError("boundary completed_at does not match the actual action record")
+    planned_not_before = run_metadata.start_time + timedelta(
+        seconds=scenario_boundary.offset_sec
+    )
+    if boundary.completed_at < planned_not_before:
+        raise ValueError("candidate-generation boundary precedes its planned action offset")
+
+
 def _partition_key(watermark: R1FinalPartitionWatermark) -> tuple[str, str, str, str]:
     partition = watermark.partition
     return partition.run_id, partition.host_id, partition.source, partition.source_channel
@@ -751,6 +816,7 @@ __all__ = [
     "R1CandidateGenerationSeal",
     "R1CandidatePolicyIdentity",
     "R1OwnedProcessTermination",
+    "R1VerifiedCandidateBoundary",
     "R1ScenarioAction",
     "candidate_generation_seal_sha256",
     "issue_r1_candidate_generation_seal",
