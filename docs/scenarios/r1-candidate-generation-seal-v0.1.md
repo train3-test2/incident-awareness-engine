@@ -174,4 +174,3 @@ Seal 또는 유효 `run_closed`가 없거나 검증에 실패하면 consumer는
 `issue_r1_candidate_generation_seal()`은 scenario action 목록, process termination attestation,
 RunMetadata, accepted `R1RunClosed`를 모두 요구한다. `run_closed`만으로 seal을 만들 수 없다.
 현재 batch whole-episode 경로와 최초 WMI Pilot에는 seal을 의무화하지 않는다.
-
