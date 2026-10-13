@@ -541,9 +541,7 @@ def resolve_r1_candidate_close(
             verified_boundary=verified_boundary,
         )
 
-    diagnostics = validation_diagnostics or (
-        "verified candidate-generation boundary is absent",
-    )
+    diagnostics = validation_diagnostics or ("verified candidate-generation boundary is absent",)
     if authoritative_run_end is None:
         raise ValueError(
             "authoritative RunMetadata.end_time is required when verified seal close is unavailable"
@@ -738,9 +736,7 @@ def _validate_boundary_action_completion(
         raise ValueError("boundary action record does not match the final scenario action")
     if action_record.timestamp != boundary.completed_at:
         raise ValueError("boundary completed_at does not match the actual action record")
-    planned_not_before = run_metadata.start_time + timedelta(
-        seconds=scenario_boundary.offset_sec
-    )
+    planned_not_before = run_metadata.start_time + timedelta(seconds=scenario_boundary.offset_sec)
     if boundary.completed_at < planned_not_before:
         raise ValueError("candidate-generation boundary precedes its planned action offset")
 
