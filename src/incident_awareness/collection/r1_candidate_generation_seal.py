@@ -239,6 +239,44 @@ class R1CandidateBoundaryAttestation(BaseModel):
         return self
 
 
+class R1CandidateBoundaryCompletion(BaseModel):
+    """Run 소유 프로세스 정리가 실제로 끝난 시각의 Role4 증명."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    run_id: StrictStr = Field(min_length=1)
+    action_id: StrictStr = Field(min_length=1)
+    step: StrictStr = Field(min_length=1)
+    action_type: StrictStr = Field(min_length=1)
+    action_started_at: datetime
+    completed_at: datetime
+    completion_source: Literal[
+        "wmi_run_end.completed_utc",
+        "remote_session.close_completed_at",
+    ]
+
+    @field_validator("run_id", "action_id", "step", "action_type")
+    @classmethod
+    def validate_identifier(cls, value: str) -> str:
+        return _validate_unpadded("boundary completion identity", value)
+
+    @field_validator("action_started_at", "completed_at", mode="before")
+    @classmethod
+    def reject_numeric_datetime(cls, value: object) -> object:
+        return _reject_numeric_datetime("boundary completion timestamp", value)
+
+    @field_validator("action_started_at", "completed_at")
+    @classmethod
+    def validate_timestamp(cls, value: datetime) -> datetime:
+        return _validate_utc_milliseconds("boundary completion timestamp", value)
+
+    @model_validator(mode="after")
+    def validate_order(self) -> R1CandidateBoundaryCompletion:
+        if self.completed_at < self.action_started_at:
+            raise ValueError("boundary completion cannot precede its action start")
+        return self
+
+
 class R1CandidatePolicyIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -396,6 +434,7 @@ def issue_r1_candidate_generation_seal(
     scenario_actions: tuple[R1ScenarioAction, ...],
     boundary: R1CandidateBoundaryAttestation,
     boundary_action_record: ExecutionRecordRow,
+    boundary_completion: R1CandidateBoundaryCompletion,
     policy: R1CandidateGenerationPolicy,
     emitted_at: datetime,
 ) -> R1CandidateGenerationSeal:
@@ -417,6 +456,7 @@ def issue_r1_candidate_generation_seal(
         boundary,
         scenario_actions[-1],
         boundary_action_record,
+        boundary_completion,
         run_metadata,
     )
     emitted = _validate_utc_milliseconds("seal emitted_at", emitted_at)
@@ -460,6 +500,7 @@ def validate_r1_candidate_generation_seal_binding(
     run_closed: R1RunClosed,
     scenario_actions: tuple[R1ScenarioAction, ...],
     boundary_action_record: ExecutionRecordRow,
+    boundary_completion: R1CandidateBoundaryCompletion,
     policy: R1CandidateGenerationPolicy,
 ) -> R1VerifiedCandidateBoundary:
     """Role4에서 Ground Truth 결속을 검증하고 비정답 경계만 반환한다."""
@@ -511,6 +552,7 @@ def validate_r1_candidate_generation_seal_binding(
         seal.boundary,
         scenario_actions[-1],
         boundary_action_record,
+        boundary_completion,
         run_metadata,
     )
     _validate_boundary_within_run(seal.boundary, run_metadata)
@@ -725,6 +767,7 @@ def _validate_boundary_action_completion(
     boundary: R1CandidateBoundaryAttestation,
     scenario_boundary: R1ScenarioAction,
     action_record: ExecutionRecordRow,
+    completion: R1CandidateBoundaryCompletion,
     run_metadata: RunMetadata,
 ) -> None:
     if action_record.run_id != run_metadata.run_id:
@@ -734,11 +777,28 @@ def _validate_boundary_action_completion(
         scenario_boundary.action_type,
     ):
         raise ValueError("boundary action record does not match the final scenario action")
-    if action_record.timestamp != boundary.completed_at:
-        raise ValueError("boundary completed_at does not match the actual action record")
+    if completion.run_id != run_metadata.run_id:
+        raise ValueError("boundary completion run_id does not match RunMetadata")
+    if (completion.action_id, completion.step, completion.action_type) != (
+        scenario_boundary.action_id,
+        scenario_boundary.step,
+        scenario_boundary.action_type,
+    ):
+        raise ValueError("boundary completion does not match the final scenario action")
+    expected_source = (
+        "wmi_run_end.completed_utc"
+        if run_metadata.family_id == "wmi_management"
+        else "remote_session.close_completed_at"
+    )
+    if completion.completion_source != expected_source:
+        raise ValueError("boundary completion source does not match the scenario family")
+    if action_record.timestamp != completion.action_started_at:
+        raise ValueError("boundary action record does not match the actual action start")
+    if boundary.completed_at != completion.completed_at:
+        raise ValueError("boundary completed_at does not match the actual completion proof")
     planned_not_before = run_metadata.start_time + timedelta(seconds=scenario_boundary.offset_sec)
-    if boundary.completed_at < planned_not_before:
-        raise ValueError("candidate-generation boundary precedes its planned action offset")
+    if action_record.timestamp < planned_not_before:
+        raise ValueError("candidate-generation boundary action precedes its planned action offset")
 
 
 def _partition_key(watermark: R1FinalPartitionWatermark) -> tuple[str, str, str, str]:
@@ -807,6 +867,7 @@ __all__ = [
     "R1_CANDIDATE_GENERATION_SEAL_CONTRACT_VERSION",
     "R1_CANDIDATE_GENERATION_SEAL_SCHEMA",
     "R1CandidateBoundaryAttestation",
+    "R1CandidateBoundaryCompletion",
     "R1CandidateCloseResolution",
     "R1CandidateGenerationPolicy",
     "R1CandidateGenerationSeal",
