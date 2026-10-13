@@ -13,8 +13,12 @@ Role3 accepted run_closed + exact final watermarks
 → Role2 #266이 terminal candidate close의 추가 입력으로 검증
 ```
 
-둘 중 하나라도 없거나 결속 검증에 실패하면 `RunMetadata.end_time`을 authoritative
-whole-episode 경계로 사용한다. 최초 WMI Pilot은 이 seal의 유무와 관계없이 기존
+Role4는 Ground Truth가 포함된 seal·RunMetadata·실행 기록을 검증한 뒤, Role2에는
+`run_id`, seal/close identity와 검증된 경계·검증 시각만 담은
+`R1VerifiedCandidateBoundary`를 전달한다. Role2 runtime은 RunMetadata, run type,
+family별 process image나 raw seal을 입력으로 받지 않는다. 검증된 경계가 없으면 Role4가
+RunMetadata에서 추출한 authoritative `end_time` 값만 whole-episode fallback으로 전달한다.
+최초 WMI Pilot은 이 seal의 유무와 관계없이 기존
 `OFFLINE WHOLE-EPISODE ONLY` 계약을 유지하며 #269는 Pilot 선행 blocker가 아니다.
 
 이 계약은 Evidence의 `available_at`, 철회·보정, Fusion/Decision 소비 시점을 정의하지 않는다.
@@ -39,14 +43,16 @@ identity와 config hash를 seal에 기록한다.
 경계 action이 성공했다는 사실만으로는 부족하다. 발급자는 다음을 모두 확인해야 한다.
 
 1. versioned scenario에서 위 경계가 마지막 action이다.
-2. 경계 뒤에는 같은 Run의 어떤 action도 없다. 특히 WMI process-create와 remote launch를
+2. 경계 완료 시각은 `RunMetadata.start_time + 마지막 action offset`보다 이르지 않고,
+   같은 Run의 실제 `ExecutionRecordRow`에서 action ID/type/UTC 시각이 정확히 일치한다.
+3. 경계 뒤에는 같은 Run의 어떤 action도 없다. 특히 WMI process-create와 remote launch를
    새로 실행하지 않는다.
-3. `intermediate`와 `final_tool`의 image가 해당 family/run type의 계획과 일치하고, 각각
+4. `intermediate`와 `final_tool`의 image가 해당 family/run type의 계획과 일치하고, 각각
    `stopped`, `exited_by_itself`, `already_exited` 중 하나로 확인됐다.
-4. ProcessGuid와 role은 중복되지 않는다.
-5. WMI의 시스템 provider host `WmiPrvSE.exe`를 Run 소유 프로세스로 주장하거나 종료하지 않는다.
-6. Role3가 수락한 `run_closed`와 final watermark가 먼저 준비됐다.
-7. 모든 final watermark의 `watermark_at`이 경계 완료 시각 이상이어서, 각 partition의
+5. ProcessGuid와 role은 중복되지 않는다.
+6. WMI의 시스템 provider host `WmiPrvSE.exe`를 Run 소유 프로세스로 주장하거나 종료하지 않는다.
+7. Role3가 수락한 `run_closed`와 final watermark가 먼저 준비됐다.
+8. 모든 final watermark의 `watermark_at`이 경계 완료 시각 이상이어서, 각 partition의
    event-time frontier가 candidate-generation boundary까지 도달했다.
 
 A04/A05 완료 전 또는 위 조건 중 하나라도 확인되지 않은 상태에서는 seal을 발급하지 않는다.
@@ -148,7 +154,8 @@ provenance는 `boundary`에 보존한다. 이 세 범위를 서로 대신하거�
 다음은 모두 seal 검증 실패다.
 
 - family/run type/action ID/step/type 불일치
-- boundary 완료 시각이 RunMetadata의 start/end 범위 밖임
+- boundary 완료 시각이 RunMetadata의 start/end 범위 밖이거나 계획 offset보다 이름
+- 실제 경계 action 기록의 Run/action/type/timestamp와 boundary가 불일치
 - 경계 뒤 action 존재
 - Run 소유 프로세스 role 누락·중복, ProcessGuid 중복, 비종료 상태
 - WMI provider host를 Run 소유로 포함
@@ -158,20 +165,33 @@ provenance는 `boundary`에 보존한다. 이 세 범위를 서로 대신하거�
 - naive/non-UTC/non-millisecond timestamp
 - 같은 seal identity의 content 변경
 
-Seal 또는 유효 `run_closed`가 없거나 검증에 실패하면 consumer는
-`authoritative_run_end_fallback`으로 내려가 `RunMetadata.end_time`을 candidate 경계로 사용한다.
-오류를 보정하거나 유효해 보이는 일부 partition만 사용하지 않는다. `RunMetadata.end_time`도
-없으면 아직 사용할 authoritative fallback이 없으므로 fail-closed한다. 반대로 유효한 seal과
+Seal 또는 유효 `run_closed`가 없거나 검증에 실패하면 Role4 검증 경로는
+`authoritative_run_end_fallback`과 함께 RunMetadata에서 추출한 `end_time` 값만 Role2에
+전달한다. Role2 runtime entry point는 전체 RunMetadata·run type·family별 image·raw seal을
+받지 않는다. 오류를 보정하거나 유효해 보이는 일부 partition만 사용하지 않는다.
+authoritative `end_time`도 없으면 아직 사용할 fallback이 없으므로 fail-closed한다. 반대로
+유효한 seal과
 결속된 `run_closed`가 있으면 진행 중 Run의 `end_time=null`은 seal 사용을 막지 않는다. seal 경계
 이후 telemetry completeness까지 확인됐다는 것이 이 조기 경로의 목적이며, 완료 metadata를
 기다리도록 만들면 Run 종료 전 close 계약이 성립하지 않기 때문이다.
 
 ## 6. 구현 경계
 
-- Role4: family policy, scenario boundary attestation, seal schema·발급·binding 검증
+- Role4: family policy, scenario boundary attestation, 실제 boundary action record,
+  seal schema·발급·Ground Truth binding 검증, 비정답 `R1VerifiedCandidateBoundary` 발행
 - Role3: accepted `run_closed`와 final watermark, transport ledger·재전달 완결성
-- Role2: 두 입력을 소비해 terminal candidate/Evidence를 확정하는 #266 로직
+- Role2: 검증된 비정답 경계 또는 authoritative end 시각만 소비해 terminal candidate/Evidence를
+  확정하는 #266 로직
 
 `issue_r1_candidate_generation_seal()`은 scenario action 목록, process termination attestation,
-RunMetadata, accepted `R1RunClosed`를 모두 요구한다. `run_closed`만으로 seal을 만들 수 없다.
+동일 Run의 실제 경계 `ExecutionRecordRow`, RunMetadata, accepted `R1RunClosed`를 모두
+요구한다. `run_closed`만으로 seal을 만들 수 없다. 검증 함수는 이 Ground Truth 결속을 마친 뒤
+프로세스 image와 run type이 없는 `R1VerifiedCandidateBoundary`만 반환한다.
+
+Role2 #266 통합은 모든 resolution에서 `verified_seal` /
+`authoritative_run_end_fallback` 횟수를 mode별 지표로 남겨야 한다. fallback은 진단 문자열 또는
+안정된 reason code를 실행 로그·지표에 남겨 반복 실패가 조용히 묻히지 않게 해야 한다.
+진단에는 Ground Truth나 process image를 복사하지 않는다. 이 관측 계약은 #266의 회귀 테스트로
+고정한다.
+
 현재 batch whole-episode 경로와 최초 WMI Pilot에는 seal을 의무화하지 않는다.
