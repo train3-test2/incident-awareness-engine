@@ -462,6 +462,27 @@ def test_rejects_candidate_boundary_outside_completed_run(
         )
 
 
+@pytest.mark.parametrize(
+    ("run_metadata", "message"),
+    [
+        (_metadata().model_copy(update={"run_id": "RUN-20261013-002"}), "run_id"),
+        (_metadata(family_id="remote_management"), "family_id"),
+        (_metadata(run_type="normal"), "run_type"),
+    ],
+)
+def test_rejects_seal_not_bound_to_run_metadata(
+    run_metadata: RunMetadata,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_r1_candidate_generation_seal_binding(
+            _seal(),
+            run_metadata=run_metadata,
+            run_closed=_run_closed(),
+            policy=_policy(),
+        )
+
+
 def test_missing_seal_uses_authoritative_run_end_fallback() -> None:
     resolution = resolve_r1_candidate_close(
         run_metadata=_metadata(),
