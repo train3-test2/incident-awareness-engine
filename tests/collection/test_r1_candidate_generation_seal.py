@@ -10,6 +10,7 @@ import yaml
 from pydantic import ValidationError
 
 from incident_awareness.collection.r1_candidate_generation_seal import (
+    DEFAULT_R1_CANDIDATE_GENERATION_POLICIES_PATH,
     R1CandidateBoundaryAttestation,
     R1CandidateGenerationPolicy,
     R1CandidateGenerationSeal,
@@ -211,7 +212,7 @@ def test_policy_lookup_requires_the_exact_id_and_version() -> None:
 
 
 def test_registry_can_hold_a_later_version_for_the_same_family(tmp_path: Path) -> None:
-    source = Path("configs/r1_candidate_generation_policies_v0.1.yaml")
+    source = DEFAULT_R1_CANDIDATE_GENERATION_POLICIES_PATH
     payload = yaml.safe_load(source.read_text(encoding="utf-8"))
     next_version = deepcopy(payload["policies"][0])
     next_version["policy_id"] = "r1-wmi-management-candidate-generation-seal-next"
@@ -620,7 +621,7 @@ def test_rejects_noncanonical_seal_timestamp(bad_time: object) -> None:
 
 
 def test_policy_config_rejects_unknown_selector_close_shortcuts(tmp_path: Path) -> None:
-    config = Path("configs/r1_candidate_generation_policies_v0.1.yaml").read_text(encoding="utf-8")
+    config = DEFAULT_R1_CANDIDATE_GENERATION_POLICIES_PATH.read_text(encoding="utf-8")
     changed = config.replace(
         "    forbid_all_actions_after_boundary: true",
         "    candidate_window_sec: 2\n    forbid_all_actions_after_boundary: true",
