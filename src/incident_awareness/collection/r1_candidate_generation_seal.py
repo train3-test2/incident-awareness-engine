@@ -407,19 +407,28 @@ def issue_r1_candidate_generation_seal(
         boundary=boundary,
         emitted_at=emitted,
     )
-    validate_r1_candidate_generation_seal_binding(seal, run_closed=run_closed, policy=policy)
+    validate_r1_candidate_generation_seal_binding(
+        seal,
+        run_metadata=run_metadata,
+        run_closed=run_closed,
+        policy=policy,
+    )
     return seal
 
 
 def validate_r1_candidate_generation_seal_binding(
     seal: R1CandidateGenerationSeal,
     *,
+    run_metadata: RunMetadata,
     run_closed: R1RunClosed,
     policy: R1CandidateGenerationPolicy,
 ) -> None:
     """Seal의 close·partition·watermark·policy 결속을 fail-closed 검증한다."""
+    _validate_run_binding(run_metadata, run_closed, policy)
     if seal.run_id != run_closed.run_id:
         raise ValueError("seal run_id does not match run_closed")
+    if seal.run_type is not run_metadata.run_type:
+        raise ValueError("seal run_type does not match RunMetadata")
     if seal.input_close_id != run_closed.close_id:
         raise ValueError("seal input_close_id does not match run_closed")
     if seal.sealed_partitions != run_closed.final_watermarks:
@@ -458,6 +467,7 @@ def validate_r1_candidate_generation_seal_binding(
         expected_processes,
         policy,
     )
+    _validate_boundary_within_run(seal.boundary, run_metadata)
     if seal.emitted_at < run_closed.emitted_at:
         raise ValueError("seal emitted_at must not precede run_closed")
 
@@ -478,14 +488,12 @@ def resolve_r1_candidate_close(
         diagnostics.append("candidate-generation seal or run_closed is absent")
     else:
         try:
-            _validate_run_binding(run_metadata, run_closed, policy)
             validate_r1_candidate_generation_seal_binding(
                 seal,
+                run_metadata=run_metadata,
                 run_closed=run_closed,
                 policy=policy,
             )
-            if seal.run_type is not run_metadata.run_type:
-                raise ValueError("seal run_type does not match RunMetadata")
         except (TypeError, ValueError) as error:
             diagnostics.append(str(error))
         else:
@@ -660,6 +668,16 @@ def _validate_boundary_attestation(
     accepted_states = set(policy.accepted_terminal_states)
     if any(process.terminal_state not in accepted_states for process in boundary.owned_processes):
         raise ValueError("run-owned process is not in an accepted terminal state")
+
+
+def _validate_boundary_within_run(
+    boundary: R1CandidateBoundaryAttestation,
+    run_metadata: RunMetadata,
+) -> None:
+    if boundary.completed_at < run_metadata.start_time:
+        raise ValueError("candidate-generation boundary precedes RunMetadata.start_time")
+    if run_metadata.end_time is not None and boundary.completed_at > run_metadata.end_time:
+        raise ValueError("candidate-generation boundary exceeds RunMetadata.end_time")
 
 
 def _partition_key(watermark: R1FinalPartitionWatermark) -> tuple[str, str, str, str]:

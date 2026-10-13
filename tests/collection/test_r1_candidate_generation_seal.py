@@ -374,6 +374,7 @@ def test_rejects_seal_that_does_not_bind_to_accepted_close(
     with pytest.raises(ValueError, match=message):
         validate_r1_candidate_generation_seal_binding(
             seal,
+            run_metadata=_metadata(),
             run_closed=_run_closed(),
             policy=_policy(),
         )
@@ -389,6 +390,7 @@ def test_rejects_even_one_changed_final_watermark_reference() -> None:
     with pytest.raises(ValueError, match="do not exactly match"):
         validate_r1_candidate_generation_seal_binding(
             changed,
+            run_metadata=_metadata(),
             run_closed=_run_closed(),
             policy=_policy(),
         )
@@ -405,6 +407,7 @@ def test_rejects_a_final_watermark_that_does_not_cover_the_candidate_boundary() 
     with pytest.raises(ValueError, match="must cover the candidate-generation boundary"):
         validate_r1_candidate_generation_seal_binding(
             changed_seal,
+            run_metadata=_metadata(),
             run_closed=changed_close,
             policy=_policy(),
         )
@@ -418,6 +421,42 @@ def test_rejects_a_loaded_seal_whose_boundary_does_not_match_its_run_type() -> N
     with pytest.raises(ValueError, match="does not match family policy"):
         validate_r1_candidate_generation_seal_binding(
             changed,
+            run_metadata=_metadata(),
+            run_closed=_run_closed(),
+            policy=_policy(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("completed_at", "end_time", "message"),
+    [
+        (
+            datetime(2026, 10, 13, 0, 59, 59, 999000, tzinfo=UTC),
+            datetime(2026, 10, 13, 1, 13, 0, tzinfo=UTC),
+            "precedes",
+        ),
+        (
+            datetime(2026, 10, 13, 1, 12, 0, 1000, tzinfo=UTC),
+            datetime(2026, 10, 13, 1, 12, 0, tzinfo=UTC),
+            "exceeds",
+        ),
+    ],
+)
+def test_rejects_candidate_boundary_outside_completed_run(
+    completed_at: datetime,
+    end_time: datetime,
+    message: str,
+) -> None:
+    seal = _seal()
+    run_metadata = _metadata().model_copy(update={"end_time": end_time})
+    changed = seal.model_copy(
+        update={"boundary": seal.boundary.model_copy(update={"completed_at": completed_at})}
+    )
+
+    with pytest.raises(ValueError, match=message):
+        validate_r1_candidate_generation_seal_binding(
+            changed,
+            run_metadata=run_metadata,
             run_closed=_run_closed(),
             policy=_policy(),
         )
