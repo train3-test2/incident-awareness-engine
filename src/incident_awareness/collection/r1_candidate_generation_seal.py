@@ -488,6 +488,7 @@ def issue_r1_candidate_generation_seal(
         run_closed=run_closed,
         scenario_actions=scenario_actions,
         boundary_action_record=boundary_action_record,
+        boundary_completion=boundary_completion,
         policy=policy,
     )
     return seal
