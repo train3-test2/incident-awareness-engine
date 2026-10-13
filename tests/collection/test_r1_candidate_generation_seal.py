@@ -457,21 +457,6 @@ def test_rejects_a_loaded_seal_whose_boundary_does_not_match_its_run_type() -> N
         )
 
 
-@pytest.mark.parametrize(
-    ("completed_at", "end_time", "message"),
-    [
-        (
-            datetime(2026, 10, 13, 0, 59, 59, 999000, tzinfo=UTC),
-            datetime(2026, 10, 13, 1, 13, 0, tzinfo=UTC),
-            "precedes",
-        ),
-        (
-            datetime(2026, 10, 13, 1, 12, 0, 1000, tzinfo=UTC),
-            datetime(2026, 10, 13, 1, 12, 0, tzinfo=UTC),
-            "exceeds",
-        ),
-    ],
-)
 def test_rejects_boundary_before_planned_action_offset() -> None:
     too_early = datetime(2026, 10, 13, 1, 0, 1, tzinfo=UTC)
     boundary = _boundary().model_copy(update={"completed_at": too_early})
@@ -519,6 +504,21 @@ def test_rejects_boundary_not_bound_to_actual_action_record(
         )
 
 
+@pytest.mark.parametrize(
+    ("completed_at", "end_time", "message"),
+    [
+        (
+            datetime(2026, 10, 13, 0, 59, 59, 999000, tzinfo=UTC),
+            datetime(2026, 10, 13, 1, 13, 0, tzinfo=UTC),
+            "planned action offset",
+        ),
+        (
+            datetime(2026, 10, 13, 1, 12, 0, 1000, tzinfo=UTC),
+            datetime(2026, 10, 13, 1, 12, 0, tzinfo=UTC),
+            "exceeds",
+        ),
+    ],
+)
 def test_rejects_candidate_boundary_outside_completed_run(
     completed_at: datetime,
     end_time: datetime,
@@ -536,7 +536,9 @@ def test_rejects_candidate_boundary_outside_completed_run(
             run_metadata=run_metadata,
             run_closed=_run_closed(),
             scenario_actions=_actions(),
-            boundary_action_record=_boundary_record(),
+            boundary_action_record=_boundary_record().model_copy(
+                update={"timestamp": completed_at}
+            ),
             policy=_policy(),
         )
 
