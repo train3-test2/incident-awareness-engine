@@ -152,6 +152,7 @@ def test_dashboard_view_serves_html_shell_without_database_access(
         "selected-run-refresh",
         "selected-run-status",
         "selected-run-summary",
+        "selected-run-settings",
         "selected-run-chart-status",
         "selected-run-chart",
         "runs-status",
@@ -320,6 +321,7 @@ def test_dashboard_view_uses_shared_shell_and_responsive_layout() -> None:
     assert "overflow-wrap: anywhere" in stylesheet
     assert ".dashboard-workbench" in stylesheet
     assert ".dashboard-analysis-grid" in stylesheet
+    assert ".dashboard-analysis-settings" in stylesheet
     assert "grid-template-columns: repeat(6, minmax(9rem, 1fr))" in stylesheet
     assert ".dashboard-table-wrapper" in stylesheet
     assert "overflow-x: auto" in stylesheet
@@ -327,7 +329,17 @@ def test_dashboard_view_uses_shared_shell_and_responsive_layout() -> None:
     assert ".app-page.dashboard-page" in stylesheet
     assert "width: 100%" in stylesheet
     assert "max-width: 101rem" in stylesheet
-    assert "@media (max-width: 82rem)" in stylesheet
+    workbench_rule = stylesheet.split(".dashboard-workbench {", maxsplit=1)[1].split(
+        "}", maxsplit=1
+    )[0]
+    assert "grid-template-columns: minmax(0, 1fr)" in workbench_rule
+    assert "minmax(36rem, 0.9fr)" not in stylesheet
+
+    runtime_index = html.index('id="runtime-summary-heading"')
+    analysis_index = html.index('id="selected-run-heading"')
+    chart_index = html.index("Fusion Score Trajectory")
+    runs_index = html.index('id="runs-heading"')
+    assert runtime_index < analysis_index < chart_index < runs_index
 
 
 def test_dashboard_script_uses_contract_and_safe_dom_rendering() -> None:
@@ -389,9 +401,14 @@ def test_dashboard_script_keeps_overview_runs_and_runtime_state_independent() ->
     assert "renderOverviewState(overviewState);" in script
     assert "renderRunListState(runListState);" in script
     assert "renderRuntimeState(runtimeState);" in script
-    assert "overviewStatus.textContent = state.totalMessage;" in script
+    assert 'overviewStatus.textContent = state.queryState === "success"' in script
+    assert 'state.queryState === "empty"' in script
     assert "runsStatus.textContent = state.message;" in script
     assert "runtimeSummaryStatus.textContent = state.message;" in script
+    assert (
+        'runtimeTopStatus.textContent = state.queryState === "success" ? "" : state.message;'
+        in script
+    )
     assert "async function loadRunDetailState(runId)" in script
     assert "async function loadFusionEngineState(runId)" in script
     assert 'resolveRunDetailQueryState(loading, { kind: "error" })' in script

@@ -128,6 +128,7 @@
                     <div>
                         <p class="dashboard-section-kicker">Selected Run</p>
                         <h2 id="selected-run-heading" class="section-heading">
+                            선택한 Run의 판단 결과 ·
                             <span id="selected-run-id">선택된 Run 없음</span>
                         </h2>
                         <p class="section-description">
@@ -147,10 +148,21 @@
                     Runtime 또는 Run 목록에서 분석할 Run을 선택하세요.
                 </div>
                 <div class="dashboard-analysis-grid">
-                    <div>
+                    <section class="dashboard-decision-summary" aria-labelledby="selected-decision-summary-heading">
+                        <div class="dashboard-chart-heading">
+                            <h3 id="selected-decision-summary-heading">주요 판단 결과</h3>
+                            <p>Fast·Fusion 상태와 최종 판단 경로, 기술적 판단 시각을 우선 표시합니다.</p>
+                        </div>
                         <dl id="selected-run-summary" class="dashboard-analysis-summary"></dl>
+                        <div class="dashboard-analysis-settings" role="group" aria-labelledby="selected-run-settings-heading">
+                            <div class="dashboard-chart-heading">
+                                <h4 id="selected-run-settings-heading">Threshold 설정</h4>
+                                <p>저장된 Runtime Config Snapshot의 보조 설정값입니다.</p>
+                            </div>
+                            <dl id="selected-run-settings" class="dashboard-analysis-settings__list"></dl>
+                        </div>
                         <div id="selected-run-detail-status" class="status-message dashboard-status" role="status"></div>
-                    </div>
+                    </section>
                     <div class="dashboard-analysis-chart">
                         <div class="dashboard-chart-heading">
                             <h3>Fusion Score Trajectory</h3>

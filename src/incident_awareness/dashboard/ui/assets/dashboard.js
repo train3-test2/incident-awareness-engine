@@ -74,6 +74,7 @@ const selectedRunScope = document.getElementById("selected-run-scope");
 const selectedRunStatus = document.getElementById("selected-run-status");
 const selectedRunDetailStatus = document.getElementById("selected-run-detail-status");
 const selectedRunSummary = document.getElementById("selected-run-summary");
+const selectedRunSettings = document.getElementById("selected-run-settings");
 const selectedRunChartStatus = document.getElementById("selected-run-chart-status");
 const selectedRunChart = document.getElementById("selected-run-chart");
 const selectedRunDetailLink = document.getElementById("selected-run-detail-link");
@@ -228,7 +229,11 @@ function createRunRow(run) {
 
 function renderOverviewState(state) {
     totalRunsValue.textContent = displayValue(state.totalRuns);
-    overviewStatus.textContent = state.totalMessage;
+    overviewStatus.textContent = state.queryState === "success"
+        ? ""
+        : state.queryState === "empty"
+            ? state.message
+            : state.totalMessage;
 }
 
 function getSelectedRuntime() {
@@ -301,7 +306,7 @@ function renderPipelineStages() {
 
 function renderRuntimeState(state) {
     runtimeSummaryStatus.textContent = state.message;
-    runtimeTopStatus.textContent = state.message;
+    runtimeTopStatus.textContent = state.queryState === "success" ? "" : state.message;
     const latest = getLatestRuntimeReport(state.items);
     if (latest === null) {
         latestRuntimeState.textContent = displayValue(null);
@@ -344,9 +349,12 @@ function renderSelectionRows() {
     renderRunListState(runListState);
 }
 
-function createAnalysisField(label, value) {
+function createAnalysisField(label, value, emphasis = "primary") {
     const field = document.createElement("div");
-    field.classList.add("dashboard-analysis-field");
+    field.classList.add(
+        "dashboard-analysis-field",
+        `dashboard-analysis-field--${emphasis}`,
+    );
     const term = document.createElement("dt");
     term.textContent = label;
     const description = document.createElement("dd");
@@ -357,6 +365,7 @@ function createAnalysisField(label, value) {
 
 function clearSelectedAnalysis() {
     selectedRunSummary.replaceChildren();
+    selectedRunSettings.replaceChildren();
     selectedRunChart.replaceChildren();
     selectedRunDetailStatus.textContent = "";
     selectedRunChartStatus.textContent = "";
@@ -427,9 +436,10 @@ function renderSelectedAnalysis(detailState, fusionState) {
         ? fusionPayload?.stopping_trace ?? null
         : null;
 
-    selectedRunDetailStatus.textContent = (
-        `${detailState.message} ${fusionState.message}`
-    );
+    selectedRunDetailStatus.textContent = [detailState, fusionState]
+        .filter((state) => state.queryState !== "success")
+        .map((state) => state.message)
+        .join(" ");
     selectedRunSummary.replaceChildren(
         createAnalysisField("Fast 상태", getStatusLabel(decision?.fast_status)),
         createAnalysisField(
@@ -444,13 +454,17 @@ function renderSelectedAnalysis(detailState, fusionState) {
             "기술적 판정 시각 (t_e)",
             formatRunTimestamp(decision?.t_e),
         ),
+    );
+    selectedRunSettings.replaceChildren(
         createAnalysisField(
             "Threshold On",
             displayValue(runtimeConfig?.stopping?.threshold_on),
+            "setting",
         ),
         createAnalysisField(
             "Threshold Off",
             displayValue(runtimeConfig?.stopping?.threshold_off),
+            "setting",
         ),
     );
 
