@@ -751,3 +751,16 @@ Pilot 실행 준비가 된 것이 아니다. 후보 구간은 canonical `wmi-ref
 `4ee119069b33470a1cd4a34626f1a1d0a88c4662`에서 1,135 passed · 1 expected skip 로 통과했다. skip 은
 실제 loader 두 개가 import 되는 환경에서 loader import 불가 음성 테스트를 기대대로 건너뛴 것이다. 남은 것은 실제
 scenario 의 dry-run 과 VM rehearsal 이다. 원격 step 본문과 300 초 대기 장치를 실제 세션에서 돌린 적이 없다.
+
+## 12. candidate-generation seal (`v0.1`)
+
+Run 종료 전 terminal 후보 집합을 닫는 후속 계약은
+[`docs/scenarios/r1-candidate-generation-seal-v0.1.md`](../../docs/scenarios/r1-candidate-generation-seal-v0.1.md)가
+정본이다. WMI는 A04/N04 `run_end`, remote management는 A05/N05 `session_end`를 family별 경계로
+사용하지만 action 완료만으로 seal을 만들지 않는다. 두 Run 소유 프로세스 종료, 경계 이후 action 없음,
+family policy identity, Role3가 수락한 `run_closed`와 final watermark 전체 결속을 모두 확인해야 한다.
+
+Seal은 telemetry completeness 또는 Evidence 확정 메시지가 아니다. Role2 #266이 Role3 close와 함께
+검증할 추가 입력이며, 어느 한쪽이라도 없거나 불일치하면 `RunMetadata.end_time` whole-episode 경계로
+fallback한다. WMI reference의 2초 후보 window와 600초 evaluation horizon은 이 경계로 재사용하지 않는다.
+최초 WMI Pilot은 이 기능의 선행 조건이 아니며 계속 `OFFLINE WHOLE-EPISODE ONLY`다.
