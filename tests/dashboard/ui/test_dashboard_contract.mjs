@@ -1611,8 +1611,12 @@ test("Dashboard selection loads both detail APIs and discards delayed responses"
     assert.match(script, /getStoppingTraceAvailability\(stoppingTrace\)/);
     assert.match(script, /buildScoreTrajectoryModel\(/);
     assert.match(script, /createScoreTrajectoryChart\(model\)/);
+    assert.match(script, /저장된 Stopping Trace가 없습니다/);
     assert.match(script, /fusionResult\?\.fusion_status === "not_evaluated"/);
+    assert.match(script, /Fusion이 평가되지 않아 저장된 Trace point가 없습니다/);
     assert.match(script, /Stopping Trace가 비어 있습니다/);
+    assert.match(script, /fusionState\.queryState !== "success"/);
+    assert.match(script, /Runtime Config Snapshot이 없어 threshold 기준선을 표시할 수 없습니다/);
     assert.match(script, /결과 저장을 기다리는 중입니다/);
 });
 
@@ -1686,11 +1690,31 @@ test("Dashboard renders dense Runtime and Run tables without exposing Run Type",
     assert.match(html, /<details class="dashboard-time-note">/);
     assert.match(html, /<summary>표시 기준 및 상태 안내<\/summary>/);
     assert.match(html, /class="dashboard-workbench"/);
+    assert.match(html, /id="selected-run-summary"/);
+    assert.match(html, /id="selected-run-settings"/);
     assert.match(html, /class="dashboard-stage-scroll"/);
     assert.match(stylesheet, /\.app-page\.dashboard-page\s*{[^}]*width: 100%;/s);
     assert.match(stylesheet, /\.app-page\.dashboard-page\s*{[^}]*max-width: 101rem;/s);
     assert.match(stylesheet, /grid-template-columns: repeat\(6, minmax\(9rem, 1fr\)\)/);
-    assert.match(stylesheet, /@media \(max-width: 82rem\)/);
+    assert.match(
+        stylesheet,
+        /\.dashboard-workbench\s*{[^}]*grid-template-columns: minmax\(0, 1fr\);/s,
+    );
+    assert.match(
+        stylesheet,
+        /\.dashboard-analysis-summary\s*{[^}]*grid-template-columns: repeat\(4,/s,
+    );
+    assert.match(stylesheet, /#selected-run-chart:empty\s*{[^}]*display: none;/s);
+    assert.doesNotMatch(stylesheet, /minmax\(36rem, 0\.9fr\)/);
+    assert.ok(
+        html.indexOf('id="runtime-summary-heading"')
+        < html.indexOf('id="selected-run-heading"'),
+    );
+    assert.ok(
+        html.indexOf('id="selected-run-heading"')
+        < html.indexOf("Fusion Score Trajectory"),
+    );
+    assert.ok(html.indexOf("Fusion Score Trajectory") < html.indexOf('id="runs-heading"'));
     assert.doesNotMatch(html, />Type<|>Run Type</);
     assert.match(script, /runsStatus\.textContent = state\.message;/);
     assert.equal(script.match(/void loadRuns\(\);/g)?.length, 1);
@@ -2008,6 +2032,14 @@ async function startDashboardHarness() {
             await respond(RUNTIME_API_PATH, 503, { detail: "Runtime unavailable" });
         },
         text: (id) => document.getElementById(id).textContent,
+        analysisFields: (id) => document.getElementById(id).childNodes.map(
+            (field) => ({
+                label: field.childNodes[0].textContent,
+                value: field.childNodes[1].textContent,
+                primary: field.classList.contains("dashboard-analysis-field--primary"),
+                setting: field.classList.contains("dashboard-analysis-field--setting"),
+            }),
+        ),
         refreshButton: () => document.getElementById("selected-run-refresh"),
         stageStates: () => document.getElementById("pipeline-stage-list").childNodes.map(
             (item) => PIPELINE_STAGE_STATES.find(
@@ -2118,6 +2150,91 @@ async function startDashboardWithRuntime(runtimeItems, runs) {
     await harness.respond(RUNTIME_API_PATH, 200, { items: runtimeItems });
     return harness;
 }
+
+test("Dashboard hides only the successful duplicate Runtime status", async (t) => {
+    // Given
+    const harness = await startDashboardHarness();
+    t.after(harness.restore);
+    const loading = {
+        top: harness.text("runtime-top-status"),
+        summary: harness.text("runtime-summary-status"),
+    };
+
+    // When
+    await harness.respond(RUNTIME_API_PATH, 200, { items: [] });
+    const empty = {
+        top: harness.text("runtime-top-status"),
+        summary: harness.text("runtime-summary-status"),
+    };
+    await harness.poll([runtimeReport("RUN-A", "WIN-A", "completed", null)]);
+    const success = {
+        top: harness.text("runtime-top-status"),
+        summary: harness.text("runtime-summary-status"),
+    };
+    await harness.pollFailure();
+    const error = {
+        top: harness.text("runtime-top-status"),
+        summary: harness.text("runtime-summary-status"),
+    };
+
+    // Then
+    assert.deepEqual(loading, {
+        top: "Runtime 정보를 불러오는 중입니다.",
+        summary: "Runtime 정보를 불러오는 중입니다.",
+    });
+    assert.deepEqual(empty, {
+        top: "표시할 Runtime 정보가 없습니다.",
+        summary: "표시할 Runtime 정보가 없습니다.",
+    });
+    assert.deepEqual(success, {
+        top: "",
+        summary: "Runtime 1건을 불러왔습니다.",
+    });
+    assert.deepEqual(error, {
+        top: "Runtime 정보를 불러오지 못했습니다.",
+        summary: "Runtime 정보를 불러오지 못했습니다.",
+    });
+});
+
+test("Dashboard separates primary decision results from threshold settings", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    const detail = storedDetail("RUN-A", "WIN-A", "DEC-A");
+    detail.body.current_decision.decision = {
+        decision_id: "DEC-A",
+        fast_status: "detected",
+        fusion_status: "miss",
+        decision_path: "fast",
+        t_e: "2026-10-09T00:02:00Z",
+    };
+    const fusion = storedFusion("RUN-A", "WIN-A", "DEC-A");
+    fusion.body.runtime_config_snapshot = {
+        stopping: { threshold_on: 0.8, threshold_off: 0.4 },
+    };
+
+    // When
+    await harness.respondAnalysis("RUN-A", detail, fusion);
+
+    // Then
+    assert.deepEqual(harness.analysisFields("selected-run-summary"), [
+        { label: "Fast 상태", value: "탐지", primary: true, setting: false },
+        { label: "Fusion 상태", value: "미탐", primary: true, setting: false },
+        { label: "최종 판단 경로", value: "Fast", primary: true, setting: false },
+        {
+            label: "기술적 판정 시각 (t_e)",
+            value: formatRunTimestamp("2026-10-09T00:02:00Z"),
+            primary: true,
+            setting: false,
+        },
+    ]);
+    assert.deepEqual(harness.analysisFields("selected-run-settings"), [
+        { label: "Threshold On", value: "0.8", primary: false, setting: true },
+        { label: "Threshold Off", value: "0.4", primary: false, setting: true },
+    ]);
+    assert.equal(harness.text("selected-run-detail-status"), "");
+    assert.equal(harness.text("selected-run-chart-status"), "저장된 Stopping Trace가 없습니다.");
+});
 
 test("Dashboard pauses and resumes Runtime polling across bfcache lifecycle", async (t) => {
     // Given
