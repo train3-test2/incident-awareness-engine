@@ -20,7 +20,10 @@ from incident_awareness.evidence.r1_approved_lineage_policy import (
 )
 from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
 from incident_awareness.evidence.r1_selector import R1SelectorPolicy
-from incident_awareness.pipeline.r1_artifacts import load_r1_evidence_artifacts
+from incident_awareness.pipeline.r1_artifacts import (
+    R1EvidenceArtifactRun,
+    load_r1_evidence_artifacts,
+)
 
 R1_CAUSAL_AVAILABILITY_CONTRACT_VERSION = "v0.1"
 R1_CAUSAL_WATERMARK_BASIS = "authoritative_run_end"
@@ -159,19 +162,36 @@ def build_r1_causal_availability_envelope(
     approved_policy: ApprovedLineagePolicy,
 ) -> R1CausalAvailabilityEnvelope:
     """검증된 R1 artifact와 authoritative Run 경계로 replay envelope를 만든다."""
-    if not isinstance(run_metadata, RunMetadata):
-        raise TypeError("run_metadata must be a RunMetadata")
-    if not isinstance(selector_policy, R1SelectorPolicy):
-        raise TypeError("selector_policy must be an R1SelectorPolicy")
-    if not isinstance(approved_policy, ApprovedLineagePolicy):
-        raise TypeError("approved_policy must be an ApprovedLineagePolicy")
-    if run_metadata.end_time is None:
-        raise ValueError("causal availability requires authoritative RunMetadata.end_time")
-    if run_metadata.family_id is None:
-        raise ValueError("causal availability requires RunMetadata.family_id")
-    validate_r1_policy_family_binding(run_metadata.family_id, approved_policy)
-
+    _validate_envelope_builder_inputs(
+        run_metadata=run_metadata,
+        selector_policy=selector_policy,
+        approved_policy=approved_policy,
+    )
     artifact_run = load_r1_evidence_artifacts(artifact_directory)
+    return build_r1_causal_availability_envelope_from_artifacts(
+        artifact_run,
+        run_metadata=run_metadata,
+        selector_policy=selector_policy,
+        approved_policy=approved_policy,
+    )
+
+
+def build_r1_causal_availability_envelope_from_artifacts(
+    artifact_run: R1EvidenceArtifactRun,
+    *,
+    run_metadata: RunMetadata,
+    selector_policy: R1SelectorPolicy,
+    approved_policy: ApprovedLineagePolicy,
+) -> R1CausalAvailabilityEnvelope:
+    """한 번 읽고 검증한 artifact bytes로 availability envelope를 만든다."""
+    if not isinstance(artifact_run, R1EvidenceArtifactRun):
+        raise TypeError("artifact_run must be an R1EvidenceArtifactRun")
+    _validate_envelope_builder_inputs(
+        run_metadata=run_metadata,
+        selector_policy=selector_policy,
+        approved_policy=approved_policy,
+    )
+
     summary = artifact_run.summary
     if summary.run_id != run_metadata.run_id:
         raise ValueError("Evidence artifact run_id must match RunMetadata run_id")
@@ -211,6 +231,7 @@ def build_r1_causal_availability_envelope(
         raise ValueError("completed Evidence artifact must include its validated SHA-256")
 
     run_end = run_metadata.end_time
+    assert run_end is not None
     availability_records: list[R1CausalEvidenceAvailability] = []
     for evidence in artifact_run.evidences:
         if evidence.run_id != run_metadata.run_id:
@@ -247,6 +268,25 @@ def build_r1_causal_availability_envelope(
         source_extraction_summary_sha256=artifact_run.summary_artifact_sha256,
         evidences=tuple(sorted(availability_records, key=r1_causal_availability_sort_key)),
     )
+
+
+def _validate_envelope_builder_inputs(
+    *,
+    run_metadata: RunMetadata,
+    selector_policy: R1SelectorPolicy,
+    approved_policy: ApprovedLineagePolicy,
+) -> None:
+    if not isinstance(run_metadata, RunMetadata):
+        raise TypeError("run_metadata must be a RunMetadata")
+    if not isinstance(selector_policy, R1SelectorPolicy):
+        raise TypeError("selector_policy must be an R1SelectorPolicy")
+    if not isinstance(approved_policy, ApprovedLineagePolicy):
+        raise TypeError("approved_policy must be an ApprovedLineagePolicy")
+    if run_metadata.end_time is None:
+        raise ValueError("causal availability requires authoritative RunMetadata.end_time")
+    if run_metadata.family_id is None:
+        raise ValueError("causal availability requires RunMetadata.family_id")
+    validate_r1_policy_family_binding(run_metadata.family_id, approved_policy)
 
 
 def r1_causal_availability_sort_key(
@@ -306,5 +346,6 @@ __all__ = [
     "R1CausalEvidenceAvailability",
     "R1CausalPolicyIdentity",
     "build_r1_causal_availability_envelope",
+    "build_r1_causal_availability_envelope_from_artifacts",
     "r1_causal_availability_sort_key",
 ]
