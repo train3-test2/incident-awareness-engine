@@ -357,8 +357,10 @@ Role4가 candidate generation을 완료한 뒤 별도의 versioned **candidate-g
 발급하고, Role2는 아래 결속을 모두 확인한 경우에만 그 seal을 Evidence 확정의 추가 입력으로
 소비한다.
 
-seal의 정식 schema와 candidate-generation 알고리즘은 Role4 소유다. 다만 Role3 stream consumer와
-결속하려면 seal은 최소 아래의 immutable reference를 가져야 한다.
+seal의 정식 schema와 candidate-generation 알고리즘은 Role4 소유이며
+[R1 candidate-generation seal v0.1](../scenarios/r1-candidate-generation-seal-v0.1.md)에
+정의한다. Role3 stream consumer와 결속하려면 seal은 최소 아래의 immutable reference를
+가져야 한다.
 
 | seal reference | 결속 규칙 |
 | --- | --- |

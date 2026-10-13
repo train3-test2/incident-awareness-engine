@@ -1,0 +1,58 @@
+config_version: v0.1
+policies:
+  - policy_id: r1-wmi-management-candidate-generation-seal
+    version: v0.1
+    family_id: wmi_management
+    normal_boundary:
+      action_id: N04
+      step: run_end
+      action_type: run_end
+    attack_boundary:
+      action_id: A04
+      step: run_end
+      action_type: run_end
+    normal_owned_processes:
+      - role: intermediate
+        image: wscript.exe
+      - role: final_tool
+        image: powershell.exe
+    attack_owned_processes:
+      - role: intermediate
+        image: cmd.exe
+      - role: final_tool
+        image: powershell.exe
+    accepted_terminal_states:
+      - stopped
+      - exited_by_itself
+      - already_exited
+    forbid_all_actions_after_boundary: true
+    protected_non_owned_process_names:
+      - wmiprvse.exe
+
+  - policy_id: r1-remote-management-candidate-generation-seal
+    version: v0.1
+    family_id: remote_management
+    normal_boundary:
+      action_id: N05
+      step: session_end
+      action_type: remote_session
+    attack_boundary:
+      action_id: A05
+      step: session_end
+      action_type: remote_session
+    normal_owned_processes:
+      - role: intermediate
+        image: cmd.exe
+      - role: final_tool
+        image: powershell.exe
+    attack_owned_processes:
+      - role: intermediate
+        image: cscript.exe
+      - role: final_tool
+        image: powershell.exe
+    accepted_terminal_states:
+      - stopped
+      - exited_by_itself
+      - already_exited
+    forbid_all_actions_after_boundary: true
+    protected_non_owned_process_names: []
