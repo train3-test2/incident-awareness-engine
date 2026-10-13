@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from incident_awareness.collection.r1_candidate_generation_seal import (
     DEFAULT_R1_CANDIDATE_GENERATION_POLICIES_PATH,
     R1CandidateBoundaryAttestation,
+    R1CandidateBoundaryCompletion,
     R1CandidateGenerationPolicy,
     R1CandidateGenerationSeal,
     R1OwnedProcessTermination,
@@ -138,7 +139,10 @@ def _actions(
 
 
 def _boundary(
-    *, family_id: str = "wmi_management", run_type: str = "attack"
+    *,
+    family_id: str = "wmi_management",
+    run_type: str = "attack",
+    completed_at: datetime | None = None,
 ) -> R1CandidateBoundaryAttestation:
     prefix = "A" if run_type == "attack" else "N"
     action = (
@@ -158,7 +162,7 @@ def _boundary(
     }[(family_id, run_type)]
     return R1CandidateBoundaryAttestation(
         **action,
-        completed_at=datetime(2026, 10, 13, 1, 12, tzinfo=UTC),
+        completed_at=completed_at or datetime(2026, 10, 13, 1, 12, tzinfo=UTC),
         no_actions_after_boundary=True,
         owned_processes=(
             R1OwnedProcessTermination(
@@ -178,15 +182,46 @@ def _boundary(
 
 
 def _boundary_record(
-    *, family_id: str = "wmi_management", run_type: str = "attack"
+    *,
+    family_id: str = "wmi_management",
+    run_type: str = "attack",
+    timestamp: datetime | None = None,
 ) -> ExecutionRecordRow:
     boundary = _boundary(family_id=family_id, run_type=run_type)
     return ExecutionRecordRow(
         run_id=RUN_ID,
         action_id=boundary.action_id,
-        timestamp=boundary.completed_at,
+        timestamp=timestamp or boundary.completed_at,
         action_type=boundary.action_type,
         description="candidate-generation boundary completed",
+    )
+
+
+def _boundary_completion(
+    *,
+    family_id: str = "wmi_management",
+    run_type: str = "attack",
+    action_started_at: datetime | None = None,
+    completed_at: datetime | None = None,
+) -> R1CandidateBoundaryCompletion:
+    boundary = _boundary(
+        family_id=family_id,
+        run_type=run_type,
+        completed_at=completed_at,
+    )
+    source = (
+        "wmi_run_end.completed_utc"
+        if family_id == "wmi_management"
+        else "remote_session.close_completed_at"
+    )
+    return R1CandidateBoundaryCompletion(
+        run_id=RUN_ID,
+        action_id=boundary.action_id,
+        step=boundary.step,
+        action_type=boundary.action_type,
+        action_started_at=action_started_at or datetime(2026, 10, 13, 1, 12, tzinfo=UTC),
+        completed_at=boundary.completed_at,
+        completion_source=source,
     )
 
 
@@ -200,6 +235,7 @@ def _seal(
         scenario_actions=_actions(family_id=family_id, run_type=run_type),
         boundary=_boundary(family_id=family_id, run_type=run_type),
         boundary_action_record=_boundary_record(family_id=family_id, run_type=run_type),
+        boundary_completion=_boundary_completion(family_id=family_id, run_type=run_type),
         policy=_policy(family_id),
         emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
     )
@@ -290,6 +326,7 @@ def test_rejects_boundary_when_a_later_scenario_action_exists() -> None:
             scenario_actions=actions,
             boundary=_boundary(),
             boundary_action_record=_boundary_record(),
+            boundary_completion=_boundary_completion(),
             policy=_policy(),
             emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
         )
@@ -314,6 +351,7 @@ def test_rejects_boundary_without_every_run_owned_process(missing_role: str) -> 
             scenario_actions=_actions(),
             boundary=changed,
             boundary_action_record=_boundary_record(),
+            boundary_completion=_boundary_completion(),
             policy=_policy(),
             emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
         )
@@ -334,6 +372,7 @@ def test_rejects_non_terminal_run_owned_process() -> None:
             scenario_actions=_actions(),
             boundary=changed,
             boundary_action_record=_boundary_record(),
+            boundary_completion=_boundary_completion(),
             policy=_policy(),
             emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
         )
@@ -354,6 +393,7 @@ def test_rejects_a_different_process_image_even_when_role_matches() -> None:
             scenario_actions=_actions(),
             boundary=changed,
             boundary_action_record=_boundary_record(),
+            boundary_completion=_boundary_completion(),
             policy=_policy(),
             emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
         )
@@ -374,6 +414,7 @@ def test_wmi_provider_host_is_never_claimed_as_run_owned() -> None:
             scenario_actions=_actions(),
             boundary=changed,
             boundary_action_record=_boundary_record(),
+            boundary_completion=_boundary_completion(),
             policy=_policy(),
             emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
         )
@@ -400,6 +441,7 @@ def test_rejects_seal_that_does_not_bind_to_accepted_close(
             run_closed=_run_closed(),
             scenario_actions=_actions(),
             boundary_action_record=_boundary_record(),
+            boundary_completion=_boundary_completion(),
             policy=_policy(),
         )
 
@@ -418,6 +460,7 @@ def test_rejects_even_one_changed_final_watermark_reference() -> None:
             run_closed=_run_closed(),
             scenario_actions=_actions(),
             boundary_action_record=_boundary_record(),
+            boundary_completion=_boundary_completion(),
             policy=_policy(),
         )
 
@@ -437,6 +480,7 @@ def test_rejects_a_final_watermark_that_does_not_cover_the_candidate_boundary() 
             run_closed=changed_close,
             scenario_actions=_actions(),
             boundary_action_record=_boundary_record(),
+            boundary_completion=_boundary_completion(),
             policy=_policy(),
         )
 
@@ -453,6 +497,7 @@ def test_rejects_a_loaded_seal_whose_boundary_does_not_match_its_run_type() -> N
             run_closed=_run_closed(),
             scenario_actions=_actions(),
             boundary_action_record=_boundary_record(),
+            boundary_completion=_boundary_completion(),
             policy=_policy(),
         )
 
@@ -470,6 +515,10 @@ def test_rejects_boundary_before_planned_action_offset() -> None:
             scenario_actions=_actions(),
             boundary=boundary,
             boundary_action_record=record,
+            boundary_completion=_boundary_completion(
+                action_started_at=too_early,
+                completed_at=too_early,
+            ),
             policy=_policy(),
             emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
         )
@@ -499,6 +548,7 @@ def test_rejects_boundary_not_bound_to_actual_action_record(
             scenario_actions=_actions(),
             boundary=_boundary(),
             boundary_action_record=record,
+            boundary_completion=_boundary_completion(),
             policy=_policy(),
             emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
         )
@@ -536,11 +586,77 @@ def test_rejects_candidate_boundary_outside_completed_run(
             run_metadata=run_metadata,
             run_closed=_run_closed(),
             scenario_actions=_actions(),
-            boundary_action_record=_boundary_record().model_copy(
-                update={"timestamp": completed_at}
+            boundary_action_record=_boundary_record(timestamp=completed_at),
+            boundary_completion=_boundary_completion(
+                action_started_at=completed_at,
+                completed_at=completed_at,
             ),
             policy=_policy(),
         )
+
+
+def test_rejects_boundary_at_action_start_when_cleanup_finishes_later() -> None:
+    started_at = datetime(2026, 10, 13, 1, 12, tzinfo=UTC)
+    completed_at = datetime(2026, 10, 13, 1, 12, 5, tzinfo=UTC)
+
+    with pytest.raises(ValueError, match="actual completion proof"):
+        issue_r1_candidate_generation_seal(
+            seal_id="SEAL-001",
+            run_metadata=_metadata(),
+            run_closed=_run_closed(),
+            scenario_actions=_actions(),
+            boundary=_boundary(completed_at=started_at),
+            boundary_action_record=_boundary_record(timestamp=started_at),
+            boundary_completion=_boundary_completion(
+                action_started_at=started_at,
+                completed_at=completed_at,
+            ),
+            policy=_policy(),
+            emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
+        )
+
+
+@pytest.mark.parametrize(
+    ("family_id", "run_type"),
+    [
+        ("wmi_management", "attack"),
+        ("remote_management", "normal"),
+    ],
+)
+def test_accepts_actual_completion_after_boundary_action_start(
+    family_id: str,
+    run_type: str,
+) -> None:
+    started_at = datetime(2026, 10, 13, 1, 12, tzinfo=UTC)
+    completed_at = datetime(2026, 10, 13, 1, 12, 5, tzinfo=UTC)
+    boundary = _boundary(
+        family_id=family_id,
+        run_type=run_type,
+        completed_at=completed_at,
+    )
+
+    seal = issue_r1_candidate_generation_seal(
+        seal_id="SEAL-001",
+        run_metadata=_metadata(family_id=family_id, run_type=run_type),
+        run_closed=_run_closed(),
+        scenario_actions=_actions(family_id=family_id, run_type=run_type),
+        boundary=boundary,
+        boundary_action_record=_boundary_record(
+            family_id=family_id,
+            run_type=run_type,
+            timestamp=started_at,
+        ),
+        boundary_completion=_boundary_completion(
+            family_id=family_id,
+            run_type=run_type,
+            action_started_at=started_at,
+            completed_at=completed_at,
+        ),
+        policy=_policy(family_id),
+        emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
+    )
+
+    assert seal.boundary.completed_at == completed_at
 
 
 @pytest.mark.parametrize(
@@ -562,6 +678,7 @@ def test_rejects_seal_not_bound_to_run_metadata(
             run_closed=_run_closed(),
             scenario_actions=_actions(),
             boundary_action_record=_boundary_record(),
+            boundary_completion=_boundary_completion(),
             policy=_policy(),
         )
 
@@ -574,6 +691,7 @@ def _verified_boundary():
         run_closed=_run_closed(),
         scenario_actions=_actions(),
         boundary_action_record=_boundary_record(),
+        boundary_completion=_boundary_completion(),
         policy=_policy(),
     )
 
@@ -599,6 +717,7 @@ def test_invalid_seal_diagnostic_is_preserved_in_fallback() -> None:
             run_closed=_run_closed(),
             scenario_actions=_actions(),
             boundary_action_record=_boundary_record(),
+            boundary_completion=_boundary_completion(),
             policy=_policy(),
         )
 
@@ -646,6 +765,7 @@ def test_valid_seal_can_be_verified_before_run_metadata_end_time() -> None:
         scenario_actions=actions,
         boundary=_boundary(),
         boundary_action_record=record,
+        boundary_completion=_boundary_completion(),
         policy=policy,
         emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
     )
@@ -655,6 +775,7 @@ def test_valid_seal_can_be_verified_before_run_metadata_end_time() -> None:
         run_closed=_run_closed(),
         scenario_actions=actions,
         boundary_action_record=record,
+        boundary_completion=_boundary_completion(),
         policy=policy,
     )
 
