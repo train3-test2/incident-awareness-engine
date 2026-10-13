@@ -4461,6 +4461,35 @@ function Invoke-RunEnd {
     return (Get-R1RunEndResult -Ended $Answer -OwnedProcessIds ([int[]]@(4100, 4200)) -RootImage "WmiPrvSE.exe")
 }
 
+function Invoke-ActualEndRunStep {
+    <# Invoke the actual remote step body with isolated process cmdlet stand-ins. #>
+    param([object[]]$Owned, [bool]$AllowPartial)
+
+    $step = $R1_REMOTE_STEPS["end_run"]
+    return (& {
+        param($Body, $Named, [bool]$Partial)
+
+        $state = @{
+            900  = [pscustomobject]@{ ProcessId = 900; Name = "WmiPrvSE.exe"; ParentProcessId = 4
+                CreationDate = [datetime]::Parse("2029-12-31T23:00:00Z").ToUniversalTime() }
+            4100 = [pscustomobject]@{ ProcessId = 4100; Name = "cmd.exe"; ParentProcessId = 900
+                CreationDate = [datetime]::Parse("2030-01-01T00:00:00Z").ToUniversalTime() }
+        }
+        function Get-CimInstance {
+            param([string]$ClassName, [string]$Filter)
+            $id = [int]([regex]::Match($Filter, '\d+').Value)
+            return $state[$id]
+        }
+        function Stop-Process {
+            param([int]$Id, [switch]$Force)
+            $state.Remove($Id)
+        }
+        function Start-Sleep { param([int]$Milliseconds) }
+
+        return (& $Body @{ owned = $Named; wait_sec = 1; allow_partial = $Partial })
+    } $step $Owned $AllowPartial)
+}
+
 $OWNED_ENDED = @(
     @{ process_id = 4100; image = "cmd.exe"; outcome = "exited_by_itself" },
     @{ process_id = 4200; image = "powershell.exe"; outcome = "stopped" })
@@ -4544,6 +4573,15 @@ Assert-True "processes that were already gone are accounted for as such" (
     @((Invoke-RunEnd (New-EndAnswer -Set @{ ended = @(
                     @{ process_id = 4100; image = "cmd.exe"; outcome = "already_exited" },
                     @{ process_id = 4200; image = "powershell.exe"; outcome = "already_exited" }) })).ended).Count -eq 2)
+Assert-True "failure cleanup can invoke the actual end_run body for its one validated Run-owned process" (
+    @((Invoke-ActualEndRunStep -Owned @(@{
+                    process_id = 4100; image = "cmd.exe"
+                    created_not_before_utc = "2030-01-01T00:00:00.000Z" }) -AllowPartial $true).ended).Count -eq 1)
+Assert-Throws "the actual end_run body still refuses one process for a normal run end" {
+    Invoke-ActualEndRunStep -Owned @(@{
+            process_id = 4100; image = "cmd.exe"
+            created_not_before_utc = "2030-01-01T00:00:00.000Z" }) -AllowPartial $false
+} "*failure cleanup may name one or two, 1 were named*"
 
  # --- success cases: the step -------------------------------------------------------------------
 
@@ -4681,7 +4719,8 @@ Assert-True "the runner calls WMI to create a process in one place only: the fir
 Assert-True "the end holds each process to the program and to the action that started it before it ends anything" (
     $endRunText.Contains('if ([string]$found.Name -ine [string]$entry.image -or $createdAt -lt $notBefore) {') -and
     $endRunText.Contains('if ($null -ne $provider.process_id -and [int]$item.entry.process_id -eq $provider.process_id) {') -and
-    $endRunText.Contains('if ($owned.Count -ne 2) {'))
+    $endRunText.Contains('if ((-not $allowPartial -and $owned.Count -ne 2) -or') -and
+    $endRunText.Contains('($allowPartial -and ($owned.Count -lt 1 -or $owned.Count -gt 2))) {'))
 
  # ---------------------------------------------------------------------------
  # 22. The registered policies a rendered scenario carries

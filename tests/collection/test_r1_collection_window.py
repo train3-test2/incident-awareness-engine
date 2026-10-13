@@ -604,6 +604,26 @@ def test_an_evidence_of_the_records_of_the_run_holds_no_context(tmp_path: Path) 
     )
 
 
+def test_an_evidence_time_generator_is_checked_at_both_observation_boundaries(
+    tmp_path: Path,
+) -> None:
+    processes, connections = _read(wmi_events("attack"), tmp_path)
+    moments = (
+        parse_event_utc_time(stamp) for stamp in (CREATED_UTC_TIME, "2030-01-02 00:13:00.001")
+    )
+
+    problems = check_evidence_excludes_context(
+        event_ids=["30"],
+        timestamps=moments,
+        records=[*processes, *connections],
+        observation_start=START,
+        observation_end=OBSERVATION_END,
+    )
+
+    assert len(problems) == 1
+    assert "the Evidence states time(s) after the end of the run" in problems[0]
+
+
 def test_the_lineage_of_a_provenance_names_its_context_root_outside_the_evidence_events(
     tmp_path: Path,
 ) -> None:
