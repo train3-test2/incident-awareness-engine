@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from inspect import signature
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ from incident_awareness.collection.r1_candidate_generation_seal import (
     validate_r1_candidate_generation_seal_replay,
     write_r1_candidate_generation_seal,
 )
+from incident_awareness.common.models.execution_record import ExecutionRecordRow
 from incident_awareness.common.models.r1_stream import R1RunClosed
 from incident_awareness.common.models.run import RunMetadata
 
@@ -175,6 +177,19 @@ def _boundary(
     )
 
 
+def _boundary_record(
+    *, family_id: str = "wmi_management", run_type: str = "attack"
+) -> ExecutionRecordRow:
+    boundary = _boundary(family_id=family_id, run_type=run_type)
+    return ExecutionRecordRow(
+        run_id=RUN_ID,
+        action_id=boundary.action_id,
+        timestamp=boundary.completed_at,
+        action_type=boundary.action_type,
+        description="candidate-generation boundary completed",
+    )
+
+
 def _seal(
     *, family_id: str = "wmi_management", run_type: str = "attack"
 ) -> R1CandidateGenerationSeal:
@@ -184,6 +199,7 @@ def _seal(
         run_closed=_run_closed(),
         scenario_actions=_actions(family_id=family_id, run_type=run_type),
         boundary=_boundary(family_id=family_id, run_type=run_type),
+        boundary_action_record=_boundary_record(family_id=family_id, run_type=run_type),
         policy=_policy(family_id),
         emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
     )
@@ -273,6 +289,7 @@ def test_rejects_boundary_when_a_later_scenario_action_exists() -> None:
             run_closed=_run_closed(),
             scenario_actions=actions,
             boundary=_boundary(),
+            boundary_action_record=_boundary_record(),
             policy=_policy(),
             emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
         )
@@ -296,6 +313,7 @@ def test_rejects_boundary_without_every_run_owned_process(missing_role: str) -> 
             run_closed=_run_closed(),
             scenario_actions=_actions(),
             boundary=changed,
+            boundary_action_record=_boundary_record(),
             policy=_policy(),
             emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
         )
@@ -315,6 +333,7 @@ def test_rejects_non_terminal_run_owned_process() -> None:
             run_closed=_run_closed(),
             scenario_actions=_actions(),
             boundary=changed,
+            boundary_action_record=_boundary_record(),
             policy=_policy(),
             emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
         )
@@ -334,6 +353,7 @@ def test_rejects_a_different_process_image_even_when_role_matches() -> None:
             run_closed=_run_closed(),
             scenario_actions=_actions(),
             boundary=changed,
+            boundary_action_record=_boundary_record(),
             policy=_policy(),
             emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
         )
@@ -353,6 +373,7 @@ def test_wmi_provider_host_is_never_claimed_as_run_owned() -> None:
             run_closed=_run_closed(),
             scenario_actions=_actions(),
             boundary=changed,
+            boundary_action_record=_boundary_record(),
             policy=_policy(),
             emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
         )
@@ -377,6 +398,8 @@ def test_rejects_seal_that_does_not_bind_to_accepted_close(
             seal,
             run_metadata=_metadata(),
             run_closed=_run_closed(),
+            scenario_actions=_actions(),
+            boundary_action_record=_boundary_record(),
             policy=_policy(),
         )
 
@@ -393,6 +416,8 @@ def test_rejects_even_one_changed_final_watermark_reference() -> None:
             changed,
             run_metadata=_metadata(),
             run_closed=_run_closed(),
+            scenario_actions=_actions(),
+            boundary_action_record=_boundary_record(),
             policy=_policy(),
         )
 
@@ -410,6 +435,8 @@ def test_rejects_a_final_watermark_that_does_not_cover_the_candidate_boundary() 
             changed_seal,
             run_metadata=_metadata(),
             run_closed=changed_close,
+            scenario_actions=_actions(),
+            boundary_action_record=_boundary_record(),
             policy=_policy(),
         )
 
@@ -424,6 +451,8 @@ def test_rejects_a_loaded_seal_whose_boundary_does_not_match_its_run_type() -> N
             changed,
             run_metadata=_metadata(),
             run_closed=_run_closed(),
+            scenario_actions=_actions(),
+            boundary_action_record=_boundary_record(),
             policy=_policy(),
         )
 
@@ -443,6 +472,53 @@ def test_rejects_a_loaded_seal_whose_boundary_does_not_match_its_run_type() -> N
         ),
     ],
 )
+def test_rejects_boundary_before_planned_action_offset() -> None:
+    too_early = datetime(2026, 10, 13, 1, 0, 1, tzinfo=UTC)
+    boundary = _boundary().model_copy(update={"completed_at": too_early})
+    record = _boundary_record().model_copy(update={"timestamp": too_early})
+
+    with pytest.raises(ValueError, match="planned action offset"):
+        issue_r1_candidate_generation_seal(
+            seal_id="SEAL-001",
+            run_metadata=_metadata(),
+            run_closed=_run_closed(),
+            scenario_actions=_actions(),
+            boundary=boundary,
+            boundary_action_record=record,
+            policy=_policy(),
+            emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("run_id", "RUN-20261013-002", "run_id"),
+        ("action_id", "A03", "final scenario action"),
+        ("action_type", "network_connection", "final scenario action"),
+        ("timestamp", datetime(2026, 10, 13, 1, 12, 0, 1000, tzinfo=UTC), "completed_at"),
+    ],
+)
+def test_rejects_boundary_not_bound_to_actual_action_record(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    record = _boundary_record().model_copy(update={field: value})
+
+    with pytest.raises(ValueError, match=message):
+        issue_r1_candidate_generation_seal(
+            seal_id="SEAL-001",
+            run_metadata=_metadata(),
+            run_closed=_run_closed(),
+            scenario_actions=_actions(),
+            boundary=_boundary(),
+            boundary_action_record=record,
+            policy=_policy(),
+            emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
+        )
+
+
 def test_rejects_candidate_boundary_outside_completed_run(
     completed_at: datetime,
     end_time: datetime,
@@ -459,6 +535,8 @@ def test_rejects_candidate_boundary_outside_completed_run(
             changed,
             run_metadata=run_metadata,
             run_closed=_run_closed(),
+            scenario_actions=_actions(),
+            boundary_action_record=_boundary_record(),
             policy=_policy(),
         )
 
@@ -480,32 +558,52 @@ def test_rejects_seal_not_bound_to_run_metadata(
             _seal(),
             run_metadata=run_metadata,
             run_closed=_run_closed(),
+            scenario_actions=_actions(),
+            boundary_action_record=_boundary_record(),
             policy=_policy(),
         )
 
 
-def test_missing_seal_uses_authoritative_run_end_fallback() -> None:
-    resolution = resolve_r1_candidate_close(
+def _verified_boundary():
+    seal = _seal()
+    return validate_r1_candidate_generation_seal_binding(
+        seal,
         run_metadata=_metadata(),
         run_closed=_run_closed(),
-        seal=None,
+        scenario_actions=_actions(),
+        boundary_action_record=_boundary_record(),
         policy=_policy(),
+    )
+
+
+def test_missing_seal_uses_authoritative_run_end_fallback() -> None:
+    resolution = resolve_r1_candidate_close(
+        authoritative_run_end=_metadata().end_time,
+        verified_boundary=None,
     )
 
     assert resolution.mode == "authoritative_run_end_fallback"
     assert resolution.candidate_boundary_at == _metadata().end_time
     assert resolution.verified_seal_at is None
-    assert resolution.seal is None
+    assert resolution.verified_boundary is None
 
 
-def test_invalid_seal_uses_authoritative_run_end_fallback() -> None:
+def test_invalid_seal_diagnostic_is_preserved_in_fallback() -> None:
     changed = _seal().model_copy(update={"input_close_id": "CLOSE-DIFFERENT"})
+    with pytest.raises(ValueError, match="input_close_id") as error:
+        validate_r1_candidate_generation_seal_binding(
+            changed,
+            run_metadata=_metadata(),
+            run_closed=_run_closed(),
+            scenario_actions=_actions(),
+            boundary_action_record=_boundary_record(),
+            policy=_policy(),
+        )
 
     resolution = resolve_r1_candidate_close(
-        run_metadata=_metadata(),
-        run_closed=_run_closed(),
-        seal=changed,
-        policy=_policy(),
+        authoritative_run_end=_metadata().end_time,
+        verified_boundary=None,
+        validation_diagnostics=(str(error.value),),
     )
 
     assert resolution.mode == "authoritative_run_end_fallback"
@@ -513,61 +611,71 @@ def test_invalid_seal_uses_authoritative_run_end_fallback() -> None:
     assert "input_close_id" in resolution.diagnostics[0]
 
 
-def test_valid_seal_exposes_boundary_and_seal_time_but_not_evidence_available_at() -> None:
-    seal = _seal()
+def test_valid_boundary_exposes_only_non_ground_truth_runtime_input() -> None:
+    verified = _verified_boundary()
     resolution = resolve_r1_candidate_close(
-        run_metadata=_metadata(),
-        run_closed=_run_closed(),
-        seal=seal,
-        policy=_policy(),
+        authoritative_run_end=_metadata().end_time,
+        verified_boundary=verified,
     )
 
     assert resolution.mode == "verified_seal"
-    assert resolution.candidate_boundary_at == seal.boundary.completed_at
-    assert resolution.verified_seal_at == seal.emitted_at
-    assert not hasattr(resolution, "finalization_available_at")
-    assert resolution.diagnostics == ()
+    assert resolution.candidate_boundary_at == verified.candidate_boundary_at
+    assert resolution.verified_seal_at == verified.verified_seal_at
+    assert resolution.verified_boundary == verified
+    serialized = json.dumps(verified.model_dump(mode="json"), sort_keys=True)
+    for forbidden in ("run_type", "family_id", "owned_processes", "image", "process_guid"):
+        assert forbidden not in serialized
+    assert set(signature(resolve_r1_candidate_close).parameters) == {
+        "authoritative_run_end",
+        "verified_boundary",
+        "validation_diagnostics",
+    }
 
 
-def test_valid_seal_can_be_issued_and_resolved_before_run_metadata_end_time() -> None:
+def test_valid_seal_can_be_verified_before_run_metadata_end_time() -> None:
     in_progress = _metadata(completed=False)
     policy = _policy()
+    actions = _actions()
+    record = _boundary_record()
     seal = issue_r1_candidate_generation_seal(
         seal_id="SEAL-RUN-20261013-001-EARLY",
         run_metadata=in_progress,
         run_closed=_run_closed(),
-        scenario_actions=_actions(),
+        scenario_actions=actions,
         boundary=_boundary(),
+        boundary_action_record=record,
         policy=policy,
         emitted_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
     )
-
-    resolution = resolve_r1_candidate_close(
+    verified = validate_r1_candidate_generation_seal_binding(
+        seal,
         run_metadata=in_progress,
         run_closed=_run_closed(),
-        seal=seal,
+        scenario_actions=actions,
+        boundary_action_record=record,
         policy=policy,
+    )
+
+    resolution = resolve_r1_candidate_close(
+        authoritative_run_end=None,
+        verified_boundary=verified,
     )
 
     assert resolution.mode == "verified_seal"
     assert resolution.candidate_boundary_at == seal.boundary.completed_at
 
 
-@pytest.mark.parametrize("with_seal", [False, True])
-def test_in_progress_run_without_a_verified_seal_has_no_run_end_fallback(
-    with_seal: bool,
+@pytest.mark.parametrize("diagnostics", [(), ("invalid seal",)])
+def test_in_progress_run_without_a_verified_boundary_has_no_run_end_fallback(
+    diagnostics: tuple[str, ...],
 ) -> None:
-    in_progress = _metadata(completed=False)
-    seal = _seal().model_copy(update={"input_close_id": "CLOSE-DIFFERENT"}) if with_seal else None
-
     with pytest.raises(
         ValueError, match="end_time is required when verified seal close is unavailable"
     ):
         resolve_r1_candidate_close(
-            run_metadata=in_progress,
-            run_closed=_run_closed(),
-            seal=seal,
-            policy=_policy(),
+            authoritative_run_end=None,
+            verified_boundary=None,
+            validation_diagnostics=diagnostics,
         )
 
 
