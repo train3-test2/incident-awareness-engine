@@ -136,7 +136,7 @@ def test_dashboard_view_serves_html_shell_without_database_access(
     assert "Runtime updated_at은 마지막 저장 보고 시각" in html
     assert "최근 Runtime 조회 결과는" in html
     assert "전체 실행 통계가 아닙니다" in html
-    for section in ("운영 상태", "Pipeline 실행 단계", "최근 Runtime 실행 현황", "최근 Run 목록"):
+    for section in ("운영 상태 요약", "파이프라인 상태", "실시간 운영 인사이트", "최근 Run 목록"):
         assert section in html
     for status_id in (
         "total-runs-value",
@@ -188,6 +188,53 @@ def test_dashboard_run_status_and_table_are_visible_without_disclosure() -> None
     assert "<summary>표시 기준 및 상태 안내</summary>" in html
 
 
+def test_dashboard_view_2_uses_real_data_regions_and_defaults_to_replay() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    html = client.get("/dashboard").text
+
+    # Then
+    region_ids = (
+        "system-status-value",
+        "pipeline-heading",
+        "insights-heading",
+        "throughput-heading",
+        "latency-heading",
+        "runs-heading",
+        "workflow-heading",
+        "selected-run-heading",
+    )
+    assert [html.index(f'id="{region_id}"') for region_id in region_ids] == sorted(
+        html.index(f'id="{region_id}"') for region_id in region_ids
+    )
+    for tab in ("summary", "replay", "evidence", "decision", "workflow"):
+        assert f'id="dashboard-tab-{tab}"' in html
+        assert f'aria-controls="dashboard-panel-{tab}"' in html
+        assert f'id="dashboard-panel-{tab}"' in html
+        assert f'aria-labelledby="dashboard-tab-{tab}"' in html
+    replay_button = html.split('id="dashboard-tab-replay"', maxsplit=1)[1].split(">", maxsplit=1)[0]
+    replay_panel = html.split('id="dashboard-panel-replay"', maxsplit=1)[1].split(">", maxsplit=1)[
+        0
+    ]
+    assert 'aria-selected="true"' in replay_button
+    assert " hidden" not in replay_panel
+    assert (
+        html.index('id="dashboard-panel-replay"')
+        < html.index('id="selected-run-chart"')
+        < html.index('id="dashboard-panel-evidence"')
+    )
+    assert 'id="decision-history-list"' in html
+    assert 'id="event-type-summary"' in html
+    assert "계측 미연결" in html
+    assert "미계측" in html
+    assert "Evidence 목록 연동 전" in html
+    assert "Human Workflow 연동 전" in html
+    assert "정상 운영 중" not in html
+    assert "판단 입력하기" not in html
+
+
 def test_operations_view_includes_dashboard_navigation() -> None:
     # Given
     client = TestClient(create_app())
@@ -211,6 +258,7 @@ def test_dashboard_assets_serve_stylesheet_script_and_contract_module() -> None:
     script = client.get("/dashboard-assets/dashboard.js")
     contract = client.get("/dashboard-assets/dashboard-contract.mjs")
     chart = client.get("/dashboard-assets/fusion-score-chart.mjs")
+    replay_chart = client.get("/dashboard-assets/dashboard-replay-chart.mjs")
 
     # Then
     for response in (shell_stylesheet, chart_stylesheet, stylesheet):
@@ -222,11 +270,13 @@ def test_dashboard_assets_serve_stylesheet_script_and_contract_module() -> None:
     assert script.status_code == 200
     assert contract.status_code == 200
     assert chart.status_code == 200
-    for response in (script, contract, chart):
+    assert replay_chart.status_code == 200
+    for response in (script, contract, chart, replay_chart):
         media_type = response.headers["content-type"].split(";", maxsplit=1)[0].strip()
         assert media_type in JAVASCRIPT_MEDIA_TYPES
     assert '} from "./dashboard-contract.mjs";' in script.text
-    assert 'from "./fusion-score-chart.mjs";' in script.text
+    assert 'from "./dashboard-replay-chart.mjs";' in script.text
+    assert 'from "./fusion-score-chart.mjs";' in replay_chart.text
     assert "export function createScoreTrajectoryChart(" in chart.text
     for contract_function in DASHBOARD_CONTRACT_FUNCTIONS:
         assert f"export function {contract_function}(" in contract.text
@@ -270,8 +320,9 @@ def test_dashboard_script_fetches_independent_apis_and_polls_only_runtime() -> N
     assert "fetchSelectedAnalysis(" in script
     assert "buildRunDetailApiPath(runId)" in script
     assert "buildFusionEngineApiPath(runId)" in script
-    assert script.count('Accept: "application/json"') == 3
-    assert script.count('cache: "no-store"') == 3
+    assert "buildEventTimelineApiPath(runId, EVENT_TIMELINE_LIMIT, 0)" in script
+    assert script.count('Accept: "application/json"') == 4
+    assert script.count('cache: "no-store"') == 4
     assert script.count("void loadOverview();") == 1
     assert script.count("void loadRuns();") == 1
     assert "startRuntimePolling();" in script
@@ -280,7 +331,7 @@ def test_dashboard_script_fetches_independent_apis_and_polls_only_runtime() -> N
     assert 'document.getElementById("runtime-summary-status")' in script
     assert 'document.getElementById("runtime-summary-list")' in script
     assert "setInterval(" not in script
-    assert script.count("setTimeout(") == 3
+    assert script.count("setTimeout(") == 4
     assert "setTimeout(() => controller.abort(), RUNTIME_REQUEST_TIMEOUT_MS)" in script
     assert "runtimePollTimeoutId = setTimeout(" in script
     assert "void pollRuntimeSummary();" in script
@@ -310,7 +361,7 @@ def test_dashboard_view_uses_shared_shell_and_responsive_layout() -> None:
     )
     for semantic_element in ("<header", "<nav", "<main", "<section", "<h1", "<h2"):
         assert semantic_element in html
-    assert 'class="app-header"' in html
+    assert 'class="app-header dashboard-app-header"' in html
     assert 'class="app-navigation"' in html
     assert 'class="app-page dashboard-page"' in html
     assert "@media (max-width: 48rem)" in shell
@@ -319,27 +370,27 @@ def test_dashboard_view_uses_shared_shell_and_responsive_layout() -> None:
     assert "@media (max-width: 48rem)" in stylesheet
     assert "@media (max-width: 30rem)" in stylesheet
     assert "overflow-wrap: anywhere" in stylesheet
-    assert ".dashboard-workbench" in stylesheet
-    assert ".dashboard-analysis-grid" in stylesheet
+    assert ".dashboard-monitor-grid" in stylesheet
+    assert ".dashboard-replay-grid" in stylesheet
     assert ".dashboard-analysis-settings" in stylesheet
-    assert "grid-template-columns: repeat(6, minmax(9rem, 1fr))" in stylesheet
+    assert "grid-template-columns: repeat(6, minmax(7rem, 1fr))" in stylesheet
     assert ".dashboard-table-wrapper" in stylesheet
     assert "overflow-x: auto" in stylesheet
     assert "width: min(100%, var(--shell-page-width))" in shell
     assert ".app-page.dashboard-page" in stylesheet
     assert "width: 100%" in stylesheet
     assert "max-width: 101rem" in stylesheet
-    workbench_rule = stylesheet.split(".dashboard-workbench {", maxsplit=1)[1].split(
+    monitor_rule = stylesheet.split(".dashboard-monitor-grid {", maxsplit=1)[1].split(
         "}", maxsplit=1
     )[0]
-    assert "grid-template-columns: minmax(0, 1fr)" in workbench_rule
+    assert "grid-template-columns: minmax(0, 1.62fr) minmax(0, 1fr)" in monitor_rule
     assert "minmax(36rem, 0.9fr)" not in stylesheet
 
     runtime_index = html.index('id="runtime-summary-heading"')
     analysis_index = html.index('id="selected-run-heading"')
     chart_index = html.index("Fusion Score Trajectory")
     runs_index = html.index('id="runs-heading"')
-    assert runtime_index < analysis_index < chart_index < runs_index
+    assert runtime_index < runs_index < analysis_index < chart_index
 
 
 def test_dashboard_script_uses_contract_and_safe_dom_rendering() -> None:
@@ -433,7 +484,7 @@ def test_dashboard_runtime_summary_preserves_order_and_operations_state_meaning(
     assert "buildPipelineStagePresentation(" in script
     assert "현재 실행 중" not in script
     assert "setInterval(" not in script
-    assert script.count("setTimeout(") == 3
+    assert script.count("setTimeout(") == 4
     assert "setTimeout(() => controller.abort(), RUNTIME_REQUEST_TIMEOUT_MS)" in script
     assert "void pollRuntimeSummary();" in script
     assert "clearTimeout(timeoutId);" in script
