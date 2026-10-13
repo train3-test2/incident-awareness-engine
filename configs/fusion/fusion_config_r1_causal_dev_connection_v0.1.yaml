@@ -1,0 +1,26 @@
+# R1 Pair-004/005 development connection verification only.
+# These initial values preserve the Pair-002 probe mechanics so the official causal
+# artifact APIs can be connected without introducing threshold or timing tuning.
+# This is not an official R1 optimum, TTSD evidence, a performance baseline, or an
+# authorization for holdout/final evaluation or production use.
+config_version: fusion-config-r1-causal-dev-connection-v0.1
+model_version: null
+
+window:
+  window_size_sec: 300
+
+replay:
+  step_size_sec: 10
+
+scoring:
+  method: simple_score
+  scorer_version: simple-score-v0.1
+  profile_id: r1-causal-dev-connection-v0.1
+  evidence_types:
+    - remote_session_process_lineage_deviation
+    - remote_process_network_follow_on
+
+stopping:
+  threshold_on: 0.8
+  threshold_off: 0.4
+  persistence_k: 2
