@@ -19,20 +19,15 @@ Evidence와 `available_at`을 확정하는 Role2 경계를 정의한다.
 
 1. Role3가 `r1-incremental-stream/v0.1` 계약으로 수락한 `R1EventChunk`
 2. Role3가 모든 partition의 final watermark와 대조해 수락한 `R1RunClosed`
-3. Role4가 scenario·ExecutionRecord·RunMetadata와 seal을 검증한 뒤 정답 정보를 제거해
-   전달한 `R1VerifiedCandidateBoundary`
-4. 검증된 selector policy와 family-bound approved lineage policy
+3. scenario의 `family_id`, 검증된 selector policy와 그 family에 결속된 approved lineage policy
 
 `run_type`, Attack/Normal label, Ground Truth, Pair별 RecordId, process-name shortcut은
-selector 입력이 아니다. Role2는 raw seal이나 Ground Truth를 읽지 않고, Role4가 내보낸
-비정답 close proof만 사용한다.
+selector 입력이 아니다. Role2는 raw seal이나 Ground Truth를 읽지 않는다.
 
-현재 병합된 #269 v0.1의 `R1VerifiedCandidateBoundary`는 Role4 검증 함수가 같은 신뢰
-경계 안에서 직접 반환한 객체로만 취급한다. 임의 JSON이나 외부 artifact를 이 타입으로
-재구성해 입력하면 안 된다. 이 최소 객체에는 host/family/policy/partition 결속 정보가 남지
-않으므로, Role2가 독립적으로 재검증할 수 있는 versioned verified-close proof가 추가되기
-전에는 production wiring에서 verified seal 경로를 활성화하지 않는다. 해당 proof가 없으면
-authoritative `RunMetadata.end_time` fallback만 사용한다.
+현재 병합된 PR `#269` v0.1의 `R1VerifiedCandidateBoundary`에는 Role2가 독립 검증할
+host/family/policy/partition/final-watermark 결속 정보가 없다. 따라서 이 계약의 v0.1 구현은
+해당 객체를 입력받아도 항상 거부하고, authoritative `RunMetadata.end_time` fallback만
+사용한다. versioned Role2-safe proof가 별도 등록되기 전에는 verified close 경로가 없다.
 
 ## 3. 상태 전이
 
@@ -41,12 +36,7 @@ accepted Event chunk
   -> accumulating/provisional selector state
 
 accepted run_closed
-+ matching verified candidate boundary
-+ every target partition final watermark >= candidate boundary
-  -> finalized Evidence
-
-verified boundary 부재·불일치
-+ accepted run_closed
++ run_closed가 선언한 모든 partition의 1..covered_through_chunk_sequence 수신 완료
 + explicit authoritative RunMetadata.end_time
 + every target partition final watermark >= run_end
   -> whole-episode fallback finalized Evidence
@@ -55,34 +45,26 @@ verified boundary 부재·불일치
 close 전 `selection`은 관측 상태일 뿐이다. Evidence와 availability는 빈 값으로 유지한다.
 terminal process와 EID 3가 보였다는 이유만으로 Evidence를 조기 발행하지 않는다.
 
-PR `#269` v0.1에서 candidate-generation seal은 accepted `run_closed` 뒤에만 발급된다. 따라서
-이 상태 전이는 collector가 계속 Event를 받는 도중의 mid-stream 확정이 아니다. candidate
-boundary의 event-time이 authoritative `run_end`보다 빠를 수 있다는 뜻이며, 실제 Evidence
-availability는 아래 검증 완료 시각보다 앞당길 수 없다.
-
-검증된 seal close에서는 selector 후보 상한을 `candidate_boundary_at`으로 둔다. seal 계약상
-그 이후에는 해당 Run 소유 candidate-generation action이 없으므로, boundary 뒤의 background
-Event가 이전 Run의 terminal 후보 집합을 다시 열지 않는다. 계보 복원에 필요한 pre-Run
-context Event는 계속 입력에 포함한다.
+`run_closed`가 data chunk보다 먼저 도착할 수 있으므로, 선언된 covered sequence에 빈 구간이
+있으면 상태는 provisional로 남는다. close가 덮는 partition·sequence의 뒤늦은 전달은 받을 수
+있지만, close에 없는 partition 또는 covered sequence를 넘는 chunk는 거부한다. caller가
+authoritative run end로 finalize할 때까지도 빈 구간이 남으면 Evidence 없이 fail-closed한다.
 
 ## 4. close와 `available_at`
 
 ### 4.1 검증 seal 경로
 
-- `candidate_boundary_at`: Role4가 검증한 boundary 완료 시각
-- `available_at`: `max(run_closed.emitted_at, verified_seal_at)`
-- close mode: `verified_candidate_generation_seal`
-
-`available_at`은 Evidence 의미 시각인 `Evidence.timestamp`와 다르며, 모든 직접 근거 Event의
-시각보다 빠를 수 없다.
+v0.1에서는 비활성화되어 있다. `R1VerifiedCandidateBoundary`를 직접 생성하거나 전달해도
+Evidence를 확정하지 않고 fail-closed로 거부한다. `verified_seal_at`은 PR `#269` seal 입력이
+검증된 provenance 시각이지, 기존 `r1-causal-availability/v0.1`의 causal `available_at`이 아니다.
 
 ### 4.2 whole-episode fallback
 
-seal이 없거나 close ID·watermark 결속 검증이 실패하면 자동으로 조기 확정하지 않는다.
 caller가 authoritative `RunMetadata.end_time`을 명시해야 한다.
 
+- 모든 final watermark가 선언한 covered chunk sequence를 partition별로 빠짐없이 받아야 한다.
 - target partition의 final watermark가 `run_end`까지 포함해야 한다.
-- `available_at = max(run_end, run_closed.emitted_at)`
+- `available_at = run_end`
 - close mode: `authoritative_run_end_fallback`
 
 이 fallback은 `max(Event.timestamp)`, timeout 또는 `evaluation_horizon_sec`로 추론하지 않는다.
@@ -90,10 +72,15 @@ caller가 authoritative `RunMetadata.end_time`을 명시해야 한다.
 ## 5. 순서·재전달·실패 처리
 
 - chunk 물리 도착 순서는 의미가 없다. Event는 `(timestamp, event_id)`로 결정적으로 처리한다.
-- 정확히 같은 chunk 재전달은 상태를 바꾸지 않는다.
-- 같은 chunk ID 또는 partition sequence의 다른 내용 재사용은 fail-closed한다.
-- 같은 Event ID의 다른 내용 재사용은 fail-closed한다.
-- `run_closed` 이후 새 chunk는 거부한다.
+- chunk identity는 `(schema, contract_version, partition, chunk_id)`이고 정확한 재전달은 상태를
+  바꾸지 않는다.
+- 같은 partition sequence의 다른 chunk identity, 또는 같은 scoped chunk identity의 다른 내용
+  재사용은 fail-closed한다.
+- Event identity도 partition 범위로 관리하며, 같은 partition Event ID의 다른 내용 재사용은
+  fail-closed한다. 서로 다른 정상 partition의 같은 ID는 충돌로 보지 않는다.
+- `run_closed` 뒤에는 그 close가 선언한 partition과 covered sequence의 누락분만 받을 수 있다.
+- finalize 때 covered sequence가 하나라도 없거나, 수락한 partition/sequence가 close와 맞지 않으면
+  Evidence 없이 `failed_closed`가 된다.
 - close 시점에 terminal 없음, ambiguity, truncated lineage, duplicate ProcessGuid 또는 temporal
   inversion이 있으면 Evidence 없이 `failed_closed`가 된다.
 - watermark 이후 late Event의 DLQ/fail-closed는 Role3 ingress 계약을 그대로 따른다. Role2는
@@ -120,17 +107,19 @@ post-Run tail Event는 수집 완결성 확인용이며 해당 Run의 selector �
 extractor를 다시 구현하지 않고 close 시점에 동일 함수를 호출한다.
 
 `R1IncrementalEvidenceSnapshot.availability`는 Role1 causal consumer에 넘길
-`Evidence + available_at` 최소 전달 계약이다. 기존 `r1-causal-availability/v0.1` artifact는
-`available_at = run_end`인 whole-episode 전용이므로 의미를 변경하지 않는다. 증분 결과의
-영속 artifact와 production wiring은 별도 versioned 계약으로 연결한다.
+`Evidence + available_at` 최소 전달 계약이다. v0.1은 기존
+`r1-causal-availability/v0.1`과 동일하게 `available_at = run_end`인 whole-episode 의미만
+사용한다. 조기 availability를 기존 모델로 노출하지 않으며, 증분 결과의 영속 artifact와
+production wiring은 별도 versioned 계약으로 연결한다.
 
 ## 8. 현재 제한
 
 - 최초 WMI Pilot은 계속 `OFFLINE WHOLE-EPISODE ONLY`이다.
-- #269 v0.1은 accepted `run_closed` 이전의 seal 발급을 지원하지 않는다. 진행 중 watermark만으로
-  확정하려면 late Event, correction/retraction 의미를 포함한 별도 후속 contract/version이 필요하다.
-- Role2-safe verified-close proof가 등록되기 전에는 minimal boundary의 외부 artifact 소비를
-  허용하지 않는다.
+- PR `#269` v0.1은 accepted `run_closed` 이전의 seal 발급을 지원하지 않는다. 진행 중
+  watermark만으로 확정하려면 late Event, correction/retraction 의미를 포함한 별도 후속
+  contract/version이 필요하다.
+- Role2-safe verified-close proof가 등록되기 전에는 minimal boundary 객체를 입력으로 받아도
+  거부한다.
 - availability/no-look-ahead 통합 검증 전에는 Temporal Replay, TTSD, online/causal 성능 주장에
   사용하지 않는다.
 - v0는 확정 뒤 late Event에 따른 철회·보정을 지원하지 않는다.

@@ -133,6 +133,8 @@ def _approved_policy() -> ApprovedLineagePolicy:
         version="v0.1",
         config_hash="f5ca732ab6987bbca9d2d44fa51eb30c0a13ba980545b4cbf7c64c7ccf2b5a9a",
         approved_lineage=("WmiPrvSE.exe", "wscript.exe", "powershell.exe"),
+        family_id="wmi_management",
+        lifecycle="development",
     )
 
 
@@ -141,6 +143,7 @@ def _state() -> R1IncrementalEvidenceState:
         run_id=_RUN_ID,
         entity_id=_HOST_ID,
         run_start=_RUN_START,
+        scenario_family_id="wmi_management",
         selector_policy=_selector_policy(),
         approved_policy=_approved_policy(),
     )
@@ -151,6 +154,7 @@ def _chunk(
     *,
     chunk_id: str,
     sequence: int,
+    source_channel: str = "Microsoft-Windows-Sysmon/Operational",
 ) -> R1EventChunk:
     payload: dict[str, object] = {
         "schema": "r1-incremental-stream",
@@ -161,7 +165,7 @@ def _chunk(
             "run_id": _RUN_ID,
             "host_id": events[0].host_id,
             "source": "sysmon",
-            "source_channel": "Microsoft-Windows-Sysmon/Operational",
+            "source_channel": source_channel,
         },
         "chunk_sequence": sequence,
         "chunk_content_sha256": "0" * 64,
@@ -182,7 +186,12 @@ def _chunk(
     return chunk.model_copy(update={"chunk_content_sha256": digest})
 
 
-def _run_closed(*, watermark_at: datetime = _RUN_END) -> R1RunClosed:
+def _run_closed(
+    *,
+    watermark_at: datetime = _RUN_END,
+    covered_through_chunk_sequence: int = 2,
+    emitted_at: datetime = _BOUNDARY_AT + timedelta(seconds=2),
+) -> R1RunClosed:
     return R1RunClosed.model_validate(
         {
             "schema": "r1-incremental-stream",
@@ -202,10 +211,10 @@ def _run_closed(*, watermark_at: datetime = _RUN_END) -> R1RunClosed:
                     "watermark_sequence": 2,
                     "watermark_at": watermark_at,
                     "allowed_lateness_ms": 30000,
-                    "covered_through_chunk_sequence": 2,
+                    "covered_through_chunk_sequence": covered_through_chunk_sequence,
                 }
             ],
-            "emitted_at": _BOUNDARY_AT + timedelta(seconds=2),
+            "emitted_at": emitted_at,
         }
     )
 
@@ -232,6 +241,42 @@ def test_constructor_exposes_no_ground_truth_or_label_input() -> None:
     assert names.isdisjoint({"ground_truth", "run_type", "attack_label", "label"})
 
 
+def test_constructor_requires_family_bound_policy_for_the_scenario_family() -> None:
+    legacy = ApprovedLineagePolicy(
+        policy_id="legacy",
+        version="v0.1",
+        config_hash="a" * 64,
+        approved_lineage=("WmiPrvSE.exe", "wscript.exe", "powershell.exe"),
+    )
+    mismatch = ApprovedLineagePolicy(
+        policy_id="other-family",
+        version="v0.1",
+        config_hash="b" * 64,
+        approved_lineage=("WmiPrvSE.exe", "wscript.exe", "powershell.exe"),
+        family_id="remote_management",
+        lifecycle="development",
+    )
+
+    with pytest.raises(ValueError, match="legacy unbound"):
+        R1IncrementalEvidenceState(
+            run_id=_RUN_ID,
+            entity_id=_HOST_ID,
+            run_start=_RUN_START,
+            scenario_family_id="wmi_management",
+            selector_policy=_selector_policy(),
+            approved_policy=legacy,
+        )
+    with pytest.raises(ValueError, match="does not match"):
+        R1IncrementalEvidenceState(
+            run_id=_RUN_ID,
+            entity_id=_HOST_ID,
+            run_start=_RUN_START,
+            scenario_family_id="wmi_management",
+            selector_policy=_selector_policy(),
+            approved_policy=mismatch,
+        )
+
+
 def test_does_not_publish_evidence_before_close() -> None:
     state = _state()
 
@@ -244,80 +289,16 @@ def test_does_not_publish_evidence_before_close() -> None:
     assert state.snapshot.available_at is None
 
 
-def test_verified_seal_and_run_close_finalize_evidence_causally() -> None:
-    state = _state()
-    _accept_all_events(state)
-
-    state.accept_run_closed(_run_closed())
-    result = state.accept_verified_boundary(_verified_boundary())
-
-    assert result.status == "finalized"
-    assert result.close_mode == "verified_candidate_generation_seal"
-    assert result.candidate_boundary_at == _BOUNDARY_AT
-    assert result.available_at == _BOUNDARY_AT + timedelta(seconds=3)
-    assert result.available_at < _RUN_END
-    assert {item.evidence_type for item in result.evidences} == {
-        "remote_session_process_lineage_deviation",
-        "remote_process_network_follow_on",
-    }
-    assert {item.available_at for item in result.availability} == {result.available_at}
-    assert result.lineage_input is not None
-    assert result.lineage_input.context_event_ids == ("evt-context-root",)
-    assert all("evt-context-root" not in item.event_ids for item in result.evidences)
-
-
-def test_close_and_boundary_delivery_order_does_not_change_result() -> None:
-    first = _state()
-    second = _state()
-    _accept_all_events(first)
-    for chunk in (
-        _chunk(_events()[2:], chunk_id="CHK-002", sequence=2),
-        _chunk(_events()[:2], chunk_id="CHK-001", sequence=1),
-    ):
-        second.accept_chunk(chunk)
-
-    first.accept_run_closed(_run_closed())
-    first_result = first.accept_verified_boundary(_verified_boundary())
-    second.accept_verified_boundary(_verified_boundary())
-    second_result = second.accept_run_closed(_run_closed())
-
-    assert first_result == second_result
-
-
-def test_mismatched_boundary_does_not_finalize_and_can_fallback() -> None:
+def test_verified_close_is_disabled_until_role2_safe_proof_exists() -> None:
     state = _state()
     _accept_all_events(state)
     state.accept_run_closed(_run_closed())
 
-    pending = state.accept_verified_boundary(_verified_boundary(close_id="CLOSE-OTHER"))
-    fallback = state.finalize_at_run_end(_RUN_END)
+    with pytest.raises(ValueError, match="Role2-safe verified close proof"):
+        state.accept_verified_boundary(_verified_boundary())
 
-    assert pending.status == "provisional"
-    assert pending.diagnostics == ("verified boundary input_close_id does not match run_closed",)
-    assert fallback.status == "finalized"
-    assert fallback.close_mode == "authoritative_run_end_fallback"
-    assert fallback.available_at == _RUN_END
-    assert fallback.diagnostics == ("verified boundary input_close_id does not match run_closed",)
-
-
-def test_rejects_a_verified_seal_time_before_its_candidate_boundary() -> None:
-    state = _state()
-    invalid = _verified_boundary().model_copy(
-        update={"verified_seal_at": _BOUNDARY_AT - timedelta(milliseconds=1)}
-    )
-
-    with pytest.raises(ValueError, match="seal time must not precede"):
-        state.accept_verified_boundary(invalid)
-
-
-def test_rejects_a_verified_candidate_boundary_before_run_start() -> None:
-    state = _state()
-    invalid = _verified_boundary().model_copy(
-        update={"candidate_boundary_at": _RUN_START - timedelta(milliseconds=1)}
-    )
-
-    with pytest.raises(ValueError, match="boundary must not precede run_start"):
-        state.accept_verified_boundary(invalid)
+    assert state.snapshot.status == "provisional"
+    assert state.snapshot.evidences == ()
 
 
 def test_fallback_requires_accepted_close_and_watermark_coverage() -> None:
@@ -345,64 +326,72 @@ def test_fallback_replay_is_idempotent_and_conflicting_run_end_is_rejected() -> 
         state.finalize_at_run_end(_RUN_END + timedelta(seconds=1))
 
 
-def test_verified_close_waits_when_final_watermark_does_not_cover_boundary() -> None:
-    state = _state()
-    _accept_all_events(state)
-    state.accept_verified_boundary(_verified_boundary())
-
-    result = state.accept_run_closed(
-        _run_closed(watermark_at=_BOUNDARY_AT - timedelta(milliseconds=1))
-    )
-
-    assert result.status == "provisional"
-    assert result.evidences == ()
-    assert result.diagnostics == ("every entity final watermark must cover the candidate boundary",)
-
-
-def test_verified_close_availability_waits_for_the_later_run_close() -> None:
-    state = _state()
-    _accept_all_events(state)
-    boundary = _verified_boundary()
-    close = _run_closed().model_copy(
-        update={"emitted_at": boundary.verified_seal_at + timedelta(milliseconds=1)}
-    )
-
-    state.accept_verified_boundary(boundary)
-    result = state.accept_run_closed(close)
-
-    assert result.status == "finalized"
-    assert result.available_at == close.emitted_at
-
-
-def test_candidate_after_verified_boundary_does_not_change_closed_selection() -> None:
+def test_run_close_waits_for_covered_chunk_sequences_delivered_after_control() -> None:
     state = _state()
     events = _events()
-    late_guid = "{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}"
-    after_boundary = (
-        _event(
-            "evt-after-terminal",
-            "process_create",
-            _BOUNDARY_AT + timedelta(seconds=1),
-            late_guid,
-            process_name="other.exe",
-        ),
-        _event(
-            "evt-after-network",
-            "network_connection",
-            _BOUNDARY_AT + timedelta(seconds=2),
-            late_guid,
-            process_name="other.exe",
-        ),
-    )
-    state.accept_chunk(_chunk(events, chunk_id="CHK-001", sequence=1))
-    state.accept_chunk(_chunk(after_boundary, chunk_id="CHK-002", sequence=2))
+    state.accept_chunk(_chunk(events[:2], chunk_id="CHK-001", sequence=1))
 
-    state.accept_run_closed(_run_closed())
-    result = state.accept_verified_boundary(_verified_boundary())
+    pending = state.accept_run_closed(_run_closed())
 
+    assert pending.status == "accumulating"
+    assert pending.evidences == ()
+    assert "covered chunk sequence is missing" in pending.diagnostics[0]
+
+    completed = state.accept_chunk(_chunk(events[2:], chunk_id="CHK-002", sequence=2))
+    result = state.finalize_at_run_end(_RUN_END)
+
+    assert completed.status == "provisional"
+    assert completed.diagnostics == ()
     assert result.status == "finalized"
-    assert result.selector_result.selection is not None
-    assert result.selector_result.selection.terminal_event_id == "evt-terminal"
+    assert result.available_at == _RUN_END
+
+
+def test_missing_covered_chunk_sequence_fails_closed_at_finalization() -> None:
+    state = _state()
+    state.accept_chunk(_chunk(_events()[:2], chunk_id="CHK-001", sequence=1))
+    state.accept_run_closed(_run_closed())
+
+    result = state.finalize_at_run_end(_RUN_END)
+
+    assert result.status == "failed_closed"
+    assert result.evidences == ()
+    assert result.available_at == _RUN_END
+    assert "covered chunk sequence is missing" in result.diagnostics[0]
+
+
+def test_chunk_after_run_close_must_be_within_declared_partition_coverage() -> None:
+    state = _state()
+    events = _events()
+    state.accept_chunk(_chunk(events[:2], chunk_id="CHK-001", sequence=1))
+    state.accept_run_closed(_run_closed(covered_through_chunk_sequence=1))
+
+    with pytest.raises(ValueError, match="exceeds run_closed coverage"):
+        state.accept_chunk(_chunk(events[2:], chunk_id="CHK-002", sequence=2))
+
+
+def test_chunk_after_run_close_rejects_an_unsealed_partition() -> None:
+    state = _state()
+    _accept_all_events(state)
+    state.accept_run_closed(_run_closed())
+    other_host = _event(
+        "evt-target-b",
+        "process_create",
+        _RUN_START + timedelta(seconds=1),
+        "{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}",
+        host_id="R1-TGTB",
+    )
+
+    with pytest.raises(ValueError, match="partition is not sealed"):
+        state.accept_chunk(_chunk((other_host,), chunk_id="CHK-001", sequence=1))
+
+
+def test_exact_chunk_replay_remains_idempotent_after_run_close() -> None:
+    state = _state()
+    chunk = _chunk(_events(), chunk_id="CHK-001", sequence=1)
+    state.accept_chunk(chunk)
+    closed = state.accept_run_closed(_run_closed(covered_through_chunk_sequence=1))
+
+    assert state.accept_chunk(chunk) == closed
 
 
 def test_later_candidate_invalidates_provisional_selection_until_close() -> None:
@@ -550,15 +539,49 @@ def test_rejects_reused_event_identity_with_different_content() -> None:
         state.accept_chunk(_chunk((conflicting,), chunk_id="CHK-002", sequence=2))
 
 
-def test_rejects_new_chunk_after_run_close_but_allows_exact_replay() -> None:
+def test_partition_scoped_chunk_and_event_identities_do_not_conflict() -> None:
     state = _state()
-    first = _chunk(_events()[:2], chunk_id="CHK-001", sequence=1)
-    state.accept_chunk(first)
+    target_a = _event(
+        "evt-shared",
+        "process_create",
+        _RUN_START,
+        _MIDDLE_GUID,
+        parent_process_guid=_ROOT_GUID,
+        process_name="cmd.exe",
+    )
+    target_b = _event(
+        "evt-shared",
+        "process_create",
+        _RUN_START + timedelta(milliseconds=1),
+        "{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}",
+        process_name="other.exe",
+        host_id="R1-TGTB",
+    )
+
+    state.accept_chunk(_chunk((target_a,), chunk_id="CHK-SHARED", sequence=1))
+    state.accept_chunk(_chunk((target_b,), chunk_id="CHK-SHARED", sequence=1))
+
+    assert state.snapshot.status == "accumulating"
+
+
+def test_accepted_partition_absent_from_run_close_fails_closed() -> None:
+    state = _state()
+    _accept_all_events(state)
+    other_host = _event(
+        "evt-target-b",
+        "process_create",
+        _RUN_START + timedelta(seconds=1),
+        "{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}",
+        host_id="R1-TGTB",
+    )
+    state.accept_chunk(_chunk((other_host,), chunk_id="CHK-B-001", sequence=1))
     state.accept_run_closed(_run_closed())
 
-    assert state.accept_chunk(first) == state.snapshot
-    with pytest.raises(ValueError, match="after run_closed"):
-        state.accept_chunk(_chunk(_events()[2:], chunk_id="CHK-002", sequence=2))
+    result = state.finalize_at_run_end(_RUN_END)
+
+    assert result.status == "failed_closed"
+    assert result.evidences == ()
+    assert "accepted chunk partition is absent" in result.diagnostics[0]
 
 
 def test_run_close_replay_is_idempotent_and_conflicting_close_fails() -> None:
@@ -572,34 +595,24 @@ def test_run_close_replay_is_idempotent_and_conflicting_close_fails() -> None:
         state.accept_run_closed(close.model_copy(update={"close_id": "CLOSE-OTHER"}))
 
 
-def test_fallback_finalization_cannot_be_reopened_by_a_late_verified_boundary() -> None:
+def test_fallback_availability_is_authoritative_run_end_not_close_emission() -> None:
     state = _state()
     _accept_all_events(state)
-    state.accept_run_closed(_run_closed())
+    state.accept_run_closed(_run_closed(emitted_at=_RUN_END + timedelta(seconds=30)))
+
     finalized = state.finalize_at_run_end(_RUN_END)
 
-    with pytest.raises(ValueError, match="already terminal"):
-        state.accept_verified_boundary(_verified_boundary())
-
-    assert state.snapshot == finalized
-
-
-def test_exact_verified_boundary_replay_is_idempotent_after_finalization() -> None:
-    state = _state()
-    _accept_all_events(state)
-    state.accept_run_closed(_run_closed())
-    boundary = _verified_boundary()
-    finalized = state.accept_verified_boundary(boundary)
-
-    assert state.accept_verified_boundary(boundary) == finalized
+    assert finalized.status == "finalized"
+    assert finalized.available_at == _RUN_END
+    assert {item.available_at for item in finalized.availability} == {_RUN_END}
 
 
 def test_final_close_fails_closed_when_lineage_is_incomplete() -> None:
     state = _state()
     state.accept_chunk(_chunk(_events()[2:], chunk_id="CHK-001", sequence=1))
-    state.accept_run_closed(_run_closed())
+    state.accept_run_closed(_run_closed(covered_through_chunk_sequence=1))
 
-    result = state.accept_verified_boundary(_verified_boundary())
+    result = state.finalize_at_run_end(_RUN_END)
 
     assert result.status == "failed_closed"
     assert result.evidences == ()
@@ -620,9 +633,6 @@ def test_ignores_other_host_events_for_host_local_selection() -> None:
     )
     state.accept_chunk(_chunk(other_host_events, chunk_id="CHK-B-001", sequence=1))
 
-    state.accept_run_closed(_run_closed())
-    result = state.accept_verified_boundary(_verified_boundary())
-
-    assert result.status == "finalized"
-    assert result.selector_result.selection is not None
-    assert result.selector_result.selection.entity_id == _HOST_ID
+    assert state.snapshot.status == "provisional"
+    assert state.snapshot.selector_result.selection is not None
+    assert state.snapshot.selector_result.selection.entity_id == _HOST_ID

@@ -11,7 +11,14 @@ from incident_awareness.collection.r1_candidate_generation_seal import (
 )
 from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.common.models.evidence import Evidence
-from incident_awareness.common.models.r1_stream import R1EventChunk, R1RunClosed
+from incident_awareness.common.models.r1_stream import (
+    R1EventChunk,
+    R1RunClosed,
+    R1StreamPartition,
+)
+from incident_awareness.evidence.r1_approved_lineage_policy import (
+    validate_r1_policy_family_binding,
+)
 from incident_awareness.evidence.r1_multi_event import (
     ApprovedLineagePolicy,
     R1ExtractionDiagnostic,
@@ -30,10 +37,11 @@ from incident_awareness.pipeline.r1_evidence import (
 )
 
 type R1IncrementalStatus = Literal["accumulating", "provisional", "finalized", "failed_closed"]
-type R1IncrementalCloseMode = Literal[
-    "verified_candidate_generation_seal",
-    "authoritative_run_end_fallback",
-]
+type R1IncrementalCloseMode = Literal["authoritative_run_end_fallback"]
+type _PartitionKey = tuple[str, str, str, str]
+type _ChunkIdentity = tuple[str, str, str, str, str, str, str]
+type _ChunkSequenceIdentity = tuple[str, str, str, str, str, str, int]
+type _EventIdentity = tuple[str, str, str, str, str, str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +76,7 @@ class R1IncrementalEvidenceState:
         run_id: str,
         entity_id: str,
         run_start: datetime,
+        scenario_family_id: str,
         selector_policy: R1SelectorPolicy,
         approved_policy: ApprovedLineagePolicy,
     ) -> None:
@@ -78,17 +87,18 @@ class R1IncrementalEvidenceState:
             raise TypeError("selector_policy must be an R1SelectorPolicy")
         if not isinstance(approved_policy, ApprovedLineagePolicy):
             raise TypeError("approved_policy must be an ApprovedLineagePolicy")
+        validate_r1_policy_family_binding(scenario_family_id, approved_policy)
         if selector_policy.lineage_event_count != len(approved_policy.approved_lineage):
             raise ValueError("selector lineage_event_count must match approved_lineage length")
+        self._scenario_family_id = scenario_family_id
         self._selector_policy = selector_policy
         self._approved_policy = approved_policy
 
-        self._events_by_id: dict[str, NormalizedEvent] = {}
-        self._event_hashes: dict[str, str] = {}
-        self._chunk_hashes: dict[str, str] = {}
-        self._chunk_sequence_identities: dict[tuple[str, str, str, str, int], str] = {}
+        self._events_by_identity: dict[_EventIdentity, NormalizedEvent] = {}
+        self._event_hashes: dict[_EventIdentity, str] = {}
+        self._chunk_hashes: dict[_ChunkIdentity, str] = {}
+        self._chunk_sequence_identities: dict[_ChunkSequenceIdentity, str] = {}
         self._run_closed: R1RunClosed | None = None
-        self._verified_boundary: R1VerifiedCandidateBoundary | None = None
         self._snapshot = self._provisional_snapshot()
 
     @property
@@ -105,44 +115,56 @@ class R1IncrementalEvidenceState:
         chunk_hash = _chunk_sha256(chunk)
         if chunk_hash != chunk.chunk_content_sha256:
             raise ValueError("chunk_content_sha256 does not match the canonical chunk payload")
-        existing_chunk_hash = self._chunk_hashes.get(chunk.chunk_id)
+        partition_key = _partition_key(chunk.partition)
+        chunk_identity = (
+            chunk.schema_id,
+            chunk.contract_version,
+            *partition_key,
+            chunk.chunk_id,
+        )
+        existing_chunk_hash = self._chunk_hashes.get(chunk_identity)
         if existing_chunk_hash is not None:
             if existing_chunk_hash != chunk_hash:
                 raise ValueError("chunk identity was reused with different content")
             return self._snapshot
-        if self._run_closed is not None:
-            raise ValueError("new chunk cannot be accepted after run_closed")
         if self._snapshot.status in {"finalized", "failed_closed"}:
             raise ValueError("incremental state is already terminal")
+        if self._run_closed is not None:
+            self._validate_chunk_after_run_closed(chunk)
 
         sequence_key = (
-            chunk.partition.run_id,
-            chunk.partition.host_id,
-            chunk.partition.source,
-            chunk.partition.source_channel,
+            chunk.schema_id,
+            chunk.contract_version,
+            *partition_key,
             chunk.chunk_sequence,
         )
         existing_chunk_id = self._chunk_sequence_identities.get(sequence_key)
         if existing_chunk_id is not None and existing_chunk_id != chunk.chunk_id:
             raise ValueError("chunk sequence was reused by another identity")
 
-        event_updates: list[tuple[NormalizedEvent, str]] = []
+        event_updates: list[tuple[NormalizedEvent, str, _EventIdentity]] = []
         for event in chunk.events:
             event_hash = _event_sha256(event)
-            existing_event_hash = self._event_hashes.get(event.event_id)
+            event_identity = (
+                chunk.schema_id,
+                chunk.contract_version,
+                *partition_key,
+                event.event_id,
+            )
+            existing_event_hash = self._event_hashes.get(event_identity)
             if existing_event_hash is not None:
                 if existing_event_hash != event_hash:
                     raise ValueError("Event identity was reused with different content")
                 continue
-            event_updates.append((event, event_hash))
+            event_updates.append((event, event_hash, event_identity))
 
-        self._chunk_hashes[chunk.chunk_id] = chunk_hash
+        self._chunk_hashes[chunk_identity] = chunk_hash
         self._chunk_sequence_identities[sequence_key] = chunk.chunk_id
-        for event, event_hash in event_updates:
-            self._event_hashes[event.event_id] = event_hash
+        for event, event_hash, event_identity in event_updates:
+            self._event_hashes[event_identity] = event_hash
             if event.host_id == self._entity_id:
-                self._events_by_id[event.event_id] = event
-        self._snapshot = self._provisional_snapshot()
+                self._events_by_identity[event_identity] = event
+        self._snapshot = self._provisional_snapshot(diagnostics=self._chunk_coverage_diagnostics())
         return self._snapshot
 
     def accept_run_closed(self, run_closed: R1RunClosed) -> R1IncrementalEvidenceSnapshot:
@@ -157,29 +179,19 @@ class R1IncrementalEvidenceState:
             return self._snapshot
         self._require_entity_partition(run_closed)
         self._run_closed = run_closed
-        return self._try_verified_close()
+        self._snapshot = self._provisional_snapshot(diagnostics=self._chunk_coverage_diagnostics())
+        return self._snapshot
 
     def accept_verified_boundary(
         self,
         boundary: R1VerifiedCandidateBoundary,
     ) -> R1IncrementalEvidenceSnapshot:
-        """같은 신뢰 경계에서 Role4가 검증한 candidate boundary를 기록한다."""
+        """v0.1에서는 독립 검증 가능한 proof가 없어 verified close를 거부한다."""
         if not isinstance(boundary, R1VerifiedCandidateBoundary):
             raise TypeError("boundary must be an R1VerifiedCandidateBoundary")
         if boundary.run_id != self._run_id:
             raise ValueError("verified boundary run_id does not match incremental state")
-        if boundary.candidate_boundary_at < self._run_start:
-            raise ValueError("verified candidate boundary must not precede run_start")
-        if boundary.verified_seal_at < boundary.candidate_boundary_at:
-            raise ValueError("verified seal time must not precede candidate boundary")
-        if self._verified_boundary is not None:
-            if self._verified_boundary != boundary:
-                raise ValueError("incremental state already has a different verified boundary")
-            return self._snapshot
-        if self._snapshot.status in {"finalized", "failed_closed"}:
-            raise ValueError("incremental state is already terminal")
-        self._verified_boundary = boundary
-        return self._try_verified_close()
+        raise ValueError("Role2-safe verified close proof is not available in v0.1")
 
     def finalize_at_run_end(self, authoritative_run_end: datetime) -> R1IncrementalEvidenceSnapshot:
         """검증 seal이 없을 때만 명시적 authoritative run_end로 fallback한다."""
@@ -197,38 +209,23 @@ class R1IncrementalEvidenceState:
             return self._snapshot
         if self._run_closed is None:
             raise ValueError("accepted run_closed is required before stream fallback finalization")
-        self._require_watermark_coverage(run_end)
-        diagnostics = self._snapshot.diagnostics or (
-            "verified candidate-generation boundary is absent or not bound to run_closed",
-        )
-        available_at = max(run_end, self._run_closed.emitted_at)
-        return self._finalize(
-            boundary_at=run_end,
-            available_at=available_at,
-            close_mode="authoritative_run_end_fallback",
-            diagnostics=diagnostics,
-        )
-
-    def _try_verified_close(self) -> R1IncrementalEvidenceSnapshot:
-        if self._run_closed is None or self._verified_boundary is None:
-            return self._snapshot
-        boundary = self._verified_boundary
-        if boundary.input_close_id != self._run_closed.close_id:
-            self._snapshot = self._provisional_snapshot(
-                diagnostics=("verified boundary input_close_id does not match run_closed",)
+        coverage_diagnostics = self._chunk_coverage_diagnostics()
+        if coverage_diagnostics:
+            self._snapshot = R1IncrementalEvidenceSnapshot(
+                status="failed_closed",
+                selector_result=self._snapshot.selector_result,
+                close_mode="authoritative_run_end_fallback",
+                candidate_boundary_at=run_end,
+                available_at=run_end,
+                diagnostics=coverage_diagnostics,
             )
             return self._snapshot
-        try:
-            self._require_watermark_coverage(boundary.candidate_boundary_at)
-        except ValueError as error:
-            self._snapshot = self._provisional_snapshot(diagnostics=(str(error),))
-            return self._snapshot
-        available_at = max(self._run_closed.emitted_at, boundary.verified_seal_at)
+        self._require_watermark_coverage(run_end)
         return self._finalize(
-            boundary_at=boundary.candidate_boundary_at,
-            available_at=available_at,
-            close_mode="verified_candidate_generation_seal",
-            diagnostics=(),
+            boundary_at=run_end,
+            available_at=run_end,
+            close_mode="authoritative_run_end_fallback",
+            diagnostics=("Role2-safe verified close proof is unavailable; used run_end fallback",),
         )
 
     def _finalize(
@@ -324,7 +321,11 @@ class R1IncrementalEvidenceState:
 
     def _ordered_events(self) -> tuple[NormalizedEvent, ...]:
         return tuple(
-            sorted(self._events_by_id.values(), key=lambda event: (event.timestamp, event.event_id))
+            event
+            for _, event in sorted(
+                self._events_by_identity.items(),
+                key=lambda item: (item[1].timestamp, item[1].event_id, item[0]),
+            )
         )
 
     def _eligible_events(self, boundary_at: datetime) -> tuple[NormalizedEvent, ...]:
@@ -335,6 +336,57 @@ class R1IncrementalEvidenceState:
             item.partition.host_id == self._entity_id for item in run_closed.final_watermarks
         ):
             raise ValueError("run_closed does not contain a final watermark for entity_id")
+
+    def _validate_chunk_after_run_closed(self, chunk: R1EventChunk) -> None:
+        assert self._run_closed is not None
+        matching = tuple(
+            item
+            for item in self._run_closed.final_watermarks
+            if _partition_key(item.partition) == _partition_key(chunk.partition)
+        )
+        if not matching:
+            raise ValueError("new chunk partition is not sealed by run_closed")
+        if chunk.chunk_sequence > matching[0].covered_through_chunk_sequence:
+            raise ValueError("new chunk sequence exceeds run_closed coverage")
+
+    def _chunk_coverage_diagnostics(self) -> tuple[str, ...]:
+        if self._run_closed is None:
+            return ()
+
+        accepted: dict[_PartitionKey, set[int]] = {}
+        for sequence_key in self._chunk_sequence_identities:
+            partition_key = sequence_key[2:6]
+            accepted.setdefault(partition_key, set()).add(sequence_key[6])
+
+        final_by_partition = {
+            _partition_key(item.partition): item.covered_through_chunk_sequence
+            for item in self._run_closed.final_watermarks
+        }
+        diagnostics: list[str] = []
+        for partition_key in sorted(accepted):
+            if partition_key not in final_by_partition:
+                diagnostics.append(
+                    "accepted chunk partition is absent from run_closed: "
+                    + _format_partition_key(partition_key)
+                )
+
+        for partition_key, covered_through in sorted(final_by_partition.items()):
+            sequences = accepted.get(partition_key, set())
+            excess = tuple(sorted(sequence for sequence in sequences if sequence > covered_through))
+            if excess:
+                diagnostics.append(
+                    "accepted chunk sequence exceeds run_closed coverage for "
+                    + _format_partition_key(partition_key)
+                    + f": {excess}"
+                )
+            missing = tuple(sorted(set(range(1, covered_through + 1)) - sequences))
+            if missing:
+                diagnostics.append(
+                    "run_closed covered chunk sequence is missing for "
+                    + _format_partition_key(partition_key)
+                    + f": {missing}"
+                )
+        return tuple(diagnostics)
 
     def _require_watermark_coverage(self, boundary_at: datetime) -> None:
         assert self._run_closed is not None
@@ -382,6 +434,19 @@ def _event_sha256(event: NormalizedEvent) -> str:
 def _canonical_sha256(payload: object) -> str:
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _partition_key(partition: R1StreamPartition) -> _PartitionKey:
+    return (
+        partition.run_id,
+        partition.host_id,
+        partition.source,
+        partition.source_channel,
+    )
+
+
+def _format_partition_key(partition_key: _PartitionKey) -> str:
+    return "/".join(partition_key)
 
 
 __all__ = [
