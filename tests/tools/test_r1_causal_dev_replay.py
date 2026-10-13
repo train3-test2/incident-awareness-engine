@@ -359,6 +359,39 @@ def test_check_can_select_exactly_one_target_run(replay_fixture: ReplayFixture) 
     assert plan.runs[0].pair_id == replay.EXPECTED_PAIR_IDS[selected_run_id]
 
 
+def test_run_metadata_validation_and_hash_share_one_file_read(
+    replay_fixture: ReplayFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    run_id = replay.TARGET_RUN_IDS[0]
+    metadata_path = next(
+        path.resolve()
+        for path in replay_fixture.extracted_root.rglob("run_metadata.json")
+        if run_id in path.parts
+    )
+    expected_content = metadata_path.read_bytes()
+    original_read_bytes = Path.read_bytes
+    selected_read_count = 0
+
+    def tracked_read_bytes(path: Path) -> bytes:
+        nonlocal selected_read_count
+        if path.resolve() == metadata_path:
+            selected_read_count += 1
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", tracked_read_bytes)
+
+    # When
+    metadata, source = replay._discover_run_metadata(replay_fixture.extracted_root, run_id)
+
+    # Then
+    assert selected_read_count == 1
+    assert metadata == RunMetadata.model_validate_json(expected_content)
+    assert source.path == metadata_path
+    assert source.sha256 == hashlib.sha256(expected_content).hexdigest()
+
+
 def test_validation_rejects_source_file_tampering(replay_fixture: ReplayFixture) -> None:
     # Given
     normalized_path = (

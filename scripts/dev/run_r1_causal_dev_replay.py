@@ -445,7 +445,8 @@ def _discover_run_metadata(extracted_root: Path, run_id: str) -> tuple[RunMetada
             f"found {len(candidates)}"
         )
     metadata_path = next(iter(candidates))
-    run_metadata = RunMetadata.model_validate_json(metadata_path.read_bytes())
+    metadata_content = metadata_path.read_bytes()
+    run_metadata = RunMetadata.model_validate_json(metadata_content)
     if run_metadata.run_id != run_id:
         raise ValueError("RunMetadata run_id does not match its discovered Run")
     if run_metadata.family_id != EXPECTED_FAMILY_ID:
@@ -454,7 +455,10 @@ def _discover_run_metadata(extracted_root: Path, run_id: str) -> tuple[RunMetada
         raise ValueError(f"RunMetadata target_host mismatch for {run_id}")
     if run_metadata.end_time is None:
         raise ValueError(f"RunMetadata end_time is required for {run_id}")
-    return run_metadata, SourceFile(path=metadata_path, sha256=_sha256_file(metadata_path))
+    return run_metadata, SourceFile(
+        path=metadata_path,
+        sha256=_sha256_bytes(metadata_content),
+    )
 
 
 def _validate_manifest_identity(
