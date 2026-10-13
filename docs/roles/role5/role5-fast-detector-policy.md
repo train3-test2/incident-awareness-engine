@@ -889,8 +889,8 @@ Rule hit
 `hit_id`는 최초 결과만을 식별하는 키가 아니라 개별 qualifying hit의 provenance 키다.
 First Cycle의 임시 표기는 `{run_id}-hit-{source_row_index}`이며, 원본 Hayabusa 출력 행 순서를
 사용하므로 재실행 시 행 순서가 바뀌면 안정성을 보장하지 않는다. 정본은
-[공통 결과 Contract의 FastHitRecord 절](../schema/result-contracts.md)과
-[Data Contract v0.2의 FastHitRecord 절](../data-contract-v0.2.md)이다.
+[공통 결과 Contract의 FastHitRecord 절](../../schema/result-contracts.md)과
+[Data Contract v0.2의 FastHitRecord 절](../../data-contract-v0.2.md)이다.
 행 번호 기준, 여러 trace를 같은 Run에 연결할 때의 충돌 방지 및 최종 생성 규칙은
 역할 3·5가 Adapter 구현 전에 맞춘다. 모든 유효한 hit는 최초 결과 선택 이후에도
 `source_hit_id` 등의 provenance 표현으로 추적 가능해야 한다.
@@ -919,8 +919,8 @@ qualifying condition 또는 Rule load 설정이 바뀌면 실행 configuration �
 조사 로그와 원본 CSV의 timestamp는 원문 그대로 보존한다.
 Raw Hayabusa output에서 canonical `FastHitRecord`를 생성하는 Fast runner의 출력 변환 경계에서
 UTC ISO 8601 millisecond 형식으로 정규화하고, Fast Adapter가 생성하는 `DetectionResult`에도
-같은 형식을 유지한다. 기준은 [공통 결과 Contract](../schema/result-contracts.md)의 시간 규칙과
-[Data Contract v0.2](../data-contract-v0.2.md)의 FastHitRecord 정의다.
+같은 형식을 유지한다. 기준은 [공통 결과 Contract](../../schema/result-contracts.md)의 시간 규칙과
+[Data Contract v0.2](../../data-contract-v0.2.md)의 FastHitRecord 정의다.
 밀리초 미만 처리 방식은 공통 Contract와 맞춰 구현 시 명시하며 이 문서에서 독자적으로 확정하지 않는다.
 시간 형식 정규화는 §12의 판단 가능 시각을 원 hit 시각으로 소급하는 근거가 되지 않는다.
 

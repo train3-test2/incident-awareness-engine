@@ -199,7 +199,8 @@ incident awareness/
 │   │   └── event-v0.md
 │   │
 │   ├── roles/
-│   │   └── role3-first-cycle.md
+│   │   └── role3/
+│   │       └── role3-first-cycle.md
 │   │
 │   └── technical-baseline.md
 │
@@ -278,7 +279,7 @@ src/incident_awareness/scenario/
 세부 Data Contract와 기술 기준은 다음 문서를 정본으로 따른다.
 
 ```text
-docs/roles/role3-first-cycle.md
+docs/roles/role3/role3-first-cycle.md
 → 3번 역할 범위와 구현 순서
 
 docs/data-contract-v0.2.md

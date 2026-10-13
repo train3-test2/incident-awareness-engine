@@ -9,7 +9,7 @@ Pair `R1-PAIR-20261005-002`: Attack `RUN-20261005-912`, Normal `RUN-20261005-913
 최종 승인 전 수집과 실제 값 검토·후보 실행 이력을 고려해 **development tuning 전용**으로 관리한다.
 공식 development 수량, train/validation/test, holdout 및 최종 성능 평가에서 제외한다.
 원본 index의 과거 `used_for_diagnostic_or_tuning=false`는 덮어쓰지 않고,
-[별도 사용 기록](validation/r1-pair002-data-usage.json)에 현재 `used_for_tuning=true`를 남긴다.
+[별도 사용 기록](../validation/r1-pair002-data-usage.json)에 현재 `used_for_tuning=true`를 남긴다.
 원본 EVTX/JSONL·실행 기록·metadata와 실제 생성 Evidence는 저장소에 게시하지 않는다.
 
 ## 무결성 및 reference 선행 확인
@@ -63,7 +63,7 @@ Normal 한 번의 0 hit를 FP 검증 완료로 해석하지 않는다.
   진단 없음은 선택한 계보의 추출 정상 완료이며 전체 수집 완전성 보증이 아니다.
 - Normal에도 후속 연결 Evidence가 있다. Evidence 발생 자체는 공격 판정이 아니다.
 
-[기계 판독 결과 및 입력 해시](validation/r1-pair002-connection.json)
+[기계 판독 결과 및 입력 해시](../validation/r1-pair002-connection.json)
 
 ## 재현과 selector 한계
 
@@ -131,7 +131,7 @@ uv run python tools/validation/check_fast_candidate_time.py \
 
 ## Baseline 입력 준비 및 동일 Run 시간 대조
 
-[입력 목록](validation/r1-pair002-input-inventory.json)은 Run별 Evidence·추출 summary·정규화 Event·metadata·Fast 시각 연결 파일의 SHA-256,
+[입력 목록](../validation/r1-pair002-input-inventory.json)은 Run별 Evidence·추출 summary·정규화 Event·metadata·Fast 시각 연결 파일의 SHA-256,
 extractor 버전, 관측 범위와 tuning 용도를 기록한다. 정확한 로컬 경로는 별도 로컬 산출물의
 input-inventory.json에 보존하며 저장소에는 경로 placeholder를 사용한다.
 기존 artifact reader 검증과 Fast 원본 JSONL 해시 일치 검사를 다시 통과했다.

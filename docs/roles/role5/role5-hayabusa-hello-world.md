@@ -49,7 +49,7 @@ Registry/RunMetadata 연결은 qualifying policy 승인 여부와 무관하게 �
 `Computer`는 원본 host 정보다. canonical `entity_id` 매핑과 `DetectionResult` 생성은
 역할 3 Fast Adapter의 책임이며, 역할 5는 공통 FastHitRecord의 native 정보를 보존한다.
 `FastHitRecord.timestamp`의 목표 형식은 공통 결과 계약
-[`result-contracts.md` §2-1](../schema/result-contracts.md)의 UTC ISO 8601 밀리초 표기다.
+[`result-contracts.md` §2-1](../../schema/result-contracts.md)의 UTC ISO 8601 밀리초 표기다.
 보존된 기록에는 실제 Timestamp와 전체 command/options가 없으므로 당시 Hayabusa의
 출력 시각 형식은 미확인이다. 목표 계약 준수가 당시 실행에서 검증됐다는 뜻은 아니다.
 기존 댓글의 `event_v0.host_id` 표현은 당시 계획 기록이며 이 문서에서 새 매핑 규칙으로
