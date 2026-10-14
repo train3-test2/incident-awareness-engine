@@ -8,6 +8,15 @@ R1_REQUIRED_PARTITION_SCHEMA = "r1-required-partitions"
 R1_REQUIRED_PARTITION_CONTRACT_VERSION = "v0.1"
 
 
+class R1RequiredPartition(BaseModel):
+    """One canonical source partition required for a bound target host."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source: Literal["sysmon"]
+    source_channel: Literal["Microsoft-Windows-Sysmon/Operational"]
+
+
 class R1RequiredPartitionContract(BaseModel):
     """Versioned envelope for the R1 canonical required-partition contract."""
 
@@ -24,8 +33,7 @@ class R1RequiredPartitionContract(BaseModel):
     )
     contract_version: Literal["v0.1"]
     target_host: StrictStr = Field(min_length=1)
-    source: Literal["sysmon"]
-    source_channel: Literal["Microsoft-Windows-Sysmon/Operational"]
+    required_partitions: tuple[R1RequiredPartition, ...] = Field(min_length=1)
 
     @field_validator("target_host")
     @classmethod
@@ -38,5 +46,6 @@ class R1RequiredPartitionContract(BaseModel):
 __all__ = [
     "R1_REQUIRED_PARTITION_CONTRACT_VERSION",
     "R1_REQUIRED_PARTITION_SCHEMA",
+    "R1RequiredPartition",
     "R1RequiredPartitionContract",
 ]

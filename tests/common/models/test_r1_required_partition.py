@@ -13,8 +13,12 @@ def _contract(**updates: object) -> dict[str, object]:
         "schema": R1_REQUIRED_PARTITION_SCHEMA,
         "contract_version": R1_REQUIRED_PARTITION_CONTRACT_VERSION,
         "target_host": "Target-A",
-        "source": "sysmon",
-        "source_channel": "Microsoft-Windows-Sysmon/Operational",
+        "required_partitions": [
+            {
+                "source": "sysmon",
+                "source_channel": "Microsoft-Windows-Sysmon/Operational",
+            }
+        ],
     }
     value.update(updates)
     return value
@@ -23,7 +27,7 @@ def _contract(**updates: object) -> dict[str, object]:
 def test_accepts_the_r1_required_partition_contract_envelope() -> None:
     contract = R1RequiredPartitionContract.model_validate(_contract())
 
-    assert contract.model_dump(by_alias=True) == _contract()
+    assert contract.model_dump(mode="json", by_alias=True) == _contract()
 
 
 @pytest.mark.parametrize(
@@ -49,6 +53,11 @@ def test_rejects_a_blank_or_noncanonical_target_host(target_host: str) -> None:
         R1RequiredPartitionContract.model_validate(_contract(target_host=target_host))
 
 
+def test_rejects_an_empty_required_partition_set() -> None:
+    with pytest.raises(ValidationError):
+        R1RequiredPartitionContract.model_validate(_contract(required_partitions=[]))
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -59,8 +68,13 @@ def test_rejects_a_blank_or_noncanonical_target_host(target_host: str) -> None:
     ],
 )
 def test_rejects_an_unsupported_source_or_source_channel(field: str, value: str) -> None:
+    partition = _contract()["required_partitions"][0]
+    assert isinstance(partition, dict)
+
     with pytest.raises(ValidationError):
-        R1RequiredPartitionContract.model_validate(_contract(**{field: value}))
+        R1RequiredPartitionContract.model_validate(
+            _contract(required_partitions=[{**partition, field: value}])
+        )
 
 
 def test_json_schema_exposes_the_canonical_schema_and_version() -> None:
@@ -71,7 +85,9 @@ def test_json_schema_exposes_the_canonical_schema_and_version() -> None:
         R1_REQUIRED_PARTITION_CONTRACT_VERSION
     )
     assert schema["properties"]["target_host"]["minLength"] == 1
-    assert schema["properties"]["source"]["const"] == "sysmon"
-    assert schema["properties"]["source_channel"]["const"] == (
+    assert schema["properties"]["required_partitions"]["minItems"] == 1
+    partition_schema = schema["$defs"]["R1RequiredPartition"]["properties"]
+    assert partition_schema["source"]["const"] == "sysmon"
+    assert partition_schema["source_channel"]["const"] == (
         "Microsoft-Windows-Sysmon/Operational"
     )
