@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 
 R1_REQUIRED_PARTITION_SCHEMA = "r1-required-partitions"
 R1_REQUIRED_PARTITION_CONTRACT_VERSION = "v0.1"
@@ -23,6 +23,14 @@ class R1RequiredPartitionContract(BaseModel):
         serialization_alias="schema",
     )
     contract_version: Literal["v0.1"]
+    target_host: StrictStr = Field(min_length=1)
+
+    @field_validator("target_host")
+    @classmethod
+    def validate_target_host(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("target_host must not contain leading or trailing whitespace")
+        return value
 
 
 __all__ = [

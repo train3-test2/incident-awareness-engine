@@ -12,6 +12,7 @@ def _contract(**updates: object) -> dict[str, object]:
     value: dict[str, object] = {
         "schema": R1_REQUIRED_PARTITION_SCHEMA,
         "contract_version": R1_REQUIRED_PARTITION_CONTRACT_VERSION,
+        "target_host": "Target-A",
     }
     value.update(updates)
     return value
@@ -40,6 +41,12 @@ def test_rejects_undefined_contract_fields() -> None:
         R1RequiredPartitionContract.model_validate(_contract(unexpected="value"))
 
 
+@pytest.mark.parametrize("target_host", ["", " Target-A", "Target-A "])
+def test_rejects_a_blank_or_noncanonical_target_host(target_host: str) -> None:
+    with pytest.raises(ValidationError):
+        R1RequiredPartitionContract.model_validate(_contract(target_host=target_host))
+
+
 def test_json_schema_exposes_the_canonical_schema_and_version() -> None:
     schema = R1RequiredPartitionContract.model_json_schema(by_alias=True)
 
@@ -47,3 +54,4 @@ def test_json_schema_exposes_the_canonical_schema_and_version() -> None:
     assert schema["properties"]["contract_version"]["const"] == (
         R1_REQUIRED_PARTITION_CONTRACT_VERSION
     )
+    assert schema["properties"]["target_host"]["minLength"] == 1
