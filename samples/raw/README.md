@@ -2,7 +2,7 @@
 
 ## 1. 목적
 
-`docs/roles/role3-first-cycle.md` Phase 2 의 **Sample 기반 변환** 입력이다.
+`docs/roles/role3/role3-first-cycle.md` Phase 2 의 **Sample 기반 변환** 입력이다.
 
 Sysmon Event ID 1 / 3 을 실제 Windows VM 에서 수집한 원본 구조 그대로 보존한다. Parser 와
 Normalizer 가 `docs/schema/event-v0.md` 를 만족하는 `NormalizedEvent` 를 만들 수 있는지

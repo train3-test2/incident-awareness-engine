@@ -33,7 +33,11 @@ import {
     buildScoreTrajectoryModel,
     resolveFusionEngineQueryState,
 } from "./fusion-engine-contract.mjs";
-import { createScoreTrajectoryChart } from "./fusion-score-chart.mjs";
+import { createDashboardReplayChart } from "./dashboard-replay-chart.mjs";
+import {
+    buildEventTimelineApiPath,
+    resolveEventTimelineQueryState,
+} from "./event-timeline-contract.mjs";
 import {
     getRuntimeProgressPresentation,
     getRuntimeStatePresentation,
@@ -53,10 +57,11 @@ const RUNTIME_ENDPOINT = "/operations/runtime?limit=5";
 const RUNTIME_POLL_INTERVAL_MS = 5000;
 const RUNTIME_REQUEST_TIMEOUT_MS = 10000;
 const ANALYSIS_REQUEST_TIMEOUT_MS = 10000;
+const EVENT_TIMELINE_LIMIT = 50;
 const SCORE_CHART_DIMENSIONS = {
     width: 960,
-    height: 360,
-    padding: { top: 28, right: 72, bottom: 44, left: 58 },
+    height: 180,
+    padding: { top: 50, right: 72, bottom: 27, left: 50 },
 };
 
 const dashboardView = document.getElementById("dashboard-view");
@@ -64,6 +69,9 @@ const totalRunsValue = document.getElementById("total-runs-value");
 const overviewStatus = document.getElementById("overview-status");
 const latestRuntimeState = document.getElementById("latest-runtime-state");
 const latestRuntimeUpdated = document.getElementById("latest-runtime-updated");
+const dashboardHeaderUpdated = document.getElementById("dashboard-header-updated");
+const systemStatusValue = document.getElementById("system-status-value");
+const activeRuntimeRun = document.getElementById("active-runtime-run");
 const runtimeTopStatus = document.getElementById("runtime-top-status");
 const pipelineStageContext = document.getElementById("pipeline-stage-context");
 const pipelineStageList = document.getElementById("pipeline-stage-list");
@@ -80,8 +88,43 @@ const selectedRunChart = document.getElementById("selected-run-chart");
 const selectedRunDetailLink = document.getElementById("selected-run-detail-link");
 const selectedRunFusionLink = document.getElementById("selected-run-fusion-link");
 const selectedRunRefreshButton = document.getElementById("selected-run-refresh");
+const previousRunButton = document.getElementById("dashboard-prev-run");
+const nextRunButton = document.getElementById("dashboard-next-run");
 const runsStatus = document.getElementById("runs-status");
 const runsList = document.getElementById("runs-list");
+const decisionTimelineList = document.getElementById("decision-timeline-list");
+const decisionTimelineStatus = document.getElementById("decision-timeline-status");
+const eventTypeSummary = document.getElementById("event-type-summary");
+const eventTypeSummaryStatus = document.getElementById("event-type-summary-status");
+const decisionHistoryList = document.getElementById("decision-history-list");
+const decisionHistoryStatus = document.getElementById("decision-history-status");
+const selectedRunTabs = [
+    {
+        button: document.getElementById("dashboard-tab-summary"),
+        panel: document.getElementById("dashboard-panel-summary"),
+        name: "summary",
+    },
+    {
+        button: document.getElementById("dashboard-tab-replay"),
+        panel: document.getElementById("dashboard-panel-replay"),
+        name: "replay",
+    },
+    {
+        button: document.getElementById("dashboard-tab-evidence"),
+        panel: document.getElementById("dashboard-panel-evidence"),
+        name: "evidence",
+    },
+    {
+        button: document.getElementById("dashboard-tab-decision"),
+        panel: document.getElementById("dashboard-panel-decision"),
+        name: "decision",
+    },
+    {
+        button: document.getElementById("dashboard-tab-workflow"),
+        panel: document.getElementById("dashboard-panel-workflow"),
+        name: "workflow",
+    },
+];
 
 let overviewState = resolveOverviewQueryState(null, { kind: "loading" });
 let runListState = resolveRunListQueryState(null, { kind: "loading" });
@@ -99,6 +142,8 @@ let runtimePollTimeoutId = null;
 let runtimePollingActive = false;
 let runtimeRequestInFlight = false;
 const selectedAnalysisAbortControllers = new Set();
+let selectedTimelineRequestVersion = 0;
+let selectedTimelineAbortController = null;
 
 function createStatusBadge(presentation) {
     const badge = document.createElement("span");
@@ -216,12 +261,38 @@ function createRunRow(run) {
     const detailLink = document.createElement("a");
     detailLink.href = buildRunDetailViewPath(run.run_id);
     detailLink.textContent = "Run Detail";
+    const runIdentifier = document.createElement("span");
+    const targetHost = document.createElement("small");
+    targetHost.textContent = `분석 대상 ${displayValue(run.target_host)}`;
+    runIdentifier.append(createSelectionButton(run.run_id), targetHost);
+
+    const matchingRuntime = runtimeState.items.find(
+        (runtime) => runtime.run_id === run.run_id && runtime.entity_id === run.target_host,
+    );
+    const runtimePresentation = matchingRuntime === undefined
+        ? null
+        : getRuntimeStatePresentation(matchingRuntime, runtimeState.telemetryAvailable);
+    const runtimeStatus = runtimePresentation === null
+        ? "최근 5건 미포함"
+        : runtimePresentation.telemetryLabel === "-"
+            ? runtimePresentation.statusLabel
+            : `${runtimePresentation.statusLabel} · ${runtimePresentation.telemetryLabel}`;
+    const runtimeProgress = matchingRuntime === undefined
+        ? "-"
+        : getRuntimeProgressPresentation(matchingRuntime).processed;
+    const start = Date.parse(run.start_time);
+    const end = run.end_time === null ? NaN : Date.parse(run.end_time);
+    const observationDuration = Number.isFinite(start) && Number.isFinite(end) && end >= start
+        ? `${Math.floor((end - start) / 60000)}분 ${Math.floor((end - start) % 60000 / 1000)}초`
+        : "-";
 
     row.append(
-        createTableCell(createSelectionButton(run.run_id), "dashboard-table__run"),
-        createTableCell(displayValue(run.scenario_id)),
-        createTableCell(displayValue(run.target_host)),
         createTableCell(formatRunTimestamp(run.start_time)),
+        createTableCell(runIdentifier, "dashboard-table__run"),
+        createTableCell(runtimeStatus),
+        createTableCell(displayValue(run.scenario_id)),
+        createTableCell(runtimeProgress),
+        createTableCell(observationDuration),
         createTableCell(detailLink),
     );
     return row;
@@ -311,6 +382,7 @@ function renderRuntimeState(state) {
     if (latest === null) {
         latestRuntimeState.textContent = displayValue(null);
         latestRuntimeUpdated.textContent = displayValue(null);
+        dashboardHeaderUpdated.textContent = "마지막 저장 보고 확인 불가";
     } else {
         const presentation = getRuntimeStatePresentation(
             latest,
@@ -320,7 +392,28 @@ function renderRuntimeState(state) {
             ? presentation.statusLabel
             : `${presentation.statusLabel} · ${presentation.telemetryLabel}`;
         latestRuntimeUpdated.textContent = formatRunTimestamp(latest.updated_at);
+        dashboardHeaderUpdated.textContent = (
+            `마지막 저장 보고 ${formatRunTimestamp(latest.updated_at)}`
+        );
     }
+    const freshRunning = state.telemetryAvailable
+        ? state.items.find((runtime) => runtime.status === "running" && !runtime.is_stale)
+        : null;
+    const staleRunning = state.telemetryAvailable
+        ? state.items.find((runtime) => runtime.status === "running" && runtime.is_stale)
+        : null;
+    systemStatusValue.textContent = !state.telemetryAvailable
+        ? "Runtime 조회 확인 불가"
+        : freshRunning !== undefined && freshRunning !== null
+            ? "최근 실행 중 보고"
+            : staleRunning !== undefined && staleRunning !== null
+                ? "오래된 실행 중 보고 · 현재 상태 확인 불가"
+                : latest === null
+                    ? "최근 Runtime 보고 없음"
+                    : "최근 저장 보고 확인";
+    activeRuntimeRun.textContent = freshRunning === null || freshRunning === undefined
+        ? "최근 실행 중 보고 없음"
+        : `${freshRunning.run_id} · ${freshRunning.entity_id}`;
     replaceSelectionRows(
         runtimeSummaryList,
         state.items.map(
@@ -342,11 +435,23 @@ function renderRunListState(state) {
         runtimeState.items,
         state.items,
     );
+    const selectedIndex = state.items.findIndex((run) => run.run_id === selectedRunId);
+    previousRunButton.disabled = selectedIndex < 0 || selectedIndex >= state.items.length - 1;
+    nextRunButton.disabled = selectedIndex <= 0;
 }
 
 function renderSelectionRows() {
     renderRuntimeState(runtimeState);
     renderRunListState(runListState);
+}
+
+function activateSelectedRunPanel(name) {
+    for (const tab of selectedRunTabs) {
+        const active = tab.name === name;
+        tab.button.setAttribute("aria-selected", String(active));
+        tab.button.tabIndex = active ? 0 : -1;
+        tab.panel.hidden = !active;
+    }
 }
 
 function createAnalysisField(label, value, emphasis = "primary") {
@@ -364,15 +469,83 @@ function createAnalysisField(label, value, emphasis = "primary") {
 }
 
 function clearSelectedAnalysis() {
+    selectedRunStatus.hidden = false;
+    selectedRunChartStatus.hidden = false;
     selectedRunSummary.replaceChildren();
     selectedRunSettings.replaceChildren();
     selectedRunChart.replaceChildren();
+    decisionTimelineList.replaceChildren();
+    decisionHistoryList.replaceChildren();
     selectedRunDetailStatus.textContent = "";
     selectedRunChartStatus.textContent = "";
+    decisionTimelineStatus.textContent = "저장된 Decision 이력을 불러오는 중입니다.";
+    decisionHistoryStatus.textContent = "저장된 Decision 이력을 불러오는 중입니다.";
+}
+
+function createDecisionHistoryItem(decision) {
+    const item = document.createElement("li");
+    const identifier = document.createElement("strong");
+    identifier.classList.add("dashboard-decision-id");
+    identifier.textContent = decision.decision_id;
+    const details = document.createElement("div");
+    details.classList.add("dashboard-decision-meta");
+    const time = document.createElement("span");
+    time.textContent = `t_e · ${formatRunTimestamp(decision.t_e)}`;
+    const path = document.createElement("span");
+    path.textContent = `판단 경로 · ${getDecisionPathLabel(decision.decision_path)}`;
+    details.append(time, path);
+    item.append(identifier, details);
+    return item;
+}
+
+function renderDecisionHistory(detailState) {
+    if (detailState.queryState !== "success") {
+        decisionTimelineStatus.textContent = detailState.message;
+        decisionHistoryStatus.textContent = detailState.message;
+        return;
+    }
+    const history = detailState.payload.decision_history;
+    if (!Array.isArray(history) || history.length === 0) {
+        decisionTimelineStatus.textContent = "저장된 Decision 이력이 없습니다.";
+        decisionHistoryStatus.textContent = "저장된 Decision 이력이 없습니다.";
+        return;
+    }
+    decisionTimelineStatus.textContent = "Run Detail의 저장 Decision 이력입니다.";
+    decisionHistoryStatus.textContent = "최신 Decision부터 저장된 순서로 표시합니다.";
+    decisionTimelineList.replaceChildren(...history.slice(0, 4).map(createDecisionHistoryItem));
+    decisionHistoryList.replaceChildren(...history.map(createDecisionHistoryItem));
+}
+
+function renderEventTypeSummary(state) {
+    eventTypeSummary.replaceChildren();
+    if (state.queryState !== "success") {
+        eventTypeSummaryStatus.textContent = state.message;
+        return;
+    }
+    const counts = new Map();
+    for (const event of state.payload.items) {
+        counts.set(event.event_type, (counts.get(event.event_type) ?? 0) + 1);
+    }
+    eventTypeSummaryStatus.textContent = (
+        `조회된 Event ${state.payload.items.length}건 기준 (전체 ${state.payload.total}건). `
+        + "Run 단위 조회이며 선택 Runtime Entity로 한정되지 않습니다. "
+        + "Event 시각과 기술적 판정 시각은 별도 의미입니다."
+    );
+    eventTypeSummary.replaceChildren(...Array.from(counts, ([eventType, count]) => {
+        const item = document.createElement("li");
+        const label = document.createElement("span");
+        label.textContent = eventType;
+        const value = document.createElement("strong");
+        value.textContent = String(count);
+        item.append(label, value);
+        return item;
+    }));
 }
 
 function renderSelectedRunFailureState() {
     selectedRequestVersion += 1;
+    selectedRunStatus.hidden = false;
+    selectedRunChartStatus.hidden = false;
     selectedRunStatus.textContent = (
         "마지막 Runtime 보고가 실패했습니다. 상세 결과 자동 재조회는 수행하지 않습니다."
     );
@@ -399,6 +572,8 @@ function renderSelectedLinks(runId, detailAvailable, fusionAvailable) {
 }
 
 function renderSelectedAnalysis(detailState, fusionState) {
+    selectedRunStatus.hidden = false;
+    selectedRunChartStatus.hidden = false;
     const detailPayload = detailState.queryState === "success" ? detailState.payload : null;
     const fusionPayload = fusionState.queryState === "success" ? fusionState.payload : null;
     const decisionConsistency = getDecisionVersionConsistency(
@@ -435,6 +610,8 @@ function renderSelectedAnalysis(detailState, fusionState) {
     const stoppingTrace = useFusionEngineArtifacts
         ? fusionPayload?.stopping_trace ?? null
         : null;
+
+    renderDecisionHistory(detailState);
 
     selectedRunDetailStatus.textContent = [detailState, fusionState]
         .filter((state) => state.queryState !== "success")
@@ -524,6 +701,8 @@ function renderSelectedAnalysis(detailState, fusionState) {
                     : "저장된 분석 결과를 불러왔습니다.";
     }
 
+    selectedRunStatus.hidden = analysisState === "available" && analysisSource === "matched";
+
     if (analysisSource === "run_detail") {
         selectedRunChartStatus.textContent = (
             "Fusion Engine Decision ID를 확인할 수 없어 Trace를 결합하지 않았습니다."
@@ -570,8 +749,14 @@ function renderSelectedAnalysis(detailState, fusionState) {
         selectedRunChartStatus.textContent = runtimeConfig === null
             ? "Runtime Config Snapshot이 없어 threshold 기준선을 표시할 수 없습니다."
             : `저장된 Score point ${model.points.length}개와 threshold를 표시합니다.`;
-        selectedRunChart.replaceChildren(createScoreTrajectoryChart(model));
+        selectedRunChartStatus.hidden = runtimeConfig !== null;
+        selectedRunChart.replaceChildren(createDashboardReplayChart(
+            model,
+            fusionResult,
+            decision?.t_e ?? null,
+        ));
     } catch {
+        selectedRunChartStatus.hidden = false;
         selectedRunChartStatus.textContent = "저장된 Fusion Trace를 표시할 수 없습니다.";
         selectedRunChart.replaceChildren();
     }
@@ -657,6 +842,51 @@ async function loadFusionEngineState(runId) {
     }
 }
 
+async function loadSelectedEventSummary(runId, selectionVersion) {
+    const controller = new AbortController();
+    selectedTimelineAbortController = controller;
+    const timeoutId = setTimeout(() => controller.abort(), ANALYSIS_REQUEST_TIMEOUT_MS);
+    let result;
+    try {
+        const response = await fetch(buildEventTimelineApiPath(runId, EVENT_TIMELINE_LIMIT, 0), {
+            headers: {
+                Accept: "application/json",
+            },
+            cache: "no-store",
+            signal: controller.signal,
+        });
+        if (response.status === 404) {
+            result = { kind: "run_not_found" };
+        } else if (!response.ok) {
+            result = { kind: "error" };
+        } else {
+            result = { kind: "success", payload: await response.json() };
+        }
+        result = resolveEventTimelineQueryState(null, result);
+    } catch {
+        result = resolveEventTimelineQueryState(null, { kind: "error" });
+    } finally {
+        clearTimeout(timeoutId);
+        if (selectedTimelineAbortController === controller) {
+            selectedTimelineAbortController = null;
+        }
+    }
+    if (selectionVersion === selectedTimelineRequestVersion && selectedRunId === runId) {
+        renderEventTypeSummary(result);
+    }
+}
+
+function refreshSelectedEventSummary() {
+    if (selectedRunId === null) {
+        return;
+    }
+    const version = ++selectedTimelineRequestVersion;
+    selectedTimelineAbortController?.abort();
+    selectedTimelineAbortController = null;
+    renderEventTypeSummary(resolveEventTimelineQueryState(null, { kind: "loading" }));
+    void loadSelectedEventSummary(selectedRunId, version);
+}
+
 async function loadSelectedRunAnalysis(runId, loadingMessage) {
     const requestVersion = ++selectedRequestVersion;
     cancelSelectedAnalysisRequests();
@@ -720,6 +950,10 @@ function rerenderSelectedAnalysis() {
 }
 
 async function selectRun(runId, runtimeEntityId = null) {
+    const timelineVersion = ++selectedTimelineRequestVersion;
+    selectedTimelineAbortController?.abort();
+    selectedTimelineAbortController = null;
+    renderEventTypeSummary(resolveEventTimelineQueryState(null, { kind: "loading" }));
     selectedRunId = runId;
     selectedRuntimeEntityId = runtimeEntityId;
     selectedRuntimeTracking = createSelectedRuntimeTracking(
@@ -736,6 +970,9 @@ async function selectRun(runId, runtimeEntityId = null) {
         runId,
         "선택한 Run의 저장 분석 결과를 불러오는 중입니다.",
     );
+    if (timelineVersion === selectedTimelineRequestVersion && selectedRunId === runId) {
+        void loadSelectedEventSummary(runId, timelineVersion);
+    }
 }
 
 function recheckSelectedRuntimeAnalysis() {
@@ -764,6 +1001,7 @@ function refreshSelectedRunAnalysis() {
         selectedRunId,
         "선택한 Run의 저장 분석 결과를 다시 조회하는 중입니다.",
     );
+    refreshSelectedEventSummary();
 }
 
 function selectDefaultRunIfReady() {
@@ -780,6 +1018,14 @@ function selectDefaultRunIfReady() {
     );
     if (selection !== null) {
         void selectRun(selection.runId, selection.entityId);
+    }
+}
+
+function selectAdjacentRun(direction) {
+    const selectedIndex = runListState.items.findIndex((run) => run.run_id === selectedRunId);
+    const target = runListState.items[selectedIndex + direction];
+    if (selectedIndex >= 0 && target !== undefined) {
+        void selectRun(target.run_id);
     }
 }
 
@@ -901,6 +1147,7 @@ async function updateRuntimeSummary() {
     runtimeInitialQuerySettled = true;
     selectDefaultRunIfReady();
     renderRuntimeState(runtimeState);
+    renderRunListState(runListState);
     if (updateFailedSelection) {
         renderSelectedRunFailureState();
     } else if (refreshCompletedSelection && selectedRunId !== null) {
@@ -908,6 +1155,7 @@ async function updateRuntimeSummary() {
             selectedRunId,
             "완료 보고를 확인해 저장된 분석 결과를 다시 불러오는 중입니다.",
         );
+        refreshSelectedEventSummary();
     } else {
         if (getSelectedRuntimeRecheckMessage(selectedRuntimeTracking) !== previousRecheckMessage) {
             rerenderSelectedAnalysis();
@@ -930,10 +1178,34 @@ async function pollRuntimeSummary() {
 }
 
 if (dashboardView !== null) {
+    for (const [index, tab] of selectedRunTabs.entries()) {
+        tab.button.addEventListener("click", () => activateSelectedRunPanel(tab.name));
+        tab.button.addEventListener("keydown", (event) => {
+            let nextIndex;
+            if (event.key === "ArrowRight") {
+                nextIndex = (index + 1) % selectedRunTabs.length;
+            } else if (event.key === "ArrowLeft") {
+                nextIndex = (index - 1 + selectedRunTabs.length) % selectedRunTabs.length;
+            } else if (event.key === "Home") {
+                nextIndex = 0;
+            } else if (event.key === "End") {
+                nextIndex = selectedRunTabs.length - 1;
+            } else {
+                return;
+            }
+            event.preventDefault();
+            const nextTab = selectedRunTabs[nextIndex];
+            activateSelectedRunPanel(nextTab.name);
+            nextTab.button.focus();
+        });
+    }
+    activateSelectedRunPanel("replay");
     renderOverviewState(overviewState);
     renderRunListState(runListState);
     renderRuntimeState(runtimeState);
     selectedRunRefreshButton.addEventListener("click", refreshSelectedRunAnalysis);
+    previousRunButton.addEventListener("click", () => selectAdjacentRun(1));
+    nextRunButton.addEventListener("click", () => selectAdjacentRun(-1));
     void loadOverview();
     void loadRuns();
     startRuntimePolling();

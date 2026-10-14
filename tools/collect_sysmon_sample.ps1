@@ -6,7 +6,7 @@
         Run inside the experiment VM with Administrator privileges.
 
         This produces the "Sample based conversion" input described in
-        docs/roles/role3-first-cycle.md Phase 2. It is NOT an experiment run:
+        docs/roles/role3/role3-first-cycle.md Phase 2. It is NOT an experiment run:
         no run_id, no RunMetadata, no Ground Truth, no reference_time.
 
         Actions performed:
