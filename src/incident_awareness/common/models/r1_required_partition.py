@@ -24,6 +24,8 @@ class R1RequiredPartitionContract(BaseModel):
     )
     contract_version: Literal["v0.1"]
     target_host: StrictStr = Field(min_length=1)
+    source: Literal["sysmon"]
+    source_channel: Literal["Microsoft-Windows-Sysmon/Operational"]
 
     @field_validator("target_host")
     @classmethod
