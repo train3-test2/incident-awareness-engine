@@ -17,12 +17,25 @@ Evidence와 `available_at`을 확정하는 Role2 경계를 정의한다.
 
 증분 selector는 다음 입력만 소비한다.
 
-1. Role3가 `r1-incremental-stream/v0.1` 계약으로 수락한 `R1EventChunk`
+1. 주입한 Role3 `R1StreamIngress`가 같은 `accept_chunk()` 호출 안에서 수락한 `R1EventChunk`
 2. Role3가 모든 partition의 final watermark와 대조해 수락한 `R1RunClosed`
 3. scenario의 `family_id`, 검증된 selector policy와 그 family에 결속된 approved lineage policy
 
 `run_type`, Attack/Normal label, Ground Truth, Pair별 RecordId, process-name shortcut은
 selector 입력이 아니다. Role2는 raw seal이나 Ground Truth를 읽지 않는다.
+
+생성자에는 실제 `R1StreamIngress`가 필수다. worker는 chunk를 ingress에 먼저 전달한 뒤
+state에 다시 전달하지 않고, `state.accept_chunk(chunk)` 한 번으로 수락과 상태 갱신을 연결한다.
+ingress가 late chunk를 거부하면 selector state는 바뀌지 않는다. `new_event_ids`에 포함된
+Event만 새로 누적하고 replay-only Event는 기존 상태를 유지한다. DB commit/ack 경계는 기존
+Role3 계약을 따르며, transaction rollback 시 in-memory state도 폐기해야 한다. 재시작 뒤
+durable ingress에는 있지만 local state에는 없는 replay는 복구 없이 selector에 삽입하지 않고
+거부한다. state의 영속 복구/production worker 연결은 별도 작업이다.
+
+selector/extractor에는 해당 Run·target host의 `source=sysmon`,
+`source_channel=Microsoft-Windows-Sysmon/Operational` partition만 전달한다. 다른 source/channel의
+chunk도 전달 완결성과 scoped identity는 추적하지만 R1 분석 입력에는 넣지 않는다. 따라서
+다른 partition의 동일 `event_id`가 기존 batch pipeline의 ID 경계에 섞이지 않는다.
 
 현재 병합된 PR `#269` v0.1의 `R1VerifiedCandidateBoundary`에는 Role2가 독립 검증할
 host/family/policy/partition/final-watermark 결속 정보가 없다. 따라서 이 계약의 v0.1 구현은

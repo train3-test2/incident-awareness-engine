@@ -9,11 +9,23 @@ from incident_awareness.collection.r1_candidate_generation_seal import (
     R1VerifiedCandidateBoundary,
 )
 from incident_awareness.common.models.event import NormalizedEvent
-from incident_awareness.common.models.r1_stream import R1EventChunk, R1RunClosed
+from incident_awareness.common.models.r1_stream import (
+    R1EventChunk,
+    R1LateEventDeadLetter,
+    R1RunClosed,
+    R1SourceWatermark,
+    R1StreamPartition,
+)
 from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
 from incident_awareness.evidence.r1_selector import R1SelectorPolicy
 from incident_awareness.pipeline.r1_evidence import run_r1_evidence_pipeline_with_selector
 from incident_awareness.pipeline.r1_incremental_evidence import R1IncrementalEvidenceState
+from incident_awareness.pipeline.r1_stream_boundary import LateStreamEventError
+from incident_awareness.pipeline.r1_stream_ingress import R1StreamIngress
+from incident_awareness.storage.repositories.r1_stream_delivery_repository import (
+    R1AcceptedWatermark,
+    R1ChunkAdmission,
+)
 
 _RUN_ID = "RUN-20261013-001"
 _HOST_ID = "R1-TGTA"
@@ -138,7 +150,76 @@ def _approved_policy() -> ApprovedLineagePolicy:
     )
 
 
-def _state() -> R1IncrementalEvidenceState:
+class _Ledger:
+    """Partition-aware in-memory storage for the actual Role3 ingress in these tests."""
+
+    def __init__(self) -> None:
+        self.chunks: dict[tuple[R1StreamPartition, str], tuple[int, str]] = {}
+        self.events: dict[tuple[R1StreamPartition, str], str] = {}
+        self.watermarks: dict[R1StreamPartition, R1AcceptedWatermark] = {}
+
+    def inspect_chunk_admission(
+        self, *, partition, chunk_id, sequence, content_sha256, event_content_sha256s
+    ) -> R1ChunkAdmission:
+        previous = self.chunks.get((partition, chunk_id))
+        if previous is not None:
+            if previous != (sequence, content_sha256):
+                raise ValueError("chunk identity conflict")
+            return R1ChunkAdmission(True, (), None)
+        new_ids = []
+        for event_id, digest in event_content_sha256s:
+            previous_digest = self.events.get((partition, event_id))
+            if previous_digest is None:
+                new_ids.append(event_id)
+            elif previous_digest != digest:
+                raise ValueError("Event identity conflict")
+        watermark = self.watermarks.get(partition)
+        if watermark is not None:
+            sequences = {seq for (p, _), (seq, _) in self.chunks.items() if p == partition}
+            if not set(range(1, watermark.covered_through_chunk_sequence + 1)) <= sequences:
+                watermark = None
+        return R1ChunkAdmission(False, tuple(new_ids), watermark)
+
+    def save_events(self, *, partition, event_content_sha256s) -> tuple[str, ...]:
+        new_ids = []
+        for event_id, digest in event_content_sha256s:
+            if (partition, event_id) not in self.events:
+                self.events[partition, event_id] = digest
+                new_ids.append(event_id)
+        return tuple(new_ids)
+
+    def save_chunk(self, *, partition, chunk_id, sequence, content_sha256) -> bool:
+        self.chunks[partition, chunk_id] = (sequence, content_sha256)
+        return True
+
+    def save_watermark(self, watermark, *, content_sha256) -> bool:
+        self.watermarks[watermark.partition] = R1AcceptedWatermark(
+            watermark.watermark_id,
+            watermark.watermark_sequence,
+            watermark.watermark_at,
+            watermark.allowed_lateness_ms,
+            watermark.covered_through_chunk_sequence,
+        )
+        return True
+
+
+class _DeadLetterSink:
+    def __init__(self) -> None:
+        self.messages: list[R1LateEventDeadLetter] = []
+
+    def write(self, message: R1LateEventDeadLetter) -> None:
+        self.messages.append(message)
+
+
+def _ingress(ledger: _Ledger | None = None, sink: _DeadLetterSink | None = None) -> R1StreamIngress:
+    return R1StreamIngress(
+        ledger or _Ledger(),  # type: ignore[arg-type]
+        dead_letter_sink=sink or _DeadLetterSink(),
+        clock=lambda: _RUN_END,
+    )
+
+
+def _state(ingress: R1StreamIngress | None = None) -> R1IncrementalEvidenceState:
     return R1IncrementalEvidenceState(
         run_id=_RUN_ID,
         entity_id=_HOST_ID,
@@ -146,6 +227,7 @@ def _state() -> R1IncrementalEvidenceState:
         scenario_family_id="wmi_management",
         selector_policy=_selector_policy(),
         approved_policy=_approved_policy(),
+        ingress=ingress or _ingress(),
     )
 
 
@@ -164,7 +246,7 @@ def _chunk(
         "partition": {
             "run_id": _RUN_ID,
             "host_id": events[0].host_id,
-            "source": "sysmon",
+            "source": events[0].source,
             "source_channel": source_channel,
         },
         "chunk_sequence": sequence,
@@ -265,6 +347,7 @@ def test_constructor_requires_family_bound_policy_for_the_scenario_family() -> N
             scenario_family_id="wmi_management",
             selector_policy=_selector_policy(),
             approved_policy=legacy,
+            ingress=_ingress(),
         )
     with pytest.raises(ValueError, match="does not match"):
         R1IncrementalEvidenceState(
@@ -274,6 +357,7 @@ def test_constructor_requires_family_bound_policy_for_the_scenario_family() -> N
             scenario_family_id="wmi_management",
             selector_policy=_selector_policy(),
             approved_policy=mismatch,
+            ingress=_ingress(),
         )
 
 
@@ -636,3 +720,138 @@ def test_ignores_other_host_events_for_host_local_selection() -> None:
     assert state.snapshot.status == "provisional"
     assert state.snapshot.selector_result.selection is not None
     assert state.snapshot.selector_result.selection.entity_id == _HOST_ID
+
+
+@pytest.mark.parametrize(
+    ("source", "channel"),
+    [
+        ("security", "Security"),
+        ("sysmon", "Other-Sysmon-Channel"),
+        ("security", "Microsoft-Windows-Sysmon/Operational"),
+    ],
+)
+def test_same_host_other_partition_shared_event_id_does_not_conflict_at_finalization(
+    source: str, channel: str
+) -> None:
+    state = _state()
+    _accept_all_events(state)
+    expected = run_r1_evidence_pipeline_with_selector(
+        _events(),
+        selector_policy=_selector_policy(),
+        approved_policy=_approved_policy(),
+        run_start=_RUN_START,
+    )
+    unrelated = _events()[2].model_copy(update={"source": source, "source_event_id": "unrelated"})
+    other_chunk = _chunk((unrelated,), chunk_id="CHK-001", sequence=1, source_channel=channel)
+
+    state.accept_chunk(other_chunk)
+    close = _run_closed()
+    other_watermark = close.final_watermarks[0].model_copy(
+        update={"partition": other_chunk.partition, "covered_through_chunk_sequence": 1}
+    )
+    state.accept_run_closed(
+        close.model_copy(update={"final_watermarks": (*close.final_watermarks, other_watermark)})
+    )
+    result = state.finalize_at_run_end(_RUN_END)
+
+    assert result.status == "finalized"
+    assert result.evidences == expected.evidences
+    assert result.lineage_input == expected.lineage_input
+    assert result.extraction_diagnostics == ()
+
+
+def test_other_channel_cannot_supply_the_required_r1_final_watermark() -> None:
+    state = _state()
+    close = _run_closed()
+    other = close.final_watermarks[0].model_copy(
+        update={
+            "partition": close.final_watermarks[0].partition.model_copy(
+                update={"source_channel": "Other-Sysmon-Channel"}
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="R1 Sysmon partition"):
+        state.accept_run_closed(close.model_copy(update={"final_watermarks": (other,)}))
+
+
+def test_ingress_rejected_late_chunk_leaves_selector_state_unchanged() -> None:
+    ledger = _Ledger()
+    sink = _DeadLetterSink()
+    ingress = _ingress(ledger, sink)
+    state = _state(ingress)
+    _accept_all_events(state)
+    before = state.snapshot
+    close = _run_closed()
+    final = close.final_watermarks[0]
+    ingress.accept_watermark(
+        R1SourceWatermark(
+            schema="r1-incremental-stream",
+            contract_version="v0.1",
+            message_type="source_watermark",
+            emitted_at=_RUN_END,
+            **final.model_dump(),
+        )
+    )
+    late = _events()[2].model_copy(update={"event_id": "evt-late-terminal"})
+
+    with pytest.raises(LateStreamEventError):
+        state.accept_chunk(_chunk((late,), chunk_id="CHK-003", sequence=3))
+
+    assert state.snapshot is before
+    assert len(ledger.chunks) == 2
+    assert sink.messages[0].violating_event_ids == ("evt-late-terminal",)
+    state.accept_run_closed(close)
+    assert state.finalize_at_run_end(_RUN_END).status == "finalized"
+
+
+def test_ingress_replay_only_chunk_cannot_change_selection() -> None:
+    ledger = _Ledger()
+    state = _state(_ingress(ledger))
+    _accept_all_events(state)
+    before = state.snapshot
+
+    state.accept_chunk(_chunk(_events(), chunk_id="CHK-003", sequence=3))
+
+    assert state.snapshot == before
+    assert len(ledger.events) == 4
+    state.accept_run_closed(_run_closed(covered_through_chunk_sequence=3))
+    assert state.finalize_at_run_end(_RUN_END).status == "finalized"
+
+
+def test_ingress_mixed_replay_and_new_events_matches_whole_batch() -> None:
+    ledger = _Ledger()
+    state = _state(_ingress(ledger))
+    events = _events()
+    state.accept_chunk(_chunk(events[:2], chunk_id="CHK-001", sequence=1))
+    state.accept_chunk(_chunk((events[0], *events[2:]), chunk_id="CHK-002", sequence=2))
+    state.accept_run_closed(_run_closed())
+
+    result = state.finalize_at_run_end(_RUN_END)
+    expected = run_r1_evidence_pipeline_with_selector(
+        events,
+        selector_policy=_selector_policy(),
+        approved_policy=_approved_policy(),
+        run_start=_RUN_START,
+    )
+
+    assert result.status == "finalized"
+    assert result.evidences == expected.evidences
+    assert result.lineage_input == expected.lineage_input
+    assert len(ledger.events) == 4
+
+
+@pytest.mark.parametrize("same_chunk", [True, False])
+def test_ingress_replay_cannot_restore_events_absent_from_local_state(same_chunk: bool) -> None:
+    ingress = _ingress()
+    state = _state(ingress)
+    chunk = _chunk(_events(), chunk_id="CHK-001", sequence=1)
+    ingress.accept_chunk(chunk)
+    replay = chunk if same_chunk else _chunk(_events(), chunk_id="CHK-002", sequence=2)
+    before = state.snapshot
+
+    with pytest.raises(ValueError, match="absent from local state; recover state"):
+        state.accept_chunk(replay)
+
+    assert state.snapshot is before
+    assert state.snapshot.evidences == ()

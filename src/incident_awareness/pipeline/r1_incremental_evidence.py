@@ -35,6 +35,13 @@ from incident_awareness.pipeline.r1_evidence import (
     R1LineageInput,
     run_r1_evidence_pipeline_with_selector,
 )
+from incident_awareness.pipeline.r1_stream_ingress import (
+    R1StreamDeliveryDisposition,
+    R1StreamIngress,
+)
+
+_R1_SOURCE = "sysmon"
+_R1_SOURCE_CHANNEL = "Microsoft-Windows-Sysmon/Operational"
 
 type R1IncrementalStatus = Literal["accumulating", "provisional", "finalized", "failed_closed"]
 type R1IncrementalCloseMode = Literal["authoritative_run_end_fallback"]
@@ -63,11 +70,9 @@ class R1IncrementalEvidenceSnapshot:
 class R1IncrementalEvidenceState:
     """Append-only R1 selector state.
 
-    Role3가 이미 수락한 chunk와 ``run_closed``만 입력으로 받는다. Role4의
-    Ground Truth 결속 검증 결과인 ``R1VerifiedCandidateBoundary``는 정답 필드를
-    포함하지 않는다. 현재 #269 v0.1 최소 객체는 같은 신뢰 경계에서 검증 함수가 직접
-    반환한 경우에만 내부 close 입력으로 쓴다. 외부 artifact 연동은 별도 Role2-safe
-    verified-close proof가 등록될 때까지 활성화하지 않는다.
+    chunk는 주입된 Role3 ingress가 수락한 뒤 승인한 새 Event만 누적한다.
+    ``run_closed``는 Role3가 이미 수락한 control 입력이다. 현재 #269 v0.1 최소
+    boundary 객체는 독립 검증 가능한 결속 정보가 없어 항상 거부한다.
     """
 
     def __init__(
@@ -79,6 +84,7 @@ class R1IncrementalEvidenceState:
         scenario_family_id: str,
         selector_policy: R1SelectorPolicy,
         approved_policy: ApprovedLineagePolicy,
+        ingress: R1StreamIngress,
     ) -> None:
         self._run_id = _unpad("run_id", run_id)
         self._entity_id = _unpad("entity_id", entity_id)
@@ -93,6 +99,9 @@ class R1IncrementalEvidenceState:
         self._scenario_family_id = scenario_family_id
         self._selector_policy = selector_policy
         self._approved_policy = approved_policy
+        if not isinstance(ingress, R1StreamIngress):
+            raise TypeError("ingress must be an R1StreamIngress")
+        self._ingress = ingress
 
         self._events_by_identity: dict[_EventIdentity, NormalizedEvent] = {}
         self._event_hashes: dict[_EventIdentity, str] = {}
@@ -106,7 +115,7 @@ class R1IncrementalEvidenceState:
         return self._snapshot
 
     def accept_chunk(self, chunk: R1EventChunk) -> R1IncrementalEvidenceSnapshot:
-        """Role3가 수락한 chunk를 idempotent하게 누적한다."""
+        """동일 호출의 Role3 ingress 수락 결과에 결속해 새 Event만 누적한다."""
         if not isinstance(chunk, R1EventChunk):
             raise TypeError("chunk must be an R1EventChunk")
         if chunk.partition.run_id != self._run_id:
@@ -126,6 +135,7 @@ class R1IncrementalEvidenceState:
         if existing_chunk_hash is not None:
             if existing_chunk_hash != chunk_hash:
                 raise ValueError("chunk identity was reused with different content")
+            self._ingress.accept_chunk(chunk)
             return self._snapshot
         if self._snapshot.status in {"finalized", "failed_closed"}:
             raise ValueError("incremental state is already terminal")
@@ -158,11 +168,25 @@ class R1IncrementalEvidenceState:
                 continue
             event_updates.append((event, event_hash, event_identity))
 
+        admission = self._ingress.accept_chunk(chunk)
+        if admission.disposition is R1StreamDeliveryDisposition.DUPLICATE:
+            raise ValueError(
+                "accepted chunk is absent from local state; recover state before replay"
+            )
+        new_event_ids = set(admission.new_event_ids)
+        chunk_event_ids = {event.event_id for event in chunk.events}
+        if not new_event_ids <= chunk_event_ids:
+            raise ValueError("ingress approved Event IDs outside this chunk")
+        if any(event.event_id not in new_event_ids for event, _, _ in event_updates):
+            raise ValueError(
+                "replayed Event is absent from local state; recover state before replay"
+            )
+
         self._chunk_hashes[chunk_identity] = chunk_hash
         self._chunk_sequence_identities[sequence_key] = chunk.chunk_id
         for event, event_hash, event_identity in event_updates:
             self._event_hashes[event_identity] = event_hash
-            if event.host_id == self._entity_id:
+            if self._is_selector_partition(chunk.partition):
                 self._events_by_identity[event_identity] = event
         self._snapshot = self._provisional_snapshot(diagnostics=self._chunk_coverage_diagnostics())
         return self._snapshot
@@ -333,9 +357,19 @@ class R1IncrementalEvidenceState:
 
     def _require_entity_partition(self, run_closed: R1RunClosed) -> None:
         if not any(
-            item.partition.host_id == self._entity_id for item in run_closed.final_watermarks
+            self._is_selector_partition(item.partition) for item in run_closed.final_watermarks
         ):
-            raise ValueError("run_closed does not contain a final watermark for entity_id")
+            raise ValueError(
+                "run_closed does not contain a final watermark for the R1 Sysmon partition"
+            )
+
+    def _is_selector_partition(self, partition: R1StreamPartition) -> bool:
+        return (
+            partition.run_id == self._run_id
+            and partition.host_id == self._entity_id
+            and partition.source == _R1_SOURCE
+            and partition.source_channel == _R1_SOURCE_CHANNEL
+        )
 
     def _validate_chunk_after_run_closed(self, chunk: R1EventChunk) -> None:
         assert self._run_closed is not None
@@ -393,7 +427,7 @@ class R1IncrementalEvidenceState:
         entity_watermarks = tuple(
             item
             for item in self._run_closed.final_watermarks
-            if item.partition.host_id == self._entity_id
+            if self._is_selector_partition(item.partition)
         )
         if not entity_watermarks:
             raise ValueError("run_closed does not contain a final watermark for entity_id")
