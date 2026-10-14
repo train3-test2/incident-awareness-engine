@@ -49,7 +49,10 @@ class R1RequiredPartitionContract(BaseModel):
     )
     contract_version: Literal["v0.1"]
     target_host: StrictStr = Field(min_length=1)
-    required_partitions: tuple[R1RequiredPartition, ...] = Field(min_length=1)
+    required_partitions: tuple[R1RequiredPartition, ...] = Field(
+        min_length=1,
+        json_schema_extra={"uniqueItems": True},
+    )
 
     @field_validator("target_host")
     @classmethod

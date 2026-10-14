@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
+from jsonschema import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
 
 from incident_awareness.common.models.r1_required_partition import (
@@ -64,6 +66,34 @@ def test_accepts_the_r1_required_partition_contract_envelope() -> None:
     contract = R1RequiredPartitionContract.model_validate(_contract())
 
     assert contract.model_dump(mode="json", by_alias=True) == _contract()
+
+
+def test_contract_json_round_trip_and_schema() -> None:
+    contract = R1RequiredPartitionContract.model_validate(_contract())
+    serialized = contract.model_dump_json(by_alias=True)
+    wire = json.loads(serialized)
+    restored = R1RequiredPartitionContract.model_validate_json(serialized)
+    schema = R1RequiredPartitionContract.model_json_schema(by_alias=True)
+    validator = Draft202012Validator(schema)
+
+    validator.validate(wire)
+
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**wire, "unexpected": "value"})
+
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(
+            {
+                **wire,
+                "required_partitions": [
+                    *wire["required_partitions"],
+                    *wire["required_partitions"],
+                ],
+            }
+        )
+
+    assert restored == contract
+    assert wire == _contract()
 
 
 @pytest.mark.parametrize(
@@ -181,6 +211,8 @@ def test_json_schema_exposes_the_canonical_schema_and_version() -> None:
     )
     assert schema["properties"]["target_host"]["minLength"] == 1
     assert schema["properties"]["required_partitions"]["minItems"] == 1
+    assert schema["properties"]["required_partitions"]["uniqueItems"] is True
+    assert schema["additionalProperties"] is False
     partition_schema = schema["$defs"]["R1RequiredPartition"]["properties"]
     assert partition_schema["source"]["const"] == "sysmon"
     assert partition_schema["source_channel"]["const"] == (
