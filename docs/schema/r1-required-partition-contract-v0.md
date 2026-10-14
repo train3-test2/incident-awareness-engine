@@ -46,8 +46,9 @@ fail-closed로 처리해야 하며, 다른 schema 또는 version을 추측해 �
 `Target-A` contract는 `target_host = Target-A` Run에만 적용할 수 있으며, 다른 host의 Run에는
 사용할 수 없다.
 
-Role2가 이 일치 여부를 실제 RunMetadata와 대조하는 loader/validator API는 후속 작업에서
-추가한다.
+`R1RequiredPartitionContract.validate_for_run(run_metadata)`는 이 일치 여부를 검사하며,
+불일치 시 예외를 발생시킨다. consumer는 오류를 무시하고 다른 host의 contract를 적용해서는
+안 된다. 파일 loader와 Role2 소비 API는 후속 작업에서 추가한다.
 
 ## 4. Required partition 집합
 

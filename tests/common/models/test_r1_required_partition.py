@@ -6,6 +6,7 @@ from incident_awareness.common.models.r1_required_partition import (
     R1_REQUIRED_PARTITION_SCHEMA,
     R1RequiredPartitionContract,
 )
+from incident_awareness.common.models.run import RunMetadata
 
 
 def _contract(**updates: object) -> dict[str, object]:
@@ -22,6 +23,29 @@ def _contract(**updates: object) -> dict[str, object]:
     }
     value.update(updates)
     return value
+
+
+def _run_metadata(*, target_host: str) -> RunMetadata:
+    return RunMetadata.model_validate(
+        {
+            "run_id": "RUN-20261014-001",
+            "scenario_id": "R1",
+            "run_type": "attack",
+            "target_host": target_host,
+            "start_time": "2026-10-14T00:00:00.000Z",
+            "schema_versions": {
+                "run_metadata": "v0.2",
+                "event": "v0.3",
+                "evidence": "v0.2",
+                "fast_hit": "v0.2",
+                "detection_result": "v0.2",
+                "fusion_result": "v0.3",
+                "decision_result": "v0.2",
+                "execution_record": "v0.2",
+                "evaluation_input": "v0.2",
+            },
+        }
+    )
 
 
 def test_accepts_the_r1_required_partition_contract_envelope() -> None:
@@ -51,6 +75,19 @@ def test_rejects_undefined_contract_fields() -> None:
 def test_rejects_a_blank_or_noncanonical_target_host(target_host: str) -> None:
     with pytest.raises(ValidationError):
         R1RequiredPartitionContract.model_validate(_contract(target_host=target_host))
+
+
+def test_accepts_a_contract_bound_to_the_run_target_host() -> None:
+    contract = R1RequiredPartitionContract.model_validate(_contract(target_host="Target-A"))
+
+    contract.validate_for_run(_run_metadata(target_host="Target-A"))
+
+
+def test_rejects_a_contract_bound_to_another_target_host() -> None:
+    contract = R1RequiredPartitionContract.model_validate(_contract(target_host="Target-A"))
+
+    with pytest.raises(ValueError, match="must match RunMetadata.target_host"):
+        contract.validate_for_run(_run_metadata(target_host="Target-B"))
 
 
 def test_rejects_an_empty_required_partition_set() -> None:

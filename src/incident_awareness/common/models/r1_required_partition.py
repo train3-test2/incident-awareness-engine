@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
+from incident_awareness.common.models.run import RunMetadata
+
 R1_REQUIRED_PARTITION_SCHEMA = "r1-required-partitions"
 R1_REQUIRED_PARTITION_CONTRACT_VERSION = "v0.1"
 
@@ -37,10 +39,15 @@ class R1RequiredPartitionContract(BaseModel):
 
     @field_validator("target_host")
     @classmethod
-    def validate_target_host(cls, value: str) -> str:
+    def validate_target_host_identifier(cls, value: str) -> str:
         if value != value.strip():
             raise ValueError("target_host must not contain leading or trailing whitespace")
         return value
+
+    def validate_for_run(self, run_metadata: RunMetadata) -> None:
+        """Reject use of this contract for a Run bound to another target host."""
+        if self.target_host != run_metadata.target_host:
+            raise ValueError("required-partition contract target_host must match RunMetadata.target_host")
 
     @model_validator(mode="after")
     def validate_unique_required_partitions(self) -> "R1RequiredPartitionContract":
