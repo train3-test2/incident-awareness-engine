@@ -48,7 +48,11 @@ class R1RequiredPartitionContract(BaseModel):
         serialization_alias="schema",
     )
     contract_version: Literal["v0.1"]
-    target_host: StrictStr = Field(min_length=1)
+    target_host: StrictStr = Field(
+        min_length=1,
+        pattern=r"^\S",
+        json_schema_extra={"allOf": [{"not": {"pattern": r"\s$"}}]},
+    )
     required_partitions: tuple[R1RequiredPartition, ...] = Field(
         min_length=1,
         json_schema_extra={"uniqueItems": True},

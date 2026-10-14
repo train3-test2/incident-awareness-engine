@@ -127,6 +127,36 @@ def test_rejects_a_blank_or_noncanonical_target_host(target_host: str) -> None:
         R1RequiredPartitionContract.model_validate(_contract(target_host=target_host))
 
 
+@pytest.mark.parametrize(
+    ("target_host", "is_valid"),
+    [
+        ("Target-A", True),
+        ("Target A", True),
+        (" Target-A", False),
+        ("Target-A ", False),
+        ("\tTarget-A", False),
+        ("Target-A\t", False),
+        ("\nTarget-A", False),
+        ("Target-A\n", False),
+    ],
+)
+def test_target_host_model_and_json_schema_accept_the_same_values(
+    target_host: str,
+    is_valid: bool,
+) -> None:
+    payload = _contract(target_host=target_host)
+    validator = Draft202012Validator(R1RequiredPartitionContract.model_json_schema(by_alias=True))
+
+    if is_valid:
+        R1RequiredPartitionContract.model_validate(payload)
+        validator.validate(payload)
+    else:
+        with pytest.raises(ValidationError):
+            R1RequiredPartitionContract.model_validate(payload)
+        with pytest.raises(JsonSchemaValidationError):
+            validator.validate(payload)
+
+
 def test_accepts_a_contract_bound_to_the_run_target_host() -> None:
     contract = R1RequiredPartitionContract.model_validate(_contract(target_host="Target-A"))
 
@@ -218,6 +248,8 @@ def test_json_schema_exposes_the_canonical_schema_and_version() -> None:
         R1_REQUIRED_PARTITION_CONTRACT_VERSION
     )
     assert schema["properties"]["target_host"]["minLength"] == 1
+    assert schema["properties"]["target_host"]["pattern"] == r"^\S"
+    assert schema["properties"]["target_host"]["allOf"] == [{"not": {"pattern": r"\s$"}}]
     assert schema["properties"]["required_partitions"]["minItems"] == 1
     assert schema["properties"]["required_partitions"]["uniqueItems"] is True
     assert schema["additionalProperties"] is False
