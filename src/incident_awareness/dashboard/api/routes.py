@@ -8,9 +8,11 @@ from incident_awareness.dashboard.api.dependencies import (
     get_dashboard_decision_reader,
     get_dashboard_evaluation_reader,
     get_dashboard_fusion_engine_reader,
+    get_dashboard_telemetry_reader,
     get_event_repository,
     get_pipeline_runtime_repository,
     get_run_repository,
+    get_telemetry_query,
 )
 from incident_awareness.dashboard.api.models import (
     CurrentDecisionResponse,
@@ -31,6 +33,11 @@ from incident_awareness.dashboard.api.service import get_fusion_engine_detail, g
 from incident_awareness.dashboard.decision_read_model import DashboardDecisionReader
 from incident_awareness.dashboard.evaluation_read_model import DashboardEvaluationReader
 from incident_awareness.dashboard.fusion_engine_read_model import DashboardFusionEngineReader
+from incident_awareness.dashboard.telemetry_read_model import (
+    DashboardTelemetryReader,
+    PipelineTelemetryResponse,
+    TelemetryQuery,
+)
 from incident_awareness.storage.repositories.event_repository import EventRepository
 from incident_awareness.storage.repositories.pipeline_runtime_repository import (
     PipelineRuntimeStatusRepository,
@@ -43,6 +50,17 @@ _OVERVIEW_RECENT_RUN_LIMIT = 5
 # snapshot has received recent telemetry. It is not a process-liveness, heartbeat,
 # execution, or SLA timeout: an older running snapshot stays running and is marked stale.
 _PIPELINE_RUNTIME_FRESHNESS_WINDOW = timedelta(minutes=5)
+
+
+@router.get("/operations/telemetry", response_model=PipelineTelemetryResponse)
+def get_pipeline_telemetry(
+    query: Annotated[TelemetryQuery, Depends(get_telemetry_query)],
+    reader: Annotated[DashboardTelemetryReader, Depends(get_dashboard_telemetry_reader)],
+) -> PipelineTelemetryResponse:
+    try:
+        return reader.get_telemetry(query)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Invalid telemetry time range") from error
 
 
 @router.get("/evaluation", response_model=DashboardEvaluationResponse)

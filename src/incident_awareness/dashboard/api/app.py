@@ -7,7 +7,15 @@ from incident_awareness.dashboard.evaluation_read_model import (
     EvaluationSnapshotUnavailableError,
     StoredEvaluationSnapshotInvalidError,
 )
+from incident_awareness.dashboard.telemetry_read_model import (
+    StoredTelemetryInvalidError,
+    TelemetryReadDefectError,
+    TelemetryUnavailableError,
+)
 from incident_awareness.dashboard.web import mount_dashboard_assets, operations_view_router
+from incident_awareness.storage.repositories.pipeline_telemetry_repository import (
+    PipelineTelemetryInputConflictError,
+)
 from incident_awareness.storage.repositories.result_repository import DecisionIntegrityError
 
 
@@ -54,6 +62,37 @@ async def _handle_stored_evaluation_snapshot_invalid_error(
 def create_app() -> FastAPI:
     """Create the Dashboard Read API and Operations View without opening external resources."""
     application = FastAPI(title="Incident Awareness Dashboard API")
+
+    @application.exception_handler(PipelineTelemetryInputConflictError)
+    async def handle_telemetry_input_conflict(
+        _request: Request, _error: PipelineTelemetryInputConflictError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "Run telemetry input identity is conflicting or unknown across executions"
+            },
+        )
+
+    @application.exception_handler(TelemetryUnavailableError)
+    async def handle_telemetry_unavailable(
+        _request: Request, _error: TelemetryUnavailableError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=503, content={"detail": "Telemetry database is unavailable"}
+        )
+
+    @application.exception_handler(TelemetryReadDefectError)
+    async def handle_telemetry_read_defect(
+        _request: Request, _error: TelemetryReadDefectError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=500, content={"detail": "Telemetry read failed"})
+
+    @application.exception_handler(StoredTelemetryInvalidError)
+    async def handle_stored_telemetry_invalid(
+        _request: Request, _error: StoredTelemetryInvalidError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=500, content={"detail": "Stored telemetry is invalid"})
 
     @application.get("/healthz")
     def get_health() -> dict[str, str]:
