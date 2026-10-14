@@ -105,7 +105,7 @@ def load_r1_required_partition_contract(
     contract_path = Path(path)
     try:
         content = contract_path.read_text(encoding="utf-8")
-    except OSError as error:
+    except (OSError, UnicodeDecodeError) as error:
         raise R1RequiredPartitionContractError(
             f"required-partition contract cannot be read: {contract_path}"
         ) from error

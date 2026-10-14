@@ -204,6 +204,17 @@ def test_role2_loader_rejects_duplicate_json_keys(tmp_path: Path) -> None:
         )
 
 
+def test_role2_loader_rejects_non_utf8_contract_bytes(tmp_path: Path) -> None:
+    contract_path = tmp_path / "required-partitions.json"
+    contract_path.write_bytes(b"\xff")
+
+    with pytest.raises(R1RequiredPartitionContractError, match="cannot be read"):
+        load_r1_required_partition_contract(
+            contract_path,
+            run_metadata=_run_metadata(target_host="Target-A"),
+        )
+
+
 def test_rejects_an_empty_required_partition_set() -> None:
     with pytest.raises(ValidationError):
         R1RequiredPartitionContract.model_validate(_contract(required_partitions=[]))
