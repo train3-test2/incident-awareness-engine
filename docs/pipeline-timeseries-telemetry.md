@@ -100,10 +100,11 @@ Freshness는 `reference_at=range_end`와 마지막 관측 간격이 15초 초과
 
 Repository는 한 SQL statement에서 metadata와 버킷을 읽는다. execution PK로만 JOIN하고
 각 초별 합계를 내므로 동일 execution/bucket 중복 합산이 없다. 응답에 무제한 Execution 목록은
-포함하지 않는다. 기존 execution scope/time 인덱스를 사용하며 새 migration은 필요하지 않다.
-Dashboard 전용 연결은 read-only, 연결 timeout 2초, statement timeout 5초다. 이 연결은
-`transaction_timeout`을 쓰지 않는다. 대규모 reported 집계는 DB 부하에 따라 timeout/503일 수
-있다. DB 오류는 psycopg 예외 계열로 구분한다.
+포함하지 않는다. 기존 execution scope/time 인덱스를 사용하므로 Read API만을 위한 추가 Migration은 필요하지 않다.
+단, 조회 SQL은 Migration 012에서 추가된 `input_identity_kind`와 `input_identity_sha256` 컬럼을 참조하므로, 운영 배포 전 Migration 011·012 적용이 필수다.
+미적용 시 `GET /operations/telemetry`는 정상 조회할 수 없다. Dashboard 전용 연결은 read-only, 연결 timeout 2초, statement timeout 5초다.
+이 연결은 `transaction_timeout`을 쓰지 않는다. 대규모 reported 집계는 DB 부하에 따라 timeout/503일 수 있다.
+DB 오류는 psycopg 예외 계열로 구분한다.
 
 | 원인 | HTTP | detail |
 | --- | --- | --- |
