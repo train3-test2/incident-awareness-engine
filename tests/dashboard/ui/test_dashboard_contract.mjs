@@ -40,6 +40,9 @@ import {
     buildFusionEngineApiPath,
 } from "../../../src/incident_awareness/dashboard/ui/assets/fusion-engine-contract.mjs";
 import {
+    buildEventTimelineApiPath,
+} from "../../../src/incident_awareness/dashboard/ui/assets/event-timeline-contract.mjs";
+import {
     getRuntimeStatePresentation,
 } from "../../../src/incident_awareness/dashboard/ui/assets/operations-contract.mjs";
 import {
@@ -1610,7 +1613,8 @@ test("Dashboard selection loads both detail APIs and discards delayed responses"
     assert.doesNotMatch(analysisLoader, /while \(|for \(/);
     assert.match(script, /getStoppingTraceAvailability\(stoppingTrace\)/);
     assert.match(script, /buildScoreTrajectoryModel\(/);
-    assert.match(script, /createScoreTrajectoryChart\(model\)/);
+    assert.match(script, /createDashboardReplayChart\(/);
+    assert.match(script, /decision\?\.t_e \?\? null/);
     assert.match(script, /저장된 Stopping Trace가 없습니다/);
     assert.match(script, /fusionResult\?\.fusion_status === "not_evaluated"/);
     assert.match(script, /Fusion이 평가되지 않아 저장된 Trace point가 없습니다/);
@@ -1682,24 +1686,26 @@ test("Dashboard renders dense Runtime and Run tables without exposing Run Type",
     );
     assert.match(script, /createTableCell\(runtime\.entity_id\)/);
     assert.match(html, /<table class="dashboard-table runs-table">/);
-    assert.match(html, /API의 관측 시작 시각 최근순을 그대로 유지하며 최대 20건/);
+    assert.match(html, /관측 시작 시각 최근순 최대 20건/);
     assert.match(html, /최근 Runtime 조회 결과는\s+전체 실행 통계가 아닙니다/);
     assert.match(html, /조회 완료 후 약 5초 간격으로 Runtime 상태 갱신/);
     assert.match(html, /조회 범위 내 최신 Runtime 상태/);
     assert.match(html, /조회 범위 내 최신 Runtime 보고/);
     assert.match(html, /<details class="dashboard-time-note">/);
     assert.match(html, /<summary>표시 기준 및 상태 안내<\/summary>/);
-    assert.match(html, /class="dashboard-workbench"/);
+    assert.match(html, /class="dashboard-monitor-grid"/);
     assert.match(html, /id="selected-run-summary"/);
     assert.match(html, /id="selected-run-settings"/);
     assert.match(html, /class="dashboard-stage-scroll"/);
     assert.match(stylesheet, /\.app-page\.dashboard-page\s*{[^}]*width: 100%;/s);
     assert.match(stylesheet, /\.app-page\.dashboard-page\s*{[^}]*max-width: 101rem;/s);
-    assert.match(stylesheet, /grid-template-columns: repeat\(6, minmax\(9rem, 1fr\)\)/);
+    assert.match(stylesheet, /grid-template-columns: repeat\(6, minmax\(7rem, 1fr\)\)/);
     assert.match(
         stylesheet,
-        /\.dashboard-workbench\s*{[^}]*grid-template-columns: minmax\(0, 1fr\);/s,
+        /\.dashboard-monitor-grid\s*{[^}]*grid-template-columns: minmax\(0, 1\.62fr\) minmax\(0, 1fr\);/s,
     );
+    assert.match(stylesheet, /\.dashboard-event-types li\s*{[^}]*grid-template-columns: minmax\(0, 1fr\) auto;/s);
+    assert.match(stylesheet, /\.dashboard-event-types li strong\s*{[^}]*text-align: center;/s);
     assert.match(
         stylesheet,
         /\.dashboard-analysis-summary\s*{[^}]*grid-template-columns: repeat\(4,/s,
@@ -1714,7 +1720,7 @@ test("Dashboard renders dense Runtime and Run tables without exposing Run Type",
         html.indexOf('id="selected-run-heading"')
         < html.indexOf("Fusion Score Trajectory"),
     );
-    assert.ok(html.indexOf("Fusion Score Trajectory") < html.indexOf('id="runs-heading"'));
+    assert.ok(html.indexOf('id="runs-heading"') < html.indexOf('id="selected-run-heading"'));
     assert.doesNotMatch(html, />Type<|>Run Type</);
     assert.match(script, /runsStatus\.textContent = state\.message;/);
     assert.equal(script.match(/void loadRuns\(\);/g)?.length, 1);
@@ -1806,6 +1812,22 @@ class FakeElement extends FakeNode {
         for (const listener of this.listeners.get("click") ?? []) {
             listener({ type: "click", target: this });
         }
+    }
+
+    keyDown(key) {
+        const event = {
+            type: "keydown",
+            key,
+            target: this,
+            defaultPrevented: false,
+            preventDefault() {
+                this.defaultPrevented = true;
+            },
+        };
+        for (const listener of this.listeners.get("keydown") ?? []) {
+            listener(event);
+        }
+        return event.defaultPrevented;
     }
 
     focus() {
@@ -2150,6 +2172,266 @@ async function startDashboardWithRuntime(runtimeItems, runs) {
     await harness.respond(RUNTIME_API_PATH, 200, { items: runtimeItems });
     return harness;
 }
+
+test("Dashboard opens the Replay panel and switches detail tabs without changing the selection", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    const tabNames = ["summary", "replay", "evidence", "decision", "workflow"];
+    const tabStates = () => tabNames.map((name) => ({
+        tab: harness.document.getElementById(`dashboard-tab-${name}`).getAttribute("aria-selected"),
+        hidden: harness.document.getElementById(`dashboard-panel-${name}`).hidden,
+    }));
+    const selectedRun = harness.text("selected-run-id");
+
+    // When
+    const defaultStates = tabStates();
+    harness.document.getElementById("dashboard-tab-decision").click();
+    const decisionStates = tabStates();
+    harness.document.getElementById("dashboard-tab-replay").click();
+    const replayTab = harness.document.getElementById("dashboard-tab-replay");
+    const arrowHandled = replayTab.keyDown("ArrowRight");
+    const evidenceTab = harness.document.getElementById("dashboard-tab-evidence");
+    const evidenceFocused = harness.document.activeElement === evidenceTab;
+    const endHandled = evidenceTab.keyDown("End");
+    const workflowTab = harness.document.getElementById("dashboard-tab-workflow");
+    const workflowFocused = harness.document.activeElement === workflowTab;
+    const homeHandled = workflowTab.keyDown("Home");
+
+    // Then
+    assert.deepEqual(defaultStates, [
+        { tab: "false", hidden: true },
+        { tab: "true", hidden: false },
+        { tab: "false", hidden: true },
+        { tab: "false", hidden: true },
+        { tab: "false", hidden: true },
+    ]);
+    assert.deepEqual(decisionStates, [
+        { tab: "false", hidden: true },
+        { tab: "false", hidden: true },
+        { tab: "false", hidden: true },
+        { tab: "true", hidden: false },
+        { tab: "false", hidden: true },
+    ]);
+    assert.equal(arrowHandled, true);
+    assert.equal(evidenceFocused, true);
+    assert.equal(endHandled, true);
+    assert.equal(workflowFocused, true);
+    assert.equal(homeHandled, true);
+    assert.equal(harness.document.getElementById("dashboard-tab-summary").getAttribute("aria-selected"), "true");
+    assert.equal(harness.document.activeElement, harness.document.getElementById("dashboard-tab-summary"));
+    assert.equal(harness.document.getElementById("dashboard-panel-summary").hidden, false);
+    assert.equal(harness.text("selected-run-id"), selectedRun);
+});
+
+test("Dashboard requests the selected Run timeline once and labels fetched Event counts", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    const timelinePath = buildEventTimelineApiPath("RUN-A", 50, 0);
+
+    // When
+    await harness.respondAnalysis(
+        "RUN-A",
+        storedDetail("RUN-A", "WIN-A"),
+        storedFusion("RUN-A", "WIN-A"),
+    );
+    const initialRequests = harness.requestCount(timelinePath);
+    await harness.respond(timelinePath, 200, {
+        items: [
+            { event_id: "EVT-1", timestamp: "2026-10-09T00:00:01Z", host_id: "WIN-A", event_type: "Process" },
+            { event_id: "EVT-2", timestamp: "2026-10-09T00:00:02Z", host_id: "WIN-A", event_type: "Network" },
+        ],
+        total: 75,
+        limit: 50,
+        offset: 0,
+    });
+    const summary = harness.text("event-type-summary");
+    const status = harness.text("event-type-summary-status");
+    const rows = harness.document.getElementById("event-type-summary").childNodes;
+
+    // Then
+    assert.equal(initialRequests, 1);
+    assert.match(summary, /Process/);
+    assert.match(summary, /Network/);
+    assert.deepEqual(rows.map((row) => row.childNodes.map((node) => node.textContent)), [
+        ["Process", "1"],
+        ["Network", "1"],
+    ]);
+    assert.equal(
+        status,
+        "조회된 Event 2건 기준 (전체 75건). "
+            + "Run 단위 조회이며 선택 Runtime Entity로 한정되지 않습니다. "
+            + "Event 시각과 기술적 판정 시각은 별도 의미입니다.",
+    );
+    assert.equal(harness.requestCount(timelinePath), 1);
+});
+
+test("Dashboard shows stored Decision history without deriving a causal Event timeline", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    const detail = storedDetail("RUN-A", "WIN-A", "DEC-2");
+    detail.body.decision_history = [
+        { decision_id: "DEC-2", decision_path: "fusion", t_e: "2026-10-09T00:02:00Z" },
+        { decision_id: "DEC-1", decision_path: "fast", t_e: "2026-10-09T00:01:00Z" },
+    ];
+
+    // When
+    await harness.respondAnalysis("RUN-A", detail, storedFusion("RUN-A", "WIN-A", "DEC-2"));
+    const history = harness.text("decision-history-list");
+    const replayTimeline = harness.text("decision-timeline-list");
+    const entries = harness.document.getElementById("decision-timeline-list").childNodes;
+
+    // Then
+    assert.equal(harness.text("decision-history-status"), "최신 Decision부터 저장된 순서로 표시합니다.");
+    assert.ok(history.indexOf("DEC-2") < history.indexOf("DEC-1"));
+    assert.match(replayTimeline, /DEC-2/);
+    assert.match(replayTimeline, /DEC-1/);
+    assert.deepEqual(entries.map((item) => [
+        item.childNodes[0].textContent,
+        ...item.childNodes[1].childNodes.map((detail) => detail.textContent),
+    ]), [
+        ["DEC-2", `t_e · ${formatRunTimestamp("2026-10-09T00:02:00Z")}`, "판단 경로 · Fusion"],
+        ["DEC-1", `t_e · ${formatRunTimestamp("2026-10-09T00:01:00Z")}`, "판단 경로 · Fast"],
+    ]);
+    assert.doesNotMatch(history, /Alert Sent|Analyst Ack|24h/);
+});
+
+test("Dashboard keeps a single stored Decision readable as a distinct timeline entry", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    const detail = storedDetail("RUN-A", "WIN-A", "DEC-1");
+    detail.body.decision_history = [
+        { decision_id: "DEC-1", decision_path: "fast_and_fusion", t_e: "2026-10-09T00:02:00Z" },
+    ];
+
+    // When
+    await harness.respondAnalysis("RUN-A", detail, storedFusion("RUN-A", "WIN-A", "DEC-1"));
+    const entries = harness.document.getElementById("decision-timeline-list").childNodes;
+
+    // Then
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].childNodes[0].textContent, "DEC-1");
+    assert.deepEqual(entries[0].childNodes[1].childNodes.map((detailItem) => detailItem.textContent), [
+        `t_e · ${formatRunTimestamp("2026-10-09T00:02:00Z")}`,
+        "판단 경로 · Fast + Fusion",
+    ]);
+});
+
+test("Dashboard distinguishes empty and failed Event category reads", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    const timelinePath = buildEventTimelineApiPath("RUN-A", 50, 0);
+    await harness.respondAnalysis(
+        "RUN-A",
+        storedDetail("RUN-A", "WIN-A"),
+        storedFusion("RUN-A", "WIN-A"),
+    );
+
+    // When
+    await harness.respond(timelinePath, 200, { items: [], total: 0, limit: 50, offset: 0 });
+    const emptyStatus = harness.text("event-type-summary-status");
+    const emptyItems = harness.text("event-type-summary");
+    harness.runButton("RUN-A").click();
+    await harness.respondAnalysis(
+        "RUN-A",
+        storedDetail("RUN-A", "WIN-A"),
+        storedFusion("RUN-A", "WIN-A"),
+    );
+    await harness.respond(timelinePath, 503, { detail: "Unavailable" });
+
+    // Then
+    assert.match(emptyStatus, /저장된 Event가 없습니다/);
+    assert.equal(emptyItems, "");
+    assert.match(harness.text("event-type-summary-status"), /불러오지 못했습니다/);
+    assert.equal(harness.text("event-type-summary"), "");
+});
+
+test("Dashboard refreshes Event categories once when a selected Running Run completes", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime(
+        [runtimeReport("RUN-A", "WIN-A", "running", "fusion")],
+        [runListItem("RUN-A", "WIN-A")],
+    );
+    t.after(harness.restore);
+    const timelinePath = buildEventTimelineApiPath("RUN-A", 50, 0);
+    await harness.respondAnalysis("RUN-A", notFound(), notFound());
+    await harness.respond(timelinePath, 200, { items: [], total: 0, limit: 50, offset: 0 });
+    const initialStatus = harness.text("event-type-summary-status");
+
+    // When
+    await harness.poll([runtimeReport("RUN-A", "WIN-A", "completed", null)]);
+    await harness.respondAnalysis(
+        "RUN-A",
+        storedDetail("RUN-A", "WIN-A", "DEC-A"),
+        storedFusion("RUN-A", "WIN-A", "DEC-A"),
+    );
+    const requestsAfterCompletion = harness.requestCount(timelinePath);
+    await harness.respond(timelinePath, 200, {
+        items: [
+            { event_id: "EVT-1", timestamp: "2026-10-09T00:02:00Z", host_id: "WIN-A", event_type: "Process" },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+    });
+    await harness.poll([runtimeReport("RUN-A", "WIN-A", "completed", null)]);
+
+    // Then
+    assert.match(initialStatus, /저장된 Event가 없습니다/);
+    assert.equal(requestsAfterCompletion, 2);
+    assert.equal(harness.requestCount(timelinePath), 2);
+    assert.match(harness.text("event-type-summary"), /Process1/);
+    assert.equal(harness.text("selected-run-status"), STORED_STATUS);
+});
+
+test("Recent Runs uses Runtime status and progress only for the exact Run and Entity scope", async (t) => {
+    // Given
+    const otherEntity = runtimeReport("RUN-A", "WIN-B", "running", "normalization");
+    otherEntity.normalization_processed_count = 9;
+    otherEntity.remaining_count = 1;
+    const matchingEntity = runtimeReport("RUN-A", "WIN-A", "running", "normalization");
+    matchingEntity.normalization_processed_count = 7;
+    matchingEntity.remaining_count = 3;
+    const harness = await startDashboardWithRuntime(
+        [otherEntity],
+        [runListItem("RUN-A", "WIN-A")],
+    );
+    t.after(harness.restore);
+    const timelinePath = buildEventTimelineApiPath("RUN-A", 50, 0);
+    await harness.respondAnalysis("RUN-A", notFound(), notFound());
+    await harness.respond(timelinePath, 200, { items: [], total: 0, limit: 50, offset: 0 });
+    const runCells = () => harness.document.getElementById("runs-list").childNodes[0].childNodes;
+    const initial = {
+        target: runCells()[1].textContent,
+        status: runCells()[2].textContent,
+        progress: runCells()[4].textContent,
+    };
+
+    // When
+    await harness.poll([otherEntity, matchingEntity]);
+    const matched = {
+        status: runCells()[2].textContent,
+        progress: runCells()[4].textContent,
+    };
+    await harness.poll([otherEntity, { ...matchingEntity, is_stale: true }]);
+    const staleStatus = runCells()[2].textContent;
+    await harness.pollFailure();
+    const failedQueryStatus = runCells()[2].textContent;
+
+    // Then
+    assert.match(initial.target, /분석 대상 WIN-A/);
+    assert.equal(initial.status, "최근 5건 미포함");
+    assert.equal(initial.progress, "-");
+    assert.match(matched.status, /최근 갱신/);
+    assert.equal(matched.progress, "7 / 10 처리");
+    assert.match(staleStatus, /오래됨/);
+    assert.match(failedQueryStatus, /확인 불가 \(조회 실패\)/);
+    assert.doesNotMatch(failedQueryStatus, /최근 갱신/);
+});
 
 test("Dashboard hides only the successful duplicate Runtime status", async (t) => {
     // Given
