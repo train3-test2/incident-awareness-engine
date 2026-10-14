@@ -21,6 +21,21 @@ SCHEMA_VERSIONS = {
 }
 
 
+def test_exposes_verified_jsonl_checksum_without_changing_loaded_records(
+    inputs: PipelineInputs,
+) -> None:
+    # Given
+    expected = hashlib.sha256(inputs.sysmon_jsonl_path.read_bytes()).hexdigest()
+
+    # When
+    artifacts = load_s0_pipeline_artifacts(inputs)
+
+    # Then
+    assert artifacts.sysmon_content_sha256 == expected
+    assert artifacts.sysmon_records[0].record_no == 1
+    assert "sysmon_content_sha256" not in repr(artifacts)
+
+
 @pytest.fixture
 def inputs(tmp_path: Path) -> PipelineInputs:
     telemetry_dir = tmp_path / "raw" / RUN_ID / "telemetry"

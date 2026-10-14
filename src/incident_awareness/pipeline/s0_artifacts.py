@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -32,6 +32,8 @@ class S0PipelineArtifacts:
     run_metadata: RunMetadata
     sysmon_records: tuple[SysmonJsonlRecord, ...]
     normalization_context: SysmonNormalizationContext
+    # Already verified manifest checksum, carried only for optional telemetry.
+    sysmon_content_sha256: str | None = field(default=None, repr=False, compare=False)
 
 
 def load_s0_pipeline_artifacts(inputs: PipelineInputs) -> S0PipelineArtifacts:
@@ -50,7 +52,7 @@ def load_s0_pipeline_artifacts(inputs: PipelineInputs) -> S0PipelineArtifacts:
             f"{manifest_run_id!r} != {run_metadata.run_id!r}"
         )
 
-    raw_log_id = _validate_sysmon_manifest_item(
+    raw_log_id, content_sha256 = _validate_sysmon_manifest_item(
         manifest,
         run_id=run_metadata.run_id,
         sysmon_jsonl_path=inputs.sysmon_jsonl_path,
@@ -60,6 +62,7 @@ def load_s0_pipeline_artifacts(inputs: PipelineInputs) -> S0PipelineArtifacts:
     return S0PipelineArtifacts(
         run_metadata=run_metadata,
         sysmon_records=records,
+        sysmon_content_sha256=content_sha256,
         normalization_context=SysmonNormalizationContext(
             run_id=run_metadata.run_id,
             raw_log_id=raw_log_id,
@@ -92,7 +95,7 @@ def _validate_sysmon_manifest_item(
     *,
     run_id: str,
     sysmon_jsonl_path: Path,
-) -> str:
+) -> tuple[str, str]:
     items = manifest.get("items")
     if not isinstance(items, list):
         raise TypeError("manifest items must be an array")
@@ -151,7 +154,7 @@ def _validate_sysmon_manifest_item(
     if actual_sha256 != expected_sha256.lower():
         raise ValueError("Sysmon JSONL SHA-256 must match the manifest")
 
-    return raw_log_id
+    return raw_log_id, actual_sha256
 
 
 def _read_sysmon_records(path: Path) -> tuple[SysmonJsonlRecord, ...]:

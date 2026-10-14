@@ -14,6 +14,25 @@ _LOGGER = logging.getLogger(__name__)
 _FIRST_CYCLE_MIGRATION_ID = "001_first_cycle"
 _MIGRATION_ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
 _MIGRATION_ADVISORY_LOCK_KEY = "incident_awareness_engine:migrations"
+_INPUT_IDENTITY_MIGRATION_ID = "012_pipeline_telemetry_input_identity"
+# Table baselines cannot identify an ALTER migration. Require all 012 artifacts;
+# partial columns/constraints/trigger must not be silently recorded as applied.
+_INPUT_IDENTITY_BASELINE_SQL = """
+SELECT
+    EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('pipeline_telemetry_executions')
+            AND attname = 'input_identity_kind' AND NOT attisdropped),
+    EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('pipeline_telemetry_executions')
+            AND attname = 'input_identity_sha256' AND NOT attisdropped),
+    EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass('pipeline_telemetry_executions')
+            AND conname = 'pipeline_telemetry_input_identity_pair' AND convalidated AND contype = 'c'),
+    EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass('pipeline_telemetry_executions')
+            AND conname = 'pipeline_telemetry_input_identity_payload' AND convalidated AND contype = 'c'),
+    to_regprocedure('guard_pipeline_telemetry_input_identity()') IS NOT NULL,
+    EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = to_regclass('pipeline_telemetry_executions')
+            AND tgname = 'pipeline_telemetry_input_identity_immutable'
+            AND tgfoid = to_regprocedure('guard_pipeline_telemetry_input_identity()')
+            AND NOT tgisinternal AND tgenabled = 'O')
+"""
 _MIGRATION_BASELINE_TABLES = {
     _FIRST_CYCLE_MIGRATION_ID: frozenset(
         {
@@ -35,6 +54,9 @@ _MIGRATION_BASELINE_TABLES = {
     ),
     "009_r1_stream_close_watermark_binding": frozenset(),
     "010_r1_stream_event_delivery_ledger": frozenset({"r1_stream_events"}),
+    "011_pipeline_telemetry_timeseries": frozenset(
+        {"pipeline_telemetry_executions", "pipeline_telemetry_buckets"}
+    ),
 }
 _MIGRATIONS_DIRECTORY = Path(__file__).resolve().parents[3] / "infra" / "postgres" / "migrations"
 
@@ -84,6 +106,17 @@ def _apply_migration_paths(
         migration_id = path.stem
         if _is_migration_applied(connection, migration_id):
             continue
+
+        if migration_id == _INPUT_IDENTITY_MIGRATION_ID:
+            artifacts = connection.execute(_INPUT_IDENTITY_BASELINE_SQL).fetchone()
+            if artifacts is None:
+                raise RuntimeError("PostgreSQL input identity baseline query returned no row")
+            if any(artifacts):
+                if not all(artifacts):
+                    raise RuntimeError("partial 012 input identity schema cannot be baselined")
+                _record_migration(connection, migration_id)
+                applied_migration_ids.append(migration_id)
+                continue
 
         baseline_tables = _MIGRATION_BASELINE_TABLES.get(migration_id)
         if baseline_tables is not None:

@@ -237,6 +237,7 @@ def test_standalone_run_persists_fusion_trace_and_runtime_config(
         ordered_artifacts: S0PipelineArtifacts,
         *,
         progress_callback,
+        telemetry_collector=None,
     ) -> object:
         normalized_record_ids.extend(
             record.data["RecordId"] for record in ordered_artifacts.sysmon_records
@@ -607,9 +608,11 @@ def _configure_runtime_stage_stubs(
     expected_error = error or RuntimeError("stage failed")
     monkeypatch.setattr(standalone_module, "load_s0_pipeline_artifacts", lambda _: artifacts)
 
-    def normalize(value, *, progress_callback):
+    def normalize(value, *, progress_callback, telemetry_collector=None):
         if failing_stage == "normalization":
             raise expected_error
+        if telemetry_collector is not None:
+            telemetry_collector.record_success(telemetry_collector.begin_record(1))
         progress_callback(1)
         return normalized
 
@@ -642,6 +645,29 @@ def _configure_runtime_stage_stubs(
     monkeypatch.setattr(standalone_module, "persist_s0_results", persist)
     monkeypatch.setattr(standalone_module, "build_execution_summary", lambda *args: summary)
     return prepared, summary
+
+
+def test_standalone_collects_attempt_metrics_without_claiming_caller_commit(monkeypatch) -> None:
+    # Given
+    prepared, expected = _configure_runtime_stage_stubs(monkeypatch)
+    runtime, telemetry = [], []
+
+    # When
+    actual = run_prepared_standalone_run(
+        prepared,
+        connection=object(),
+        commit=False,
+        runtime_observer=runtime.append,
+        telemetry_observer=telemetry.append,
+    )
+
+    # Then
+    assert actual is expected
+    assert runtime[-1].status is PipelineRuntimeState.RUNNING
+    assert runtime[-1].current_stage is PipelineStage.PERSISTENCE
+    assert {item.execution_id for item in runtime + telemetry} == {runtime[-1].execution_id}
+    assert sum(bucket.processing_completed_count for bucket in telemetry[-1].buckets) == 1
+    assert all(item.current_stage is not PipelineStage.FAST_HANDOFF for item in runtime)
 
 
 class _RuntimeTrackerSpy:

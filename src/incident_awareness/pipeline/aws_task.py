@@ -12,9 +12,11 @@ import boto3
 from botocore.client import BaseClient
 from pydantic import ValidationError
 
+from incident_awareness.common.models.pipeline_telemetry import PipelineTelemetryInputIdentity
 from incident_awareness.common.models.run import RunMetadata
 from incident_awareness.pipeline.__main__ import main as pipeline_main
 from incident_awareness.pipeline.standalone import main as standalone_main
+from incident_awareness.pipeline.telemetry_input import s3_input_identity, telemetry_input_context
 
 _LOGGER = logging.getLogger(__name__)
 _INPUT_ROOT = Path("/inputs")
@@ -39,8 +41,12 @@ def main() -> int:
     """Download an S3 First Cycle input prefix and invoke the pipeline CLI."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     location = parse_s3_input_location(_required_environment(_S3_INPUT_URI_ENV))
-    download_s3_inputs(location, _INPUT_ROOT)
+    identity = download_s3_inputs(location, _INPUT_ROOT)
+    with telemetry_input_context(identity):
+        return _run_materialized_inputs(location)
 
+
+def _run_materialized_inputs(location: S3InputLocation) -> int:
     if _standalone_mode_enabled():
         return standalone_main(
             [
@@ -111,11 +117,12 @@ def download_s3_inputs(
     destination: Path,
     *,
     s3_client: BaseClient | None = None,
-) -> None:
+) -> PipelineTelemetryInputIdentity | None:
     """Download every object under one approved S3 prefix into ``destination``."""
     client = s3_client or boto3.client("s3")
     paginator = client.get_paginator("list_objects_v2")
     downloaded_count = 0
+    input_identity = None
     for page in paginator.paginate(Bucket=location.bucket, Prefix=location.prefix):
         for item in page.get("Contents", []):
             key = item.get("Key")
@@ -130,6 +137,8 @@ def download_s3_inputs(
             temporary_target = target.with_name(f"{target.name}.download")
             client.download_file(location.bucket, key, str(temporary_target))
             temporary_target.replace(target)
+            if relative_path == PurePosixPath("telemetry/sysmon-0001.jsonl"):
+                input_identity = s3_input_identity(location.bucket, key, item.get("ETag"))
             downloaded_count += 1
 
     if downloaded_count == 0:
@@ -143,6 +152,7 @@ def download_s3_inputs(
         location.prefix,
         downloaded_count,
     )
+    return input_identity
 
 
 def _relative_object_path(key: str, prefix: str) -> PurePosixPath:
