@@ -12,6 +12,7 @@ from incident_awareness.normalization.sysmon import SysmonNormalizationContext
 from incident_awareness.pipeline import event_evidence
 from incident_awareness.pipeline.event_evidence import normalize_sysmon_and_extract_evidence
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts
+from incident_awareness.pipeline.timeseries_telemetry import PipelineTelemetryCollector
 
 RUN_ID = "RUN-20260920-001"
 SAMPLE_PATH = Path(__file__).parents[2] / "samples" / "raw" / "sysmon-0001.jsonl"
@@ -101,6 +102,110 @@ def _artifacts_for_record_ids(*record_ids: int) -> S0PipelineArtifacts:
         record for record in read_sysmon_jsonl(SAMPLE_PATH) if record.data["RecordId"] in record_ids
     )
     return _artifacts(records)
+
+
+def test_real_normalization_measures_evidence_before_progress_callback(monkeypatch) -> None:
+    # Given
+    artifacts = _artifacts_for_record_ids(3391, 3395)
+    expected = normalize_sysmon_and_extract_evidence(artifacts)
+    elapsed = [0]
+    collector = PipelineTelemetryCollector(
+        execution_id="shared",
+        run_id=RUN_ID,
+        entity_id="WIN-01",
+        clock=lambda: datetime(2026, 10, 14, 1, tzinfo=UTC),
+        monotonic_clock=lambda: elapsed[0],
+    )
+    collector.accept_batch(2)
+    extract = event_evidence.extract_evidence
+
+    def measured_extract(event):
+        elapsed[0] += 7
+        return extract(event)
+
+    def progress(count):
+        assert collector.snapshot().buckets[0].processing_completed_count == count
+        elapsed[0] += 1_000_000  # Progress/DB I/O must not enter the record duration.
+
+    monkeypatch.setattr(event_evidence, "extract_evidence", measured_extract)
+
+    # When
+    actual = normalize_sysmon_and_extract_evidence(
+        artifacts,
+        progress_callback=progress,
+        telemetry_collector=collector,
+    )
+
+    # Then
+    assert actual == expected
+    bucket = collector.snapshot().buckets[0]
+    assert bucket.processing_completed_count == bucket.latency_sample_count == 2
+    assert bucket.latency_sum_ns == 14
+    assert bucket.processing_failed_count == 0
+
+
+def test_evidence_failure_is_counted_separately_and_preserves_exception(monkeypatch) -> None:
+    # Given
+    artifacts = _artifacts_for_record_ids(3391, 3395)
+    collector = PipelineTelemetryCollector(
+        execution_id="shared",
+        run_id=RUN_ID,
+        entity_id="WIN-01",
+        clock=lambda: datetime(2026, 10, 14, 1, tzinfo=UTC),
+    )
+    collector.accept_batch(2)
+    original = event_evidence.extract_evidence
+    calls = [0]
+    error = RuntimeError("Evidence failed")
+
+    def extract(event):
+        calls[0] += 1
+        if calls[0] == 2:
+            raise error
+        return original(event)
+
+    monkeypatch.setattr(event_evidence, "extract_evidence", extract)
+    progress = []
+
+    # When
+    with pytest.raises(RuntimeError) as exc_info:
+        normalize_sysmon_and_extract_evidence(
+            artifacts,
+            telemetry_collector=collector,
+            progress_callback=progress.append,
+        )
+
+    # Then
+    assert exc_info.value is error
+    assert progress == [1]
+    bucket = collector.snapshot().buckets[0]
+    assert bucket.processing_completed_count == bucket.processing_failed_count == 1
+    assert bucket.latency_sample_count == 1
+
+
+def test_failing_measurement_callbacks_cannot_replace_business_error(monkeypatch) -> None:
+    # Given
+    artifacts = _artifacts_for_record_ids(3391)
+    business_error = RuntimeError("original Evidence failure")
+    collector = PipelineTelemetryCollector(execution_id="shared", run_id=RUN_ID, entity_id="WIN-01")
+    collector.accept_batch(1)
+
+    def fail(*args):
+        raise RuntimeError("measurement failed")
+
+    def fail_evidence(event):
+        raise business_error
+
+    monkeypatch.setattr(collector, "begin_record", fail)
+    monkeypatch.setattr(collector, "record_failure", fail)
+    monkeypatch.setattr(event_evidence, "extract_evidence", fail_evidence)
+
+    # When
+    with pytest.raises(RuntimeError) as exc_info:
+        normalize_sysmon_and_extract_evidence(artifacts, telemetry_collector=collector)
+
+    # Then
+    assert exc_info.value is business_error
 
 
 def _artifacts(records: tuple[SysmonJsonlRecord, ...]) -> S0PipelineArtifacts:

@@ -93,6 +93,11 @@ class PipelineRuntimeTracker:
         self._disabled = False
 
     @property
+    def execution_id(self) -> str:
+        """Expose the invocation identity shared with timeseries telemetry."""
+        return self._execution_id
+
+    @property
     def status(self) -> PipelineRuntimeStatus | None:
         """Return the most recently produced immutable snapshot."""
         return self._status

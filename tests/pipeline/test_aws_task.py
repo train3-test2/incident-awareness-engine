@@ -3,6 +3,10 @@ from pathlib import Path
 import pytest
 
 from incident_awareness.pipeline import aws_task
+from incident_awareness.pipeline.telemetry_input import (
+    resolve_telemetry_input_identity,
+    s3_input_identity,
+)
 
 
 class _Paginator:
@@ -13,6 +17,45 @@ class _Paginator:
     def paginate(self, **kwargs: str) -> list[dict[str, object]]:
         self.arguments = kwargs
         return self._pages
+
+
+def test_downloaded_sysmon_passes_s3_object_identity_not_its_local_path(tmp_path: Path) -> None:
+    # Given
+    location = aws_task.parse_s3_input_location("s3://input-bucket/first-cycle/RUN-20260920-001/")
+    key = f"{location.prefix}telemetry/sysmon-0001.jsonl"
+    client = _S3Client(
+        pages=[{"Contents": [{"Key": key, "ETag": '"version-one"'}]}],
+        contents={key: b'{"record":1}\n'},
+    )
+
+    # When
+    identity = aws_task.download_s3_inputs(location, tmp_path, s3_client=client)
+
+    # Then
+    assert identity == s3_input_identity(location.bucket, key, "version-one")
+    assert identity.kind == "s3_object_sha256_v1"
+
+
+def test_aws_startup_carries_unknown_identity_without_content_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    monkeypatch.setenv(
+        "INCIDENT_AWARENESS_S3_INPUT_URI", "s3://input-bucket/first-cycle/RUN-20260920-001/"
+    )
+    monkeypatch.setattr(aws_task, "download_s3_inputs", lambda *args: None)
+
+    def business(location):
+        assert resolve_telemetry_input_identity(Path("not-a-temporary-identity"), ()) is None
+        return 0
+
+    monkeypatch.setattr(aws_task, "_run_materialized_inputs", business)
+
+    # When
+    result = aws_task.main()
+
+    # Then
+    assert result == 0
 
 
 class _S3Client:

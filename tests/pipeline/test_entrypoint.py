@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+
 from incident_awareness.pipeline import __main__ as entrypoint
 
 
@@ -5,7 +7,8 @@ def test_main_parses_inputs_and_runs_first_cycle_pipeline(monkeypatch) -> None:
     # Given
     inputs = object()
     runtime_observer = object()
-    received: list[tuple[object, object]] = []
+    telemetry_observer = object()
+    received: list[tuple[object, object, object]] = []
     lifecycle: list[str] = []
 
     class ObserverContext:
@@ -19,9 +22,14 @@ def test_main_parses_inputs_and_runs_first_cycle_pipeline(monkeypatch) -> None:
     monkeypatch.setattr(entrypoint, "parse_cli_args", lambda argv: inputs)
     monkeypatch.setattr(entrypoint, "PostgresPipelineRuntimeObserver", ObserverContext)
     monkeypatch.setattr(
+        entrypoint, "telemetry_observer_context", lambda: nullcontext(telemetry_observer)
+    )
+    monkeypatch.setattr(
         entrypoint,
         "run_first_cycle_pipeline",
-        lambda value, *, runtime_observer: received.append((value, runtime_observer)),
+        lambda value, *, runtime_observer, telemetry_observer: received.append(
+            (value, runtime_observer, telemetry_observer)
+        ),
     )
 
     # When
@@ -29,5 +37,5 @@ def test_main_parses_inputs_and_runs_first_cycle_pipeline(monkeypatch) -> None:
 
     # Then
     assert exit_code == 0
-    assert received == [(inputs, runtime_observer)]
+    assert received == [(inputs, runtime_observer, telemetry_observer)]
     assert lifecycle == ["enter", "exit"]

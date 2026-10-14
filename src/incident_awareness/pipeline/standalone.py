@@ -53,6 +53,11 @@ from incident_awareness.pipeline.runtime_telemetry import (
     PostgresPipelineRuntimeObserver,
 )
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts, load_s0_pipeline_artifacts
+from incident_awareness.pipeline.timeseries_observer import (
+    PipelineTelemetryObserver,
+    telemetry_observer_context,
+    telemetry_session_context,
+)
 from incident_awareness.storage.config import DatabaseConfig
 
 _STANDALONE_MANIFEST_ROOT = "raw"
@@ -272,6 +277,7 @@ def run_prepared_standalone_run(
     connection: DatabaseConnection,
     commit: bool = True,
     runtime_observer: PipelineRuntimeObserver | None = None,
+    telemetry_observer: PipelineTelemetryObserver | None = None,
 ) -> PipelineExecutionSummary:
     """Run standalone stages while preserving the existing Summary return contract.
 
@@ -284,6 +290,7 @@ def run_prepared_standalone_run(
         connection=connection,
         commit=commit,
         runtime_observer=runtime_observer,
+        telemetry_observer=telemetry_observer,
     )
     if commit and runtime_tracker is not None:
         runtime_tracker.complete()
@@ -296,6 +303,7 @@ def _run_prepared_standalone_stages(
     connection: DatabaseConnection,
     commit: bool,
     runtime_observer: PipelineRuntimeObserver | None,
+    telemetry_observer: PipelineTelemetryObserver | None = None,
 ) -> tuple[
     PipelineExecutionSummary,
     PipelineRuntimeTracker | None,
@@ -313,72 +321,87 @@ def _run_prepared_standalone_stages(
         started_at=started_at,
         observer=runtime_observer,
     )
-    normalized_artifacts = _run_stage(
-        PipelineStage.NORMALIZATION,
-        lambda: normalize_sysmon_and_extract_evidence(
-            artifacts,
-            progress_callback=(
-                runtime_tracker.record_normalization_progress
-                if runtime_tracker is not None
-                else None
+    with telemetry_session_context(
+        runtime_tracker,
+        run_id=artifacts.run_metadata.run_id,
+        entity_id=prepared.inputs.entity_id,
+        input_total=len(artifacts.sysmon_records),
+        observer=telemetry_observer,
+        input_path=getattr(prepared.inputs, "sysmon_jsonl_path", None),
+        input_records=artifacts.sysmon_records,
+        input_verified_sha256=getattr(artifacts, "sysmon_content_sha256", None),
+    ) as telemetry_session:
+        normalized_artifacts = _run_stage(
+            PipelineStage.NORMALIZATION,
+            lambda: normalize_sysmon_and_extract_evidence(
+                artifacts,
+                progress_callback=(
+                    runtime_tracker.record_normalization_progress
+                    if runtime_tracker is not None
+                    else None
+                ),
+                telemetry_collector=telemetry_session,
             ),
-        ),
-        runtime_tracker=runtime_tracker,
-    )
-    r1_archive = None
-    if getattr(prepared, "r1_production_config", None) is not None:
-        r1_archive = _generate_r1_archive_if_configured(
-            prepared,
-            events=normalized_artifacts.events,
-            run_id=artifacts.run_metadata.run_id,
+            runtime_tracker=runtime_tracker,
+            telemetry_session=telemetry_session,
         )
-    fusion_output = _run_stage(
-        PipelineStage.FUSION,
-        lambda: run_s0_fusion_with_trace(prepared.inputs, artifacts, normalized_artifacts),
-        runtime_tracker=runtime_tracker,
-    )
-    fast_result, decision_result = _run_stage(
-        PipelineStage.HYBRID,
-        lambda: _build_standalone_decision(
-            prepared,
-            run_id=artifacts.run_metadata.run_id,
-            fusion_result=fusion_output.fusion_result,
-        ),
-        runtime_tracker=runtime_tracker,
-    )
-    _run_stage(
-        PipelineStage.PERSISTENCE,
-        lambda: persist_s0_results(
-            artifacts,
-            normalized_artifacts,
-            fusion_output.fusion_result,
-            fusion_output.stopping_trace,
-            fusion_output.runtime_config_snapshot,
-            fast_result,
-            decision_result,
-            connection=connection,
-            commit=commit,
-        ),
-        runtime_tracker=runtime_tracker,
-    )
-    try:
-        summary = build_execution_summary(
-            artifacts,
-            normalized_artifacts,
-            fusion_output.fusion_result,
-            fast_result,
-            decision_result,
+        r1_archive = None
+        if getattr(prepared, "r1_production_config", None) is not None:
+            r1_archive = _generate_r1_archive_if_configured(
+                prepared,
+                events=normalized_artifacts.events,
+                run_id=artifacts.run_metadata.run_id,
+            )
+        fusion_output = _run_stage(
+            PipelineStage.FUSION,
+            lambda: run_s0_fusion_with_trace(prepared.inputs, artifacts, normalized_artifacts),
+            runtime_tracker=runtime_tracker,
+            telemetry_session=telemetry_session,
         )
-    except Exception:
-        if runtime_tracker is not None:
-            if commit:
-                # Persistence already confirmed its commit; a reporting failure must
-                # not relabel the durable Business result as a failed transaction.
-                runtime_tracker.complete()
-            else:
-                runtime_tracker.fail(PipelineStage.PERSISTENCE)
-        raise
-    return summary, runtime_tracker, r1_archive
+        fast_result, decision_result = _run_stage(
+            PipelineStage.HYBRID,
+            lambda: _build_standalone_decision(
+                prepared,
+                run_id=artifacts.run_metadata.run_id,
+                fusion_result=fusion_output.fusion_result,
+            ),
+            runtime_tracker=runtime_tracker,
+            telemetry_session=telemetry_session,
+        )
+        _run_stage(
+            PipelineStage.PERSISTENCE,
+            lambda: persist_s0_results(
+                artifacts,
+                normalized_artifacts,
+                fusion_output.fusion_result,
+                fusion_output.stopping_trace,
+                fusion_output.runtime_config_snapshot,
+                fast_result,
+                decision_result,
+                connection=connection,
+                commit=commit,
+            ),
+            runtime_tracker=runtime_tracker,
+            telemetry_session=telemetry_session,
+        )
+        try:
+            summary = build_execution_summary(
+                artifacts,
+                normalized_artifacts,
+                fusion_output.fusion_result,
+                fast_result,
+                decision_result,
+            )
+        except Exception:
+            if runtime_tracker is not None:
+                if commit:
+                    # Persistence already confirmed its commit; a reporting failure must
+                    # not relabel the durable Business result as a failed transaction.
+                    runtime_tracker.complete()
+                else:
+                    runtime_tracker.fail(PipelineStage.PERSISTENCE)
+            raise
+        return summary, runtime_tracker, r1_archive
 
 
 def _generate_r1_archive_if_configured(
@@ -443,6 +466,7 @@ def run_standalone_sysmon_jsonl(
     fusion_config_path: Path | None = None,
     r1_production_config: R1ProductionConfig | None = None,
     runtime_observer: PipelineRuntimeObserver | None = None,
+    telemetry_observer: PipelineTelemetryObserver | None = None,
 ) -> StandaloneExecution:
     """Run one standalone Sysmon JSONL execution in the caller's transaction.
 
@@ -470,6 +494,7 @@ def run_standalone_sysmon_jsonl(
             connection=connection,
             commit=False,
             runtime_observer=runtime_observer,
+            telemetry_observer=telemetry_observer,
         )
     except Exception:
         shutil.rmtree(reservation.output_dir, ignore_errors=True)
@@ -511,7 +536,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     ).resolve()
     database_config = DatabaseConfig.from_environment()
 
-    with PostgresPipelineRuntimeObserver() as runtime_observer:
+    with (
+        PostgresPipelineRuntimeObserver() as runtime_observer,
+        telemetry_observer_context() as telemetry_observer,
+    ):
         execution: StandaloneExecution | None = None
         try:
             with psycopg.connect(database_config.url, autocommit=False) as connection:
@@ -525,6 +553,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     entity_id=namespace.entity_id,
                     fusion_config_path=namespace.fusion_config,
                     runtime_observer=runtime_observer,
+                    telemetry_observer=telemetry_observer,
                 )
         except Exception:
             if execution is not None:

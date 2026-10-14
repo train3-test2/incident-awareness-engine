@@ -31,6 +31,12 @@ from incident_awareness.pipeline.runtime_telemetry import (
     utc_now_milliseconds,
 )
 from incident_awareness.pipeline.s0_artifacts import load_s0_pipeline_artifacts
+from incident_awareness.pipeline.timeseries_observer import (
+    PipelineTelemetryObserver,
+    PipelineTelemetrySession,
+    flush_telemetry,
+    telemetry_session_context,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,6 +46,7 @@ def run_first_cycle_pipeline(
     *,
     connection: DatabaseConnection | None = None,
     runtime_observer: PipelineRuntimeObserver | None = None,
+    telemetry_observer: PipelineTelemetryObserver | None = None,
 ) -> PipelineExecutionSummary:
     """Run the assembled First Cycle stages and report their terminal state."""
     started_at = _capture_runtime_started_at()
@@ -54,67 +61,83 @@ def run_first_cycle_pipeline(
         started_at=started_at,
         observer=runtime_observer,
     )
-    normalized_artifacts = _run_stage(
-        PipelineStage.NORMALIZATION,
-        lambda: normalize_sysmon_and_extract_evidence(
-            artifacts,
-            progress_callback=(
-                runtime_tracker.record_normalization_progress
-                if runtime_tracker is not None
-                else None
+    with telemetry_session_context(
+        runtime_tracker,
+        run_id=artifacts.run_metadata.run_id,
+        entity_id=inputs.entity_id,
+        input_total=len(artifacts.sysmon_records),
+        observer=telemetry_observer,
+        input_path=inputs.sysmon_jsonl_path,
+        input_records=artifacts.sysmon_records,
+        input_verified_sha256=getattr(artifacts, "sysmon_content_sha256", None),
+    ) as telemetry_session:
+        normalized_artifacts = _run_stage(
+            PipelineStage.NORMALIZATION,
+            lambda: normalize_sysmon_and_extract_evidence(
+                artifacts,
+                progress_callback=(
+                    runtime_tracker.record_normalization_progress
+                    if runtime_tracker is not None
+                    else None
+                ),
+                telemetry_collector=telemetry_session,
             ),
-        ),
-        runtime_tracker=runtime_tracker,
-    )
-    fusion_output = _run_stage(
-        PipelineStage.FUSION,
-        lambda: run_s0_fusion_with_trace(inputs, artifacts, normalized_artifacts),
-        runtime_tracker=runtime_tracker,
-    )
-    fusion_result = fusion_output.fusion_result
-    stopping_trace = fusion_output.stopping_trace
-    runtime_config_snapshot = fusion_output.runtime_config_snapshot
-    fast_result = _run_stage(
-        PipelineStage.FAST_HANDOFF,
-        lambda: load_s0_fast_detection(inputs, artifacts),
-        runtime_tracker=runtime_tracker,
-    )
-    decision_result = _run_stage(
-        PipelineStage.HYBRID,
-        lambda: _combine_with_lifecycle_resolution(
-            inputs,
-            fast_result,
-            fusion_result,
-            run_id=artifacts.run_metadata.run_id,
-            connection=connection,
-        ),
-        runtime_tracker=runtime_tracker,
-    )
-    _run_stage(
-        PipelineStage.PERSISTENCE,
-        lambda: persist_s0_results(
+            runtime_tracker=runtime_tracker,
+            telemetry_session=telemetry_session,
+        )
+        fusion_output = _run_stage(
+            PipelineStage.FUSION,
+            lambda: run_s0_fusion_with_trace(inputs, artifacts, normalized_artifacts),
+            runtime_tracker=runtime_tracker,
+            telemetry_session=telemetry_session,
+        )
+        fusion_result = fusion_output.fusion_result
+        stopping_trace = fusion_output.stopping_trace
+        runtime_config_snapshot = fusion_output.runtime_config_snapshot
+        fast_result = _run_stage(
+            PipelineStage.FAST_HANDOFF,
+            lambda: load_s0_fast_detection(inputs, artifacts),
+            runtime_tracker=runtime_tracker,
+            telemetry_session=telemetry_session,
+        )
+        decision_result = _run_stage(
+            PipelineStage.HYBRID,
+            lambda: _combine_with_lifecycle_resolution(
+                inputs,
+                fast_result,
+                fusion_result,
+                run_id=artifacts.run_metadata.run_id,
+                connection=connection,
+            ),
+            runtime_tracker=runtime_tracker,
+            telemetry_session=telemetry_session,
+        )
+        _run_stage(
+            PipelineStage.PERSISTENCE,
+            lambda: persist_s0_results(
+                artifacts,
+                normalized_artifacts,
+                fusion_result,
+                stopping_trace,
+                runtime_config_snapshot,
+                fast_result,
+                decision_result,
+                connection=connection,
+            ),
+            runtime_tracker=runtime_tracker,
+            telemetry_session=telemetry_session,
+        )
+        if runtime_tracker is not None:
+            runtime_tracker.complete()
+        summary = build_execution_summary(
             artifacts,
             normalized_artifacts,
             fusion_result,
-            stopping_trace,
-            runtime_config_snapshot,
             fast_result,
             decision_result,
-            connection=connection,
-        ),
-        runtime_tracker=runtime_tracker,
-    )
-    if runtime_tracker is not None:
-        runtime_tracker.complete()
-    summary = build_execution_summary(
-        artifacts,
-        normalized_artifacts,
-        fusion_result,
-        fast_result,
-        decision_result,
-    )
-    log_execution_summary(summary)
-    return summary
+        )
+        log_execution_summary(summary)
+        return summary
 
 
 def _capture_runtime_started_at() -> datetime | None:
@@ -190,6 +213,7 @@ def _run_stage[T](
     operation: Callable[[], T],
     *,
     runtime_tracker: PipelineRuntimeTracker | None = None,
+    telemetry_session: PipelineTelemetrySession | None = None,
 ) -> T:
     if runtime_tracker is not None:
         runtime_tracker.start_stage(stage)
@@ -200,6 +224,8 @@ def _run_stage[T](
             runtime_tracker.fail(stage)
         log_pipeline_error(stage.value, error)
         raise
+    finally:
+        flush_telemetry(telemetry_session)
 
 
 __all__ = ["run_first_cycle_pipeline"]

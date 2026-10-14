@@ -568,10 +568,12 @@ def _configure_completed_pipeline(monkeypatch: pytest.MonkeyPatch) -> PipelineEx
     )
     monkeypatch.setattr(runner, "load_s0_pipeline_artifacts", lambda inputs: artifacts)
 
-    def normalize(value, *, progress_callback=None):
-        if progress_callback is not None:
-            progress_callback(1)
-            progress_callback(2)
+    def normalize(value, *, progress_callback=None, telemetry_collector=None):
+        for count in (1, 2):
+            if telemetry_collector is not None:
+                telemetry_collector.record_success(telemetry_collector.begin_record(count))
+            if progress_callback is not None:
+                progress_callback(count)
         return normalized_artifacts
 
     monkeypatch.setattr(runner, "normalize_sysmon_and_extract_evidence", normalize)
@@ -587,6 +589,99 @@ def _configure_completed_pipeline(monkeypatch: pytest.MonkeyPatch) -> PipelineEx
     monkeypatch.setattr(runner, "build_execution_summary", lambda *args: summary)
     monkeypatch.setattr(runner, "log_execution_summary", lambda value: None)
     return summary
+
+
+def test_pipeline_shares_execution_and_flushes_short_batch(monkeypatch) -> None:
+    # Given
+    expected = _configure_completed_pipeline(monkeypatch)
+    runtime, telemetry = [], []
+    generated = []
+    monkeypatch.setattr(
+        runner, "generate_execution_id", lambda: generated.append("shared") or "shared"
+    )
+
+    # When
+    actual = run_first_cycle_pipeline(
+        _inputs(),
+        runtime_observer=runtime.append,
+        telemetry_observer=telemetry.append,
+    )
+
+    # Then
+    assert actual == expected
+    assert generated == ["shared"]
+    assert {item.execution_id for item in runtime + telemetry} == {"shared"}
+    latest = telemetry[-1]
+    assert sum(bucket.input_accepted_count for bucket in latest.buckets) == 2
+    assert sum(bucket.processing_completed_count for bucket in latest.buckets) == 2
+    assert sum(bucket.latency_sample_count for bucket in latest.buckets) == 2
+    assert (
+        latest.input_total == runtime[-1].input_total == runtime[-1].normalization_processed_count
+    )
+    assert runtime[-1].status is PipelineRuntimeState.COMPLETED
+
+
+def test_collector_creation_error_preserves_pipeline_summary_and_runtime(monkeypatch) -> None:
+    # Given
+    from incident_awareness.pipeline import timeseries_observer
+
+    expected = _configure_completed_pipeline(monkeypatch)
+    runtime, telemetry = [], []
+
+    def fail(**kwargs):
+        raise RuntimeError("Collector construction failed")
+
+    monkeypatch.setattr(timeseries_observer, "create_pipeline_telemetry_collector", fail)
+
+    # When
+    actual = run_first_cycle_pipeline(
+        _inputs(),
+        runtime_observer=runtime.append,
+        telemetry_observer=telemetry.append,
+    )
+
+    # Then
+    assert actual == expected
+    assert runtime[-1].status is PipelineRuntimeState.COMPLETED
+    assert telemetry == []
+
+
+def test_timeseries_observer_failure_cannot_fail_business_or_runtime(monkeypatch) -> None:
+    # Given
+    expected = _configure_completed_pipeline(monkeypatch)
+    runtime = []
+
+    def fail(snapshot):
+        raise RuntimeError("timeseries unavailable")
+
+    # When
+    actual = run_first_cycle_pipeline(
+        _inputs(), runtime_observer=runtime.append, telemetry_observer=fail
+    )
+
+    # Then
+    assert actual == expected
+    assert runtime[-1].status is PipelineRuntimeState.COMPLETED
+    assert all(item.status is not PipelineRuntimeState.FAILED for item in runtime)
+
+
+def test_disabled_runtime_tracker_does_not_disable_timeseries(monkeypatch) -> None:
+    # Given
+    expected = _configure_completed_pipeline(monkeypatch)
+    telemetry = []
+
+    def fail(self, stage):
+        raise RuntimeError("Runtime internal error")
+
+    monkeypatch.setattr(runner.PipelineRuntimeTracker, "_start_stage", fail)
+
+    # When
+    actual = run_first_cycle_pipeline(_inputs(), telemetry_observer=telemetry.append)
+
+    # Then
+    assert actual == expected
+    assert sum(bucket.processing_completed_count for bucket in telemetry[-1].buckets) == 2
+    assert telemetry[-1].observation_status == "observed"
 
 
 def _raise_or_return(

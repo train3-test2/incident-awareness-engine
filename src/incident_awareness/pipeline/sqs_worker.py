@@ -39,6 +39,8 @@ from incident_awareness.pipeline.runtime_telemetry import (
     utc_now_milliseconds,
 )
 from incident_awareness.pipeline.standalone import StandaloneExecution, run_standalone_sysmon_jsonl
+from incident_awareness.pipeline.telemetry_input import s3_telemetry_input_context
+from incident_awareness.pipeline.timeseries_observer import telemetry_observer_context
 from incident_awareness.storage.config import DatabaseConfig
 from incident_awareness.storage.repositories.pipeline_runtime_repository import (
     PipelineRuntimeStatusRepository,
@@ -255,13 +257,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_root: Path,
             runtime_observer: PipelineRuntimeObserver | None,
         ) -> StandaloneExecution:
-            return run_standalone_sysmon_jsonl(
-                sysmon_jsonl_path=sysmon_jsonl_path,
-                output_root=output_root,
-                connection=connection,
-                r1_production_config=r1_production_config,
-                runtime_observer=runtime_observer,
-            )
+            # Attempt metrics end at stage return, independently of Receipt/publication.
+            # The existing transaction owner still finalizes Runtime and SQS afterwards.
+            with telemetry_observer_context() as telemetry_observer:
+                return run_standalone_sysmon_jsonl(
+                    sysmon_jsonl_path=sysmon_jsonl_path,
+                    output_root=output_root,
+                    connection=connection,
+                    r1_production_config=r1_production_config,
+                    runtime_observer=runtime_observer,
+                    telemetry_observer=telemetry_observer,
+                )
 
         return run_worker(
             queue_url=_required_environment(_QUEUE_URL_ENV),
@@ -410,11 +416,14 @@ def _process_message(
                     receipt_committed = False
                     try:
                         try:
-                            execution = run_standalone(
-                                sysmon_jsonl_path,
-                                input_dir / "output",
-                                active_runtime_observer,
-                            )
+                            with s3_telemetry_input_context(
+                                input_object.bucket, input_object.key, input_object.e_tag
+                            ):
+                                execution = run_standalone(
+                                    sysmon_jsonl_path,
+                                    input_dir / "output",
+                                    active_runtime_observer,
+                                )
                         except ValueError as error:
                             raise PermanentWorkerError(str(error)) from error
                         except (OperationalError, OSError) as error:
