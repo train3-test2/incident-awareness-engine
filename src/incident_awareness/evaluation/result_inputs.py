@@ -192,6 +192,10 @@ def _fast_starts(bundle: StoredRunResults, plan: EvaluationPlan) -> list[datetim
         raise ValueError("evaluated Fast requires complete versioned episode starts, not raw hits")
     if episodes.run_id != run.run_id or episodes.entity_id != run.target_host:
         raise ValueError("Fast episodes run_id/entity_id mismatch")
+    if plan.purpose == "performance" and episodes.policy_version.startswith("fast-development-"):
+        raise ValueError(
+            "development Fast episode policy is not eligible for performance evaluation"
+        )
     if episodes.policy_version != plan.fast_episode_policy_version:
         raise ValueError("Fast episode policy_version mismatch")
     if episodes.detector_set_version != plan.detector_set_version:

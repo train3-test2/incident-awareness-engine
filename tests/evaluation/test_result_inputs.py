@@ -392,3 +392,32 @@ def test_fast_miss_rejects_partial_coverage_or_episode_starts(field, value):
     setattr(data.runs[0].fast_episodes, field, value)
     with pytest.raises(ValueError, match="entire measured Run|miss Fast must not carry"):
         build_evaluation_inputs(data)
+
+
+@pytest.mark.parametrize("purpose", ["smoke", "performance"])
+def test_development_episode_policy_usage_boundary(purpose):
+    # Given
+    value = snapshot(bundle())
+    value.plan.purpose = purpose
+    value.plan.scenario_id = "R1"
+    value.runs[0].run_metadata.scenario_id = "R1"
+    version = "fast-development-episodes-v2-gap10s"
+    value.plan.fast_episode_policy_version = version
+    value.runs[0].fast_episodes.policy_version = version
+
+    # When
+    if purpose == "performance":
+        with pytest.raises(ValueError) as exc:
+            build_evaluation_inputs(value)
+        error = str(exc.value)
+        frames = None
+    else:
+        frames, _ = build_evaluation_inputs(value)
+        error = None
+
+    # Then
+    if purpose == "performance":
+        assert "development Fast episode policy" in error
+    else:
+        assert frames is not None
+        assert error is None
