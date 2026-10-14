@@ -1,6 +1,8 @@
 """Development-only episode grouping over a verified, fully scanned handoff."""
 
 import hashlib
+import json
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -22,22 +24,141 @@ class DevelopmentEpisodePolicy(BaseModel):
     boundary: Literal["gap_greater_than_or_equal"]
 
 
+class CoverageArtifact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    def read_verified(self) -> bytes:
+        raw = Path(self.path).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != self.sha256:
+            raise ValueError("coverage evidence hash mismatch")
+        return raw
+
+
 class FastScanCoverage(BaseModel):
-    """Producer attestation, pinned by the caller; not inferred from empty CSV."""
+    """Bounded offline-export evidence, never a claim of lossless collection."""
 
     model_config = ConfigDict(extra="forbid")
+    contract_version: Literal["fast-development-coverage-v2"]
+    purpose: Literal["development-interface-only"]
     run_id: str
     entity_id: str
     observation_start: datetime
     observation_end: datetime
-    source_sha256: str
-    csv_sha256: str
-    config_sha256: str
-    collection_complete: Literal[True]
-    scan_complete: Literal[True]
-    parse_error_count: Literal[0]
-    exit_code: Literal[0]
-    producer_record: str = Field(min_length=1)
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    csv_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    collection_basis: Literal["declared-export-window-and-validator"]
+    collection_evidence: list[CoverageArtifact] = Field(min_length=1)
+    # Numeric parser errors are not reported by Hayabusa; no fabricated zero.
+    parse_error_count: None
+    diagnostic_execution: CoverageArtifact
+    stdout: CoverageArtifact
+    stderr: CoverageArtifact
+    raw_jsonl: CoverageArtifact
+    manifest: CoverageArtifact
+    metadata: CoverageArtifact
+    engine: CoverageArtifact
+    rule: CoverageArtifact
+
+    def verify_scan(self) -> dict:
+        for artifact in self.collection_evidence:
+            artifact.read_verified()
+        manifest = json.loads(self.manifest.read_verified().decode("utf-8-sig"))
+        metadata = json.loads(self.metadata.read_verified().decode("utf-8-sig"))
+        if (
+            manifest["run_id"] != self.run_id
+            or metadata["run_id"] != self.run_id
+            or metadata["target_host"] != self.entity_id
+            or datetime.fromisoformat(metadata["start_time"]) != self.observation_start
+            or datetime.fromisoformat(metadata["end_time"]) != self.observation_end
+        ):
+            raise ValueError("collection metadata identity or interval mismatch")
+        hashes = {item["sha256"].lower() for item in manifest["items"]}
+        if self.source_sha256 not in hashes or self.raw_jsonl.sha256 not in hashes:
+            raise ValueError("manifest does not bind scan source and JSONL")
+        execution = json.loads(self.diagnostic_execution.read_verified())
+        stdout_bytes = self.stdout.read_verified()
+        stderr_bytes = self.stderr.read_verified()
+        self.engine.read_verified()
+        self.rule.read_verified()
+        raw_records = [
+            json.loads(line)
+            for line in self.raw_jsonl.read_verified().decode("utf-8-sig").splitlines()
+            if line.strip()
+        ]
+        if not raw_records:
+            raise ValueError("empty raw export cannot establish scan coverage")
+        if (
+            execution["run_id"] != self.run_id
+            or execution["exit_code"] != 0
+            or execution["source_sha256"] != self.source_sha256
+            or execution["engine_sha256"] != self.engine.sha256
+            or execution["rule_sha256"] != self.rule.sha256
+            or execution["stdout_sha256"] != self.stdout.sha256
+            or execution["stderr_sha256"] != self.stderr.sha256
+            or execution["source_unchanged"] is not True
+            or execution["csv_byte_identical"] is not True
+            or execution["error_named_files"] != []
+        ):
+            raise ValueError("diagnostic execution does not bind a successful scan")
+        if stderr_bytes:
+            raise ValueError("diagnostic stderr must be empty")
+        command = execution["command"]
+        if (
+            "--verbose" not in command
+            or "--validate-checksums" not in command
+            or "--quiet-errors" in command
+            or "-Q" in command
+        ):
+            raise ValueError("required scan diagnostics not enabled")
+        allowed_flags = {
+            "dfir-timeline",
+            "-f",
+            "-r",
+            "-w",
+            "-O",
+            "-t",
+            "-K",
+            "-o",
+            "--verbose",
+            "--validate-checksums",
+        }
+        if any(arg.startswith("-") and arg not in allowed_flags for arg in command[1:]):
+            raise ValueError("filtered or unsupported diagnostic scan")
+        if (
+            hashlib.sha256(Path(command[0]).read_bytes()).hexdigest() != self.engine.sha256
+            or hashlib.sha256(Path(command[command.index("-r") + 1]).read_bytes()).hexdigest()
+            != self.rule.sha256
+        ):
+            raise ValueError("diagnostic engine/rule mismatch")
+        if (
+            hashlib.sha256(Path(command[command.index("-f") + 1]).read_bytes()).hexdigest()
+            != self.source_sha256
+        ):
+            raise ValueError("diagnostic command source mismatch")
+        if (
+            hashlib.sha256(Path(command[command.index("-o") + 1]).read_bytes()).hexdigest()
+            != self.csv_sha256
+        ):
+            raise ValueError("diagnostic CSV differs from bound handoff")
+        stdout = re.sub(r"\x1b\[[0-9;]*m", "", stdout_bytes.decode("utf-8"))
+        if re.search(r"(?i)\b(error|failed|warning)\b", stdout):
+            raise ValueError("diagnostic stdout reports a problem")
+        counts = re.findall(
+            r"Events with hits\s*/\s*Total events:\s*([\d,]+)\s*/\s*([\d,]+)", stdout
+        )
+        if len(counts) != 1 or int(counts[0][1].replace(",", "")) != len(raw_records):
+            raise ValueError("scan count differs from raw JSONL")
+        if execution["jsonl_count"] != len(raw_records):
+            raise ValueError("diagnostic raw count mismatch")
+        return {
+            "raw_record_count": len(raw_records),
+            "reported_errors": [],
+            "parse_error_count": None,
+            "scope": "supplied-export-only",
+        }
 
 
 def build_development_episodes(
@@ -86,6 +207,7 @@ def build_development_episodes(
         raise ValueError("coverage identity or observation interval mismatch")
     if hashlib.sha256(source_path.read_bytes()).hexdigest() != coverage.source_sha256:
         raise ValueError("source hash mismatch")
+    scan_verification = coverage.verify_scan()
     selection, audit = select_fast_hit(
         hits_path=hits_path,
         trace_path=trace_path,
@@ -134,6 +256,8 @@ def build_development_episodes(
         "performance_eligible": False,
         "episode_policy": episode_policy.model_dump(mode="json"),
         "coverage_sha256": coverage_sha256,
+        "coverage": coverage.model_dump(mode="json"),
+        "scan_verification": scan_verification,
         "selection_audit": audit,
         "selection": selection.model_dump(mode="json"),
         "episodes": groups,
