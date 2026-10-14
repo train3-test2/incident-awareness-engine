@@ -21,9 +21,15 @@ from incident_awareness.pipeline.timeseries_telemetry import PipelineTelemetryCo
     "digest", ["", "A" * 64, "g" * 64, "a" * 63, "a" * 65, "a" * 64 + "\n", 123]
 )
 def test_input_identity_rejects_invalid_digests(digest: object) -> None:
-    # Given / When / Then
-    with pytest.raises(ValidationError):
-        PipelineTelemetryInputIdentity(kind="file_content_sha256_v1", sha256=digest)
+    # Given
+    kind = "file_content_sha256_v1"
+
+    # When
+    with pytest.raises(ValidationError) as caught:
+        PipelineTelemetryInputIdentity(kind=kind, sha256=digest)
+
+    # Then
+    assert caught.value.errors()[0]["loc"] == ("sha256",)
 
 
 def test_file_identity_is_byte_content_sha256_not_a_filesystem_path(tmp_path: Path) -> None:
@@ -111,9 +117,12 @@ def test_s3_object_identity_is_stable_and_different_objects_are_not_content_equi
 
 
 def test_identity_kinds_are_distinct_even_with_the_same_digest() -> None:
-    # Given / When
-    file = PipelineTelemetryInputIdentity(kind="file_content_sha256_v1", sha256="a" * 64)
-    s3 = PipelineTelemetryInputIdentity(kind="s3_object_sha256_v1", sha256="a" * 64)
+    # Given
+    digest = "a" * 64
+
+    # When
+    file = PipelineTelemetryInputIdentity(kind="file_content_sha256_v1", sha256=digest)
+    s3 = PipelineTelemetryInputIdentity(kind="s3_object_sha256_v1", sha256=digest)
 
     # Then
     assert file != s3

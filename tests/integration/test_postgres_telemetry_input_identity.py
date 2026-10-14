@@ -149,7 +149,7 @@ def test_postgres_input_identity_is_immutable_at_repository_and_database_boundar
         update={"revision": snapshot.revision + 1, "input_identity": FILE_B}
     )
 
-    # When / Then
+    # When
     with pytest.raises(PipelineTelemetryIntegrityError):
         repository.save_snapshot(changed)
     with pytest.raises(psycopg.IntegrityError), connection.transaction():
@@ -162,6 +162,8 @@ def test_postgres_input_identity_is_immutable_at_repository_and_database_boundar
                 "identity",
             ),
         )
+
+    # Then
     assert repository.get_execution("identity") == snapshot
     assert repository.save_snapshot(snapshot) is False
 
@@ -288,9 +290,11 @@ def test_postgres_partial_012_cannot_be_baselined(connection, drop):
     connection.execute(drop)
     connection.commit()
 
-    # When / Then
+    # When
     with pytest.raises(RuntimeError, match="partial 012"):
         migrate.apply_migrations(connection)
+
+    # Then
     assert (
         connection.execute(
             "SELECT 1 FROM schema_migrations WHERE migration_id = '012_pipeline_telemetry_input_identity'"

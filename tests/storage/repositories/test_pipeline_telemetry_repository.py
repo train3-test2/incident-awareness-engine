@@ -184,9 +184,11 @@ def test_execution_input_identity_cannot_change_even_on_stale_or_newer_snapshots
         }
     )
 
-    # When / Then
+    # When
     with pytest.raises(PipelineTelemetryIntegrityError, match="identity"):
         repository.save_snapshot(changed)
+
+    # Then
     assert repository.get_execution(previous.execution_id) == previous
 
 

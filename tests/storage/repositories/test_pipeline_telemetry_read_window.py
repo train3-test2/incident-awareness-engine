@@ -72,7 +72,9 @@ def test_read_window_rejects_invalid_scope_or_range_before_sql(kwargs: dict) -> 
     # Given
     connection = FakeConnection()
 
-    # When / Then
+    # When
     with pytest.raises(ValueError):
         PipelineTelemetryRepository(connection).read_window(**kwargs)
+
+    # Then
     assert connection.calls == []
