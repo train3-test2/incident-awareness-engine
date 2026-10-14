@@ -75,4 +75,5 @@ R1 Target-A required-partition contract v0.1은 Sysmon Operational channel만 �
 
 - 모델: `src/incident_awareness/common/models/r1_required_partition.py`
 - 테스트: `tests/common/models/test_r1_required_partition.py`
+- Target-A fixture: `tests/fixtures/evidence/r1_target_a_required_partitions_v0.1.json`
 - R1 telemetry·ProcessGuid 배경: `docs/scenarios/r1.md`

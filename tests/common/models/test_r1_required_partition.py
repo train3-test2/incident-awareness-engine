@@ -13,6 +13,13 @@ from incident_awareness.common.models.r1_required_partition import (
 )
 from incident_awareness.common.models.run import RunMetadata
 
+FIXTURE_PATH = (
+    Path(__file__).parents[2]
+    / "fixtures"
+    / "evidence"
+    / "r1_target_a_required_partitions_v0.1.json"
+)
+
 
 def _contract(**updates: object) -> dict[str, object]:
     value: dict[str, object] = {
@@ -95,16 +102,13 @@ def test_rejects_a_contract_bound_to_another_target_host() -> None:
         contract.validate_for_run(_run_metadata(target_host="Target-B"))
 
 
-def test_role2_loader_returns_a_contract_bound_to_the_run_target_host(tmp_path: Path) -> None:
-    contract_path = tmp_path / "required-partitions.json"
-    contract_path.write_text(json.dumps(_contract()), encoding="utf-8")
-
+def test_role2_loader_returns_the_target_a_fixture_bound_to_the_run_target_host() -> None:
     contract = load_r1_required_partition_contract(
-        contract_path,
+        FIXTURE_PATH,
         run_metadata=_run_metadata(target_host="Target-A"),
     )
 
-    assert contract.target_host == "Target-A"
+    assert contract.model_dump(mode="json", by_alias=True) == _contract()
 
 
 def test_role2_loader_rejects_a_contract_bound_to_another_target_host(tmp_path: Path) -> None:
