@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -5,6 +8,8 @@ from incident_awareness.common.models.r1_required_partition import (
     R1_REQUIRED_PARTITION_CONTRACT_VERSION,
     R1_REQUIRED_PARTITION_SCHEMA,
     R1RequiredPartitionContract,
+    R1RequiredPartitionContractError,
+    load_r1_required_partition_contract,
 )
 from incident_awareness.common.models.run import RunMetadata
 
@@ -88,6 +93,43 @@ def test_rejects_a_contract_bound_to_another_target_host() -> None:
 
     with pytest.raises(ValueError, match="must match RunMetadata.target_host"):
         contract.validate_for_run(_run_metadata(target_host="Target-B"))
+
+
+def test_role2_loader_returns_a_contract_bound_to_the_run_target_host(tmp_path: Path) -> None:
+    contract_path = tmp_path / "required-partitions.json"
+    contract_path.write_text(json.dumps(_contract()), encoding="utf-8")
+
+    contract = load_r1_required_partition_contract(
+        contract_path,
+        run_metadata=_run_metadata(target_host="Target-A"),
+    )
+
+    assert contract.target_host == "Target-A"
+
+
+def test_role2_loader_rejects_a_contract_bound_to_another_target_host(tmp_path: Path) -> None:
+    contract_path = tmp_path / "required-partitions.json"
+    contract_path.write_text(json.dumps(_contract(target_host="Target-A")), encoding="utf-8")
+
+    with pytest.raises(R1RequiredPartitionContractError, match="invalid for run"):
+        load_r1_required_partition_contract(
+            contract_path,
+            run_metadata=_run_metadata(target_host="Target-B"),
+        )
+
+
+def test_role2_loader_rejects_duplicate_json_keys(tmp_path: Path) -> None:
+    contract_path = tmp_path / "required-partitions.json"
+    contract_path.write_text(
+        '{"schema":"r1-required-partitions","schema":"r1-required-partitions"}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(R1RequiredPartitionContractError, match="duplicate JSON key"):
+        load_r1_required_partition_contract(
+            contract_path,
+            run_metadata=_run_metadata(target_host="Target-A"),
+        )
 
 
 def test_rejects_an_empty_required_partition_set() -> None:

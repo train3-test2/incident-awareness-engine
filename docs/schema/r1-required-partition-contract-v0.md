@@ -6,10 +6,10 @@
 versioned envelope를 정의한다. Role2는 Target-A 또는 Sysmon channel 값을 코드에 하드코딩하지
 않고 이 contract를 loader/validator로 읽어야 한다.
 
-이번 단계는 envelope, target host binding, source/source channel canonical 값을 고정한다.
-required partition 집합과 duplicate fail-closed 규칙은 이 이슈의 후속 작업에서 같은 v0.1
-contract에 추가한다. 따라서 이 단계만으로 Role2 early-close path를 활성화해서는 안 되며,
-그 전까지 fallback-only 경로를 유지한다.
+이 문서의 v0.1 contract는 envelope, target host binding, canonical source/channel, required
+partition 집합과 duplicate fail-closed 규칙을 고정한다. Role2는 제공된 loader API로 contract를
+읽고 RunMetadata에 결속해야 한다. 이 contract만으로 Role2 early-close path를 활성화해서는
+안 되며, early-close의 나머지 전제는 Role2 selector 계약이 별도로 정한다.
 
 ## 2. 공통 envelope
 
@@ -47,8 +47,10 @@ fail-closed로 처리해야 하며, 다른 schema 또는 version을 추측해 �
 사용할 수 없다.
 
 `R1RequiredPartitionContract.validate_for_run(run_metadata)`는 이 일치 여부를 검사하며,
-불일치 시 예외를 발생시킨다. consumer는 오류를 무시하고 다른 host의 contract를 적용해서는
-안 된다. 파일 loader와 Role2 소비 API는 후속 작업에서 추가한다.
+불일치 시 예외를 발생시킨다. `load_r1_required_partition_contract(path, run_metadata=...)`는
+Role2가 사용하는 파일 loader 경계이며, 읽기 실패·잘못된 JSON·중복 JSON key·모델 검증 오류도
+모두 fail-closed로 거부한다. consumer는 오류를 무시하고 다른 host의 contract를 적용해서는 안
+된다.
 
 ## 4. Required partition 집합
 

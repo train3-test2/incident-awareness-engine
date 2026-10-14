@@ -1,13 +1,27 @@
-"""R1 required-partition contract envelope."""
+"""R1 required-partition contract envelope and Role2 consumer API."""
 
+import json
+from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from incident_awareness.common.models.run import RunMetadata
 
 R1_REQUIRED_PARTITION_SCHEMA = "r1-required-partitions"
 R1_REQUIRED_PARTITION_CONTRACT_VERSION = "v0.1"
+
+
+class R1RequiredPartitionContractError(ValueError):
+    """Raised when a required-partition contract cannot be consumed safely."""
 
 
 class R1RequiredPartition(BaseModel):
@@ -59,9 +73,60 @@ class R1RequiredPartitionContract(BaseModel):
         return self
 
 
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    document: dict[str, object] = {}
+    for key, value in pairs:
+        if key in document:
+            raise R1RequiredPartitionContractError(
+                f"required-partition contract contains duplicate JSON key {key!r}"
+            )
+        document[key] = value
+    return document
+
+
+def load_r1_required_partition_contract(
+    path: str | Path, *, run_metadata: RunMetadata
+) -> R1RequiredPartitionContract:
+    """Load and fail-closed validate a required-partition contract for one Run.
+
+    This is the public Role2 consumer boundary. It rejects unreadable or
+    malformed documents, duplicate JSON keys, schema validation failures, and
+    contracts bound to a target host other than ``run_metadata.target_host``.
+    """
+    contract_path = Path(path)
+    try:
+        content = contract_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise R1RequiredPartitionContractError(
+            f"required-partition contract cannot be read: {contract_path}"
+        ) from error
+
+    try:
+        document = json.loads(content, object_pairs_hook=_reject_duplicate_json_keys)
+    except json.JSONDecodeError as error:
+        raise R1RequiredPartitionContractError(
+            f"required-partition contract is not valid JSON: {contract_path}"
+        ) from error
+
+    if not isinstance(document, dict):
+        raise R1RequiredPartitionContractError("required-partition contract must be a JSON object")
+
+    try:
+        contract = R1RequiredPartitionContract.model_validate(document)
+        contract.validate_for_run(run_metadata)
+    except (ValidationError, ValueError) as error:
+        raise R1RequiredPartitionContractError(
+            f"required-partition contract is invalid for run {run_metadata.run_id}: {error}"
+        ) from error
+
+    return contract
+
+
 __all__ = [
     "R1_REQUIRED_PARTITION_CONTRACT_VERSION",
     "R1_REQUIRED_PARTITION_SCHEMA",
     "R1RequiredPartition",
     "R1RequiredPartitionContract",
+    "R1RequiredPartitionContractError",
+    "load_r1_required_partition_contract",
 ]
