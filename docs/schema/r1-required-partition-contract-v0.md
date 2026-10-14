@@ -77,3 +77,52 @@ R1 Target-A required-partition contract v0.1은 Sysmon Operational channel만 �
 - 테스트: `tests/common/models/test_r1_required_partition.py`
 - Target-A fixture: `tests/fixtures/evidence/r1_target_a_required_partitions_v0.1.json`
 - R1 telemetry·ProcessGuid 배경: `docs/scenarios/r1.md`
+
+## 7. Role2 소비 방법
+
+Role2는 Raw JSON을 직접 `json.loads()`로 읽거나 Target-A·Sysmon channel을 코드에 하드코딩하지
+않는다. Role3가 전달한 명시적 contract 파일 경로와 현재 Run의 `RunMetadata`를 다음 public API에
+전달한다.
+
+```python
+from incident_awareness.common.models.r1_required_partition import (
+    load_r1_required_partition_contract,
+)
+
+contract = load_r1_required_partition_contract(
+    required_partition_contract_path,
+    run_metadata=run_metadata,
+)
+
+for partition in contract.required_partitions:
+    selector.register_required_partition(
+        source=partition.source,
+        source_channel=partition.source_channel,
+    )
+```
+
+`load_r1_required_partition_contract()`가 보장하는 사항은 다음과 같다.
+
+- UTF-8 JSON object만 읽고, JSON key 중복·읽기 실패·형식 오류를 거부한다.
+- `schema = r1-required-partitions`, `contract_version = v0.1`, canonical
+  `source`·`source_channel`, 정의되지 않은 필드, 빈·중복 partition 집합을 검증한다.
+- `contract.target_host`와 전달받은 `RunMetadata.target_host`가 정확히 일치하는지 검증한다.
+- 검증 실패 시 `R1RequiredPartitionContractError`를 발생시키며, caller는 이를 fallback 값으로
+  바꾸거나 다른 host의 contract를 적용해서는 안 된다.
+
+Role2 selector state key는 `run_id`와 `entity_id`를 포함해 Run 간 상태를 분리한다. 같은
+`target_host`라도 다른 Run의 Event나 partition 완료 상태를 결합해서는 안 된다.
+
+## 8. Role3·Role2 연동 경계
+
+| 책임 | Role3 | Role2 |
+| --- | --- | --- |
+| Contract 생성·배포 | versioned JSON contract를 생성하고 명시적 파일 경로를 전달 | 생성·수정하지 않음 |
+| Contract 검증 | 제공 전 fixture·계약 회귀 테스트 유지 | loader API로 Run마다 재검증 |
+| Partition 소비 | canonical source/channel을 Event ingress에 보존 | `required_partitions` 전체가 충족됐는지 selector state로 판단 |
+| 오류 처리 | 잘못된 contract를 정상 산출물로 전달하지 않음 | `R1RequiredPartitionContractError`에서 fail-closed; early-close를 활성화하지 않음 |
+| Early-close 결정 | 결정하지 않음 | 이 contract 외 Role2 selector의 watermark·seal 등 모든 선행 조건이 충족될 때만 결정 |
+
+따라서 이 contract는 **required partition 집합을 전달하는 입력**일 뿐, Event 순서·watermark·seal·
+Evidence 확정 또는 Decision을 대신 보증하지 않는다. Role2가 별도 selector 계약의 전제 조건을
+충족하기 전에는 기존 fallback-only 경로를 유지해야 한다.
