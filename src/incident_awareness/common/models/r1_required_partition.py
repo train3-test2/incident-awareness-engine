@@ -64,7 +64,9 @@ class R1RequiredPartitionContract(BaseModel):
     def validate_for_run(self, run_metadata: RunMetadata) -> None:
         """Reject use of this contract for a Run bound to another target host."""
         if self.target_host != run_metadata.target_host:
-            raise ValueError("required-partition contract target_host must match RunMetadata.target_host")
+            raise ValueError(
+                "required-partition contract target_host must match RunMetadata.target_host"
+            )
 
     @model_validator(mode="after")
     def validate_unique_required_partitions(self) -> "R1RequiredPartitionContract":

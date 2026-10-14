@@ -215,6 +215,4 @@ def test_json_schema_exposes_the_canonical_schema_and_version() -> None:
     assert schema["additionalProperties"] is False
     partition_schema = schema["$defs"]["R1RequiredPartition"]["properties"]
     assert partition_schema["source"]["const"] == "sysmon"
-    assert partition_schema["source_channel"]["const"] == (
-        "Microsoft-Windows-Sysmon/Operational"
-    )
+    assert partition_schema["source_channel"]["const"] == ("Microsoft-Windows-Sysmon/Operational")
