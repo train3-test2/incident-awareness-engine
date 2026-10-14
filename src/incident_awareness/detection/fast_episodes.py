@@ -16,11 +16,11 @@ from incident_awareness.integration.fast_hit_handoff import read_fast_hit_handof
 
 class DevelopmentEpisodePolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    policy_version: Literal["fast-development-episodes-v1"]
+    policy_version: Literal["fast-development-episodes-v2"]
     purpose: Literal["development-only"]
     # Sessionization: a gap >= this value opens another episode.
     inactivity_gap_sec: int = Field(strict=True, gt=0)
-    grouping: Literal["run_entity_all_qualifying_rules"]
+    grouping: Literal["run_entity_alert_key"]
     boundary: Literal["gap_greater_than_or_equal"]
 
 
@@ -107,41 +107,41 @@ class FastScanCoverage(BaseModel):
             raise ValueError("diagnostic stderr must be empty")
         command = execution["command"]
         if (
-            "--verbose" not in command
-            or "--validate-checksums" not in command
-            or "--quiet-errors" in command
-            or "-Q" in command
+            not isinstance(command, list)
+            or len(command) < 2
+            or not all(isinstance(arg, str) and arg for arg in command)
+            or command[1] != "dfir-timeline"
         ):
-            raise ValueError("required scan diagnostics not enabled")
-        allowed_flags = {
-            "dfir-timeline",
-            "-f",
-            "-r",
-            "-w",
-            "-O",
-            "-t",
-            "-K",
-            "-o",
-            "--verbose",
-            "--validate-checksums",
-        }
-        if any(arg.startswith("-") and arg not in allowed_flags for arg in command[1:]):
-            raise ValueError("filtered or unsupported diagnostic scan")
+            raise ValueError("unsupported diagnostic subcommand")
+        switches = {"-w", "--no-wizard", "-O", "-t", "-K", "--verbose", "--validate-checksums"}
+        paths = {}
+        seen = set()
+        index = 2
+        while index < len(command):
+            flag = command[index]
+            canonical = "-w" if flag == "--no-wizard" else flag
+            if canonical in seen:
+                raise ValueError("duplicate diagnostic option")
+            seen.add(canonical)
+            if flag in {"-f", "-r", "-o"}:
+                if index + 1 >= len(command) or command[index + 1].startswith("-"):
+                    raise ValueError("missing diagnostic option argument")
+                paths[flag] = command[index + 1]
+                index += 2
+            elif flag in switches:
+                index += 1
+            else:
+                raise ValueError("filtered or unsupported diagnostic scan")
+        if not {"-f", "-r", "-o", "-w", "--verbose", "--validate-checksums"} <= seen:
+            raise ValueError("required scan diagnostics or paths not enabled")
         if (
             hashlib.sha256(Path(command[0]).read_bytes()).hexdigest() != self.engine.sha256
-            or hashlib.sha256(Path(command[command.index("-r") + 1]).read_bytes()).hexdigest()
-            != self.rule.sha256
+            or hashlib.sha256(Path(paths["-r"]).read_bytes()).hexdigest() != self.rule.sha256
         ):
             raise ValueError("diagnostic engine/rule mismatch")
-        if (
-            hashlib.sha256(Path(command[command.index("-f") + 1]).read_bytes()).hexdigest()
-            != self.source_sha256
-        ):
+        if hashlib.sha256(Path(paths["-f"]).read_bytes()).hexdigest() != self.source_sha256:
             raise ValueError("diagnostic command source mismatch")
-        if (
-            hashlib.sha256(Path(command[command.index("-o") + 1]).read_bytes()).hexdigest()
-            != self.csv_sha256
-        ):
+        if hashlib.sha256(Path(paths["-o"]).read_bytes()).hexdigest() != self.csv_sha256:
             raise ValueError("diagnostic CSV differs from bound handoff")
         stdout = re.sub(r"\x1b\[[0-9;]*m", "", stdout_bytes.decode("utf-8"))
         if re.search(r"(?i)\b(error|failed|warning)\b", stdout):
@@ -221,6 +221,12 @@ def build_development_episodes(
     ):
         raise ValueError("coverage CSV/config binding mismatch")
     handoff = read_fast_hit_handoff(hits_path, trace_path, run_id=run_id)
+    if (
+        handoff.trace.output_sha256 != audit["hits_sha256"]
+        or handoff.trace.input_sha256 != audit["input_csv_sha256"]
+        or hashlib.sha256(trace_path.read_bytes()).hexdigest() != audit["trace_sha256"]
+    ):
+        raise ValueError("handoff changed after selection")
     records = sorted(
         (
             h
@@ -232,16 +238,20 @@ def build_development_episodes(
     if len({h.hit_id for h in records}) != len(records):
         raise ValueError("duplicate hit identity")
     groups = []
-    previous = None
+    active = {}
     for hit in records:
         if not observation_start <= hit.timestamp <= observation_end:
             raise ValueError("hit outside observation interval")
-        if previous is None or hit.timestamp - previous >= timedelta(
+        previous = active.get(hit.alert_key)
+        if previous is None or hit.timestamp - previous[0] >= timedelta(
             seconds=episode_policy.inactivity_gap_sec
         ):
-            groups.append({"start_time": hit.timestamp, "hit_ids": []})
-        groups[-1]["hit_ids"].append(hit.hit_id)
-        previous = hit.timestamp
+            group = {"start_time": hit.timestamp, "alert_key": hit.alert_key, "hit_ids": []}
+            groups.append(group)
+        else:
+            group = previous[1]
+        group["hit_ids"].append(hit.hit_id)
+        active[hit.alert_key] = (hit.timestamp, group)
     result = FastEpisodeStarts(
         run_id=run_id,
         entity_id=entity_id,
