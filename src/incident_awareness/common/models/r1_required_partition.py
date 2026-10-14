@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
 R1_REQUIRED_PARTITION_SCHEMA = "r1-required-partitions"
 R1_REQUIRED_PARTITION_CONTRACT_VERSION = "v0.1"
@@ -41,6 +41,15 @@ class R1RequiredPartitionContract(BaseModel):
         if value != value.strip():
             raise ValueError("target_host must not contain leading or trailing whitespace")
         return value
+
+    @model_validator(mode="after")
+    def validate_unique_required_partitions(self) -> "R1RequiredPartitionContract":
+        partition_identities = [
+            (partition.source, partition.source_channel) for partition in self.required_partitions
+        ]
+        if len(partition_identities) != len(set(partition_identities)):
+            raise ValueError("required_partitions must not contain duplicate partitions")
+        return self
 
 
 __all__ = [

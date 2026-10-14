@@ -57,8 +57,9 @@ Role2가 이 일치 여부를 실제 RunMetadata와 대조하는 loader/validato
 contract 구조를 바꾸지 않는다.
 
 각 partition은 source와 source channel을 함께 가져야 하며, source만 또는 channel만으로
-partition을 식별해서는 안 된다. duplicate partition의 fail-closed 검증은 후속 작업에서
-추가한다.
+partition을 식별해서는 안 된다. 같은 `(source, source_channel)` 쌍이 둘 이상 있으면
+consumer는 contract 전체를 fail-closed로 거부한다. 중복 항목을 제거하거나 첫 항목만 사용하는
+방식으로 임의 보정해서는 안 된다.
 
 ## 5. Canonical source partition
 

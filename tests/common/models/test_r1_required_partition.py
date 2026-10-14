@@ -58,6 +58,18 @@ def test_rejects_an_empty_required_partition_set() -> None:
         R1RequiredPartitionContract.model_validate(_contract(required_partitions=[]))
 
 
+def test_rejects_duplicate_required_partitions() -> None:
+    partition = {
+        "source": "sysmon",
+        "source_channel": "Microsoft-Windows-Sysmon/Operational",
+    }
+
+    with pytest.raises(ValidationError, match="duplicate partitions"):
+        R1RequiredPartitionContract.model_validate(
+            _contract(required_partitions=[partition, partition])
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
