@@ -108,6 +108,14 @@ def test_rejects_an_unsupported_contract_identity(field: str, value: str) -> Non
         R1RequiredPartitionContract.model_validate(_contract(**{field: value}))
 
 
+def test_rejects_schema_id_without_the_required_schema_alias() -> None:
+    payload = _contract()
+    payload["schema_id"] = payload.pop("schema")
+
+    with pytest.raises(ValidationError):
+        R1RequiredPartitionContract.model_validate(payload)
+
+
 def test_rejects_undefined_contract_fields() -> None:
     with pytest.raises(ValidationError):
         R1RequiredPartitionContract.model_validate(_contract(unexpected="value"))

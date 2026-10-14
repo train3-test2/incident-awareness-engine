@@ -39,7 +39,7 @@ class R1RequiredPartitionContract(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         frozen=True,
-        validate_by_name=True,
+        validate_by_name=False,
         serialize_by_alias=True,
     )
 
