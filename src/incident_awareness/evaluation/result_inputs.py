@@ -15,7 +15,14 @@ from incident_awareness.common.models.fusion import FusionResult
 from incident_awareness.common.models.result import DecisionResult, DetectionResult
 from incident_awareness.common.models.run import RunMetadata
 from incident_awareness.decision.hybrid import combine_results
+from incident_awareness.evaluation.causal_inputs import (
+    CausalReplayEvaluationInput,
+    CausalReplayPins,
+    validate_causal_replay,
+)
 from incident_awareness.evaluation.evaluation_v0 import evaluate
+from incident_awareness.evaluation.fast_binding import FastBindingInput, validate_fast_binding
+from incident_awareness.integration.fast_hit_handoff import Sha256
 
 METHODS = ("Fast", "Fusion", "Hybrid")
 COLUMNS = (
@@ -55,6 +62,10 @@ class EvaluationPlan(BaseModel):
     fast_episode_policy_version: str
     evaluation_horizon_sec: int = Field(ge=0)
     parallel_required: Literal[True] = True
+    require_fast_binding: bool = False
+    fast_binding_hashes: dict[str, Sha256] = Field(default_factory=dict)
+    require_causal_replay: bool = False
+    causal_replay_pins: dict[str, CausalReplayPins] = Field(default_factory=dict)
 
 
 class FastEpisodeStarts(BaseModel):
@@ -90,6 +101,8 @@ class StoredRunResults(BaseModel):
     decision: DecisionResult | None = None
     fast_episodes: FastEpisodeStarts | None = None
     fusion_observation: FusionObservation | None = None
+    fast_binding: FastBindingInput | None = None
+    causal_replay: CausalReplayEvaluationInput | None = None
 
 
 class EvaluationSnapshot(BaseModel):
@@ -152,6 +165,26 @@ def _validate_bundle(bundle: StoredRunResults, plan: EvaluationPlan) -> None:
             raise ValueError(f"Fusion {name} must match plan")
     if decision.detector_set_version not in (None, plan.detector_set_version):
         raise ValueError("Decision detector_set_version must match plan")
+    binding_hash = plan.fast_binding_hashes.get(run.run_id)
+    if detection.detector_status == "not_evaluated":
+        if bundle.fast_binding is not None or binding_hash is not None:
+            raise ValueError("not_evaluated Fast must not carry binding artifacts or hash")
+    elif (
+        plan.require_fast_binding
+        or (plan.purpose == "performance")
+        or bundle.fast_binding is not None
+        or binding_hash is not None
+    ):
+        if bundle.fast_binding is None or binding_hash is None:
+            raise ValueError("evaluated Fast requires set binding artifacts and planned hash")
+        validate_fast_binding(
+            bundle.fast_binding,
+            expected_binding_sha256=binding_hash,
+            run=run,
+            detection=detection,
+            decision=decision,
+            episodes=bundle.fast_episodes,
+        )
     # A saved Decision must agree with the supplied path results, not a later DB overwrite.
     expected = combine_results(
         detection,
@@ -223,6 +256,8 @@ def _fusion_starts(bundle: StoredRunResults, plan: EvaluationPlan) -> list[datet
     assert fusion is not None and run.end_time is not None
     coverage = bundle.fusion_observation
     if fusion.fusion_status == "not_evaluated":
+        if bundle.causal_replay is not None or run.run_id in plan.causal_replay_pins:
+            raise ValueError("not_evaluated Fusion must not carry causal replay artifacts or pins")
         if coverage is not None:
             raise ValueError("not_evaluated Fusion must not carry observation coverage")
         return []
@@ -244,6 +279,29 @@ def _fusion_starts(bundle: StoredRunResults, plan: EvaluationPlan) -> list[datet
     ):
         raise ValueError(
             "Fusion observation must cover the evaluation interval within measured Run"
+        )
+    required = plan.require_causal_replay or (plan.purpose == "performance")
+    proof = bundle.causal_replay
+    pins = plan.causal_replay_pins.get(run.run_id)
+    if required or proof is not None or pins is not None:
+        if proof is None or pins is None:
+            raise ValueError(
+                "evaluated causal Fusion requires provenance, envelope, trace and plan pins"
+            )
+        if plan.purpose == "performance" and (
+            proof.envelope.watermark_basis == "authoritative_run_end"
+            or proof.provenance.watermark_basis == "authoritative_run_end"
+        ):
+            raise ValueError(
+                "whole-episode availability is not eligible for performance evaluation"
+            )
+        validate_causal_replay(
+            proof,
+            pins,
+            run=run,
+            fusion=fusion,
+            observation_start=coverage.observation_start,
+            observation_end=coverage.observation_end,
         )
     episodes = sorted(fusion.fusion_episodes, key=lambda item: item.start_time)
     previous_end = None
@@ -293,6 +351,10 @@ def build_evaluation_inputs(
         raise ValueError("Run inventory must be nonempty and contain unique run_ids")
     if set(run_ids) != set(plan.decision_ids):
         raise ValueError("Run inventory must exactly match the planned decision_ids")
+    if set(plan.fast_binding_hashes) - set(run_ids):
+        raise ValueError("Fast binding hashes contain unplanned Runs")
+    if set(plan.causal_replay_pins) - set(run_ids):
+        raise ValueError("causal replay pins contain unplanned Runs")
     if len(set(plan.decision_ids.values())) != len(plan.decision_ids):
         raise ValueError("planned decision_ids must be unique")
     for decision_id in plan.decision_ids.values():

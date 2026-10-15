@@ -395,7 +395,7 @@ def test_fast_miss_rejects_partial_coverage_or_episode_starts(field, value):
 
 
 @pytest.mark.parametrize("purpose", ["smoke", "performance"])
-def test_development_episode_policy_usage_boundary(purpose):
+def test_development_episode_policy_usage_boundary(purpose, tmp_path):
     # Given
     value = snapshot(bundle())
     value.plan.purpose = purpose
@@ -404,6 +404,10 @@ def test_development_episode_policy_usage_boundary(purpose):
     version = "fast-development-episodes-v2-gap10s"
     value.plan.fast_episode_policy_version = version
     value.runs[0].fast_episodes.policy_version = version
+    if purpose == "performance":
+        from test_fast_binding import attach_fast_binding
+
+        attach_fast_binding(value, tmp_path)
 
     # When
     if purpose == "performance":

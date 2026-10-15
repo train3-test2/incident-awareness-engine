@@ -539,3 +539,31 @@ def test_long_no_wizard_option_is_accepted(tmp_path):
 
     # Then
     assert len(result.start_times) == 2
+
+
+@pytest.mark.parametrize(
+    "arguments,error",
+    [
+        (["-t", "csv"], None),
+        (["-t"], "missing diagnostic option argument"),
+        (["-t", "--verbose"], "missing diagnostic option argument"),
+        (["-t", "json"], "unsupported diagnostic output format"),
+        (["-t", "csv", "-t", "csv"], "duplicate diagnostic option"),
+        (["-t", "csv", "unexpected"], "filtered or unsupported diagnostic scan"),
+    ],
+)
+def test_diagnostic_output_format_argument(tmp_path, arguments, error):
+    # Given: match the valued -t csv option recorded by the real diagnostic run.
+    args, coverage = setup(tmp_path)
+    execution = json.loads(Path(coverage["diagnostic_execution"]["path"]).read_bytes())
+    execution["command"].extend(arguments)
+    rehash_artifact(coverage, "diagnostic_execution", execution)
+    save(args, coverage)
+
+    # When / Then
+    if error is not None:
+        with pytest.raises(ValueError, match=error):
+            build_development_episodes(**args)
+    else:
+        result, _ = build_development_episodes(**args)
+        assert len(result.start_times) == 2
