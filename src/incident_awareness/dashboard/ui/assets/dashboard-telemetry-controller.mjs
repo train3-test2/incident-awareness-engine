@@ -199,6 +199,7 @@ export function createDashboardTelemetryController(doc, {
             nextTimer = null;
         }
         requestController?.abort();
+        pending = null;
     }
 
     return { start, stop, poll };

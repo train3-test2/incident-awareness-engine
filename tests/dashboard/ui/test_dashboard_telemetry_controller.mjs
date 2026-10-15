@@ -271,3 +271,39 @@ test("Partial observations and stale timestamps are labeled without asserting wo
     assert.equal(doc.elements.get("telemetry-latency-summary").textContent, "0.775214 ms");
     controller.stop();
 });
+
+test("Telemetry restart after pagehide starts a new request while the old fetch is pending", async () => {
+    // Given
+    const doc = makeDocument();
+    const timers = fakeTimers();
+    const responses = [];
+    const controller = createDashboardTelemetryController(doc, {
+        ...timers,
+        fetchImpl: () => new Promise((resolve) => { responses.push(resolve); }),
+    });
+
+    // When
+    const original = controller.start();
+    controller.stop();
+    const restored = controller.start();
+
+    // Then
+    assert.equal(responses.length, 2, "Restored view must fetch immediately");
+
+    responses[0]({ ok: true, json: async () => payload() });
+    await original;
+    await Promise.resolve();
+
+    assert.equal(doc.elements.get("telemetry-throughput-summary").textContent, "조회 중");
+    assert.equal([...timers.timers.values()].filter((timer) => timer.delay === 5000).length, 0);
+
+    responses[1]({ ok: true, json: async () => payload() });
+    await restored;
+    await Promise.resolve();
+
+    assert.equal(doc.elements.get("telemetry-throughput-summary").textContent, "입력 2건 / 처리 2건");
+    assert.equal([...timers.timers.values()].filter((timer) => timer.delay === 5000).length, 1);
+
+    controller.stop();
+    assert.equal(timers.timers.size, 0);
+});
