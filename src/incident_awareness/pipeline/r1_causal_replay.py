@@ -1,7 +1,8 @@
 """검증된 R1 Evidence와 availability를 Role1 causal replay에 연결한다."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from incident_awareness.collection.r1_candidate_generation_seal import (
@@ -46,7 +47,9 @@ from incident_awareness.pipeline.r1_causal_replay_artifacts import (
 from incident_awareness.pipeline.r1_incremental_availability import (
     R1IncrementalAvailabilityPublicationReceipt,
     R1IncrementalCausalAvailabilityEnvelope,
+    R1IncrementalReplayInputValidation,
     build_r1_incremental_causal_availability_envelope,
+    load_or_record_r1_incremental_replay_input_validation,
     validate_r1_incremental_availability_publication,
 )
 from incident_awareness.pipeline.r1_incremental_checkpoint import (
@@ -62,6 +65,7 @@ class R1CausalReplayInput:
     """Strict join을 통과한 결정적 scheduled Evidence 입력."""
 
     scheduled_evidences: tuple[ScheduledEvidence, ...]
+    incremental_input_validation: R1IncrementalReplayInputValidation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,10 +219,12 @@ def prepare_r1_incremental_causal_replay_input(
     checkpoint: R1IncrementalEvidenceCheckpoint,
     publication_receipt: R1IncrementalAvailabilityPublicationReceipt,
     *,
+    input_validation_path: Path,
     run_metadata: RunMetadata,
     selector_policy: R1SelectorPolicy,
     approved_policy: ApprovedLineagePolicy,
     candidate_policy: R1CandidateGenerationPolicy,
+    clock: Callable[[], datetime] | None = None,
 ) -> R1CausalReplayInput:
     """Strictly join finalized incremental Evidence and v0.2 availability."""
 
@@ -250,12 +256,18 @@ def prepare_r1_incremental_causal_replay_input(
     availability_by_id = {item.evidence_id: item for item in validated.evidences}
     if evidences_by_id.keys() != availability_by_id.keys():
         raise ValueError("incremental Evidence and availability ID sets must match exactly")
+    input_validation = load_or_record_r1_incremental_replay_input_validation(
+        input_validation_path,
+        validated,
+        publication_receipt,
+        clock=clock,
+    )
     scheduled = tuple(
         sorted(
             (
                 ScheduledEvidence(
                     evidence=evidence,
-                    available_at=publication_receipt.publication_completed_at,
+                    available_at=input_validation.inputs_validated_at,
                 )
                 for evidence_id, evidence in evidences_by_id.items()
             ),
@@ -266,7 +278,10 @@ def prepare_r1_incremental_causal_replay_input(
             ),
         )
     )
-    return R1CausalReplayInput(scheduled_evidences=scheduled)
+    return R1CausalReplayInput(
+        scheduled_evidences=scheduled,
+        incremental_input_validation=input_validation,
+    )
 
 
 def run_r1_causal_replay(

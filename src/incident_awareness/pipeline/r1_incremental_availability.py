@@ -60,6 +60,7 @@ from incident_awareness.pipeline.r1_incremental_evidence import (
 R1_INCREMENTAL_CAUSAL_AVAILABILITY_CONTRACT_VERSION = "v0.2"
 R1_INCREMENTAL_WATERMARK_BASIS = "accepted_final_stream_close_and_verified_candidate_proof"
 R1_INCREMENTAL_PUBLICATION_RECEIPT_SCHEMA = "r1-incremental-availability-publication"
+R1_INCREMENTAL_REPLAY_INPUT_VALIDATION_SCHEMA = "r1-incremental-replay-input-validation"
 
 
 class R1IncrementalAvailabilityPublicationReceipt(BaseModel):
@@ -101,6 +102,48 @@ class R1IncrementalAvailabilityPublicationReceipt(BaseModel):
         actual = payload.pop("receipt_content_sha256")
         if actual != _canonical_sha256(payload):
             raise ValueError("publication receipt content hash does not match")
+        return self
+
+
+class R1IncrementalReplayInputValidation(BaseModel):
+    """First durable observation that every replay input passed strict validation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_id: Literal["r1-incremental-replay-input-validation"] = Field(
+        validation_alias="schema",
+        serialization_alias="schema",
+    )
+    contract_version: Literal["v0.1"]
+    run_id: StrictStr
+    entity_id: StrictStr
+    source_envelope_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    source_checkpoint_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    source_publication_receipt_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    inputs_validated_at: datetime
+    validation_content_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("inputs_validated_at", mode="before")
+    @classmethod
+    def reject_numeric_time(cls, value: object) -> object:
+        if isinstance(value, int | float) or (isinstance(value, str) and _is_numeric_string(value)):
+            raise ValueError("replay input validation time must not be a numeric Unix timestamp")
+        return value
+
+    @field_validator("inputs_validated_at")
+    @classmethod
+    def validate_time(cls, value: datetime) -> datetime:
+        _validate_utc(value)
+        if value.microsecond % 1000 != 0:
+            raise ValueError("replay input validation time must use millisecond precision")
+        return value
+
+    @model_validator(mode="after")
+    def validate_content_hash(self) -> R1IncrementalReplayInputValidation:
+        payload = self.model_dump(mode="json", by_alias=True)
+        actual = payload.pop("validation_content_sha256")
+        if actual != _canonical_sha256(payload):
+            raise ValueError("replay input validation content hash does not match")
         return self
 
 
@@ -426,6 +469,52 @@ def validate_r1_incremental_availability_publication(
     _validate_publication_receipt(receipt, envelope)
 
 
+def load_or_record_r1_incremental_replay_input_validation(
+    path: Path,
+    envelope: R1IncrementalCausalAvailabilityEnvelope,
+    publication_receipt: R1IncrementalAvailabilityPublicationReceipt,
+    *,
+    clock: Callable[[], datetime] | None = None,
+) -> R1IncrementalReplayInputValidation:
+    """Persist or reuse the first strict replay-input validation observation."""
+
+    if not isinstance(path, Path):
+        raise TypeError("path must be a Path")
+    _validate_publication_receipt(publication_receipt, envelope)
+    if path.exists():
+        validation = load_r1_incremental_replay_input_validation(path)
+        _validate_replay_input_validation(validation, envelope, publication_receipt)
+        return validation
+    inputs_validated_at = ceil_utc_clock_observation("inputs_validated_at", (clock or utc_now)())
+    if inputs_validated_at < publication_receipt.publication_completed_at:
+        raise ValueError("replay input validation must not precede envelope publication")
+    validation = _build_replay_input_validation(
+        envelope,
+        publication_receipt,
+        inputs_validated_at,
+    )
+    _publish_immutable_bytes(path, _serialize_replay_input_validation(validation))
+    return validation
+
+
+def load_r1_incremental_replay_input_validation(
+    path: Path,
+) -> R1IncrementalReplayInputValidation:
+    try:
+        payload = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object
+        )
+        return R1IncrementalReplayInputValidation.model_validate(payload)
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValidationError,
+        ValueError,
+    ) as error:
+        raise ValueError("R1 incremental replay input validation is invalid") from error
+
+
 def _publish_immutable_bytes(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
@@ -491,6 +580,61 @@ def _validate_publication_receipt(
     expected = _build_publication_receipt(envelope, receipt.publication_completed_at)
     if receipt != expected:
         raise ValueError("publication receipt does not match the trusted availability envelope")
+
+
+def _build_replay_input_validation(
+    envelope: R1IncrementalCausalAvailabilityEnvelope,
+    publication_receipt: R1IncrementalAvailabilityPublicationReceipt,
+    inputs_validated_at: datetime,
+) -> R1IncrementalReplayInputValidation:
+    payload: dict[str, object] = {
+        "schema": R1_INCREMENTAL_REPLAY_INPUT_VALIDATION_SCHEMA,
+        "contract_version": "v0.1",
+        "run_id": envelope.run_id,
+        "entity_id": envelope.entity_id,
+        "source_envelope_sha256": incremental_availability_envelope_sha256(envelope),
+        "source_checkpoint_sha256": envelope.source_state_checkpoint_sha256,
+        "source_publication_receipt_sha256": _publication_receipt_sha256(publication_receipt),
+        "inputs_validated_at": inputs_validated_at.isoformat().replace("+00:00", "Z"),
+    }
+    payload["validation_content_sha256"] = _canonical_sha256(payload)
+    return R1IncrementalReplayInputValidation.model_validate(payload)
+
+
+def _serialize_replay_input_validation(
+    validation: R1IncrementalReplayInputValidation,
+) -> bytes:
+    return (
+        json.dumps(
+            validation.model_dump(mode="json", by_alias=True),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _validate_replay_input_validation(
+    validation: R1IncrementalReplayInputValidation,
+    envelope: R1IncrementalCausalAvailabilityEnvelope,
+    publication_receipt: R1IncrementalAvailabilityPublicationReceipt,
+) -> None:
+    expected = _build_replay_input_validation(
+        envelope,
+        publication_receipt,
+        validation.inputs_validated_at,
+    )
+    if validation != expected:
+        raise ValueError("replay input validation does not match trusted inputs")
+    if validation.inputs_validated_at < publication_receipt.publication_completed_at:
+        raise ValueError("replay input validation precedes envelope publication")
+
+
+def _publication_receipt_sha256(
+    receipt: R1IncrementalAvailabilityPublicationReceipt,
+) -> str:
+    return hashlib.sha256(_serialize_publication_receipt(receipt)).hexdigest()
 
 
 def incremental_availability_envelope_sha256(
@@ -628,10 +772,13 @@ __all__ = [
     "R1IncrementalAvailabilityFrontier",
     "R1IncrementalAvailabilityPublicationReceipt",
     "R1IncrementalCausalAvailabilityEnvelope",
+    "R1IncrementalReplayInputValidation",
     "build_r1_incremental_causal_availability_envelope",
     "incremental_availability_envelope_sha256",
+    "load_or_record_r1_incremental_replay_input_validation",
     "load_r1_incremental_availability_publication_receipt",
     "load_r1_incremental_causal_availability_envelope",
+    "load_r1_incremental_replay_input_validation",
     "required_partition_contract_sha256",
     "validate_r1_incremental_availability_publication",
     "write_r1_incremental_causal_availability_envelope",

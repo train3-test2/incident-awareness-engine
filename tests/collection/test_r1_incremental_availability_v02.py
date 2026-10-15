@@ -66,6 +66,7 @@ _RUN_END = datetime(2026, 10, 13, 1, 14, tzinfo=UTC)
 _PROOF_VALIDATED_AT = datetime(2026, 10, 13, 1, 13, 4, tzinfo=UTC)
 _EVIDENCE_READY_AT = _PROOF_VALIDATED_AT + timedelta(seconds=2)
 _PUBLICATION_COMPLETED_AT = _EVIDENCE_READY_AT + timedelta(seconds=3)
+_INPUTS_VALIDATED_AT = _PUBLICATION_COMPLETED_AT + timedelta(seconds=2)
 _ROOT_GUID = "{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}"
 _MIDDLE_GUID = "{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}"
 _TERMINAL_GUID = "{CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC}"
@@ -425,6 +426,7 @@ def test_verified_close_builds_persistent_v02_availability_and_causal_replay(
     checkpoint = state.export_checkpoint()
     checkpoint_path = tmp_path / "r1_incremental_checkpoint.json"
     envelope_path = tmp_path / "r1_incremental_availability_v0.2.json"
+    input_validation_path = tmp_path / "r1_incremental_replay_input_validation.json"
 
     write_r1_incremental_checkpoint(checkpoint_path, checkpoint)
     loaded_checkpoint = load_r1_incremental_checkpoint(checkpoint_path)
@@ -450,10 +452,12 @@ def test_verified_close_builds_persistent_v02_availability_and_causal_replay(
         loaded_envelope,
         loaded_checkpoint,
         loaded_publication_receipt,
+        input_validation_path=input_validation_path,
         run_metadata=_run_metadata(),
         selector_policy=selector,
         approved_policy=approved,
         candidate_policy=candidate,
+        clock=lambda: _INPUTS_VALIDATED_AT,
     )
     replay = (
         _config()
@@ -501,22 +505,21 @@ def test_verified_close_builds_persistent_v02_availability_and_causal_replay(
     assert loaded_envelope.frontier.proof_validated_at == _PROOF_VALIDATED_AT
     assert loaded_envelope.frontier.evidence_ready_at == _EVIDENCE_READY_AT
     assert loaded_checkpoint.available_at == _EVIDENCE_READY_AT
+    assert input_validation_path.exists()
+    assert replay_input.incremental_input_validation is not None
+    assert replay_input.incremental_input_validation.inputs_validated_at == _INPUTS_VALIDATED_AT
     assert hashlib.sha256(envelope_path.read_bytes()).hexdigest() == (
         incremental_availability_envelope_sha256(envelope)
     )
     assert restored.snapshot == snapshot
     assert all(
-        item.available_at == _PUBLICATION_COMPLETED_AT for item in replay_input.scheduled_evidences
+        item.available_at == _INPUTS_VALIDATED_AT for item in replay_input.scheduled_evidences
     )
     assert all(
-        point.score == 0
-        for point in replay.trajectory
-        if point.timestamp < _PUBLICATION_COMPLETED_AT
+        point.score == 0 for point in replay.trajectory if point.timestamp < _INPUTS_VALIDATED_AT
     )
     assert any(
-        point.score > 0
-        for point in replay.trajectory
-        if point.timestamp >= _PUBLICATION_COMPLETED_AT
+        point.score > 0 for point in replay.trajectory if point.timestamp >= _INPUTS_VALIDATED_AT
     )
     assert (
         state.accept_verified_close_proof(
@@ -556,6 +559,19 @@ def test_verified_close_builds_persistent_v02_availability_and_causal_replay(
         )
         == publication_receipt
     )
+    restarted_replay_input = prepare_r1_incremental_causal_replay_input(
+        snapshot,
+        loaded_envelope,
+        loaded_checkpoint,
+        loaded_publication_receipt,
+        input_validation_path=input_validation_path,
+        run_metadata=_run_metadata(),
+        selector_policy=selector,
+        approved_policy=approved,
+        candidate_policy=candidate,
+        clock=lambda: _RUN_END,
+    )
+    assert restarted_replay_input == replay_input
     tampered = loaded_envelope.model_copy(update={"source_state_checkpoint_sha256": "0" * 64})
     with pytest.raises(ValueError, match="does not match trusted inputs"):
         prepare_r1_incremental_causal_replay_input(
@@ -563,11 +579,78 @@ def test_verified_close_builds_persistent_v02_availability_and_causal_replay(
             tampered,
             loaded_checkpoint,
             loaded_publication_receipt,
+            input_validation_path=tmp_path / "unused-validation.json",
             run_metadata=_run_metadata(),
             selector_policy=selector,
             approved_policy=approved,
             candidate_policy=candidate,
         )
+
+
+def test_replay_availability_is_observed_after_receipt_publication_and_validation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    state, snapshot, selector, approved, candidate, *_ = _state()
+    checkpoint = state.export_checkpoint()
+    envelope = build_r1_incremental_causal_availability_envelope(
+        snapshot,
+        checkpoint,
+        run_metadata=_run_metadata(),
+        selector_policy=selector,
+        approved_policy=approved,
+        candidate_policy=candidate,
+    )
+    envelope_path = tmp_path / "availability.json"
+    receipt_path = envelope_path.with_name(f"{envelope_path.name}.publication.json")
+    receipt_published_at = _PUBLICATION_COMPLETED_AT + timedelta(seconds=1)
+    original_publish = availability_module._publish_immutable_bytes
+    publication_events: list[datetime] = []
+
+    def publish_with_receipt_delay(path: Path, content: bytes) -> None:
+        is_receipt = path == receipt_path
+        if is_receipt:
+            assert envelope_path.exists()
+            assert not receipt_path.exists()
+            with pytest.raises(ValueError, match="publication receipt is invalid"):
+                load_r1_incremental_availability_publication_receipt(receipt_path)
+        original_publish(path, content)
+        if is_receipt:
+            publication_events.append(receipt_published_at)
+
+    monkeypatch.setattr(
+        availability_module,
+        "_publish_immutable_bytes",
+        publish_with_receipt_delay,
+    )
+    write_r1_incremental_causal_availability_envelope(
+        envelope_path,
+        envelope,
+        clock=lambda: _PUBLICATION_COMPLETED_AT,
+    )
+    loaded_receipt = load_r1_incremental_availability_publication_receipt(receipt_path)
+
+    replay_input = prepare_r1_incremental_causal_replay_input(
+        snapshot,
+        envelope,
+        checkpoint,
+        loaded_receipt,
+        input_validation_path=tmp_path / "replay-input-validation.json",
+        run_metadata=_run_metadata(),
+        selector_policy=selector,
+        approved_policy=approved,
+        candidate_policy=candidate,
+        clock=lambda: _INPUTS_VALIDATED_AT,
+    )
+
+    assert publication_events == [receipt_published_at]
+    assert loaded_receipt.publication_completed_at < receipt_published_at < _INPUTS_VALIDATED_AT
+    assert all(
+        item.available_at == _INPUTS_VALIDATED_AT for item in replay_input.scheduled_evidences
+    )
+    assert all(
+        item.available_at >= receipt_published_at for item in replay_input.scheduled_evidences
+    )
 
 
 def test_required_partition_loader_output_is_the_incremental_source_of_truth(
@@ -694,6 +777,7 @@ def test_snapshot_evidence_content_must_match_checkpoint_digest(tmp_path: Path) 
             envelope,
             checkpoint,
             publication_receipt,
+            input_validation_path=tmp_path / "unused-validation.json",
             run_metadata=_run_metadata(),
             selector_policy=selector,
             approved_policy=approved,
