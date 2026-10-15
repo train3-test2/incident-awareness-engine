@@ -27,23 +27,24 @@ selector 입력이 아니다. Role2는 raw seal이나 Ground Truth를 읽지 않
 생성자에는 실제 `R1StreamIngress`가 필수다. worker는 chunk를 ingress에 먼저 전달한 뒤
 state에 다시 전달하지 않고, `state.accept_chunk(chunk)` 한 번으로 수락과 상태 갱신을 연결한다.
 ingress가 late chunk를 거부하면 selector state는 바뀌지 않는다. `new_event_ids`에 포함된
-Event만 새로 누적하고 replay-only Event는 기존 상태를 유지한다. DB commit/ack 경계는 기존
-Role3 계약을 따르며, transaction rollback 시 in-memory state도 폐기해야 한다. 재시작 뒤
-durable ingress에는 있지만 local state에는 없는 replay는 복구 없이 selector에 삽입하지 않고
-거부한다. state의 영속 복구/production worker 연결은 별도 작업이다.
+Event만 새로 누적한다. 단, Role3 commit 뒤 Role2 checkpoint 전 crash gap에서 동일 immutable
+chunk가 `DUPLICATE`로 재전달되면 그 payload를 Role2 state에 다시 적용해 누락을 복구한다.
+다른 chunk identity가 기존 Event를 자기 입력처럼 주장하면 거부한다. DB commit/ack 경계는 기존
+Role3 계약을 따르며, Role2는 별도 checkpoint에 lossless chunk/Event와 terminal 결속을 보존한다.
 
-selector/extractor에는 해당 Run·target host의 `source=sysmon`,
-`source_channel=Microsoft-Windows-Sysmon/Operational` partition만 전달한다. 다른 source/channel의
-chunk도 전달 완결성과 scoped identity는 추적하지만 R1 분석 입력에는 넣지 않는다. 따라서
-다른 partition의 동일 `event_id`가 기존 batch pipeline의 ID 경계에 섞이지 않는다.
+v0.1 fallback-only 호출은 historical compatibility를 위해 기존 Sysmon partition을 사용한다.
+v0.2 경로는 `R1RequiredPartitionContract`가 반환한 target host의 required partition 집합을
+소비하며 source/channel을 별도로 추론하지 않는다. 서로 다른 partition의 동일 `event_id`가
+기존 batch pipeline의 ID 경계에 섞이지 않도록 chunk/Event identity는 partition 범위로 관리한다.
 
 PR `#269` v0.1의 `R1VerifiedCandidateBoundary`에는 Role2가 독립 검증할
 host/family/policy/partition/final-watermark 결속 정보가 없다. 따라서 이 계약의 v0.1 구현은
 해당 객체를 입력받아도 항상 거부하고, authoritative `RunMetadata.end_time` fallback만
 사용한다. Issue #285의 versioned
 [Role2-safe proof](r1-role2-verified-close-proof-v0.1.md)는 별도 strict validation 입력을
-제공하지만, 이 v0.1 state가 proof를 소비하거나 early close를 활성화하지는 않는다. 실제 소비와
-causal `available_at` 정의는 #266 후속 version의 범위다.
+제공한다. 기존 minimal `R1VerifiedCandidateBoundary` 입력은 계속 거부하지만, 별도 v0.2 경로는
+accepted `run_closed` receipt, source-seal projection과 required partition을 함께 검증한 proof만
+소비한다. causal `available_at`은 [별도 v0.2 계약](r1-incremental-availability-v0.2.md)에 정의한다.
 
 ## 3. 상태 전이
 
@@ -128,14 +129,14 @@ extractor를 다시 구현하지 않고 close 시점에 동일 함수를 호출�
 사용한다. 조기 availability를 기존 모델로 노출하지 않으며, 증분 결과의 영속 artifact와
 production wiring은 별도 versioned 계약으로 연결한다.
 
-## 8. 현재 제한
+## 8. v0.2 확장과 현재 제한
 
 - 최초 WMI Pilot은 계속 `OFFLINE WHOLE-EPISODE ONLY`이다.
 - PR `#269` v0.1은 accepted `run_closed` 이전의 seal 발급을 지원하지 않는다. 진행 중
   watermark만으로 확정하려면 late Event, correction/retraction 의미를 포함한 별도 후속
   contract/version이 필요하다.
-- minimal boundary 객체는 Role2-safe proof를 대신할 수 없으며 계속 거부한다. 별도 proof의
-  실제 소비와 early-close 활성화는 #266 후속 version에서만 수행한다.
-- availability/no-look-ahead 통합 검증 전에는 Temporal Replay, TTSD, online/causal 성능 주장에
-  사용하지 않는다.
+- minimal boundary 객체는 Role2-safe proof를 대신할 수 없으며 계속 거부한다. strict proof를
+  소비하는 v0.2도 accepted `run_closed` 이후에만 확정하므로 true pre-run-closed 경로가 아니다.
+- v0.2는 테스트용 approved development 입력에서 `available_at < run_end`와 #232 causal gate를
+  검증한다. Pilot `OFFLINE WHOLE-EPISODE ONLY` 입력을 causal/TTSD 실측 근거로 전용하지 않는다.
 - v0는 확정 뒤 late Event에 따른 철회·보정을 지원하지 않는다.

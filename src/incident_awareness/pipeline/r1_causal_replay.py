@@ -1,9 +1,13 @@
 """검증된 R1 Evidence와 availability를 Role1 causal replay에 연결한다."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
+from incident_awareness.collection.r1_candidate_generation_seal import (
+    R1CandidateGenerationPolicy,
+)
 from incident_awareness.common.models.fusion import (
     FusionResult,
     FusionStoppingTrace,
@@ -23,6 +27,7 @@ from incident_awareness.evidence.r1_approved_lineage_policy import (
     validate_r1_policy_family_binding,
 )
 from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
+from incident_awareness.evidence.r1_selector import R1SelectorPolicy
 from incident_awareness.pipeline.fusion import build_fusion_runtime_config_snapshot
 from incident_awareness.pipeline.r1_artifacts import R1EvidenceArtifactRun
 from incident_awareness.pipeline.r1_causal_availability import (
@@ -39,6 +44,20 @@ from incident_awareness.pipeline.r1_causal_replay_artifacts import (
     canonical_model_sha256,
     write_r1_causal_replay_artifacts,
 )
+from incident_awareness.pipeline.r1_incremental_availability import (
+    R1IncrementalAvailabilityPublicationReceipt,
+    R1IncrementalCausalAvailabilityEnvelope,
+    R1IncrementalReplayInputValidation,
+    build_r1_incremental_causal_availability_envelope,
+    load_or_record_r1_incremental_replay_input_validation,
+    validate_r1_incremental_availability_publication,
+)
+from incident_awareness.pipeline.r1_incremental_checkpoint import (
+    R1IncrementalEvidenceCheckpoint,
+)
+from incident_awareness.pipeline.r1_incremental_evidence import (
+    R1IncrementalEvidenceSnapshot,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +65,7 @@ class R1CausalReplayInput:
     """Strict join을 통과한 결정적 scheduled Evidence 입력."""
 
     scheduled_evidences: tuple[ScheduledEvidence, ...]
+    incremental_input_validation: R1IncrementalReplayInputValidation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +213,77 @@ def prepare_r1_causal_replay_input(
     return R1CausalReplayInput(scheduled_evidences=tuple(scheduled))
 
 
+def prepare_r1_incremental_causal_replay_input(
+    snapshot: R1IncrementalEvidenceSnapshot,
+    envelope: R1IncrementalCausalAvailabilityEnvelope,
+    checkpoint: R1IncrementalEvidenceCheckpoint,
+    publication_receipt: R1IncrementalAvailabilityPublicationReceipt,
+    *,
+    input_validation_path: Path,
+    run_metadata: RunMetadata,
+    selector_policy: R1SelectorPolicy,
+    approved_policy: ApprovedLineagePolicy,
+    candidate_policy: R1CandidateGenerationPolicy,
+    clock: Callable[[], datetime] | None = None,
+) -> R1CausalReplayInput:
+    """Strictly join finalized incremental Evidence and v0.2 availability."""
+
+    if not isinstance(snapshot, R1IncrementalEvidenceSnapshot):
+        raise TypeError("snapshot must be an R1IncrementalEvidenceSnapshot")
+    if not isinstance(envelope, R1IncrementalCausalAvailabilityEnvelope):
+        raise TypeError("envelope must be an R1IncrementalCausalAvailabilityEnvelope")
+    if not isinstance(checkpoint, R1IncrementalEvidenceCheckpoint):
+        raise TypeError("checkpoint must be an R1IncrementalEvidenceCheckpoint")
+    expected = build_r1_incremental_causal_availability_envelope(
+        snapshot,
+        checkpoint,
+        run_metadata=run_metadata,
+        selector_policy=selector_policy,
+        approved_policy=approved_policy,
+        candidate_policy=candidate_policy,
+    )
+    validated = R1IncrementalCausalAvailabilityEnvelope.model_validate(
+        envelope.model_dump(),
+        strict=True,
+    )
+    if validated != expected:
+        raise ValueError("incremental availability envelope does not match trusted inputs")
+    validate_r1_incremental_availability_publication(publication_receipt, validated)
+
+    evidences_by_id = {item.evidence_id: item for item in snapshot.evidences}
+    if len(evidences_by_id) != len(snapshot.evidences):
+        raise ValueError("incremental Evidence IDs must be unique")
+    availability_by_id = {item.evidence_id: item for item in validated.evidences}
+    if evidences_by_id.keys() != availability_by_id.keys():
+        raise ValueError("incremental Evidence and availability ID sets must match exactly")
+    input_validation = load_or_record_r1_incremental_replay_input_validation(
+        input_validation_path,
+        validated,
+        publication_receipt,
+        clock=clock,
+    )
+    scheduled = tuple(
+        sorted(
+            (
+                ScheduledEvidence(
+                    evidence=evidence,
+                    available_at=input_validation.inputs_validated_at,
+                )
+                for evidence_id, evidence in evidences_by_id.items()
+            ),
+            key=lambda item: (
+                item.available_at,
+                item.evidence.timestamp,
+                item.evidence.evidence_id,
+            ),
+        )
+    )
+    return R1CausalReplayInput(
+        scheduled_evidences=scheduled,
+        incremental_input_validation=input_validation,
+    )
+
+
 def run_r1_causal_replay(
     artifact_run: R1EvidenceArtifactRun,
     envelope: R1CausalAvailabilityEnvelope,
@@ -324,6 +415,7 @@ __all__ = [
     "R1CausalReplayInput",
     "R1CausalReplayPipelineResult",
     "prepare_r1_causal_replay_input",
+    "prepare_r1_incremental_causal_replay_input",
     "run_and_write_r1_causal_replay",
     "run_r1_causal_replay",
 ]
