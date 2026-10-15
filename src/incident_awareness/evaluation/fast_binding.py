@@ -95,6 +95,13 @@ def validate_fast_binding(
     handoff = read_fast_hit_handoff(
         Path(value.hits_path), Path(value.trace_path), run_id=run.run_id
     )
+    if (
+        handoff.trace.output_sha256 != expected_audit["hits_sha256"]
+        or handoff.trace.input_sha256 != expected_audit["input_csv_sha256"]
+        or hashlib.sha256(Path(value.trace_path).read_bytes()).hexdigest()
+        != expected_audit["trace_sha256"]
+    ):
+        raise ValueError("Fast handoff changed after selection validation")
     adapted = adapt_fast_hit_handoff(
         handoff,
         entity_id=run.target_host,

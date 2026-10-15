@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -58,9 +59,10 @@ def attach_fast_binding(snapshot, tmp_path, *, miss=False):
             ""
             if miss
             else f"{timestamp.isoformat(timespec='milliseconds')},synthetic-rule,HOST,1\n"
-        )
+        ),
+        encoding="utf-8",
     )
-    config_path.write_text(json.dumps(config))
+    config_path.write_text(json.dumps(config), encoding="utf-8")
     hits, trace = tmp_path / "hits.jsonl", tmp_path / "trace.json"
     run_fast_handoff(
         csv_path=csv_path,
@@ -86,8 +88,8 @@ def attach_fast_binding(snapshot, tmp_path, *, miss=False):
         entity_id=run.target_host,
     )
     selection_path, audit_path = tmp_path / "selection.json", tmp_path / "selection-audit.json"
-    selection_path.write_text(selection.model_dump_json())
-    audit_path.write_text(json.dumps(audit))
+    selection_path.write_text(selection.model_dump_json(), encoding="utf-8")
+    audit_path.write_text(json.dumps(audit), encoding="utf-8")
     binding = FastSetBinding(
         contract_version="fast-set-binding-v1",
         detector_set_version="set-v1",
@@ -128,14 +130,18 @@ def attach_fast_binding(snapshot, tmp_path, *, miss=False):
 
 @pytest.mark.parametrize("miss", [False, True])
 def test_bound_fast_result_reaches_evaluation(tmp_path, miss):
+    # Given
     snapshot = setup_snapshot(tmp_path, miss=miss)
+    # When
     report = evaluate_snapshot(snapshot)
+    # Then
     assert report["comparison_ready"]
     assert report["metrics"]["Fast"]["median_ttsd_sec"] == (None if miss else 40)
 
 
 @pytest.mark.parametrize("missing", ["binding", "pin", "file"])
 def test_missing_binding_is_error_not_miss(tmp_path, missing):
+    # Given
     snapshot = setup_snapshot(tmp_path, miss=True)
     if missing == "binding":
         snapshot.runs[0].fast_binding = None
@@ -143,8 +149,12 @@ def test_missing_binding_is_error_not_miss(tmp_path, missing):
         snapshot.plan.fast_binding_hashes = {}
     else:
         Path(snapshot.runs[0].fast_binding.audit_path).unlink()
-    with pytest.raises((ValueError, FileNotFoundError)):
+    # When
+    with pytest.raises((ValueError, FileNotFoundError)) as exc:
         evaluate_snapshot(snapshot)
+
+    # Then
+    assert str(exc.value)
 
 
 @pytest.mark.parametrize(
@@ -157,34 +167,50 @@ def test_missing_binding_is_error_not_miss(tmp_path, missing):
     ],
 )
 def test_binding_semantics_even_if_record_is_repinned(tmp_path, field, value):
+    # Given
     snapshot = setup_snapshot(tmp_path)
     bundle = snapshot.runs[0]
     setattr(bundle.fast_binding.binding, field, value)
     snapshot.plan.fast_binding_hashes[bundle.run_metadata.run_id] = fast_binding_sha256(
         bundle.fast_binding.binding
     )
-    with pytest.raises(ValueError, match="(binding|hash)"):
+    # When
+    with pytest.raises(ValueError) as exc:
         evaluate_snapshot(snapshot)
+
+    # Then
+    assert re.search("(binding|hash)", str(exc.value))
 
 
 def test_changed_approval_record_rejected_by_pin(tmp_path):
+    # Given
     snapshot = setup_snapshot(tmp_path)
     snapshot.runs[0].fast_binding.binding.approval_reference = "other-approval"
-    with pytest.raises(ValueError, match="pinned approval"):
+    # When
+    with pytest.raises(ValueError) as exc:
         evaluate_snapshot(snapshot)
+
+    # Then
+    assert re.search("pinned approval", str(exc.value))
 
 
 @pytest.mark.parametrize("field", ["selection_path", "audit_path"])
 def test_stored_selection_and_audit_must_match_recomputed_source(tmp_path, field):
+    # Given
     snapshot = setup_snapshot(tmp_path)
     path = Path(getattr(snapshot.runs[0].fast_binding, field))
-    path.write_text("{}")
-    with pytest.raises(ValueError, match="stored Fast"):
+    path.write_text("{}", encoding="utf-8")
+    # When
+    with pytest.raises(ValueError) as exc:
         evaluate_snapshot(snapshot)
+
+    # Then
+    assert re.search("stored Fast", str(exc.value))
 
 
 @pytest.mark.parametrize("change", ["set", "sources", "missing_sources", "selected", "detection"])
 def test_adapter_and_decision_provenance_cannot_drift(tmp_path, change):
+    # Given
     snapshot = setup_snapshot(tmp_path)
     bundle = snapshot.runs[0]
     if change == "set":
@@ -198,57 +224,91 @@ def test_adapter_and_decision_provenance_cannot_drift(tmp_path, change):
         bundle.decision.selected_source_hit_id = None
     else:
         bundle.detection.rule_version = "other"
-    with pytest.raises(ValueError):
+    # When
+    with pytest.raises(ValueError) as exc:
         evaluate_snapshot(snapshot)
+
+    # Then
+    assert str(exc.value)
 
 
 def test_r1_performance_cannot_disable_binding(tmp_path):
+    # Given
     snapshot = setup_snapshot(tmp_path)
     snapshot.plan.scenario_id = snapshot.runs[0].run_metadata.scenario_id = "R1"
     snapshot.plan.purpose = "performance"
     snapshot.plan.require_fast_binding = False
     snapshot.plan.fast_binding_hashes = {}
     snapshot.runs[0].fast_binding = None
-    with pytest.raises(ValueError, match="requires set binding"):
+    # When
+    with pytest.raises(ValueError) as exc:
         build_evaluation_inputs(snapshot)
+
+    # Then
+    assert re.search("requires set binding", str(exc.value))
 
 
 def test_source_csv_edit_cannot_pass_unchanged_audit(tmp_path):
+    # Given
     snapshot = setup_snapshot(tmp_path)
-    (tmp_path / "source.csv").write_text("Timestamp,RuleID,Computer,RecordID\n")
-    with pytest.raises(ValueError):
+    (tmp_path / "source.csv").write_text("Timestamp,RuleID,Computer,RecordID\n", encoding="utf-8")
+    # When
+    with pytest.raises(ValueError) as exc:
         evaluate_snapshot(snapshot)
+
+    # Then
+    assert str(exc.value)
 
 
 def test_normal_run_uses_same_binding_boundary(tmp_path):
+    # Given
     snapshot = setup_snapshot(tmp_path, miss=True)
     snapshot.runs[0].run_metadata.run_type = RunType.NORMAL
     snapshot.runs[0].run_metadata.reference_time = None
-    assert evaluate_snapshot(snapshot)["comparison_ready"]
+    # When
+    report = evaluate_snapshot(snapshot)
+    # Then
+    assert report["comparison_ready"]
 
 
 def test_changed_host_mapping_cannot_reuse_approved_policy_hash(tmp_path):
+    # Given
     snapshot = setup_snapshot(tmp_path)
     snapshot.runs[0].fast_binding.policy.host_entity_map["UNUSED"] = "other"
-    with pytest.raises(ValueError, match="policy hash"):
+    # When
+    with pytest.raises(ValueError) as exc:
         evaluate_snapshot(snapshot)
+
+    # Then
+    assert re.search("policy hash", str(exc.value))
 
 
 def test_unplanned_binding_hash_rejected(tmp_path):
+    # Given
     snapshot = setup_snapshot(tmp_path)
     snapshot.plan.fast_binding_hashes["unexpected-run"] = "0" * 64
-    with pytest.raises(ValueError, match="unplanned Runs"):
+    # When
+    with pytest.raises(ValueError) as exc:
         evaluate_snapshot(snapshot)
+
+    # Then
+    assert re.search("unplanned Runs", str(exc.value))
 
 
 def test_json_snapshot_roundtrip_preserves_binding(tmp_path):
+    # Given
     snapshot = setup_snapshot(tmp_path)
     path = tmp_path / "snapshot.json"
-    path.write_text(snapshot.model_dump_json())
-    assert evaluate_snapshot(load_evaluation_snapshot(path)) == evaluate_snapshot(snapshot)
+    path.write_text(snapshot.model_dump_json(), encoding="utf-8")
+    # When
+    actual = evaluate_snapshot(load_evaluation_snapshot(path))
+    expected = evaluate_snapshot(snapshot)
+    # Then
+    assert actual == expected
 
 
 def test_stored_snapshot_consumes_external_fast_binding(tmp_path, monkeypatch):
+    # Given
     from contextlib import nullcontext
     from types import SimpleNamespace
 
@@ -278,9 +338,41 @@ def test_stored_snapshot_consumes_external_fast_binding(tmp_path, monkeypatch):
         "fast_episodes": {bundle.run_metadata.run_id: bundle.fast_episodes},
         "fusion_observations": {bundle.run_metadata.run_id: bundle.fusion_observation},
     }
-    with pytest.raises(ValueError, match="requires set binding"):
+    # When
+    with pytest.raises(ValueError) as exc:
         stored.read_stored_snapshot(connection, **arguments)
     actual = stored.read_stored_snapshot(
         connection, fast_bindings={bundle.run_metadata.run_id: bundle.fast_binding}, **arguments
     )
-    assert evaluate_snapshot(actual) == evaluate_snapshot(snapshot)
+    actual_report = evaluate_snapshot(actual)
+    expected_report = evaluate_snapshot(snapshot)
+    # Then
+    assert actual_report == expected_report
+    assert re.search("requires set binding", str(exc.value))
+
+
+@pytest.mark.parametrize("change", ["output", "input", "trace"])
+def test_binding_rejects_handoff_replacement_after_selection(tmp_path, monkeypatch, change):
+    # Given
+    from incident_awareness.evaluation import fast_binding as module
+
+    snapshot = setup_snapshot(tmp_path)
+    original_read = module.read_fast_hit_handoff
+
+    def changed_handoff(*args, **kwargs):
+        handoff = original_read(*args, **kwargs)
+        if change == "trace":
+            path = Path(snapshot.runs[0].fast_binding.trace_path)
+            path.write_bytes(path.read_bytes() + b"\n")
+        else:
+            setattr(handoff.trace, f"{change}_sha256", "0" * 64)
+        return handoff
+
+    monkeypatch.setattr(module, "read_fast_hit_handoff", changed_handoff)
+
+    # When
+    with pytest.raises(ValueError) as exc:
+        evaluate_snapshot(snapshot)
+
+    # Then
+    assert "Fast handoff changed after selection validation" in str(exc.value)
