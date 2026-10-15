@@ -95,8 +95,7 @@ contract = load_r1_required_partition_contract(
 )
 
 required_partition_identities = frozenset(
-    (partition.source, partition.source_channel)
-    for partition in contract.required_partitions
+    (partition.source, partition.source_channel) for partition in contract.required_partitions
 )
 ```
 
