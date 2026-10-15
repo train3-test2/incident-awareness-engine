@@ -37,6 +37,7 @@ from incident_awareness.evidence.r1_approved_lineage_policy import (
 )
 from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
 from incident_awareness.evidence.r1_selector import R1SelectorPolicy
+from incident_awareness.pipeline.r1_artifact_io import fsync_parent_directory
 from incident_awareness.pipeline.r1_causal_availability import (
     R1CausalEvidenceAvailability,
     R1CausalPolicyIdentity,
@@ -45,6 +46,7 @@ from incident_awareness.pipeline.r1_causal_availability import (
 from incident_awareness.pipeline.r1_incremental_checkpoint import (
     R1IncrementalEvidenceCheckpoint,
     incremental_checkpoint_sha256,
+    validate_r1_incremental_finalized_evidence,
 )
 from incident_awareness.pipeline.r1_incremental_evidence import (
     R1IncrementalEvidenceSnapshot,
@@ -207,6 +209,11 @@ def build_r1_incremental_causal_availability_envelope(
         raise TypeError("candidate_policy must be an R1CandidateGenerationPolicy")
     if snapshot.status != "finalized" or snapshot.close_mode != "verified_close_proof":
         raise ValueError("v0.2 availability requires a finalized verified-proof snapshot")
+    validate_r1_incremental_finalized_evidence(
+        checkpoint,
+        snapshot.evidences,
+        expected_close_mode="verified_close_proof",
+    )
     if snapshot.availability_contract_version != "v0.2":
         raise ValueError("snapshot does not carry incremental availability v0.2")
     if run_metadata.end_time is None or run_metadata.family_id is None:
@@ -331,6 +338,7 @@ def write_r1_incremental_causal_availability_envelope(
         os.link(staged, path)
     finally:
         staged.unlink(missing_ok=True)
+    fsync_parent_directory(path)
 
 
 def incremental_availability_envelope_sha256(

@@ -25,10 +25,12 @@ from pydantic import (
 from incident_awareness.collection.r1_role2_verified_close_proof import (
     R1Role2VerifiedCloseProof,
 )
+from incident_awareness.common.models.evidence import Evidence
 from incident_awareness.common.models.r1_required_partition import (
     R1RequiredPartitionContract,
 )
 from incident_awareness.common.models.r1_stream import R1EventChunk, R1RunClosed
+from incident_awareness.pipeline.r1_artifact_io import fsync_parent_directory
 from incident_awareness.pipeline.r1_causal_availability import R1CausalPolicyIdentity
 from incident_awareness.storage.repositories.r1_stream_delivery_repository import (
     R1AcceptedRunCloseReceipt,
@@ -184,7 +186,11 @@ def write_r1_incremental_checkpoint(
     path: Path,
     checkpoint: R1IncrementalEvidenceCheckpoint,
 ) -> None:
-    """Atomically replace mutable state while rejecting generation conflicts."""
+    """Replace single-writer state while rejecting generation conflicts.
+
+    Callers must serialize writers targeting the same path. The generation
+    check followed by ``os.replace`` is not a multi-writer atomic CAS.
+    """
 
     if not isinstance(path, Path):
         raise TypeError("path must be a Path")
@@ -217,6 +223,7 @@ def write_r1_incremental_checkpoint(
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        fsync_parent_directory(path)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -242,6 +249,40 @@ def load_r1_incremental_checkpoint(path: Path) -> R1IncrementalEvidenceCheckpoin
 
 def incremental_checkpoint_sha256(checkpoint: R1IncrementalEvidenceCheckpoint) -> str:
     return _canonical_sha256(checkpoint.model_dump(mode="json", by_alias=True))
+
+
+def incremental_evidence_sha256(evidence: Evidence) -> str:
+    """Return the checkpoint contract's canonical digest of one Evidence."""
+
+    if not isinstance(evidence, Evidence):
+        raise TypeError("evidence must be an Evidence")
+    return _canonical_sha256(evidence.model_dump(mode="json", by_alias=True))
+
+
+def validate_r1_incremental_finalized_evidence(
+    checkpoint: R1IncrementalEvidenceCheckpoint,
+    evidences: tuple[Evidence, ...],
+    *,
+    expected_close_mode: Literal["authoritative_run_end_fallback", "verified_close_proof"]
+    | None = None,
+) -> None:
+    """Bind finalized Evidence IDs and full canonical content to a checkpoint."""
+
+    if checkpoint.status != "finalized":
+        raise ValueError("Evidence output requires a finalized checkpoint")
+    if checkpoint.close_mode is None or (
+        expected_close_mode is not None and checkpoint.close_mode != expected_close_mode
+    ):
+        raise ValueError("checkpoint close_mode is not valid for this Evidence output")
+    actual = tuple(
+        (evidence.evidence_id, incremental_evidence_sha256(evidence))
+        for evidence in sorted(evidences, key=lambda item: item.evidence_id)
+    )
+    expected = tuple(
+        (item.evidence_id, item.content_sha256) for item in checkpoint.evidence_digests
+    )
+    if actual != expected:
+        raise ValueError("Evidence identity/content does not match checkpoint digests")
 
 
 def _require_content_hash(checkpoint: R1IncrementalEvidenceCheckpoint) -> None:
@@ -320,6 +361,8 @@ __all__ = [
     "R1IncrementalSelectorIdentity",
     "build_r1_incremental_checkpoint",
     "incremental_checkpoint_sha256",
+    "incremental_evidence_sha256",
     "load_r1_incremental_checkpoint",
+    "validate_r1_incremental_finalized_evidence",
     "write_r1_incremental_checkpoint",
 ]

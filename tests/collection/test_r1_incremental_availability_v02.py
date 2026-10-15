@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -9,6 +10,8 @@ import pytest
 import test_r1_candidate_generation_seal as seal_fixture
 import test_r1_role2_verified_close_proof as proof_fixture
 
+import incident_awareness.pipeline.r1_incremental_availability as availability_module
+import incident_awareness.pipeline.r1_incremental_checkpoint as checkpoint_module
 from incident_awareness.collection.r1_role2_verified_close_proof import (
     role2_safe_source_seal_projection_sha256,
 )
@@ -42,6 +45,7 @@ from incident_awareness.pipeline.r1_incremental_availability import (
     write_r1_incremental_causal_availability_envelope,
 )
 from incident_awareness.pipeline.r1_incremental_checkpoint import (
+    build_r1_incremental_checkpoint,
     load_r1_incremental_checkpoint,
     write_r1_incremental_checkpoint,
 )
@@ -519,6 +523,130 @@ def test_runtime_availability_does_not_branch_on_attack_or_normal_label() -> Non
     assert attack == normal
 
 
+def test_snapshot_evidence_content_must_match_checkpoint_digest() -> None:
+    state, snapshot, selector, approved, candidate, *_ = _state()
+    checkpoint = state.export_checkpoint()
+    evidence = snapshot.evidences[0]
+    tampered_evidence = evidence.model_copy(
+        update={"features": {**evidence.features, "tampered": True}}
+    )
+    tampered_evidences = (tampered_evidence, *snapshot.evidences[1:])
+    tampered_snapshot = replace(snapshot, evidences=tampered_evidences)
+    payload = [
+        item.model_dump(mode="json", by_alias=True)
+        for item in sorted(tampered_evidences, key=lambda item: item.evidence_id)
+    ]
+    recomputed_evidence_hash = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    original_envelope = build_r1_incremental_causal_availability_envelope(
+        snapshot,
+        checkpoint,
+        run_metadata=_run_metadata(),
+        selector_policy=selector,
+        approved_policy=approved,
+        candidate_policy=candidate,
+    )
+    envelope = original_envelope.model_copy(
+        update={"source_evidence_sha256": recomputed_evidence_hash}
+    )
+    assert incremental_availability_envelope_sha256(envelope) != (
+        incremental_availability_envelope_sha256(original_envelope)
+    )
+
+    with pytest.raises(ValueError, match="checkpoint digests"):
+        prepare_r1_incremental_causal_replay_input(
+            tampered_snapshot,
+            envelope,
+            checkpoint,
+            run_metadata=_run_metadata(),
+            selector_policy=selector,
+            approved_policy=approved,
+            candidate_policy=candidate,
+        )
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"status": "failed_closed"}, "finalized checkpoint"),
+        ({"close_mode": "authoritative_run_end_fallback"}, "close_mode"),
+        ({"evidence_digests": ()}, "checkpoint digests"),
+    ],
+)
+def test_availability_rejects_invalid_checkpoint_output_binding(updates, message: str) -> None:
+    state, snapshot, selector, approved, candidate, *_ = _state()
+    payload = state.export_checkpoint().model_dump(mode="python", by_alias=True)
+    payload.update(updates)
+    checkpoint = build_r1_incremental_checkpoint(payload)
+
+    with pytest.raises(ValueError, match=message):
+        build_r1_incremental_causal_availability_envelope(
+            snapshot,
+            checkpoint,
+            run_metadata=_run_metadata(),
+            selector_policy=selector,
+            approved_policy=approved,
+            candidate_policy=candidate,
+        )
+
+
+def test_artifact_writers_sync_parent_after_publication(tmp_path: Path, monkeypatch) -> None:
+    state, snapshot, selector, approved, candidate, *_ = _state()
+    checkpoint = state.export_checkpoint()
+    envelope = build_r1_incremental_causal_availability_envelope(
+        snapshot,
+        checkpoint,
+        run_metadata=_run_metadata(),
+        selector_policy=selector,
+        approved_policy=approved,
+        candidate_policy=candidate,
+    )
+    observed: list[Path] = []
+
+    def assert_published(path: Path) -> None:
+        assert path.exists()
+        assert not tuple(path.parent.glob(f".{path.name}.*"))
+        observed.append(path)
+
+    monkeypatch.setattr(checkpoint_module, "fsync_parent_directory", assert_published)
+    monkeypatch.setattr(availability_module, "fsync_parent_directory", assert_published)
+    checkpoint_path = tmp_path / "checkpoint.json"
+    envelope_path = tmp_path / "availability.json"
+
+    write_r1_incremental_checkpoint(checkpoint_path, checkpoint)
+    write_r1_incremental_causal_availability_envelope(envelope_path, envelope)
+
+    assert observed == [checkpoint_path, envelope_path]
+
+
+def test_directory_sync_io_failure_is_not_reported_as_success(tmp_path: Path, monkeypatch) -> None:
+    state, snapshot, selector, approved, candidate, *_ = _state()
+    checkpoint = state.export_checkpoint()
+    envelope = build_r1_incremental_causal_availability_envelope(
+        snapshot,
+        checkpoint,
+        run_metadata=_run_metadata(),
+        selector_policy=selector,
+        approved_policy=approved,
+        candidate_policy=candidate,
+    )
+
+    def fail_sync(_path: Path) -> None:
+        raise OSError("directory sync failed")
+
+    monkeypatch.setattr(checkpoint_module, "fsync_parent_directory", fail_sync)
+    monkeypatch.setattr(availability_module, "fsync_parent_directory", fail_sync)
+
+    with pytest.raises(OSError, match="directory sync failed"):
+        write_r1_incremental_checkpoint(tmp_path / "checkpoint.json", checkpoint)
+    with pytest.raises(OSError, match="directory sync failed"):
+        write_r1_incremental_causal_availability_envelope(
+            tmp_path / "availability.json",
+            envelope,
+        )
+
+
 def test_invalid_accepted_close_receipt_fails_closed_without_evidence() -> None:
     state = R1IncrementalEvidenceState(
         run_id=_RUN_ID,
@@ -598,6 +726,63 @@ def test_verified_close_with_missing_covered_chunk_fails_closed() -> None:
     assert failed.status == "failed_closed"
     assert failed.evidences == failed.availability == ()
     assert any("missing" in item for item in failed.diagnostics)
+
+
+@pytest.mark.parametrize("invalid_ingest_time", [None, _RUN_START.replace(tzinfo=None)])
+def test_verified_close_fails_closed_for_missing_or_invalid_event_ingest_time(
+    invalid_ingest_time: object,
+) -> None:
+    state = R1IncrementalEvidenceState(
+        run_id=_RUN_ID,
+        entity_id=_HOST_ID,
+        run_start=_RUN_START,
+        scenario_family_id="wmi_management",
+        selector_policy=_selector_policy(),
+        approved_policy=_approved_policy(),
+        ingress=_ingress(),
+        required_partition_contract=_required_contract(),
+    )
+    events = _events()
+    for sequence, event in enumerate((*events, events[0]), start=1):
+        chunk = _chunk(event, sequence)
+        if sequence == 3:
+            invalid_event = event.model_copy(update={"ingest_time": invalid_ingest_time})
+            chunk = chunk.model_copy(update={"events": (invalid_event,)})
+            payload = chunk.model_dump(mode="json", by_alias=True)
+            del payload["chunk_content_sha256"]
+            chunk = chunk.model_copy(
+                update={
+                    "chunk_content_sha256": hashlib.sha256(
+                        json.dumps(
+                            payload,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode()
+                    ).hexdigest()
+                }
+            )
+        state.accept_chunk(chunk)
+    close = seal_fixture._run_closed()
+    state.accept_run_closed(close)
+    seal = seal_fixture._seal()
+
+    with pytest.raises(ValueError, match="missing_or_invalid_ingest_time"):
+        state.accept_verified_close_proof(
+            proof_fixture._proof(),
+            accepted_run_closed=close,
+            accepted_close_receipt=proof_fixture._receipt(close),
+            candidate_policy=seal_fixture._policy(),
+            accepted_source_seal_id=seal.seal_id,
+            accepted_source_seal_projection_sha256=(
+                role2_safe_source_seal_projection_sha256(seal, host_id=_HOST_ID)
+            ),
+            proof_validated_at=_PROOF_VALIDATED_AT,
+        )
+
+    assert state.snapshot.status == "failed_closed"
+    assert state.snapshot.evidences == state.snapshot.availability == ()
+    assert any("missing_or_invalid_ingest_time" in item for item in state.snapshot.diagnostics)
 
 
 def test_corrupted_checkpoint_is_rejected(tmp_path: Path) -> None:

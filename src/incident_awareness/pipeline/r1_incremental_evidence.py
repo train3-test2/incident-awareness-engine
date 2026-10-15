@@ -53,6 +53,8 @@ from incident_awareness.pipeline.r1_incremental_checkpoint import (
     R1IncrementalEvidenceDigest,
     R1IncrementalSelectorIdentity,
     build_r1_incremental_checkpoint,
+    incremental_evidence_sha256,
+    validate_r1_incremental_finalized_evidence,
 )
 from incident_awareness.pipeline.r1_stream_ingress import (
     R1StreamDeliveryDisposition,
@@ -349,10 +351,7 @@ class R1IncrementalEvidenceState:
             if any(item.proof_validated_at != validated_at for item in validations):
                 raise ValueError("proof validation time changed across required partitions")
             self._require_watermark_coverage(proof.candidate_boundary_at)
-            latest_input_time = max(
-                (event.ingest_time for event in self._ordered_events()),
-                default=self._run_start,
-            )
+            latest_input_time = self._latest_verified_input_ingest_time()
             frontier_inputs = (
                 accepted_run_closed.emitted_at,
                 proof.candidate_boundary_at,
@@ -400,7 +399,7 @@ class R1IncrementalEvidenceState:
         evidence_digests = tuple(
             R1IncrementalEvidenceDigest(
                 evidence_id=evidence.evidence_id,
-                content_sha256=_evidence_sha256(evidence),
+                content_sha256=incremental_evidence_sha256(evidence),
             )
             for evidence in sorted(self._snapshot.evidences, key=lambda item: item.evidence_id)
         )
@@ -823,6 +822,15 @@ class R1IncrementalEvidenceState:
         if any(item.watermark_at < boundary_at for item in entity_watermarks):
             raise ValueError("every entity final watermark must cover the candidate boundary")
 
+    def _latest_verified_input_ingest_time(self) -> datetime:
+        ingest_times: list[datetime] = []
+        for event in self._ordered_events():
+            try:
+                ingest_times.append(_utc("Event ingest_time", event.ingest_time))
+            except (TypeError, ValueError) as error:
+                raise ValueError("missing_or_invalid_ingest_time") from error
+        return max(ingest_times, default=self._run_start)
+
 
 def _unpad(field_name: str, value: str) -> str:
     if not isinstance(value, str):
@@ -852,10 +860,6 @@ def _chunk_sha256(chunk: R1EventChunk) -> str:
 
 def _event_sha256(event: NormalizedEvent) -> str:
     return _canonical_sha256(event.model_dump(mode="json", by_alias=True))
-
-
-def _evidence_sha256(evidence: Evidence) -> str:
-    return _canonical_sha256(evidence.model_dump(mode="json", by_alias=True))
 
 
 def _validate_checkpoint_policy_inputs(
@@ -905,15 +909,14 @@ def _validate_restored_snapshot(
         raise ValueError("restored candidate boundary does not match checkpoint")
     if snapshot.available_at != checkpoint.available_at:
         raise ValueError("restored availability does not match checkpoint")
-    actual = tuple(
-        (evidence.evidence_id, _evidence_sha256(evidence))
-        for evidence in sorted(snapshot.evidences, key=lambda item: item.evidence_id)
-    )
-    expected = tuple(
-        (item.evidence_id, item.content_sha256) for item in checkpoint.evidence_digests
-    )
-    if actual != expected:
-        raise ValueError("restored Evidence identity/content does not match checkpoint")
+    if checkpoint.status == "finalized":
+        validate_r1_incremental_finalized_evidence(
+            checkpoint,
+            snapshot.evidences,
+            expected_close_mode=checkpoint.close_mode,
+        )
+    elif snapshot.evidences or checkpoint.evidence_digests:
+        raise ValueError("non-finalized checkpoint must not contain Evidence output")
 
 
 def _canonical_sha256(payload: object) -> str:
