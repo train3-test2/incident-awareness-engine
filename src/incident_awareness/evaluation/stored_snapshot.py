@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from psycopg import Connection
 from psycopg.pq import TransactionStatus
 
+from incident_awareness.evaluation.causal_inputs import CausalReplayEvaluationInput
+from incident_awareness.evaluation.fast_binding import FastBindingInput
 from incident_awareness.evaluation.result_inputs import (
     EvaluationPlan,
     EvaluationSnapshot,
@@ -28,6 +30,8 @@ def read_stored_snapshot(
     plan: EvaluationPlan,
     fast_episodes: Mapping[str, FastEpisodeStarts],
     fusion_observations: Mapping[str, FusionObservation],
+    fast_bindings: Mapping[str, FastBindingInput] | None = None,
+    causal_replays: Mapping[str, CausalReplayEvaluationInput] | None = None,
 ) -> EvaluationSnapshot:
     """Read the exact inventory in one read-only, repeatable-read transaction.
 
@@ -41,6 +45,12 @@ def read_stored_snapshot(
         raise ValueError("Fast episode history contains unplanned Runs")
     if set(fusion_observations) - set(plan.decision_ids):
         raise ValueError("Fusion observation coverage contains unplanned Runs")
+    fast_bindings = {} if fast_bindings is None else fast_bindings
+    if set(fast_bindings) - set(plan.decision_ids):
+        raise ValueError("Fast binding artifacts contain unplanned Runs")
+    causal_replays = {} if causal_replays is None else causal_replays
+    if set(causal_replays) - set(plan.decision_ids):
+        raise ValueError("causal replay artifacts contain unplanned Runs")
     with connection.transaction():
         connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         runs = []
@@ -56,6 +66,8 @@ def read_stored_snapshot(
                     decision=DecisionRepository(connection).get(decision_id),
                     fast_episodes=fast_episodes.get(run_id),
                     fusion_observation=fusion_observations.get(run_id),
+                    fast_binding=fast_bindings.get(run_id),
+                    causal_replay=causal_replays.get(run_id),
                 )
             )
         snapshot = EvaluationSnapshot(snapshot_id=snapshot_id, plan=plan, runs=runs)
