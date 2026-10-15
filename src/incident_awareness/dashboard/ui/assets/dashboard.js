@@ -34,6 +34,7 @@ import {
     resolveFusionEngineQueryState,
 } from "./fusion-engine-contract.mjs";
 import { createDashboardReplayChart } from "./dashboard-replay-chart.mjs";
+import { createDashboardTelemetryController } from "./dashboard-telemetry-controller.mjs";
 import {
     buildEventTimelineApiPath,
     resolveEventTimelineQueryState,
@@ -1178,6 +1179,7 @@ async function pollRuntimeSummary() {
 }
 
 if (dashboardView !== null) {
+    const telemetryController = createDashboardTelemetryController(document);
     for (const [index, tab] of selectedRunTabs.entries()) {
         tab.button.addEventListener("click", () => activateSelectedRunPanel(tab.name));
         tab.button.addEventListener("keydown", (event) => {
@@ -1209,11 +1211,16 @@ if (dashboardView !== null) {
     void loadOverview();
     void loadRuns();
     startRuntimePolling();
+    void telemetryController.start();
 
-    window.addEventListener("pagehide", stopRuntimePolling);
+    window.addEventListener("pagehide", () => {
+        stopRuntimePolling();
+        telemetryController.stop();
+    });
     window.addEventListener("pageshow", (event) => {
         if (event.persisted) {
             startRuntimePolling();
+            void telemetryController.start();
         }
     });
 }

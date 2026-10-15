@@ -1565,7 +1565,9 @@ test("Dashboard polls Runtime after each completed request without overlap", asy
     assert.match(script, /getLatestRuntimeReport\(state\.items\)/);
     assert.match(script, /formatRunTimestamp\(runtime\.updated_at\)/);
     assert.match(script, /presentation\.telemetryLabel/);
-    assert.match(script, /window\.addEventListener\("pagehide", stopRuntimePolling\)/);
+    assert.match(script, /window\.addEventListener\("pagehide", \(\) => \{/);
+    assert.match(script, /stopRuntimePolling\(\);/);
+    assert.match(script, /telemetryController\.stop\(\);/);
     assert.match(script, /window\.addEventListener\("pageshow"/);
     assert.doesNotMatch(script, /현재 실행 중|setInterval\(/);
 });
@@ -2004,7 +2006,14 @@ async function startDashboardHarness() {
         },
     );
 
-    const moduleSource = source.replaceAll(
+    // Keep the existing Run/Runtime harness independent of Telemetry DOM and timers.
+    // The actual Telemetry controller is covered by its dedicated tests.
+    const isolatedSource = source.replace(
+        'import { createDashboardTelemetryController } from "./dashboard-telemetry-controller.mjs";',
+        "const createDashboardTelemetryController = () => ({ start() {}, stop() {} });",
+    );
+    assert.notEqual(isolatedSource, source, "Expected Dashboard Telemetry import");
+    const moduleSource = isolatedSource.replaceAll(
         /from "\.\/([^"]+)"/g,
         (_, file) => `from "${new URL(file, DASHBOARD_ASSETS_URL).href}"`,
     );

@@ -169,39 +169,42 @@
                 <div class="section-header dashboard-section-header">
                     <div>
                         <h2 id="throughput-heading" class="section-heading">실시간 처리 흐름 (Input &amp; Processing Throughput)</h2>
-                        <p class="section-description">1초 단위 유입·처리 시계열은 현재 제공되지 않습니다.</p>
+                        <p class="section-description">최근 5분 · 검증된 Batch 입력 수락 및 Normalization + Evidence 처리 완료 · 1초 버킷</p>
                     </div>
-                    <span class="dashboard-measurement-note">시계열 계측 미연결</span>
+                    <span id="telemetry-throughput-note" class="dashboard-measurement-note">조회 중</span>
                 </div>
                 <div class="dashboard-metric-layout">
-                    <div class="dashboard-metric-frame" role="note">
-                        <span>계측 데이터 없음</span>
+                    <div id="telemetry-throughput-chart" class="dashboard-metric-frame dashboard-telemetry-frame">
+                        <span>실측 처리량 조회 중</span>
                     </div>
                     <div class="dashboard-metric-summary">
-                        <p>최근 처리량</p>
-                        <strong>미계측</strong>
-                        <small>실제 throughput API 연결 후 표시</small>
+                        <p>최근 60초 입력·처리</p>
+                        <strong id="telemetry-throughput-summary">조회 중</strong>
+                        <small id="telemetry-throughput-details">최근 60초 실측값 확인 중</small>
                     </div>
                 </div>
+                <p id="telemetry-throughput-status" class="status-message dashboard-telemetry-status" role="status" aria-live="polite">처리량 측정 데이터를 조회하고 있습니다.</p>
             </section>
 
             <section class="section-card dashboard-section dashboard-latency-section" aria-labelledby="latency-heading">
                 <div class="section-header dashboard-section-header">
                     <div>
                         <h2 id="latency-heading" class="section-heading">처리 지연 시간 (Processing Latency)</h2>
-                        <p class="section-description">지연 시계열과 평균 지연은 현재 제공되지 않습니다.</p>
+                        <p class="section-description">최근 5분 · Normalization + Evidence 구간의 실제 레코드 처리 지연(ms)</p>
                     </div>
+                    <span id="telemetry-latency-note" class="dashboard-measurement-note">조회 중</span>
                 </div>
                 <div class="dashboard-metric-layout">
-                    <div class="dashboard-metric-frame dashboard-metric-frame--latency" role="note">
-                        <span>계측 데이터 없음</span>
+                    <div id="telemetry-latency-chart" class="dashboard-metric-frame dashboard-telemetry-frame">
+                        <span>실측 지연시간 조회 중</span>
                     </div>
                     <div class="dashboard-metric-summary">
-                        <p>최근 평균</p>
-                        <strong>미계측</strong>
-                        <small>처리 지연 API 연결 후 표시</small>
+                        <p>최근 60초 평균</p>
+                        <strong id="telemetry-latency-summary">조회 중</strong>
+                        <small id="telemetry-latency-details">최근 60초 실측값 확인 중</small>
                     </div>
                 </div>
+                <p id="telemetry-latency-status" class="status-message dashboard-telemetry-status" role="status" aria-live="polite">처리 지연 데이터를 조회하고 있습니다.</p>
             </section>
 
             <section class="section-card dashboard-section dashboard-runs-section" aria-labelledby="runs-heading">
