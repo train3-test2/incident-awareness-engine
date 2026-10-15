@@ -76,6 +76,17 @@ max(close emitted, candidate boundary, seal verified, proof created,
 `context_event_ids`는 lineage reconstruction provenance로만 남고 semantic `event_ids`나
 timestamp에 섞이지 않는다.
 
+v0.1과 v0.2의 시간축은 구분해서 해석한다. v0.1 frontier는 authoritative `run_end`이고,
+v0.2 frontier는 Event `ingest_time`, close/proof 생성·검증 등 실제 처리 시각을 포함한다. 모든
+입력은 UTC로 정규화되어 서로 비교 가능해야 하며, 생산 시스템 시계가 동기화되어 있다는 운영
+전제가 필요하다. UTC 형식이 같다는 사실만으로 시계 동기화가 입증되지는 않는다.
+
+Fusion의 event-time window는 계속 `Evidence.timestamp`를 기준으로 한다. 따라서 늦게
+`available_at`에 도달한 Evidence는 활성화 시점에 이미 event-time window 밖일 수 있으며, v0.2
+기반 Fusion/TTSD에는 이 처리 지연이 반영된다. Fast baseline이 서로 다른 지연 포함 기준을
+사용하면 양쪽 시간을 직접 비교할 수 없다. 이 계약은 해당 비교를 보정하거나 Role1/Role5 평가
+로직을 변경하지 않는다.
+
 ## 5. durable checkpoint와 복구
 
 `R1IncrementalEvidenceCheckpoint`는 다음을 canonical JSON과 content hash로 보존한다.
@@ -87,7 +98,12 @@ timestamp에 섞이지 않는다.
 - 확정 Evidence ID/content digest, availability boundary와 diagnostics
 
 writer는 generation 역행과 같은 generation의 다른 content를 거부하고 임시 파일을 fsync한 뒤
-atomic replace한다. loader는 duplicate JSON key, schema drift와 content hash 손상을 거부한다.
+atomic replace한다. 동일 checkpoint 경로에는 단일 writer만 허용되며 운영 통합 계층이 writer를
+직렬화해야 한다. generation 비교와 `os.replace` 조합은 복수 writer 사이의 atomic CAS가 아니다.
+POSIX에서는 replace 후 상위 디렉터리를 fsync하고, 디렉터리 fsync를 지원하지 않는 파일시스템은
+명시적인 미지원 경계로 둔다. Windows에서는 POSIX directory-descriptor fsync가 없어 파일 fsync와
+atomic replace/link까지만 보장한다. 지원되는 I/O의 실제 실패는 성공으로 숨기지 않는다. loader는
+duplicate JSON key, schema drift와 content hash 손상을 거부한다.
 복구 시 chunk를 다시 ingress에 결속하고 selector/extractor를 재실행한 뒤 저장된 Evidence
 identity/content와 terminal 상태가 정확히 일치하는지 확인한다.
 
@@ -104,6 +120,10 @@ v0.2 envelope는 다음 linkage를 포함한다.
 - Role2 checkpoint SHA-256
 - verified close proof SHA-256와 complete frontier
 - canonical finalized Evidence set SHA-256/count
+
+envelope 게시 역시 파일 fsync 후 immutable link를 만들고 staged 파일을 정리한 다음, 지원되는
+POSIX 환경에서는 상위 디렉터리를 fsync한다. 실제 디렉터리 I/O 실패는 게시 성공으로 보고하지
+않는다.
 
 `prepare_r1_incremental_causal_replay_input()`은 snapshot, checkpoint, envelope와 trusted
 RunMetadata/policies로 envelope를 재구성해 exact equality를 확인한 뒤 기존 `ScheduledEvidence`
