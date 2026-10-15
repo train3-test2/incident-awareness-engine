@@ -58,18 +58,35 @@ v0.2 frontier는 다음 모든 시각을 보존한다.
 - proof creation
 - proof validation
 - accepted Event의 최신 `ingest_time`
+- selector/extractor 실행, Evidence 검증과 canonical digest 계산이 끝난 `evidence_ready_at`
 
-`available_at`은 위 입력이 모두 이용 가능하고 검증된 causal frontier다. 현재 proof API는
-`proof_validated_at`이 다른 모든 finalization 입력보다 빠르지 않음을 요구하므로, 유효한 v0.2
-결과에서는 그 최댓값과 `proof_validated_at`이 같다. 이는 한 provenance 시각을 임의로 복사한
-규칙이 아니라 모든 predecessor를 검증한 결과다.
+`proof_validated_at`은 proof 검증 provenance일 뿐 Evidence 이용 가능 시각이 아니다. Role2는
+selector/extractor가 성공하고 전체 Evidence canonical digest 검증까지 끝난 뒤 주입된 운영 clock으로
+`evidence_ready_at`을 한 번 관측한다. `available_at`은 이 public-ready 경계를 사용하며
+`evidence_ready_at >= proof_validated_at`을 강제한다.
 
 ```text
 max(close emitted, candidate boundary, seal verified, proof created,
-    latest accepted input ingest, proof validated)
-= proof_validated_at
-= Evidence.available_at
+    latest accepted input ingest) <= proof_validated_at
+proof_validated_at <= evidence_ready_at = Evidence.available_at
 ```
+
+public-ready는 finalized Evidence 내용과 digest가 고정되어 checkpoint/envelope writer에 넘길 수 있게
+된 시점이다. immutable writer는 그 뒤 envelope 파일 fsync, atomic publication과 지원 환경의 directory
+fsync를 완료한 다음 `publication_completed_at`을 관측한다. 이 시각은 envelope/checkpoint hash에
+결속된 immutable publication receipt에 기록된다. envelope 자체를 사후 변경하지 않으므로
+self-referential hash나 immutable artifact 변조가 없다.
+
+파일 기반 downstream 경로는 envelope와 publication receipt를 함께 strict join해야 하며, 이때 최종
+`ScheduledEvidence.available_at`은 `publication_completed_at`이다. 따라서 public-ready와 게시 완료
+사이에 writer 지연이 있어도 게시 완료 전 replay point에서 Evidence가 활성화되지 않는다. 메모리
+snapshot의 `available_at`은 Evidence 계산 완료 경계이고, 파일 기반 replay availability는 더 늦은
+publication completion 경계다.
+
+최초 finalized checkpoint는 `evidence_ready_at`을 `available_at`으로 보존한다. 재시작과 exact duplicate
+처리는 저장된 값을 재사용하며 현재 clock으로 다시 계산하지 않는다. `evidence_ready_at`이 authoritative
+`run_end`보다 늦으면 이를 `run_end`로 자르지 않고 v0.2 envelope 생성을 fail-closed한다. 그런 결과를
+조기 확정으로 표현하거나 v0.1 fallback으로 소급하지 않는다.
 
 또한 `Evidence.timestamp <= available_at <= authoritative run_end`를 요구한다.
 `Evidence.timestamp`는 계속 direct `Evidence.event_ids` Event timestamp의 최댓값이다. pre-Run
@@ -123,9 +140,11 @@ v0.2 envelope는 다음 linkage를 포함한다.
 
 envelope 게시 역시 파일 fsync 후 immutable link를 만들고 staged 파일을 정리한 다음, 지원되는
 POSIX 환경에서는 상위 디렉터리를 fsync한다. 실제 디렉터리 I/O 실패는 게시 성공으로 보고하지
-않는다.
+않는다. 그 뒤 생성되는 publication receipt는 envelope/checkpoint SHA-256과 `evidence_ready_at`,
+`publication_completed_at`을 결속한다. exact duplicate 게시에서는 기존 receipt를 재사용하여 최초
+게시 완료 시각을 보존하고, 같은 경로의 다른 content는 거부한다.
 
-`prepare_r1_incremental_causal_replay_input()`은 snapshot, checkpoint, envelope와 trusted
+`prepare_r1_incremental_causal_replay_input()`은 snapshot, checkpoint, envelope, publication receipt와 trusted
 RunMetadata/policies로 envelope를 재구성해 exact equality를 확인한 뒤 기존 `ScheduledEvidence`
 내부 표현으로 변환한다. ordering과 activation은 #232 계약을 그대로 따른다.
 
