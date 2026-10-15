@@ -37,6 +37,9 @@ from incident_awareness.common.models.r1_stream import (
     R1StreamPartition,
 )
 from incident_awareness.common.models.run import RunMetadata
+from incident_awareness.storage.repositories.r1_stream_delivery_repository import (
+    R1AcceptedRunCloseReceipt,
+)
 
 R1_ROLE2_VERIFIED_CLOSE_PROOF_SCHEMA = "r1-role2-verified-close-proof"
 R1_ROLE2_VERIFIED_CLOSE_PROOF_CONTRACT_VERSION = "v0.1"
@@ -50,7 +53,8 @@ class R1Role2VerifiedCloseProof(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         frozen=True,
-        validate_by_name=True,
+        validate_by_alias=True,
+        validate_by_name=False,
         serialize_by_alias=True,
     )
 
@@ -149,12 +153,17 @@ def issue_r1_role2_verified_close_proof(
     verified_boundary: R1VerifiedCandidateBoundary,
     source_seal: R1CandidateGenerationSeal,
     accepted_run_closed: R1RunClosed,
+    accepted_close_receipt: R1AcceptedRunCloseReceipt,
     candidate_policy: R1CandidateGenerationPolicy,
     proof_created_at: datetime,
 ) -> R1Role2VerifiedCloseProof:
     """Create a proof only from an already verified Role4 boundary and accepted close."""
 
     validated_host_id = _validate_unpadded("host_id", host_id)
+    _validate_accepted_close_receipt(
+        accepted_close_receipt,
+        accepted_run_closed=accepted_run_closed,
+    )
     _validate_source_binding(
         verified_boundary=verified_boundary,
         source_seal=source_seal,
@@ -195,6 +204,7 @@ def validate_r1_role2_verified_close_proof(
     proof: R1Role2VerifiedCloseProof,
     *,
     accepted_run_closed: R1RunClosed,
+    accepted_close_receipt: R1AcceptedRunCloseReceipt,
     candidate_policy: R1CandidateGenerationPolicy,
     expected_run_id: str,
     expected_family_id: str,
@@ -209,6 +219,10 @@ def validate_r1_role2_verified_close_proof(
         raise TypeError("proof must be an R1Role2VerifiedCloseProof")
     if not isinstance(accepted_run_closed, R1RunClosed):
         raise TypeError("accepted_run_closed must be an R1RunClosed")
+    _validate_accepted_close_receipt(
+        accepted_close_receipt,
+        accepted_run_closed=accepted_run_closed,
+    )
     if not isinstance(candidate_policy, R1CandidateGenerationPolicy):
         raise TypeError("candidate_policy must be an R1CandidateGenerationPolicy")
     if not isinstance(expected_selector_partition, R1StreamPartition):
@@ -425,6 +439,27 @@ def _validate_source_binding(
         raise ValueError("source seal final watermark does not cover candidate boundary")
     if verified_boundary.verified_seal_at < accepted_run_closed.emitted_at:
         raise ValueError("verified boundary precedes accepted run_closed")
+
+
+def _validate_accepted_close_receipt(
+    receipt: R1AcceptedRunCloseReceipt,
+    *,
+    accepted_run_closed: R1RunClosed,
+) -> None:
+    if not isinstance(receipt, R1AcceptedRunCloseReceipt):
+        raise TypeError("accepted_close_receipt must be an R1AcceptedRunCloseReceipt")
+    run_id = RunMetadata.validate_run_id(RunMetadata.validate_required_identifier(receipt.run_id))
+    close_id = _validate_unpadded("accepted_close_receipt.close_id", receipt.close_id)
+    content_sha256 = _validate_sha256(
+        "accepted_close_receipt.content_sha256",
+        receipt.content_sha256,
+    )
+    if run_id != accepted_run_closed.run_id:
+        raise ValueError("accepted close receipt run_id does not match accepted run_closed")
+    if close_id != accepted_run_closed.close_id:
+        raise ValueError("accepted close receipt close_id does not match accepted run_closed")
+    if content_sha256 != r1_run_closed_sha256(accepted_run_closed):
+        raise ValueError("accepted close receipt content hash does not match accepted run_closed")
 
 
 def _policy_identity(policy: R1CandidateGenerationPolicy) -> tuple[str, str, str, str]:

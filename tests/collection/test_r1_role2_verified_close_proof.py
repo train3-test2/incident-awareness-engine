@@ -24,6 +24,18 @@ from incident_awareness.collection.r1_role2_verified_close_proof import (
     write_r1_role2_verified_close_proof,
 )
 from incident_awareness.common.models.r1_stream import R1RunClosed, R1StreamPartition
+from incident_awareness.storage.repositories.r1_stream_delivery_repository import (
+    R1AcceptedRunCloseReceipt,
+)
+
+
+def _receipt(run_closed: R1RunClosed | None = None) -> R1AcceptedRunCloseReceipt:
+    close = run_closed or seal_fixture._run_closed()
+    return R1AcceptedRunCloseReceipt(
+        run_id=close.run_id,
+        close_id=close.close_id,
+        content_sha256=r1_run_closed_sha256(close),
+    )
 
 
 def _proof() -> R1Role2VerifiedCloseProof:
@@ -33,6 +45,7 @@ def _proof() -> R1Role2VerifiedCloseProof:
         verified_boundary=seal_fixture._verified_boundary(),
         source_seal=seal_fixture._seal(),
         accepted_run_closed=seal_fixture._run_closed(),
+        accepted_close_receipt=_receipt(),
         candidate_policy=seal_fixture._policy(),
         proof_created_at=datetime(2026, 10, 13, 1, 13, 3, tzinfo=UTC),
     )
@@ -55,6 +68,7 @@ def _validate(
     proof: R1Role2VerifiedCloseProof,
     *,
     run_closed: R1RunClosed | None = None,
+    accepted_close_receipt: R1AcceptedRunCloseReceipt | None = None,
     source_seal_projection_sha256: str | None = None,
     expected_run_id: str = seal_fixture.RUN_ID,
     expected_family_id: str = "wmi_management",
@@ -62,9 +76,11 @@ def _validate(
     source_seal_id: str | None = None,
 ):
     seal = seal_fixture._seal()
+    close = run_closed or seal_fixture._run_closed()
     return validate_r1_role2_verified_close_proof(
         proof,
-        accepted_run_closed=run_closed or seal_fixture._run_closed(),
+        accepted_run_closed=close,
+        accepted_close_receipt=accepted_close_receipt or _receipt(close),
         candidate_policy=seal_fixture._policy(),
         expected_run_id=expected_run_id,
         expected_family_id=expected_family_id,
@@ -151,6 +167,7 @@ def test_strict_api_requires_every_external_binding() -> None:
     assert set(signature(validate_r1_role2_verified_close_proof).parameters) == {
         "proof",
         "accepted_run_closed",
+        "accepted_close_receipt",
         "candidate_policy",
         "expected_run_id",
         "expected_family_id",
@@ -209,6 +226,7 @@ def test_rejects_cross_policy_and_untrusted_source_seal_hash() -> None:
         validate_r1_role2_verified_close_proof(
             proof,
             accepted_run_closed=seal_fixture._run_closed(),
+            accepted_close_receipt=_receipt(),
             candidate_policy=changed_policy,
             expected_run_id=seal_fixture.RUN_ID,
             expected_family_id="wmi_management",
@@ -236,7 +254,30 @@ def test_rejects_changed_run_closed_content() -> None:
     )
 
     with pytest.raises(ValueError, match="run_closed content hash"):
-        _validate(proof, run_closed=changed_close)
+        _validate(
+            proof,
+            run_closed=changed_close,
+            accepted_close_receipt=_receipt(changed_close),
+        )
+
+
+def test_rejects_unaccepted_close_when_proof_and_close_hash_are_recomputed() -> None:
+    proof = _proof()
+    original_close = seal_fixture._run_closed()
+    changed_close = original_close.model_copy(
+        update={"emitted_at": original_close.emitted_at + timedelta(milliseconds=1)}
+    )
+    payload = proof.model_dump(mode="json", by_alias=True)
+    payload["accepted_run_closed_content_sha256"] = r1_run_closed_sha256(changed_close)
+    payload["input_close_emitted_at"] = changed_close.emitted_at.isoformat().replace("+00:00", "Z")
+    changed_proof = _rehash(payload)
+
+    with pytest.raises(ValueError, match="receipt content hash"):
+        _validate(
+            changed_proof,
+            run_closed=changed_close,
+            accepted_close_receipt=_receipt(original_close),
+        )
 
 
 def test_rejects_rehashed_boundary_that_is_not_bound_to_trusted_projection() -> None:
@@ -290,6 +331,7 @@ def test_rejects_temporal_inversion() -> None:
         validate_r1_role2_verified_close_proof(
             _proof(),
             accepted_run_closed=seal_fixture._run_closed(),
+            accepted_close_receipt=_receipt(),
             candidate_policy=seal_fixture._policy(),
             expected_run_id=seal_fixture.RUN_ID,
             expected_family_id="wmi_management",
@@ -318,6 +360,7 @@ def test_issue_rejects_boundary_or_source_that_was_not_the_verified_input() -> N
             verified_boundary=seal_fixture._verified_boundary(),
             source_seal=changed_seal,
             accepted_run_closed=seal_fixture._run_closed(),
+            accepted_close_receipt=_receipt(),
             candidate_policy=seal_fixture._policy(),
             proof_created_at=datetime(2026, 10, 13, 1, 13, 3, tzinfo=UTC),
         )
@@ -348,6 +391,19 @@ def test_loader_rejects_duplicate_keys_and_changed_content_hash(tmp_path: Path) 
     payload = _proof().model_dump(mode="json", by_alias=True)
     payload["host_id"] = "OTHER-HOST"
     path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="does not match v0.1"):
+        load_r1_role2_verified_close_proof(path)
+
+
+def test_loader_rejects_internal_schema_id_without_wire_schema(tmp_path: Path) -> None:
+    payload = _proof().model_dump(mode="json", by_alias=True)
+    payload["schema_id"] = payload.pop("schema")
+    payload.pop("proof_content_sha256")
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    payload["proof_content_sha256"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    path = tmp_path / "proof.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
     with pytest.raises(ValueError, match="does not match v0.1"):
         load_r1_role2_verified_close_proof(path)
 

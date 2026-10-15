@@ -64,12 +64,14 @@ Role4는 `issue_r1_role2_verified_close_proof()`에 아래 검증된 입력을 �
 - `R1VerifiedCandidateBoundary`
 - 원본 `R1CandidateGenerationSeal`
 - Role3가 수락한 `R1RunClosed`
+- Role3 append-only ledger에서 transaction commit 후 조회한 accepted-close receipt
 - 정확한 registered candidate-generation policy
 - selector target host
 
 Role2는 `validate_r1_role2_verified_close_proof()`에 아래 expected binding을 모두 명시한다.
 
 - accepted `R1RunClosed`
+- Role3 append-only ledger에서 transaction commit 후 조회한 accepted-close receipt
 - registered candidate-generation policy
 - expected run/family
 - expected selector partition
@@ -77,7 +79,11 @@ Role2는 `validate_r1_role2_verified_close_proof()`에 아래 expected binding�
 - trusted source seal Role2-safe projection SHA-256
 - 현재 Role2 검증 시각(`proof_validated_at`)
 
-Validator는 proof 내부 hash, accepted close hash, exact partition/final-watermark 목록, source
+Accepted-close receipt는 Role3 ledger가 보존한 `run_id`, `close_id`, canonical content SHA-256을
+담으며 proof나 전달된 `R1RunClosed`에서 다시 만들어 신뢰값으로 사용하지 않는다.
+
+Validator는 proof 내부 hash, accepted close hash와 Role3 receipt, exact
+partition/final-watermark 목록, source
 seal projection digest와 policy identity를 모두 대조한다. projection은 proof에 공개된
 run/host/family/policy/close/partition/final-watermark, `candidate_boundary_at`,
 `verified_seal_at`만 포함하고 `run_type`·action·process 정보를 제외한다. Validator는 proof
@@ -97,6 +103,7 @@ Proof가 없거나 검증이 실패하면 #266이 병합되기 전의 현재 run
 
 - run/host/family/policy binding 불일치
 - 다른 source seal projection digest 또는 accepted close hash
+- Role3 accepted-close receipt 부재 또는 run/close/content hash 불일치
 - close ID, partition 집합 또는 final watermark 값 불일치
 - expected selector partition 누락
 - covered chunk sequence가 1 미만이거나 sequence binding 변경
