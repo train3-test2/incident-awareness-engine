@@ -113,7 +113,7 @@ class FastScanCoverage(BaseModel):
             or command[1] != "dfir-timeline"
         ):
             raise ValueError("unsupported diagnostic subcommand")
-        switches = {"-w", "--no-wizard", "-O", "-t", "-K", "--verbose", "--validate-checksums"}
+        switches = {"-w", "--no-wizard", "-O", "-K", "--verbose", "--validate-checksums"}
         paths = {}
         seen = set()
         index = 2
@@ -127,6 +127,12 @@ class FastScanCoverage(BaseModel):
                 if index + 1 >= len(command) or command[index + 1].startswith("-"):
                     raise ValueError("missing diagnostic option argument")
                 paths[flag] = command[index + 1]
+                index += 2
+            elif flag == "-t":
+                if index + 1 >= len(command) or command[index + 1].startswith("-"):
+                    raise ValueError("missing diagnostic option argument")
+                if command[index + 1] != "csv":
+                    raise ValueError("unsupported diagnostic output format")
                 index += 2
             elif flag in switches:
                 index += 1
