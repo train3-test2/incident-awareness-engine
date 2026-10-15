@@ -54,7 +54,11 @@ def attach_fast_binding(snapshot, tmp_path, *, miss=False):
     csv_path, config_path = tmp_path / "source.csv", tmp_path / "config.json"
     csv_path.write_text(
         "Timestamp,RuleID,Computer,RecordID\n"
-        + ("" if miss else f"{timestamp.isoformat(timespec='milliseconds')},synthetic-rule,HOST,1\n")
+        + (
+            ""
+            if miss
+            else f"{timestamp.isoformat(timespec='milliseconds')},synthetic-rule,HOST,1\n"
+        )
     )
     config_path.write_text(json.dumps(config))
     hits, trace = tmp_path / "hits.jsonl", tmp_path / "trace.json"
