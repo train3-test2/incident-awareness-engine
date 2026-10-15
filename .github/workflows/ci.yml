@@ -35,6 +35,10 @@ jobs:
       - run: >-
           node --test
           tests/dashboard/ui/test_dashboard_contract.mjs
+          tests/dashboard/ui/test_dashboard_telemetry_contract.mjs
+          tests/dashboard/ui/test_dashboard_telemetry_chart.mjs
+          tests/dashboard/ui/test_dashboard_telemetry_controller.mjs
+          tests/dashboard/ui/test_dashboard_telemetry_wiring.mjs
           tests/dashboard/ui/test_operations_contract.mjs
           tests/dashboard/ui/test_run_detail_contract.mjs
           tests/dashboard/ui/test_decision_detail_contract.mjs
