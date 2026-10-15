@@ -40,6 +40,7 @@ from incident_awareness.evidence.r1_selector import (
     R1SelectorResult,
     select_r1_lineage,
 )
+from incident_awareness.pipeline.r1_artifact_io import ceil_utc_clock_observation, utc_now
 from incident_awareness.pipeline.r1_causal_availability import (
     R1CausalEvidenceAvailability,
     R1CausalPolicyIdentity,
@@ -135,7 +136,7 @@ class R1IncrementalEvidenceState:
         if not isinstance(ingress, R1StreamIngress):
             raise TypeError("ingress must be an R1StreamIngress")
         self._ingress = ingress
-        self._clock = clock or (lambda: datetime.now(UTC))
+        self._clock = clock or utc_now
 
         if required_partition_contract is not None:
             if not isinstance(required_partition_contract, R1RequiredPartitionContract):
@@ -629,7 +630,7 @@ class R1IncrementalEvidenceState:
             for evidence in result.evidences:
                 incremental_evidence_sha256(evidence)
             try:
-                evidence_ready_at = _utc("evidence_ready_at", self._clock())
+                evidence_ready_at = ceil_utc_clock_observation("evidence_ready_at", self._clock())
             except (TypeError, ValueError) as error:
                 self._fail_closed(f"Evidence publication readiness clock is invalid: {error}")
                 raise

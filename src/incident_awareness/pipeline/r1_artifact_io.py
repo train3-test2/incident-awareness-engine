@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 _UNSUPPORTED_DIRECTORY_SYNC_ERRORS = {
@@ -11,6 +12,28 @@ _UNSUPPORTED_DIRECTORY_SYNC_ERRORS = {
     getattr(errno, "ENOTSUP", errno.EINVAL),
     getattr(errno, "EOPNOTSUPP", errno.EINVAL),
 }
+
+
+def utc_now() -> datetime:
+    """Return the raw UTC system-clock observation."""
+
+    return datetime.now(UTC)
+
+
+def ceil_utc_clock_observation(field_name: str, value: datetime) -> datetime:
+    """Validate an internal UTC clock observation and ceil it to milliseconds."""
+
+    if not isinstance(value, datetime):
+        raise TypeError(f"{field_name} must be a datetime")
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must include timezone information")
+    if value.utcoffset() != timedelta(0):
+        raise ValueError(f"{field_name} must be UTC")
+    normalized = value.astimezone(UTC)
+    remainder = normalized.microsecond % 1000
+    if remainder == 0:
+        return normalized
+    return normalized + timedelta(microseconds=1000 - remainder)
 
 
 def fsync_parent_directory(path: Path) -> None:
@@ -42,4 +65,4 @@ def fsync_parent_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-__all__ = ["fsync_parent_directory"]
+__all__ = ["ceil_utc_clock_observation", "fsync_parent_directory", "utc_now"]

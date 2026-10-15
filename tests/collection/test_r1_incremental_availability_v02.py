@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -12,6 +12,7 @@ import test_r1_role2_verified_close_proof as proof_fixture
 
 import incident_awareness.pipeline.r1_incremental_availability as availability_module
 import incident_awareness.pipeline.r1_incremental_checkpoint as checkpoint_module
+import incident_awareness.pipeline.r1_incremental_evidence as incremental_evidence_module
 from incident_awareness.collection.r1_role2_verified_close_proof import (
     role2_safe_source_seal_projection_sha256,
 )
@@ -34,6 +35,7 @@ from incident_awareness.evidence.r1_approved_lineage_policy import (
 )
 from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
 from incident_awareness.evidence.r1_selector import R1SelectorPolicy
+from incident_awareness.pipeline.r1_artifact_io import ceil_utc_clock_observation
 from incident_awareness.pipeline.r1_causal_replay import (
     prepare_r1_incremental_causal_replay_input,
 )
@@ -273,7 +275,7 @@ def _state(
     *,
     middle_name: str = "cmd.exe",
     reverse: bool = False,
-    evidence_ready_at: datetime = _EVIDENCE_READY_AT,
+    evidence_ready_at: datetime | None = _EVIDENCE_READY_AT,
 ):
     selector = _selector_policy()
     approved = _approved_policy()
@@ -287,7 +289,7 @@ def _state(
         approved_policy=approved,
         ingress=_ingress(),
         required_partition_contract=_required_contract(),
-        clock=lambda: evidence_ready_at,
+        clock=None if evidence_ready_at is None else lambda: evidence_ready_at,
     )
     events = _events(middle_name=middle_name)
     chunks = tuple(_chunk(event, index) for index, event in enumerate(events, start=1)) + (
@@ -311,6 +313,84 @@ def _state(
         proof_validated_at=_PROOF_VALIDATED_AT,
     )
     return state, snapshot, selector, approved, candidate, receipt, seal
+
+
+@pytest.mark.parametrize(
+    ("observed", "expected"),
+    [
+        (
+            datetime(2026, 10, 13, 1, 13, 6, 123456, tzinfo=UTC),
+            datetime(2026, 10, 13, 1, 13, 6, 124000, tzinfo=UTC),
+        ),
+        (
+            datetime(2026, 10, 13, 1, 13, 6, 999999, tzinfo=UTC),
+            datetime(2026, 10, 13, 1, 13, 7, tzinfo=UTC),
+        ),
+        (
+            datetime(2026, 10, 13, 1, 13, 6, 123000, tzinfo=UTC),
+            datetime(2026, 10, 13, 1, 13, 6, 123000, tzinfo=UTC),
+        ),
+    ],
+)
+def test_internal_clock_observation_is_ceiled_to_utc_milliseconds(
+    observed: datetime,
+    expected: datetime,
+) -> None:
+    actual = ceil_utc_clock_observation("observed_at", observed)
+
+    assert actual == expected
+    assert actual >= observed
+
+
+@pytest.mark.parametrize(
+    "observed",
+    [
+        _RUN_START.replace(tzinfo=None),
+        datetime(2026, 10, 13, 10, 13, 6, tzinfo=timezone(timedelta(hours=9))),
+    ],
+)
+def test_internal_clock_observation_does_not_normalize_invalid_time(
+    observed: datetime,
+) -> None:
+    with pytest.raises(ValueError):
+        ceil_utc_clock_observation("observed_at", observed)
+
+
+def test_default_evidence_clock_is_ceiled_before_verified_close_finalization(monkeypatch) -> None:
+    observed = _EVIDENCE_READY_AT + timedelta(microseconds=123456)
+    expected = _EVIDENCE_READY_AT + timedelta(microseconds=124000)
+    monkeypatch.setattr(incremental_evidence_module, "utc_now", lambda: observed)
+
+    _, snapshot, *_ = _state(evidence_ready_at=None)
+
+    assert snapshot.status == "finalized"
+    assert snapshot.available_at == expected
+
+
+def test_default_publication_clock_is_ceiled_after_immutable_publish(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    state, snapshot, selector, approved, candidate, *_ = _state()
+    envelope = build_r1_incremental_causal_availability_envelope(
+        snapshot,
+        state.export_checkpoint(),
+        run_metadata=_run_metadata(),
+        selector_policy=selector,
+        approved_policy=approved,
+        candidate_policy=candidate,
+    )
+    observed = _PUBLICATION_COMPLETED_AT + timedelta(microseconds=999999)
+    expected = _PUBLICATION_COMPLETED_AT + timedelta(seconds=1)
+    monkeypatch.setattr(availability_module, "utc_now", lambda: observed)
+
+    receipt = write_r1_incremental_causal_availability_envelope(
+        tmp_path / "availability.json",
+        envelope,
+    )
+
+    assert receipt.publication_completed_at == expected
+    assert receipt.publication_completed_at >= observed
 
 
 def _run_metadata(*, run_type: str = "attack") -> RunMetadata:
@@ -557,7 +637,7 @@ def test_runtime_availability_does_not_branch_on_attack_or_normal_label() -> Non
 
 def test_evidence_readiness_after_run_end_is_not_clipped_to_look_early() -> None:
     state, snapshot, selector, approved, candidate, *_ = _state(
-        evidence_ready_at=_RUN_END + timedelta(milliseconds=1)
+        evidence_ready_at=_RUN_END + timedelta(microseconds=1)
     )
 
     assert snapshot.available_at == _RUN_END + timedelta(milliseconds=1)

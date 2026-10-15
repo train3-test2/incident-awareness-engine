@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -38,7 +38,11 @@ from incident_awareness.evidence.r1_approved_lineage_policy import (
 )
 from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
 from incident_awareness.evidence.r1_selector import R1SelectorPolicy
-from incident_awareness.pipeline.r1_artifact_io import fsync_parent_directory
+from incident_awareness.pipeline.r1_artifact_io import (
+    ceil_utc_clock_observation,
+    fsync_parent_directory,
+    utc_now,
+)
 from incident_awareness.pipeline.r1_causal_availability import (
     R1CausalEvidenceAvailability,
     R1CausalPolicyIdentity,
@@ -389,8 +393,9 @@ def write_r1_incremental_causal_availability_envelope(
         receipt = load_r1_incremental_availability_publication_receipt(receipt_path)
         _validate_publication_receipt(receipt, envelope)
         return receipt
-    publication_completed_at = (clock or (lambda: datetime.now(UTC)))()
-    _validate_utc(publication_completed_at)
+    publication_completed_at = ceil_utc_clock_observation(
+        "publication_completed_at", (clock or utc_now)()
+    )
     receipt = _build_publication_receipt(envelope, publication_completed_at)
     _publish_immutable_bytes(receipt_path, _serialize_publication_receipt(receipt))
     return receipt
