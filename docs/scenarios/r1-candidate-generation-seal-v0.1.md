@@ -18,6 +18,10 @@ Role4는 Ground Truth가 포함된 seal·RunMetadata·실행 기록을 검증한
 `R1VerifiedCandidateBoundary`를 전달한다. Role2 runtime은 RunMetadata, run type,
 family별 process image나 raw seal을 입력으로 받지 않는다. 검증된 경계가 없으면 Role4가
 RunMetadata에서 추출한 authoritative `end_time` 값만 whole-episode fallback으로 전달한다.
+Issue #285의 [Role2-safe verified close proof](../evidence/r1-role2-verified-close-proof-v0.1.md)는
+검증된 boundary와 원본 seal·accepted `run_closed`를 결합해 이 최소 객체에서 제거된
+host·family·policy·partition·watermark binding과 source content hash를 별도 proof로 보존한다.
+기존 최소 객체의 schema는 바꾸지 않는다.
 최초 WMI Pilot은 이 seal의 유무와 관계없이 기존
 `OFFLINE WHOLE-EPISODE ONLY` 계약을 유지하며 #269는 Pilot 선행 blocker가 아니다.
 
@@ -200,3 +204,5 @@ Role2 #266 통합은 모든 resolution에서 `verified_seal` /
 고정한다.
 
 현재 batch whole-episode 경로와 최초 WMI Pilot에는 seal을 의무화하지 않는다.
+Role2-safe proof의 등록만으로 #266 early-close가 활성화되지는 않는다. 현재 증분 Evidence
+runtime은 #266 통합 전까지 authoritative `RunMetadata.end_time` fallback을 유지한다.

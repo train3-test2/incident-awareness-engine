@@ -159,6 +159,15 @@ class R1AcceptedWatermark:
 
 
 @dataclass(frozen=True, slots=True)
+class R1AcceptedRunCloseReceipt:
+    """Immutable identity and content hash loaded from the Role3 close ledger."""
+
+    run_id: str
+    close_id: str
+    content_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
 class R1ChunkAdmission:
     """Durable chunk/Event dedup state observed under one Run lock."""
 
@@ -439,6 +448,27 @@ class R1StreamDeliveryRepository:
             raise ValueError("run close identity conflicts with previously accepted content")
         raise ValueError("run already has a different accepted close_id")
 
+    def load_accepted_run_close_receipt(
+        self,
+        run_id: str,
+    ) -> R1AcceptedRunCloseReceipt | None:
+        """Load the durable Role3 acceptance binding after its transaction commits."""
+
+        if not isinstance(run_id, str) or not run_id.strip() or run_id != run_id.strip():
+            raise ValueError("run_id must be a non-blank, unpadded string")
+        delivery = self._row_to_delivery(
+            self._connection.execute(_SELECT_CLOSE_BY_RUN, (run_id,)).fetchone(),
+            label="run close",
+            has_sequence=False,
+        )
+        if delivery is None:
+            return None
+        return R1AcceptedRunCloseReceipt(
+            run_id=run_id,
+            close_id=delivery.identity,
+            content_sha256=delivery.content_sha256,
+        )
+
     def _lock_run(self, run_id: str) -> None:
         """Serialize watermark and close transitions for one Run until commit."""
         self._connection.execute(_LOCK_RUN, (run_id,)).fetchone()
@@ -614,6 +644,7 @@ def _partition_params(partition: R1StreamPartition) -> tuple[str, str, str, str]
 
 
 __all__ = [
+    "R1AcceptedRunCloseReceipt",
     "R1AcceptedWatermark",
     "R1ChunkAdmission",
     "R1StreamDelivery",

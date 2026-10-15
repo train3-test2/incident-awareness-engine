@@ -6,6 +6,7 @@ from incident_awareness.common.models.r1_stream import (
     R1StreamPartition,
 )
 from incident_awareness.storage.repositories.r1_stream_delivery_repository import (
+    R1AcceptedRunCloseReceipt,
     R1StreamDeliveryRepository,
 )
 
@@ -253,6 +254,32 @@ def test_recovers_an_exact_run_close_replay() -> None:
 
     assert not R1StreamDeliveryRepository(connection).save_run_close(
         run_id="RUN-20261012-001", close_id="CLOSE-001", content_sha256="a" * 64
+    )
+
+
+def test_loads_the_durable_role3_run_close_receipt() -> None:
+    connection = _Connection(rows=[("CLOSE-001", "a" * 64)])
+
+    receipt = R1StreamDeliveryRepository(connection).load_accepted_run_close_receipt(
+        "RUN-20261012-001"
+    )
+
+    assert receipt == R1AcceptedRunCloseReceipt(
+        run_id="RUN-20261012-001",
+        close_id="CLOSE-001",
+        content_sha256="a" * 64,
+    )
+    query, params = connection.statements[-1]
+    assert "FROM r1_stream_run_closes" in query
+    assert params == ("RUN-20261012-001",)
+
+
+def test_absent_role3_run_close_has_no_acceptance_receipt() -> None:
+    connection = _Connection(rows=[None])
+
+    assert (
+        R1StreamDeliveryRepository(connection).load_accepted_run_close_receipt("RUN-20261012-001")
+        is None
     )
 
 

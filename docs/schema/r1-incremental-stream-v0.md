@@ -384,6 +384,11 @@ Role2는 Event timestamp, `max(Event.timestamp)`, SQS 수신 시각, timeout으�
 `run_closed`를 대체하거나 telemetry completeness를 넓히지 않는다. 반대로 `run_closed`만으로
 seal을 만들어서는 안 된다.
 
+Issue #285의 [Role2-safe verified close proof](../evidence/r1-role2-verified-close-proof-v0.1.md)는
+이 절의 close·partition·final-watermark reference와 source seal/accepted close canonical hash를
+그대로 보존한다. Proof validator는 Role3가 수락한 `R1RunClosed`와 exact content를 다시
+대조하며, proof 파일 자체만 보고 accepted close를 추정하지 않는다.
+
 이 절은 seal을 EvidenceResult에 저장하는 필드, `available_at` 값, Evidence 철회·보정, Fusion과
 Decision의 소비 시점은 정의하지 않는다. 해당 의미는 Role2·Role4의 versioned Evidence/selector
 계약에서 별도로 확정한다.
