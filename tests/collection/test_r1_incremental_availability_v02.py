@@ -603,9 +603,11 @@ def test_replay_availability_is_observed_after_receipt_publication_and_validatio
     )
     envelope_path = tmp_path / "availability.json"
     receipt_path = envelope_path.with_name(f"{envelope_path.name}.publication.json")
+    input_validation_path = tmp_path / "replay-input-validation.json"
     receipt_published_at = _PUBLICATION_COMPLETED_AT + timedelta(seconds=1)
+    validation_record_published_at = _INPUTS_VALIDATED_AT + timedelta(seconds=1)
     original_publish = availability_module._publish_immutable_bytes
-    publication_events: list[datetime] = []
+    publication_events: list[tuple[Path, datetime]] = []
 
     def publish_with_receipt_delay(path: Path, content: bytes) -> None:
         is_receipt = path == receipt_path
@@ -616,7 +618,9 @@ def test_replay_availability_is_observed_after_receipt_publication_and_validatio
                 load_r1_incremental_availability_publication_receipt(receipt_path)
         original_publish(path, content)
         if is_receipt:
-            publication_events.append(receipt_published_at)
+            publication_events.append((path, receipt_published_at))
+        elif path == input_validation_path:
+            publication_events.append((path, validation_record_published_at))
 
     monkeypatch.setattr(
         availability_module,
@@ -635,7 +639,7 @@ def test_replay_availability_is_observed_after_receipt_publication_and_validatio
         envelope,
         checkpoint,
         loaded_receipt,
-        input_validation_path=tmp_path / "replay-input-validation.json",
+        input_validation_path=input_validation_path,
         run_metadata=_run_metadata(),
         selector_policy=selector,
         approved_policy=approved,
@@ -643,14 +647,115 @@ def test_replay_availability_is_observed_after_receipt_publication_and_validatio
         clock=lambda: _INPUTS_VALIDATED_AT,
     )
 
-    assert publication_events == [receipt_published_at]
+    assert publication_events == [
+        (receipt_path, receipt_published_at),
+        (input_validation_path, validation_record_published_at),
+    ]
     assert loaded_receipt.publication_completed_at < receipt_published_at < _INPUTS_VALIDATED_AT
+    assert _INPUTS_VALIDATED_AT < validation_record_published_at
     assert all(
         item.available_at == _INPUTS_VALIDATED_AT for item in replay_input.scheduled_evidences
     )
     assert all(
         item.available_at >= receipt_published_at for item in replay_input.scheduled_evidences
     )
+
+
+def test_replay_input_is_not_returned_when_validation_record_publication_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    state, snapshot, selector, approved, candidate, *_ = _state()
+    checkpoint = state.export_checkpoint()
+    envelope = build_r1_incremental_causal_availability_envelope(
+        snapshot,
+        checkpoint,
+        run_metadata=_run_metadata(),
+        selector_policy=selector,
+        approved_policy=approved,
+        candidate_policy=candidate,
+    )
+    envelope_path = tmp_path / "availability.json"
+    receipt = write_r1_incremental_causal_availability_envelope(
+        envelope_path,
+        envelope,
+        clock=lambda: _PUBLICATION_COMPLETED_AT,
+    )
+    input_validation_path = tmp_path / "replay-input-validation.json"
+    original_publish = availability_module._publish_immutable_bytes
+
+    def fail_validation_record(path: Path, content: bytes) -> None:
+        if path == input_validation_path:
+            raise OSError("validation record publication failed")
+        original_publish(path, content)
+
+    monkeypatch.setattr(
+        availability_module,
+        "_publish_immutable_bytes",
+        fail_validation_record,
+    )
+
+    with pytest.raises(OSError, match="validation record publication failed"):
+        prepare_r1_incremental_causal_replay_input(
+            snapshot,
+            envelope,
+            checkpoint,
+            receipt,
+            input_validation_path=input_validation_path,
+            run_metadata=_run_metadata(),
+            selector_policy=selector,
+            approved_policy=approved,
+            candidate_policy=candidate,
+            clock=lambda: _INPUTS_VALIDATED_AT,
+        )
+
+    assert not input_validation_path.exists()
+
+
+def test_inputs_validated_after_run_end_are_not_clipped_or_activated(
+    tmp_path: Path,
+) -> None:
+    state, snapshot, selector, approved, candidate, *_ = _state()
+    checkpoint = state.export_checkpoint()
+    envelope = build_r1_incremental_causal_availability_envelope(
+        snapshot,
+        checkpoint,
+        run_metadata=_run_metadata(),
+        selector_policy=selector,
+        approved_policy=approved,
+        candidate_policy=candidate,
+    )
+    receipt = write_r1_incremental_causal_availability_envelope(
+        tmp_path / "availability.json",
+        envelope,
+        clock=lambda: _PUBLICATION_COMPLETED_AT,
+    )
+    observed_after_run_end = _RUN_END + timedelta(microseconds=1)
+    expected_available_at = _RUN_END + timedelta(milliseconds=1)
+
+    replay_input = prepare_r1_incremental_causal_replay_input(
+        snapshot,
+        envelope,
+        checkpoint,
+        receipt,
+        input_validation_path=tmp_path / "replay-input-validation.json",
+        run_metadata=_run_metadata(),
+        selector_policy=selector,
+        approved_policy=approved,
+        candidate_policy=candidate,
+        clock=lambda: observed_after_run_end,
+    )
+    assert all(
+        item.available_at == expected_available_at for item in replay_input.scheduled_evidences
+    )
+    with pytest.raises(ValueError, match="available_at must fall within replay boundaries"):
+        _config().build_runner().run_causal(
+            replay_input.scheduled_evidences,
+            run_id=_RUN_ID,
+            entity_id=_HOST_ID,
+            run_start=_RUN_START,
+            run_end=_RUN_END,
+        )
 
 
 def test_required_partition_loader_output_is_the_incremental_source_of_truth(
