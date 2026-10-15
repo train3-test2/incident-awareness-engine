@@ -1,0 +1,11 @@
+{
+  "schema": "r1-required-partitions",
+  "contract_version": "v0.1",
+  "target_host": "Target-A",
+  "required_partitions": [
+    {
+      "source": "sysmon",
+      "source_channel": "Microsoft-Windows-Sysmon/Operational"
+    }
+  ]
+}
