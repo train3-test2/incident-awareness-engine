@@ -97,7 +97,11 @@ envelope/checkpoint/receipt SHA-256에 결속된 immutable replay-input validati
 `run_end`보다 늦으면 이를 `run_end`로 자르지 않고 v0.2 envelope 생성을 fail-closed한다. 그런 결과를
 조기 확정으로 표현하거나 v0.1 fallback으로 소급하지 않는다.
 
-또한 `Evidence.timestamp <= available_at <= authoritative run_end`를 요구한다.
+envelope 내부 readiness에는 `Evidence.timestamp <= Evidence.available_at <= authoritative run_end`를
+요구한다. 파일 기반 replay의 최종 `ScheduledEvidence.available_at`, 즉 `inputs_validated_at`에는 이
+상한을 적용하거나 `run_end`로 잘라 맞추지 않는다. 필수 입력 검증이 `run_end` 뒤에 끝나면 저장된
+실제 시각을 유지한다. 현재 Role1 replay core의 bounded-run 계약은 이 입력을 replay 경계 밖으로
+거부하므로 Evidence가 활성화되거나 운영 조기인지 결과로 처리되지 않는다.
 `Evidence.timestamp`는 계속 direct `Evidence.event_ids` Event timestamp의 최댓값이다. pre-Run
 `context_event_ids`는 lineage reconstruction provenance로만 남고 semantic `event_ids`나
 timestamp에 섞이지 않는다.
@@ -112,6 +116,11 @@ Fusion의 event-time window는 계속 `Evidence.timestamp`를 기준으로 한�
 기반 Fusion/TTSD에는 이 처리 지연이 반영된다. Fast baseline이 서로 다른 지연 포함 기준을
 사용하면 양쪽 시간을 직접 비교할 수 없다. 이 계약은 해당 비교를 보정하거나 Role1/Role5 평가
 로직을 변경하지 않는다.
+
+`inputs_validated_at`은 Role2가 제공하는 source-ready 시각이다. 실제 Role1 수신·수락 시각인
+`handoff_accepted_at`은 Role1 수신 경계가 소유하며 Role2는 이를 생성하거나 두 시각이 같다고
+주장하지 않는다. 따라서 source-ready 기반 causal replay 결과와 운영 조기인지 결과를 구분한다.
+특히 실제 Role1 인계가 authoritative `run_end` 뒤에 완료됐다면 운영 조기인지로 인정하지 않는다.
 
 ## 5. durable checkpoint와 복구
 
