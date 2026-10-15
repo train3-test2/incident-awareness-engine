@@ -406,6 +406,9 @@ def test_fallback_replay_is_idempotent_and_conflicting_run_end_is_rejected() -> 
     replay = state.finalize_at_run_end(_RUN_END)
 
     assert replay == first
+    assert first.close_mode == "authoritative_run_end_fallback"
+    assert first.availability_contract_version == "v0.1"
+    assert first.available_at == _RUN_END
     with pytest.raises(ValueError, match="different authoritative_run_end"):
         state.finalize_at_run_end(_RUN_END + timedelta(seconds=1))
 
@@ -841,17 +844,29 @@ def test_ingress_mixed_replay_and_new_events_matches_whole_batch() -> None:
     assert len(ledger.events) == 4
 
 
-@pytest.mark.parametrize("same_chunk", [True, False])
-def test_ingress_replay_cannot_restore_events_absent_from_local_state(same_chunk: bool) -> None:
+def test_exact_ingress_replay_repairs_role3_to_role2_crash_gap() -> None:
     ingress = _ingress()
     state = _state(ingress)
     chunk = _chunk(_events(), chunk_id="CHK-001", sequence=1)
     ingress.accept_chunk(chunk)
-    replay = chunk if same_chunk else _chunk(_events(), chunk_id="CHK-002", sequence=2)
+
+    recovered = state.accept_chunk(chunk)
+
+    assert recovered.status == "provisional"
+    assert recovered.selector_result.selection is not None
+    assert recovered.evidences == ()
+
+
+def test_new_chunk_cannot_claim_events_missing_from_local_state() -> None:
+    ingress = _ingress()
+    state = _state(ingress)
+    accepted = _chunk(_events(), chunk_id="CHK-001", sequence=1)
+    ingress.accept_chunk(accepted)
+    different_chunk = _chunk(_events(), chunk_id="CHK-002", sequence=2)
     before = state.snapshot
 
     with pytest.raises(ValueError, match="absent from local state; recover state"):
-        state.accept_chunk(replay)
+        state.accept_chunk(different_chunk)
 
     assert state.snapshot is before
     assert state.snapshot.evidences == ()
