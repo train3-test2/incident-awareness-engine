@@ -37,10 +37,13 @@ selector/extractor에는 해당 Run·target host의 `source=sysmon`,
 chunk도 전달 완결성과 scoped identity는 추적하지만 R1 분석 입력에는 넣지 않는다. 따라서
 다른 partition의 동일 `event_id`가 기존 batch pipeline의 ID 경계에 섞이지 않는다.
 
-현재 병합된 PR `#269` v0.1의 `R1VerifiedCandidateBoundary`에는 Role2가 독립 검증할
+PR `#269` v0.1의 `R1VerifiedCandidateBoundary`에는 Role2가 독립 검증할
 host/family/policy/partition/final-watermark 결속 정보가 없다. 따라서 이 계약의 v0.1 구현은
 해당 객체를 입력받아도 항상 거부하고, authoritative `RunMetadata.end_time` fallback만
-사용한다. versioned Role2-safe proof가 별도 등록되기 전에는 verified close 경로가 없다.
+사용한다. Issue #285의 versioned
+[Role2-safe proof](r1-role2-verified-close-proof-v0.1.md)는 별도 strict validation 입력을
+제공하지만, 이 v0.1 state가 proof를 소비하거나 early close를 활성화하지는 않는다. 실제 소비와
+causal `available_at` 정의는 #266 후속 version의 범위다.
 
 ## 3. 상태 전이
 
@@ -131,8 +134,8 @@ production wiring은 별도 versioned 계약으로 연결한다.
 - PR `#269` v0.1은 accepted `run_closed` 이전의 seal 발급을 지원하지 않는다. 진행 중
   watermark만으로 확정하려면 late Event, correction/retraction 의미를 포함한 별도 후속
   contract/version이 필요하다.
-- Role2-safe verified-close proof가 등록되기 전에는 minimal boundary 객체를 입력으로 받아도
-  거부한다.
+- minimal boundary 객체는 Role2-safe proof를 대신할 수 없으며 계속 거부한다. 별도 proof의
+  실제 소비와 early-close 활성화는 #266 후속 version에서만 수행한다.
 - availability/no-look-ahead 통합 검증 전에는 Temporal Replay, TTSD, online/causal 성능 주장에
   사용하지 않는다.
 - v0는 확정 뒤 late Event에 따른 철회·보정을 지원하지 않는다.
