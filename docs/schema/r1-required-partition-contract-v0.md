@@ -94,12 +94,17 @@ contract = load_r1_required_partition_contract(
     run_metadata=run_metadata,
 )
 
-for partition in contract.required_partitions:
-    selector.register_required_partition(
-        source=partition.source,
-        source_channel=partition.source_channel,
-    )
+required_partition_identities = frozenset(
+    (partition.source, partition.source_channel)
+    for partition in contract.required_partitions
+)
 ```
+
+위 예시는 이 저장소에 구현된 loader와 그 반환값까지만 보여준다.
+`selector.register_required_partition()` 같은 Role2 selector 주입 API는 현재 이 저장소에
+존재하지 않으며, Role2가 실제 selector 생성·상태 관리 인터페이스를 확정할 때
+`required_partition_identities`를 그 인터페이스에 연결한다. 이 문서는 존재하지 않는 selector
+메서드나 호출 순서를 계약으로 정의하지 않는다.
 
 `load_r1_required_partition_contract()`가 보장하는 사항은 다음과 같다.
 
