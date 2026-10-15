@@ -41,6 +41,7 @@ from incident_awareness.pipeline.r1_evidence import run_r1_evidence_pipeline_wit
 from incident_awareness.pipeline.r1_incremental_availability import (
     build_r1_incremental_causal_availability_envelope,
     incremental_availability_envelope_sha256,
+    load_r1_incremental_availability_publication_receipt,
     load_r1_incremental_causal_availability_envelope,
     write_r1_incremental_causal_availability_envelope,
 )
@@ -61,6 +62,8 @@ _HOST_ID = "R1-TGTA"
 _RUN_START = datetime(2026, 10, 13, 1, 0, tzinfo=UTC)
 _RUN_END = datetime(2026, 10, 13, 1, 14, tzinfo=UTC)
 _PROOF_VALIDATED_AT = datetime(2026, 10, 13, 1, 13, 4, tzinfo=UTC)
+_EVIDENCE_READY_AT = _PROOF_VALIDATED_AT + timedelta(seconds=2)
+_PUBLICATION_COMPLETED_AT = _EVIDENCE_READY_AT + timedelta(seconds=3)
 _ROOT_GUID = "{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}"
 _MIDDLE_GUID = "{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}"
 _TERMINAL_GUID = "{CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC}"
@@ -266,7 +269,12 @@ def _chunk(event: NormalizedEvent, sequence: int) -> R1EventChunk:
     return chunk.model_copy(update={"chunk_content_sha256": digest})
 
 
-def _state(*, middle_name: str = "cmd.exe", reverse: bool = False):
+def _state(
+    *,
+    middle_name: str = "cmd.exe",
+    reverse: bool = False,
+    evidence_ready_at: datetime = _EVIDENCE_READY_AT,
+):
     selector = _selector_policy()
     approved = _approved_policy()
     candidate = seal_fixture._policy()
@@ -279,6 +287,7 @@ def _state(*, middle_name: str = "cmd.exe", reverse: bool = False):
         approved_policy=approved,
         ingress=_ingress(),
         required_partition_contract=_required_contract(),
+        clock=lambda: evidence_ready_at,
     )
     events = _events(middle_name=middle_name)
     chunks = tuple(_chunk(event, index) for index, event in enumerate(events, start=1)) + (
@@ -347,12 +356,20 @@ def test_verified_close_builds_persistent_v02_availability_and_causal_replay(
         approved_policy=approved,
         candidate_policy=candidate,
     )
-    write_r1_incremental_causal_availability_envelope(envelope_path, envelope)
+    publication_receipt = write_r1_incremental_causal_availability_envelope(
+        envelope_path,
+        envelope,
+        clock=lambda: _PUBLICATION_COMPLETED_AT,
+    )
+    loaded_publication_receipt = load_r1_incremental_availability_publication_receipt(
+        envelope_path.with_name(f"{envelope_path.name}.publication.json")
+    )
     loaded_envelope = load_r1_incremental_causal_availability_envelope(envelope_path)
     replay_input = prepare_r1_incremental_causal_replay_input(
         snapshot,
         loaded_envelope,
         loaded_checkpoint,
+        loaded_publication_receipt,
         run_metadata=_run_metadata(),
         selector_policy=selector,
         approved_policy=approved,
@@ -390,7 +407,7 @@ def test_verified_close_builds_persistent_v02_availability_and_causal_replay(
 
     assert snapshot.status == "finalized"
     assert snapshot.availability_contract_version == "v0.2"
-    assert snapshot.available_at == _PROOF_VALIDATED_AT < _RUN_END
+    assert snapshot.available_at == _EVIDENCE_READY_AT < _RUN_END
     assert len(snapshot.evidences) == 2
     assert snapshot.evidences == whole_episode.evidences
     assert snapshot.lineage_input == whole_episode.lineage_input
@@ -400,18 +417,26 @@ def test_verified_close_builds_persistent_v02_availability_and_causal_replay(
     }
     assert loaded_checkpoint == checkpoint
     assert loaded_envelope == envelope
+    assert loaded_publication_receipt == publication_receipt
+    assert loaded_envelope.frontier.proof_validated_at == _PROOF_VALIDATED_AT
+    assert loaded_envelope.frontier.evidence_ready_at == _EVIDENCE_READY_AT
+    assert loaded_checkpoint.available_at == _EVIDENCE_READY_AT
     assert hashlib.sha256(envelope_path.read_bytes()).hexdigest() == (
         incremental_availability_envelope_sha256(envelope)
     )
     assert restored.snapshot == snapshot
     assert all(
-        item.available_at == _PROOF_VALIDATED_AT for item in replay_input.scheduled_evidences
+        item.available_at == _PUBLICATION_COMPLETED_AT for item in replay_input.scheduled_evidences
     )
     assert all(
-        point.score == 0 for point in replay.trajectory if point.timestamp < _PROOF_VALIDATED_AT
+        point.score == 0
+        for point in replay.trajectory
+        if point.timestamp < _PUBLICATION_COMPLETED_AT
     )
     assert any(
-        point.score > 0 for point in replay.trajectory if point.timestamp >= _PROOF_VALIDATED_AT
+        point.score > 0
+        for point in replay.trajectory
+        if point.timestamp >= _PUBLICATION_COMPLETED_AT
     )
     assert (
         state.accept_verified_close_proof(
@@ -443,14 +468,21 @@ def test_verified_close_builds_persistent_v02_availability_and_causal_replay(
             ),
             proof_validated_at=_PROOF_VALIDATED_AT,
         )
-    with pytest.raises(FileExistsError):
-        write_r1_incremental_causal_availability_envelope(envelope_path, envelope)
+    assert (
+        write_r1_incremental_causal_availability_envelope(
+            envelope_path,
+            envelope,
+            clock=lambda: _RUN_END,
+        )
+        == publication_receipt
+    )
     tampered = loaded_envelope.model_copy(update={"source_state_checkpoint_sha256": "0" * 64})
     with pytest.raises(ValueError, match="does not match trusted inputs"):
         prepare_r1_incremental_causal_replay_input(
             snapshot,
             tampered,
             loaded_checkpoint,
+            loaded_publication_receipt,
             run_metadata=_run_metadata(),
             selector_policy=selector,
             approved_policy=approved,
@@ -496,7 +528,7 @@ def test_attack_and_normal_inputs_share_the_verified_runtime_path_and_are_determ
     assert ordered[1] == reversed_input[1]
     assert ordered[0].export_checkpoint() == reversed_input[0].export_checkpoint()
     assert len(ordered[1].evidences) == expected_count
-    assert {item.available_at for item in ordered[1].availability} == {_PROOF_VALIDATED_AT}
+    assert {item.available_at for item in ordered[1].availability} == {_EVIDENCE_READY_AT}
 
 
 def test_runtime_availability_does_not_branch_on_attack_or_normal_label() -> None:
@@ -523,7 +555,24 @@ def test_runtime_availability_does_not_branch_on_attack_or_normal_label() -> Non
     assert attack == normal
 
 
-def test_snapshot_evidence_content_must_match_checkpoint_digest() -> None:
+def test_evidence_readiness_after_run_end_is_not_clipped_to_look_early() -> None:
+    state, snapshot, selector, approved, candidate, *_ = _state(
+        evidence_ready_at=_RUN_END + timedelta(milliseconds=1)
+    )
+
+    assert snapshot.available_at == _RUN_END + timedelta(milliseconds=1)
+    with pytest.raises(ValueError, match="Evidence readiness must be inside"):
+        build_r1_incremental_causal_availability_envelope(
+            snapshot,
+            state.export_checkpoint(),
+            run_metadata=_run_metadata(),
+            selector_policy=selector,
+            approved_policy=approved,
+            candidate_policy=candidate,
+        )
+
+
+def test_snapshot_evidence_content_must_match_checkpoint_digest(tmp_path: Path) -> None:
     state, snapshot, selector, approved, candidate, *_ = _state()
     checkpoint = state.export_checkpoint()
     evidence = snapshot.evidences[0]
@@ -553,12 +602,18 @@ def test_snapshot_evidence_content_must_match_checkpoint_digest() -> None:
     assert incremental_availability_envelope_sha256(envelope) != (
         incremental_availability_envelope_sha256(original_envelope)
     )
+    publication_receipt = write_r1_incremental_causal_availability_envelope(
+        tmp_path / "availability.json",
+        original_envelope,
+        clock=lambda: _PUBLICATION_COMPLETED_AT,
+    )
 
     with pytest.raises(ValueError, match="checkpoint digests"):
         prepare_r1_incremental_causal_replay_input(
             tampered_snapshot,
             envelope,
             checkpoint,
+            publication_receipt,
             run_metadata=_run_metadata(),
             selector_policy=selector,
             approved_policy=approved,
@@ -617,7 +672,11 @@ def test_artifact_writers_sync_parent_after_publication(tmp_path: Path, monkeypa
     write_r1_incremental_checkpoint(checkpoint_path, checkpoint)
     write_r1_incremental_causal_availability_envelope(envelope_path, envelope)
 
-    assert observed == [checkpoint_path, envelope_path]
+    assert observed == [
+        checkpoint_path,
+        envelope_path,
+        envelope_path.with_name(f"{envelope_path.name}.publication.json"),
+    ]
 
 
 def test_directory_sync_io_failure_is_not_reported_as_success(tmp_path: Path, monkeypatch) -> None:

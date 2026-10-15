@@ -6,7 +6,8 @@ import hashlib
 import json
 import os
 import tempfile
-from datetime import datetime, timedelta
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -54,6 +55,49 @@ from incident_awareness.pipeline.r1_incremental_evidence import (
 
 R1_INCREMENTAL_CAUSAL_AVAILABILITY_CONTRACT_VERSION = "v0.2"
 R1_INCREMENTAL_WATERMARK_BASIS = "accepted_final_stream_close_and_verified_candidate_proof"
+R1_INCREMENTAL_PUBLICATION_RECEIPT_SCHEMA = "r1-incremental-availability-publication"
+
+
+class R1IncrementalAvailabilityPublicationReceipt(BaseModel):
+    """Immutable proof that the availability envelope passed its publication gate."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_id: Literal["r1-incremental-availability-publication"] = Field(
+        validation_alias="schema",
+        serialization_alias="schema",
+    )
+    contract_version: Literal["v0.1"]
+    run_id: StrictStr
+    entity_id: StrictStr
+    source_envelope_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    source_checkpoint_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_ready_at: datetime
+    publication_completed_at: datetime
+    receipt_content_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("evidence_ready_at", "publication_completed_at", mode="before")
+    @classmethod
+    def reject_numeric_time(cls, value: object) -> object:
+        if isinstance(value, int | float) or (isinstance(value, str) and _is_numeric_string(value)):
+            raise ValueError("publication receipt time must not be a numeric Unix timestamp")
+        return value
+
+    @field_validator("evidence_ready_at", "publication_completed_at")
+    @classmethod
+    def validate_time(cls, value: datetime) -> datetime:
+        _validate_utc(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_receipt(self) -> R1IncrementalAvailabilityPublicationReceipt:
+        if self.publication_completed_at < self.evidence_ready_at:
+            raise ValueError("publication completion must not precede Evidence readiness")
+        payload = self.model_dump(mode="json", by_alias=True)
+        actual = payload.pop("receipt_content_sha256")
+        if actual != _canonical_sha256(payload):
+            raise ValueError("publication receipt content hash does not match")
+        return self
 
 
 class R1IncrementalAvailabilityFrontier(BaseModel):
@@ -71,6 +115,7 @@ class R1IncrementalAvailabilityFrontier(BaseModel):
     proof_created_at: datetime
     proof_validated_at: datetime
     latest_input_ingest_at: datetime
+    evidence_ready_at: datetime
 
     @field_validator(
         "input_close_emitted_at",
@@ -79,6 +124,7 @@ class R1IncrementalAvailabilityFrontier(BaseModel):
         "proof_created_at",
         "proof_validated_at",
         "latest_input_ingest_at",
+        "evidence_ready_at",
         mode="before",
     )
     @classmethod
@@ -94,6 +140,7 @@ class R1IncrementalAvailabilityFrontier(BaseModel):
         "proof_created_at",
         "proof_validated_at",
         "latest_input_ingest_at",
+        "evidence_ready_at",
     )
     @classmethod
     def validate_time(cls, value: datetime) -> datetime:
@@ -111,6 +158,8 @@ class R1IncrementalAvailabilityFrontier(BaseModel):
         )
         if self.proof_validated_at < max(predecessors):
             raise ValueError("proof validation must not precede a finalization input")
+        if self.evidence_ready_at < self.proof_validated_at:
+            raise ValueError("Evidence readiness must not precede proof validation")
         return self
 
 
@@ -165,6 +214,8 @@ class R1IncrementalCausalAvailabilityEnvelope(BaseModel):
             raise ValueError("incremental watermark must be inside authoritative Run bounds")
         if not self.run_start <= self.frontier.proof_validated_at <= self.run_end:
             raise ValueError("incremental causal frontier must be inside authoritative Run bounds")
+        if not self.run_start <= self.frontier.evidence_ready_at <= self.run_end:
+            raise ValueError("Evidence readiness must be inside authoritative Run bounds")
         if self.source_evidence_count != len(self.evidences):
             raise ValueError("source_evidence_count must match availability records")
         if self.evidences != tuple(sorted(self.evidences, key=r1_causal_availability_sort_key)):
@@ -174,7 +225,7 @@ class R1IncrementalCausalAvailabilityEnvelope(BaseModel):
         for item in self.evidences:
             if not self.run_start <= item.timestamp <= self.run_end:
                 raise ValueError("Evidence timestamp must be inside authoritative Run bounds")
-            if item.available_at != self.frontier.proof_validated_at:
+            if item.available_at != self.frontier.evidence_ready_at:
                 raise ValueError("Evidence available_at must equal the validated causal frontier")
             if not item.timestamp <= item.available_at <= self.run_end:
                 raise ValueError("incremental Evidence availability must be causal and in-Run")
@@ -231,12 +282,17 @@ def build_r1_incremental_causal_availability_envelope(
     _validate_policy_identities(checkpoint, selector_policy, approved_policy, candidate_policy)
     proof = checkpoint.verified_close_proof
     run_closed = checkpoint.accepted_run_closed
-    if proof is None or run_closed is None or checkpoint.proof_validated_at is None:
+    if (
+        proof is None
+        or run_closed is None
+        or checkpoint.proof_validated_at is None
+        or checkpoint.available_at is None
+    ):
         raise ValueError("checkpoint is missing verified close proof provenance")
     if snapshot.verified_close_proof_sha256 != role2_verified_close_proof_sha256(proof):
         raise ValueError("snapshot proof identity does not match checkpoint proof")
-    if snapshot.available_at != checkpoint.proof_validated_at:
-        raise ValueError("snapshot availability does not match checkpoint validation time")
+    if snapshot.available_at != checkpoint.available_at:
+        raise ValueError("snapshot availability does not match checkpoint Evidence readiness")
     selection = snapshot.selector_result.selection
     if selection is None or (selection.run_id, selection.entity_id) != (
         run_metadata.run_id,
@@ -259,6 +315,7 @@ def build_r1_incremental_causal_availability_envelope(
         proof_created_at=proof.proof_created_at,
         proof_validated_at=checkpoint.proof_validated_at,
         latest_input_ingest_at=latest_input_ingest_at,
+        evidence_ready_at=checkpoint.available_at,
     )
     evidences = tuple(sorted(snapshot.availability, key=r1_causal_availability_sort_key))
     evidence_by_id = {evidence.evidence_id: evidence for evidence in snapshot.evidences}
@@ -318,13 +375,58 @@ def build_r1_incremental_causal_availability_envelope(
 def write_r1_incremental_causal_availability_envelope(
     path: Path,
     envelope: R1IncrementalCausalAvailabilityEnvelope,
-) -> None:
-    """Publish a finalized envelope once; overwrite is forbidden."""
+    *,
+    clock: Callable[[], datetime] | None = None,
+) -> R1IncrementalAvailabilityPublicationReceipt:
+    """Publish an envelope and return its hash-bound completion receipt."""
 
     if not isinstance(path, Path):
         raise TypeError("path must be a Path")
     content = _serialize_envelope(envelope)
+    _publish_immutable_bytes(path, content)
+    receipt_path = _publication_receipt_path(path)
+    if receipt_path.exists():
+        receipt = load_r1_incremental_availability_publication_receipt(receipt_path)
+        _validate_publication_receipt(receipt, envelope)
+        return receipt
+    publication_completed_at = (clock or (lambda: datetime.now(UTC)))()
+    _validate_utc(publication_completed_at)
+    receipt = _build_publication_receipt(envelope, publication_completed_at)
+    _publish_immutable_bytes(receipt_path, _serialize_publication_receipt(receipt))
+    return receipt
+
+
+def load_r1_incremental_availability_publication_receipt(
+    path: Path,
+) -> R1IncrementalAvailabilityPublicationReceipt:
+    try:
+        payload = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object
+        )
+        return R1IncrementalAvailabilityPublicationReceipt.model_validate(payload)
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValidationError,
+        ValueError,
+    ) as error:
+        raise ValueError("R1 incremental publication receipt is invalid") from error
+
+
+def validate_r1_incremental_availability_publication(
+    receipt: R1IncrementalAvailabilityPublicationReceipt,
+    envelope: R1IncrementalCausalAvailabilityEnvelope,
+) -> None:
+    _validate_publication_receipt(receipt, envelope)
+
+
+def _publish_immutable_bytes(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        if path.read_bytes() == content:
+            return
+        raise FileExistsError(f"immutable artifact already exists with different content: {path}")
     with tempfile.NamedTemporaryFile(
         dir=path.parent,
         prefix=f".{path.name}.",
@@ -339,6 +441,51 @@ def write_r1_incremental_causal_availability_envelope(
     finally:
         staged.unlink(missing_ok=True)
     fsync_parent_directory(path)
+
+
+def _publication_receipt_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.publication.json")
+
+
+def _build_publication_receipt(
+    envelope: R1IncrementalCausalAvailabilityEnvelope,
+    publication_completed_at: datetime,
+) -> R1IncrementalAvailabilityPublicationReceipt:
+    payload: dict[str, object] = {
+        "schema": R1_INCREMENTAL_PUBLICATION_RECEIPT_SCHEMA,
+        "contract_version": "v0.1",
+        "run_id": envelope.run_id,
+        "entity_id": envelope.entity_id,
+        "source_envelope_sha256": incremental_availability_envelope_sha256(envelope),
+        "source_checkpoint_sha256": envelope.source_state_checkpoint_sha256,
+        "evidence_ready_at": envelope.frontier.evidence_ready_at.isoformat().replace("+00:00", "Z"),
+        "publication_completed_at": publication_completed_at.isoformat().replace("+00:00", "Z"),
+    }
+    payload["receipt_content_sha256"] = _canonical_sha256(payload)
+    return R1IncrementalAvailabilityPublicationReceipt.model_validate(payload)
+
+
+def _serialize_publication_receipt(receipt: R1IncrementalAvailabilityPublicationReceipt) -> bytes:
+    return (
+        json.dumps(
+            receipt.model_dump(mode="json", by_alias=True),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _validate_publication_receipt(
+    receipt: R1IncrementalAvailabilityPublicationReceipt,
+    envelope: R1IncrementalCausalAvailabilityEnvelope,
+) -> None:
+    if not isinstance(receipt, R1IncrementalAvailabilityPublicationReceipt):
+        raise TypeError("receipt must be an R1IncrementalAvailabilityPublicationReceipt")
+    expected = _build_publication_receipt(envelope, receipt.publication_completed_at)
+    if receipt != expected:
+        raise ValueError("publication receipt does not match the trusted availability envelope")
 
 
 def incremental_availability_envelope_sha256(
@@ -474,10 +621,13 @@ __all__ = [
     "R1_INCREMENTAL_CAUSAL_AVAILABILITY_CONTRACT_VERSION",
     "R1_INCREMENTAL_WATERMARK_BASIS",
     "R1IncrementalAvailabilityFrontier",
+    "R1IncrementalAvailabilityPublicationReceipt",
     "R1IncrementalCausalAvailabilityEnvelope",
     "build_r1_incremental_causal_availability_envelope",
     "incremental_availability_envelope_sha256",
+    "load_r1_incremental_availability_publication_receipt",
     "load_r1_incremental_causal_availability_envelope",
     "required_partition_contract_sha256",
+    "validate_r1_incremental_availability_publication",
     "write_r1_incremental_causal_availability_envelope",
 ]

@@ -158,8 +158,12 @@ class R1IncrementalEvidenceCheckpoint(BaseModel):
             and any(item is None for item in proof_fields)
         ):
             raise ValueError("verified proof checkpoint is missing a trusted binding")
-        if self.status == "finalized" and self.close_mode is None:
-            raise ValueError("finalized checkpoint requires close_mode")
+        if self.status == "finalized" and (
+            self.close_mode is None
+            or self.candidate_boundary_at is None
+            or self.available_at is None
+        ):
+            raise ValueError("finalized checkpoint requires close_mode and availability boundaries")
         if self.status not in {"finalized", "failed_closed"} and self.evidence_digests:
             raise ValueError("provisional checkpoint must not contain Evidence digests")
         if self.evidence_digests != tuple(

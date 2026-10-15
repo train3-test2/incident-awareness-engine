@@ -44,8 +44,10 @@ from incident_awareness.pipeline.r1_causal_replay_artifacts import (
     write_r1_causal_replay_artifacts,
 )
 from incident_awareness.pipeline.r1_incremental_availability import (
+    R1IncrementalAvailabilityPublicationReceipt,
     R1IncrementalCausalAvailabilityEnvelope,
     build_r1_incremental_causal_availability_envelope,
+    validate_r1_incremental_availability_publication,
 )
 from incident_awareness.pipeline.r1_incremental_checkpoint import (
     R1IncrementalEvidenceCheckpoint,
@@ -211,6 +213,7 @@ def prepare_r1_incremental_causal_replay_input(
     snapshot: R1IncrementalEvidenceSnapshot,
     envelope: R1IncrementalCausalAvailabilityEnvelope,
     checkpoint: R1IncrementalEvidenceCheckpoint,
+    publication_receipt: R1IncrementalAvailabilityPublicationReceipt,
     *,
     run_metadata: RunMetadata,
     selector_policy: R1SelectorPolicy,
@@ -239,6 +242,7 @@ def prepare_r1_incremental_causal_replay_input(
     )
     if validated != expected:
         raise ValueError("incremental availability envelope does not match trusted inputs")
+    validate_r1_incremental_availability_publication(publication_receipt, validated)
 
     evidences_by_id = {item.evidence_id: item for item in snapshot.evidences}
     if len(evidences_by_id) != len(snapshot.evidences):
@@ -251,7 +255,7 @@ def prepare_r1_incremental_causal_replay_input(
             (
                 ScheduledEvidence(
                     evidence=evidence,
-                    available_at=availability_by_id[evidence_id].available_at,
+                    available_at=publication_receipt.publication_completed_at,
                 )
                 for evidence_id, evidence in evidences_by_id.items()
             ),

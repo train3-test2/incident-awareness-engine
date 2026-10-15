@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -116,6 +117,7 @@ class R1IncrementalEvidenceState:
         approved_policy: ApprovedLineagePolicy,
         ingress: R1StreamIngress,
         required_partition_contract: R1RequiredPartitionContract | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._run_id = _unpad("run_id", run_id)
         self._entity_id = _unpad("entity_id", entity_id)
@@ -133,6 +135,7 @@ class R1IncrementalEvidenceState:
         if not isinstance(ingress, R1StreamIngress):
             raise TypeError("ingress must be an R1StreamIngress")
         self._ingress = ingress
+        self._clock = clock or (lambda: datetime.now(UTC))
 
         if required_partition_contract is not None:
             if not isinstance(required_partition_contract, R1RequiredPartitionContract):
@@ -380,6 +383,7 @@ class R1IncrementalEvidenceState:
             diagnostics=("Role2-safe verified close proof finalized incremental Evidence",),
             event_cutoff=None,
             availability_contract_version="v0.2",
+            observe_evidence_ready_at=True,
         )
 
     def export_checkpoint(self) -> R1IncrementalEvidenceCheckpoint:
@@ -476,6 +480,7 @@ class R1IncrementalEvidenceState:
         if not isinstance(checkpoint, R1IncrementalEvidenceCheckpoint):
             raise TypeError("checkpoint must be an R1IncrementalEvidenceCheckpoint")
         _validate_checkpoint_policy_inputs(checkpoint, selector_policy, approved_policy)
+        recovery_available_at = checkpoint.available_at
         state = cls(
             run_id=checkpoint.run_id,
             entity_id=checkpoint.entity_id,
@@ -485,6 +490,12 @@ class R1IncrementalEvidenceState:
             approved_policy=approved_policy,
             ingress=ingress,
             required_partition_contract=checkpoint.required_partition_contract,
+            clock=(
+                (lambda: recovery_available_at)
+                if checkpoint.close_mode == "verified_close_proof"
+                and recovery_available_at is not None
+                else None
+            ),
         )
         for chunk in checkpoint.accepted_chunks:
             state.accept_chunk(chunk)
@@ -582,6 +593,7 @@ class R1IncrementalEvidenceState:
         diagnostics: tuple[str, ...],
         event_cutoff: datetime | None,
         availability_contract_version: Literal["v0.1", "v0.2"],
+        observe_evidence_ready_at: bool = False,
     ) -> R1IncrementalEvidenceSnapshot:
         eligible_events = (
             self._ordered_events() if event_cutoff is None else self._eligible_events(event_cutoff)
@@ -610,6 +622,21 @@ class R1IncrementalEvidenceState:
                 diagnostics=failure_diagnostics,
             )
             return self._snapshot
+
+        if observe_evidence_ready_at:
+            # Complete canonical Evidence validation before observing the first
+            # time at which the immutable output is ready for downstream publish.
+            for evidence in result.evidences:
+                incremental_evidence_sha256(evidence)
+            try:
+                evidence_ready_at = _utc("evidence_ready_at", self._clock())
+            except (TypeError, ValueError) as error:
+                self._fail_closed(f"Evidence publication readiness clock is invalid: {error}")
+                raise
+            if evidence_ready_at < available_at:
+                self._fail_closed("evidence_ready_at precedes the verified proof frontier")
+                raise ValueError("evidence_ready_at must not precede the verified proof frontier")
+            available_at = evidence_ready_at
 
         context_event_ids = (
             result.lineage_input.context_event_ids if result.lineage_input is not None else ()
