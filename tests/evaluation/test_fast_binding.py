@@ -17,6 +17,7 @@ from incident_awareness.evaluation.fast_binding import (
     FastBindingInput,
     FastSetBinding,
     fast_binding_sha256,
+    fast_execution_sha256,
 )
 from incident_awareness.evaluation.result_inputs import (
     build_evaluation_inputs,
@@ -91,12 +92,13 @@ def attach_fast_binding(snapshot, tmp_path, *, miss=False):
     selection_path.write_text(selection.model_dump_json(), encoding="utf-8")
     audit_path.write_text(json.dumps(audit), encoding="utf-8")
     binding = FastSetBinding(
-        contract_version="fast-set-binding-v1",
+        contract_version="fast-set-binding-v2",
         detector_set_version="set-v1",
         detector_config_version=policy.detector_config_version,
         config_sha256=policy.config_sha256,
         selection_policy_sha256=audit["policy_sha256"],
         approval_reference="synthetic-approval",
+        execution_sha256="0" * 64,
     )
     bundle.fast_binding = FastBindingInput(
         binding=binding,
@@ -125,6 +127,8 @@ def attach_fast_binding(snapshot, tmp_path, *, miss=False):
     )
     bundle.decision.detector_set_version = "set-v1"
     bundle.fast_episodes.start_times = [] if miss else [bundle.detection.detector_time]
+    binding.execution_sha256 = fast_execution_sha256(bundle.fast_binding, bundle.fast_episodes)
+    snapshot.plan.fast_binding_hashes = {run.run_id: fast_binding_sha256(binding)}
     return snapshot
 
 
@@ -376,3 +380,45 @@ def test_binding_rejects_handoff_replacement_after_selection(tmp_path, monkeypat
 
     # Then
     assert "Fast handoff changed after selection validation" in str(exc.value)
+
+
+@pytest.mark.parametrize("mutation", ["add", "remove", "move"])
+def test_complete_episode_history_is_pinned(tmp_path, mutation):
+    from datetime import timedelta
+
+    snapshot = setup_snapshot(tmp_path)
+    bundle = snapshot.runs[0]
+    first = bundle.detection.detector_time
+    bundle.fast_episodes.start_times = [first, first + timedelta(seconds=10)]
+    binding = bundle.fast_binding.binding
+    binding.execution_sha256 = fast_execution_sha256(bundle.fast_binding, bundle.fast_episodes)
+    snapshot.plan.fast_binding_hashes[bundle.run_metadata.run_id] = fast_binding_sha256(binding)
+    build_evaluation_inputs(snapshot)
+    if mutation == "add":
+        bundle.fast_episodes.start_times.append(first + timedelta(seconds=20))
+    elif mutation == "remove":
+        bundle.fast_episodes.start_times.pop()
+    else:
+        bundle.fast_episodes.start_times[-1] += timedelta(seconds=1)
+    with pytest.raises(ValueError, match="complete episode artifact"):
+        build_evaluation_inputs(snapshot)
+
+
+def test_semantically_identical_execution_file_replacement_is_rejected(tmp_path):
+    snapshot = setup_snapshot(tmp_path)
+    path = Path(snapshot.runs[0].fast_binding.audit_path)
+    path.write_text(path.read_text() + "\n")
+    with pytest.raises(ValueError, match="approved binding hash"):
+        build_evaluation_inputs(snapshot)
+
+
+@pytest.mark.parametrize("scenario", ["R1-wmi", "custom-scenario"])
+def test_other_performance_scenarios_require_fast_proof(tmp_path, scenario):
+    snapshot = setup_snapshot(tmp_path)
+    snapshot.plan.scenario_id = scenario
+    snapshot.runs[0].run_metadata.scenario_id = scenario
+    snapshot.plan.purpose = "performance"
+    snapshot.plan.require_fast_binding = False
+    snapshot.runs[0].fast_binding = None
+    with pytest.raises(ValueError, match="requires set binding"):
+        build_evaluation_inputs(snapshot)

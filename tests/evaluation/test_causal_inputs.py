@@ -309,7 +309,8 @@ def _snapshot(*, normal=False, persistence=1):
     )
     plan = EvaluationPlan(
         scenario_id="R1",
-        purpose="performance",
+        purpose="smoke",
+        require_causal_replay=True,
         decision_ids={run.run_id: decision.decision_id},
         decision_config_version="decision-v1",
         scoring_config_version=config.config_version,
@@ -372,6 +373,7 @@ def test_official_r1_requires_causal_inputs_even_without_opt_in(missing):
 def test_offline_smoke_is_explicitly_separate():
     snapshot = _snapshot()
     snapshot.plan.purpose = "smoke"
+    snapshot.plan.require_causal_replay = False
     snapshot.plan.causal_replay_pins = {}
     snapshot.runs[0].causal_replay = None
     build_evaluation_inputs(snapshot)
@@ -706,8 +708,34 @@ def test_r1_performance_requires_both_execution_proofs(field):
     snapshot = _snapshot()
     snapshot.plan.require_fast_binding = False
     snapshot.plan.require_causal_replay = False
-    # Both complete execution bundles pass without opt-in flags.
-    build_evaluation_inputs(snapshot)
+    snapshot.plan.purpose = "performance"
+    # Whole-episode proof is also forbidden, even when both proofs exist.
     setattr(snapshot.runs[0], field, None)
     with pytest.raises(ValueError, match="requires"):
+        build_evaluation_inputs(snapshot)
+
+
+@pytest.mark.parametrize("scenario", ["R1", "R1-wmi", "custom-scenario"])
+@pytest.mark.parametrize("persistence", [1, 2])
+def test_whole_episode_is_smoke_only(scenario, persistence):
+    snapshot = _snapshot(persistence=persistence)
+    build_evaluation_inputs(snapshot)
+    snapshot.plan.scenario_id = scenario
+    snapshot.runs[0].run_metadata.scenario_id = scenario
+    snapshot.plan.purpose = "performance"
+    snapshot.plan.require_causal_replay = False
+    with pytest.raises(ValueError, match="whole-episode availability"):
+        build_evaluation_inputs(snapshot)
+
+
+@pytest.mark.parametrize("scenario", ["R1-wmi", "custom-scenario"])
+def test_other_performance_scenarios_require_causal_proof(scenario):
+    snapshot = _snapshot()
+    snapshot.plan.scenario_id = scenario
+    snapshot.runs[0].run_metadata.scenario_id = scenario
+    snapshot.plan.purpose = "performance"
+    snapshot.plan.require_causal_replay = False
+    snapshot.runs[0].causal_replay = None
+    snapshot.plan.causal_replay_pins = {}
+    with pytest.raises(ValueError, match="requires provenance"):
         build_evaluation_inputs(snapshot)

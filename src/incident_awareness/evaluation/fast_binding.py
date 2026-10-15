@@ -26,12 +26,13 @@ class FastSetBinding(BaseModel):
     """One externally reviewed immutable set/config/policy association."""
 
     model_config = ConfigDict(extra="forbid")
-    contract_version: Literal["fast-set-binding-v1"]
+    contract_version: Literal["fast-set-binding-v2"]
     detector_set_version: Identifier
     detector_config_version: Identifier
     config_sha256: Sha256
     selection_policy_sha256: Sha256
     approval_reference: Identifier
+    execution_sha256: Sha256
 
 
 def fast_binding_sha256(binding: FastSetBinding) -> str:
@@ -59,6 +60,26 @@ class FastBindingInput(BaseModel):
     audit_path: str
 
 
+def fast_execution_sha256(value: FastBindingInput, episodes: BaseModel) -> str:
+    """Bind exact execution files and the complete externally approved episode artifact."""
+    trace = json.loads(Path(value.trace_path).read_text(encoding="utf-8"))
+    files = {
+        name: hashlib.sha256(Path(getattr(value, name)).read_bytes()).hexdigest()
+        for name in ("hits_path", "trace_path", "selection_path", "audit_path")
+    }
+    files["csv"] = hashlib.sha256(Path(trace["input_csv"]).read_bytes()).hexdigest()
+    payload = {
+        "files": files,
+        "config_sha256": trace["config_sha256"],
+        "episodes": episodes.model_dump(mode="json"),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
 def validate_fast_binding(
     value: FastBindingInput,
     *,
@@ -66,6 +87,7 @@ def validate_fast_binding(
     run: RunMetadata,
     detection: DetectionResult,
     decision: DecisionResult,
+    episodes: BaseModel | None,
 ) -> None:
     """Recompute selection and compare its actual consumer result and provenance."""
     value = FastBindingInput.model_validate(value.model_dump())
@@ -118,3 +140,7 @@ def validate_fast_binding(
         raise ValueError("Decision source hit IDs differ from bound Fast selection")
     if decision.selected_source_hit_id != adapted.selected_source_hit_id:
         raise ValueError("Decision selected source hit differs from bound Fast selection")
+    if episodes is None or fast_execution_sha256(value, episodes) != binding.execution_sha256:
+        raise ValueError(
+            "Fast execution/complete episode artifact differs from approved binding hash"
+        )

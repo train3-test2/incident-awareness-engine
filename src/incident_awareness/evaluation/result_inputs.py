@@ -171,7 +171,7 @@ def _validate_bundle(bundle: StoredRunResults, plan: EvaluationPlan) -> None:
             raise ValueError("not_evaluated Fast must not carry binding artifacts or hash")
     elif (
         plan.require_fast_binding
-        or (plan.scenario_id == "R1" and plan.purpose == "performance")
+        or (plan.purpose == "performance")
         or bundle.fast_binding is not None
         or binding_hash is not None
     ):
@@ -183,6 +183,7 @@ def _validate_bundle(bundle: StoredRunResults, plan: EvaluationPlan) -> None:
             run=run,
             detection=detection,
             decision=decision,
+            episodes=bundle.fast_episodes,
         )
     # A saved Decision must agree with the supplied path results, not a later DB overwrite.
     expected = combine_results(
@@ -279,15 +280,20 @@ def _fusion_starts(bundle: StoredRunResults, plan: EvaluationPlan) -> list[datet
         raise ValueError(
             "Fusion observation must cover the evaluation interval within measured Run"
         )
-    required = plan.require_causal_replay or (
-        plan.scenario_id == "R1" and plan.purpose == "performance"
-    )
+    required = plan.require_causal_replay or (plan.purpose == "performance")
     proof = bundle.causal_replay
     pins = plan.causal_replay_pins.get(run.run_id)
     if required or proof is not None or pins is not None:
         if proof is None or pins is None:
             raise ValueError(
                 "evaluated causal Fusion requires provenance, envelope, trace and plan pins"
+            )
+        if plan.purpose == "performance" and (
+            proof.envelope.watermark_basis == "authoritative_run_end"
+            or proof.provenance.watermark_basis == "authoritative_run_end"
+        ):
+            raise ValueError(
+                "whole-episode availability is not eligible for performance evaluation"
             )
         validate_causal_replay(
             proof,
