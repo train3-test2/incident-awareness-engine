@@ -29,7 +29,6 @@ from incident_awareness.collection.r1_candidate_generation_seal import (
     R1CandidateGenerationSeal,
     R1CandidatePolicyIdentity,
     R1VerifiedCandidateBoundary,
-    candidate_generation_seal_sha256,
 )
 from incident_awareness.collection.r1_pair_identity import validate_family_id
 from incident_awareness.common.models.r1_stream import (
@@ -41,6 +40,8 @@ from incident_awareness.common.models.run import RunMetadata
 
 R1_ROLE2_VERIFIED_CLOSE_PROOF_SCHEMA = "r1-role2-verified-close-proof"
 R1_ROLE2_VERIFIED_CLOSE_PROOF_CONTRACT_VERSION = "v0.1"
+R1_ROLE2_SOURCE_SEAL_PROJECTION_SCHEMA = "r1-role2-source-seal-projection"
+R1_ROLE2_SOURCE_SEAL_PROJECTION_CONTRACT_VERSION = "v0.1"
 
 
 class R1Role2VerifiedCloseProof(BaseModel):
@@ -65,7 +66,7 @@ class R1Role2VerifiedCloseProof(BaseModel):
     family_id: StrictStr = Field(min_length=1)
     candidate_policy: R1CandidatePolicyIdentity
     source_seal_id: StrictStr = Field(min_length=1)
-    source_seal_content_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    source_seal_projection_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     input_close_id: StrictStr = Field(min_length=1)
     accepted_run_closed_content_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     input_close_emitted_at: datetime
@@ -172,7 +173,10 @@ def issue_r1_role2_verified_close_proof(
         "family_id": source_seal.family_id,
         "candidate_policy": source_seal.candidate_policy.model_dump(mode="json"),
         "source_seal_id": source_seal.seal_id,
-        "source_seal_content_sha256": candidate_generation_seal_sha256(source_seal),
+        "source_seal_projection_sha256": role2_safe_source_seal_projection_sha256(
+            source_seal,
+            host_id=validated_host_id,
+        ),
         "input_close_id": accepted_run_closed.close_id,
         "accepted_run_closed_content_sha256": r1_run_closed_sha256(accepted_run_closed),
         "input_close_emitted_at": _datetime_json(accepted_run_closed.emitted_at),
@@ -196,7 +200,7 @@ def validate_r1_role2_verified_close_proof(
     expected_family_id: str,
     expected_selector_partition: R1StreamPartition,
     accepted_source_seal_id: str,
-    accepted_source_seal_content_sha256: str,
+    accepted_source_seal_projection_sha256: str,
     proof_validated_at: datetime,
 ) -> R1Role2VerifiedCloseProofValidation:
     """Strictly validate every Role2-visible proof binding without Ground Truth."""
@@ -214,9 +218,9 @@ def validate_r1_role2_verified_close_proof(
     run_id = RunMetadata.validate_run_id(RunMetadata.validate_required_identifier(expected_run_id))
     family_id = validate_family_id(expected_family_id)
     source_seal_id = _validate_unpadded("accepted_source_seal_id", accepted_source_seal_id)
-    source_seal_hash = _validate_sha256(
-        "accepted_source_seal_content_sha256",
-        accepted_source_seal_content_sha256,
+    source_projection_hash = _validate_sha256(
+        "accepted_source_seal_projection_sha256",
+        accepted_source_seal_projection_sha256,
     )
     validated_at = _validate_utc_milliseconds("proof_validated_at", proof_validated_at)
 
@@ -230,8 +234,12 @@ def validate_r1_role2_verified_close_proof(
         raise ValueError("proof and candidate policy must match expected_family_id")
     if proof.source_seal_id != source_seal_id:
         raise ValueError("proof source_seal_id does not match the accepted source seal")
-    if proof.source_seal_content_sha256 != source_seal_hash:
-        raise ValueError("proof source seal content hash does not match the accepted source seal")
+    if proof.source_seal_projection_sha256 != source_projection_hash:
+        raise ValueError(
+            "proof source seal projection digest does not match the accepted projection"
+        )
+    if _proof_source_seal_projection_sha256(proof) != source_projection_hash:
+        raise ValueError("proof fields do not match the trusted source seal projection digest")
     if proof.input_close_id != accepted_run_closed.close_id:
         raise ValueError("proof input_close_id does not match accepted run_closed")
     if proof.accepted_run_closed_content_sha256 != r1_run_closed_sha256(accepted_run_closed):
@@ -270,6 +278,35 @@ def r1_run_closed_sha256(run_closed: R1RunClosed) -> str:
     if not isinstance(run_closed, R1RunClosed):
         raise TypeError("run_closed must be an R1RunClosed")
     return _canonical_sha256(run_closed.model_dump(mode="json", by_alias=True))
+
+
+def role2_safe_source_seal_projection_sha256(
+    source_seal: R1CandidateGenerationSeal,
+    *,
+    host_id: str,
+) -> str:
+    """Hash only the Role2-safe source-seal fields exposed by the proof."""
+
+    if not isinstance(source_seal, R1CandidateGenerationSeal):
+        raise TypeError("source_seal must be an R1CandidateGenerationSeal")
+    validated_host_id = _validate_unpadded("host_id", host_id)
+    if not any(
+        item.partition.host_id == validated_host_id for item in source_seal.sealed_partitions
+    ):
+        raise ValueError("host_id is absent from source seal partitions")
+    return _canonical_sha256(
+        _source_seal_projection_payload(
+            source_seal_id=source_seal.seal_id,
+            run_id=source_seal.run_id,
+            host_id=validated_host_id,
+            family_id=source_seal.family_id,
+            candidate_policy=source_seal.candidate_policy,
+            input_close_id=source_seal.input_close_id,
+            candidate_boundary_at=source_seal.boundary.completed_at,
+            sealed_partitions=source_seal.sealed_partitions,
+            verified_seal_at=source_seal.emitted_at,
+        )
+    )
 
 
 def role2_verified_close_proof_sha256(proof: R1Role2VerifiedCloseProof) -> str:
@@ -394,6 +431,49 @@ def _policy_identity(policy: R1CandidateGenerationPolicy) -> tuple[str, str, str
     return policy.policy_id, policy.version, policy.config_hash, policy.canonical_path
 
 
+def _proof_source_seal_projection_sha256(proof: R1Role2VerifiedCloseProof) -> str:
+    return _canonical_sha256(
+        _source_seal_projection_payload(
+            source_seal_id=proof.source_seal_id,
+            run_id=proof.run_id,
+            host_id=proof.host_id,
+            family_id=proof.family_id,
+            candidate_policy=proof.candidate_policy,
+            input_close_id=proof.input_close_id,
+            candidate_boundary_at=proof.candidate_boundary_at,
+            sealed_partitions=proof.sealed_partitions,
+            verified_seal_at=proof.verified_seal_at,
+        )
+    )
+
+
+def _source_seal_projection_payload(
+    *,
+    source_seal_id: str,
+    run_id: str,
+    host_id: str,
+    family_id: str,
+    candidate_policy: R1CandidatePolicyIdentity,
+    input_close_id: str,
+    candidate_boundary_at: datetime,
+    sealed_partitions: tuple[R1FinalPartitionWatermark, ...],
+    verified_seal_at: datetime,
+) -> dict[str, object]:
+    return {
+        "schema": R1_ROLE2_SOURCE_SEAL_PROJECTION_SCHEMA,
+        "contract_version": R1_ROLE2_SOURCE_SEAL_PROJECTION_CONTRACT_VERSION,
+        "source_seal_id": source_seal_id,
+        "run_id": run_id,
+        "host_id": host_id,
+        "family_id": family_id,
+        "candidate_policy": candidate_policy.model_dump(mode="json"),
+        "input_close_id": input_close_id,
+        "candidate_boundary_at": _datetime_json(candidate_boundary_at),
+        "sealed_partitions": [item.model_dump(mode="json") for item in sealed_partitions],
+        "verified_seal_at": _datetime_json(verified_seal_at),
+    }
+
+
 def _require_proof_content_hash(proof: R1Role2VerifiedCloseProof) -> None:
     payload = proof.model_dump(mode="json", by_alias=True)
     actual = payload.pop("proof_content_sha256")
@@ -464,6 +544,8 @@ def _is_numeric_string(value: str) -> bool:
 
 
 __all__ = [
+    "R1_ROLE2_SOURCE_SEAL_PROJECTION_CONTRACT_VERSION",
+    "R1_ROLE2_SOURCE_SEAL_PROJECTION_SCHEMA",
     "R1_ROLE2_VERIFIED_CLOSE_PROOF_CONTRACT_VERSION",
     "R1_ROLE2_VERIFIED_CLOSE_PROOF_SCHEMA",
     "R1Role2VerifiedCloseProof",
@@ -471,6 +553,7 @@ __all__ = [
     "issue_r1_role2_verified_close_proof",
     "load_r1_role2_verified_close_proof",
     "r1_run_closed_sha256",
+    "role2_safe_source_seal_projection_sha256",
     "role2_verified_close_proof_sha256",
     "validate_r1_role2_verified_close_proof",
     "validate_r1_role2_verified_close_proof_replay",

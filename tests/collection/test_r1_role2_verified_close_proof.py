@@ -17,6 +17,7 @@ from incident_awareness.collection.r1_role2_verified_close_proof import (
     issue_r1_role2_verified_close_proof,
     load_r1_role2_verified_close_proof,
     r1_run_closed_sha256,
+    role2_safe_source_seal_projection_sha256,
     role2_verified_close_proof_sha256,
     validate_r1_role2_verified_close_proof,
     validate_r1_role2_verified_close_proof_replay,
@@ -54,7 +55,7 @@ def _validate(
     proof: R1Role2VerifiedCloseProof,
     *,
     run_closed: R1RunClosed | None = None,
-    source_seal_sha256: str | None = None,
+    source_seal_projection_sha256: str | None = None,
     expected_run_id: str = seal_fixture.RUN_ID,
     expected_family_id: str = "wmi_management",
     expected_partition: R1StreamPartition | None = None,
@@ -69,8 +70,9 @@ def _validate(
         expected_family_id=expected_family_id,
         expected_selector_partition=expected_partition or _selector_partition(),
         accepted_source_seal_id=source_seal_id or seal.seal_id,
-        accepted_source_seal_content_sha256=(
-            source_seal_sha256 or seal_fixture.candidate_generation_seal_sha256(seal)
+        accepted_source_seal_projection_sha256=(
+            source_seal_projection_sha256
+            or role2_safe_source_seal_projection_sha256(seal, host_id="R1-TGTA")
         ),
         proof_validated_at=datetime(2026, 10, 13, 1, 13, 4, tzinfo=UTC),
     )
@@ -98,13 +100,32 @@ def test_issues_complete_role2_safe_proof_and_validates_it_strictly() -> None:
     assert proof.source_seal_id == seal_fixture._seal().seal_id
     assert proof.input_close_id == seal_fixture._run_closed().close_id
     assert proof.sealed_partitions == seal_fixture._run_closed().final_watermarks
-    assert proof.source_seal_content_sha256 == (
-        seal_fixture.candidate_generation_seal_sha256(seal_fixture._seal())
+    assert proof.source_seal_projection_sha256 == (
+        role2_safe_source_seal_projection_sha256(
+            seal_fixture._seal(),
+            host_id="R1-TGTA",
+        )
     )
     assert proof.accepted_run_closed_content_sha256 == r1_run_closed_sha256(
         seal_fixture._run_closed()
     )
-    assert proof.proof_content_sha256 != proof.source_seal_content_sha256
+    assert proof.proof_content_sha256 != proof.source_seal_projection_sha256
+
+
+def test_source_projection_cannot_distinguish_attack_from_normal_ground_truth() -> None:
+    attack_seal = seal_fixture._seal(run_type="attack")
+    normal_seal = seal_fixture._seal(run_type="normal")
+
+    assert seal_fixture.candidate_generation_seal_sha256(attack_seal) != (
+        seal_fixture.candidate_generation_seal_sha256(normal_seal)
+    )
+    assert role2_safe_source_seal_projection_sha256(
+        attack_seal,
+        host_id="R1-TGTA",
+    ) == role2_safe_source_seal_projection_sha256(
+        normal_seal,
+        host_id="R1-TGTA",
+    )
 
 
 def test_proof_contains_no_ground_truth_and_no_availability_claim() -> None:
@@ -135,7 +156,7 @@ def test_strict_api_requires_every_external_binding() -> None:
         "expected_family_id",
         "expected_selector_partition",
         "accepted_source_seal_id",
-        "accepted_source_seal_content_sha256",
+        "accepted_source_seal_projection_sha256",
         "proof_validated_at",
     }
 
@@ -145,7 +166,7 @@ def test_strict_api_requires_every_external_binding() -> None:
     [
         ("host_id", "OTHER-HOST"),
         ("family_id", "remote_management"),
-        ("source_seal_content_sha256", "a" * 64),
+        ("source_seal_projection_sha256", "a" * 64),
         ("accepted_run_closed_content_sha256", "b" * 64),
         ("input_close_id", "CLOSE-OTHER"),
         ("candidate_boundary_at", "2026-10-13T01:11:59.000Z"),
@@ -193,13 +214,16 @@ def test_rejects_cross_policy_and_untrusted_source_seal_hash() -> None:
             expected_family_id="wmi_management",
             expected_selector_partition=_selector_partition(),
             accepted_source_seal_id=seal_fixture._seal().seal_id,
-            accepted_source_seal_content_sha256=(
-                seal_fixture.candidate_generation_seal_sha256(seal_fixture._seal())
+            accepted_source_seal_projection_sha256=(
+                role2_safe_source_seal_projection_sha256(
+                    seal_fixture._seal(),
+                    host_id="R1-TGTA",
+                )
             ),
             proof_validated_at=datetime(2026, 10, 13, 1, 13, 4, tzinfo=UTC),
         )
-    with pytest.raises(ValueError, match="source seal content hash"):
-        _validate(proof, source_seal_sha256="d" * 64)
+    with pytest.raises(ValueError, match="source seal projection digest"):
+        _validate(proof, source_seal_projection_sha256="d" * 64)
     with pytest.raises(ValueError, match="source_seal_id"):
         _validate(proof, source_seal_id="SEAL-OTHER")
 
@@ -213,6 +237,15 @@ def test_rejects_changed_run_closed_content() -> None:
 
     with pytest.raises(ValueError, match="run_closed content hash"):
         _validate(proof, run_closed=changed_close)
+
+
+def test_rejects_rehashed_boundary_that_is_not_bound_to_trusted_projection() -> None:
+    payload = _proof().model_dump(mode="json", by_alias=True)
+    payload["candidate_boundary_at"] = "2026-10-13T01:11:59Z"
+    changed = _rehash(payload)
+
+    with pytest.raises(ValueError, match="trusted source seal projection digest"):
+        _validate(changed)
 
 
 @pytest.mark.parametrize(
@@ -230,7 +263,7 @@ def test_rejects_changed_final_watermark_binding(field: str, value: object) -> N
     payload["sealed_partitions"][0][field] = value
     changed_partitions = _rehash(payload)
 
-    with pytest.raises(ValueError, match="sealed_partitions"):
+    with pytest.raises(ValueError, match="projection digest|sealed_partitions"):
         _validate(changed_partitions)
 
 
@@ -262,8 +295,11 @@ def test_rejects_temporal_inversion() -> None:
             expected_family_id="wmi_management",
             expected_selector_partition=_selector_partition(),
             accepted_source_seal_id=seal_fixture._seal().seal_id,
-            accepted_source_seal_content_sha256=(
-                seal_fixture.candidate_generation_seal_sha256(seal_fixture._seal())
+            accepted_source_seal_projection_sha256=(
+                role2_safe_source_seal_projection_sha256(
+                    seal_fixture._seal(),
+                    host_id="R1-TGTA",
+                )
             ),
             proof_validated_at=datetime(2026, 10, 13, 1, 13, 2, tzinfo=UTC),
         )

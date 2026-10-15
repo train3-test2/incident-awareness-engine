@@ -5,7 +5,7 @@
 이 계약은 Role4의 candidate-generation seal과 Role3가 수락한 `run_closed`의 결속을
 Role2가 Ground Truth 없이 다시 확인할 수 있도록 보존한다. 기존
 `R1VerifiedCandidateBoundary`가 제거하던 host·family·policy·partition·final-watermark
-정보와 source content hash를 versioned proof로 전달한다.
+정보와 Ground Truth를 제외한 source seal projection digest를 versioned proof로 전달한다.
 
 이 proof는 다음을 **정의하지 않는다**.
 
@@ -29,7 +29,7 @@ Proof는 다음을 모두 보존한다.
 
 - `proof_id`, `run_id`, `host_id`, `family_id`
 - candidate policy ID·version·config hash·canonical path
-- source candidate-generation `seal_id`와 canonical content SHA-256
+- source candidate-generation `seal_id`와 Role2-safe projection SHA-256
 - accepted `run_closed.close_id`와 canonical content SHA-256
 - accepted close의 `emitted_at`
 - `candidate_boundary_at`
@@ -74,11 +74,15 @@ Role2는 `validate_r1_role2_verified_close_proof()`에 아래 expected binding�
 - expected run/family
 - expected selector partition
 - trusted source seal ID
-- trusted source seal content SHA-256
+- trusted source seal Role2-safe projection SHA-256
 - 현재 Role2 검증 시각(`proof_validated_at`)
 
-Validator는 proof 내부 hash, accepted close hash, exact partition/final-watermark 목록, source seal
-hash와 policy identity를 모두 대조한 뒤 `R1Role2VerifiedCloseProofValidation`을 반환한다. 이
+Validator는 proof 내부 hash, accepted close hash, exact partition/final-watermark 목록, source
+seal projection digest와 policy identity를 모두 대조한다. projection은 proof에 공개된
+run/host/family/policy/close/partition/final-watermark, `candidate_boundary_at`,
+`verified_seal_at`만 포함하고 `run_type`·action·process 정보를 제외한다. Validator는 proof
+필드로 projection을 다시 계산해 trusted digest와 비교하므로 proof 자체 hash만 재계산해
+boundary를 바꿀 수 없다. 검증 후 `R1Role2VerifiedCloseProofValidation`을 반환한다. 이
 결과의 `proof_validated_at`은 proof 파일에 포함된 신뢰 불가능한 주장값을 읽는 것이 아니라
 Role2 호출자가 제공한 UTC·밀리초 검증 시각이다. 필드를 파일명, family 기본값, Event 최댓값,
 timeout으로 추론하지 않는다.
@@ -92,7 +96,7 @@ Proof가 없거나 검증이 실패하면 #266이 병합되기 전의 현재 run
 다음은 모두 proof 거부 조건이다.
 
 - run/host/family/policy binding 불일치
-- 다른 source seal 또는 accepted close hash
+- 다른 source seal projection digest 또는 accepted close hash
 - close ID, partition 집합 또는 final watermark 값 불일치
 - expected selector partition 누락
 - covered chunk sequence가 1 미만이거나 sequence binding 변경
@@ -108,5 +112,8 @@ Proof가 없거나 검증이 실패하면 #266이 병합되기 전의 현재 run
 
 v0.1 source seal은 accepted `run_closed` 뒤에만 발급된다. 따라서 이 proof가 허용하는 조기
 경로는 **collector stream close 이후, authoritative RunMetadata.end_time 확정 이전** 범위다.
+다만 현행 Batch 경로는 완성된 JSONL을 생성한 뒤 처리하므로, 이 구간을 이용한 실제 조기
+확정은 아직 수행하지 않는다. 실제 조기 종료에는 증분 chunk 수집과 Issue #266 소비 연동이
+추가로 필요하며, 그 전까지 runtime은 whole-episode/fallback 경로를 유지한다.
 collector가 열린 동안의 확정이 필요하면 candidate-scoped partial close, late Event 처리 및
 correction/retraction을 별도 contract/version으로 정의해야 한다.
