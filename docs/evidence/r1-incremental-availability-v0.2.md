@@ -77,11 +77,20 @@ fsync를 완료한 다음 `publication_completed_at`을 관측한다. 이 시각
 결속된 immutable publication receipt에 기록된다. envelope 자체를 사후 변경하지 않으므로
 self-referential hash나 immutable artifact 변조가 없다.
 
-파일 기반 downstream 경로는 envelope와 publication receipt를 함께 strict join해야 하며, 이때 최종
-`ScheduledEvidence.available_at`은 `publication_completed_at`이다. 따라서 public-ready와 게시 완료
-사이에 writer 지연이 있어도 게시 완료 전 replay point에서 Evidence가 활성화되지 않는다. 메모리
-snapshot의 `available_at`은 Evidence 계산 완료 경계이고, 파일 기반 replay availability는 더 늦은
-publication completion 경계다.
+`publication_completed_at`은 envelope 게시 완료 뒤 producer가 관측한 시각이며 뒤이어 게시되는
+publication receipt 자체의 이용 가능 완료 시각은 아니다. 따라서 파일 기반 downstream availability로
+직접 사용하지 않는다. replay adapter는 게시된 receipt를 load하고 snapshot, checkpoint, envelope,
+receipt 및 trusted 정책을 모두 strict join한 뒤 `inputs_validated_at`을 관측한다. 이 최초 관측은 source
+envelope/checkpoint/receipt SHA-256에 결속된 immutable replay-input validation record로 저장한다.
+재시작·중복·오프라인 재실행은 같은 identity의 기존 기록을 재사용하며 현재 clock으로 다시 계산하지
+않는다.
+
+파일 기반 `ScheduledEvidence.available_at`은 `inputs_validated_at`이다. validation record는 자기 자신의
+게시 완료 시각을 주장하는 추가 receipt가 아니라, 이미 게시된 모든 필수 source input의 소비·검증이
+완료된 사건을 기록한다. adapter는 이 기록을 영속화한 뒤에만 replay input을 반환한다. 그 이후에는
+추가 source artifact validation gate가 없고, 결정적인 `ScheduledEvidence` 변환과 Role1 평가만 남는다.
+메모리 snapshot의 `available_at`은 Evidence 계산 완료 경계이고, 파일 기반 replay availability는 더
+늦은 필수 입력 검증 완료 경계다.
 
 최초 finalized checkpoint는 `evidence_ready_at`을 `available_at`으로 보존한다. 재시작과 exact duplicate
 처리는 저장된 값을 재사용하며 현재 clock으로 다시 계산하지 않는다. `evidence_ready_at`이 authoritative
@@ -141,12 +150,15 @@ v0.2 envelope는 다음 linkage를 포함한다.
 envelope 게시 역시 파일 fsync 후 immutable link를 만들고 staged 파일을 정리한 다음, 지원되는
 POSIX 환경에서는 상위 디렉터리를 fsync한다. 실제 디렉터리 I/O 실패는 게시 성공으로 보고하지
 않는다. 그 뒤 생성되는 publication receipt는 envelope/checkpoint SHA-256과 `evidence_ready_at`,
-`publication_completed_at`을 결속한다. exact duplicate 게시에서는 기존 receipt를 재사용하여 최초
-게시 완료 시각을 보존하고, 같은 경로의 다른 content는 거부한다.
+`publication_completed_at`을 결속한다. exact duplicate 게시에서는 기존 receipt를 재사용하고, 같은
+경로의 다른 content는 거부한다. receipt 게시 전의 `publication_completed_at`은 replay activation에
+사용하지 않는다.
 
 `prepare_r1_incremental_causal_replay_input()`은 snapshot, checkpoint, envelope, publication receipt와 trusted
-RunMetadata/policies로 envelope를 재구성해 exact equality를 확인한 뒤 기존 `ScheduledEvidence`
-내부 표현으로 변환한다. ordering과 activation은 #232 계약을 그대로 따른다.
+RunMetadata/policies로 envelope를 재구성해 exact equality를 확인한다. 이어 모든 필수 입력 검증 완료
+시각을 identity/hash-bound replay-input validation record에 최초 한 번 기록하거나 기존 기록을 검증해
+재사용한 뒤 `ScheduledEvidence` 내부 표현으로 변환한다. ordering과 activation은 #232 계약을 그대로
+따른다.
 
 ```text
 activation: available_at <= replay_time
