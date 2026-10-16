@@ -94,13 +94,18 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, ob
 
 
 def load_r1_required_partition_contract(
-    path: str | Path, *, run_metadata: RunMetadata
+    path: str | Path,
+    *,
+    run_metadata: RunMetadata | None = None,
+    expected_target_host: str | None = None,
 ) -> R1RequiredPartitionContract:
     """Load and fail-closed validate a required-partition contract for one Run.
 
     This is the public Role2 consumer boundary. It rejects unreadable or
     malformed documents, duplicate JSON keys, schema validation failures, and
-    contracts bound to a target host other than ``run_metadata.target_host``.
+    contracts bound to another host. Collection-time callers may supply the
+    runner-verified ``expected_target_host`` before final RunMetadata exists;
+    evaluation callers continue to bind the same contract to RunMetadata.
     """
     contract_path = Path(path)
     try:
@@ -120,12 +125,30 @@ def load_r1_required_partition_contract(
     if not isinstance(document, dict):
         raise R1RequiredPartitionContractError("required-partition contract must be a JSON object")
 
+    if (run_metadata is None) == (expected_target_host is None):
+        raise R1RequiredPartitionContractError(
+            "exactly one of run_metadata or expected_target_host must be provided"
+        )
+
+    run_label = f"run {run_metadata.run_id}" if run_metadata is not None else "active collection"
     try:
         contract = R1RequiredPartitionContract.model_validate(document)
-        contract.validate_for_run(run_metadata)
+        if run_metadata is not None:
+            contract.validate_for_run(run_metadata)
+        else:
+            assert expected_target_host is not None
+            if (
+                not expected_target_host.strip()
+                or expected_target_host != expected_target_host.strip()
+            ):
+                raise ValueError("expected_target_host must be a non-blank unpadded string")
+            if contract.target_host != expected_target_host:
+                raise ValueError(
+                    "required-partition contract target_host must match expected_target_host"
+                )
     except (ValidationError, ValueError) as error:
         raise R1RequiredPartitionContractError(
-            f"required-partition contract is invalid for run {run_metadata.run_id}: {error}"
+            f"required-partition contract is invalid for {run_label}: {error}"
         ) from error
 
     return contract
