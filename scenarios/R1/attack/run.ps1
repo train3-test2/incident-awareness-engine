@@ -90,6 +90,7 @@ param(
     [string]$TargetSysmonConfigPath,
     [string]$ExpectedSysmonConfigSha256,
     [string]$ReadinessRecordPath,
+    [string]$IncrementalStreamControlRoot,
     [switch]$Rehearsal,
     [switch]$DryRun
 )
@@ -123,5 +124,6 @@ Invoke-R1PilotRun -RunType "attack" -RunId $RunId -ScenarioJsonPath $ScenarioJso
     -TargetSysmonConfigPath $TargetSysmonConfigPath `
     -ExpectedSysmonConfigSha256 $ExpectedSysmonConfigSha256 `
     -ReadinessRecordPath $ReadinessRecordPath `
+    -IncrementalStreamControlRoot $IncrementalStreamControlRoot `
     -Connection $connection -Transport $transport `
     -Rehearsal:$Rehearsal -DryRun:$DryRun | Out-Null

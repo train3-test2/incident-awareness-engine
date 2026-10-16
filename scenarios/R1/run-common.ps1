@@ -686,6 +686,30 @@ function Write-R1NewFile {
     }
 }
 
+function Write-R1AtomicNewFile {
+    <# Publish a new control file only after all bytes are durable in a sibling stage file. #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][byte[]]$Bytes
+    )
+
+    if (Test-Path -LiteralPath $Path) { throw "immutable control path already exists: $Path" }
+    $stage = $Path + "." + [Guid]::NewGuid().ToString("N") + ".tmp"
+    try {
+        $stream = [System.IO.File]::Open($stage, [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try {
+            $stream.Write($Bytes, 0, $Bytes.Length)
+            $stream.Flush($true)
+        } finally {
+            $stream.Dispose()
+        }
+        [System.IO.File]::Move($stage, $Path)
+    } finally {
+        if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Force }
+    }
+}
+
 function Get-R1DatasetTier {
     <#
         The dataset tier a rendered scenario states for its Pair.
@@ -3320,6 +3344,7 @@ function Invoke-R1PilotRun {
         [AllowEmptyString()][string]$TargetSysmonConfigPath,
         [AllowEmptyString()][string]$ExpectedSysmonConfigSha256,
         [AllowEmptyString()][string]$ReadinessRecordPath,
+        [AllowEmptyString()][string]$IncrementalStreamControlRoot,
         [AllowNull()]$Connection,
         [AllowNull()][hashtable]$Transport,
         [scriptblock]$NowProvider = { Get-Date },
@@ -3340,6 +3365,9 @@ function Invoke-R1PilotRun {
     $collectionProfile = Get-R1CollectionProfile -Scenario $scenario
     $entryIsSession = ($collectionProfile.entry_kind -ceq $R1_ENTRY_REMOTING)
     $rawFromBoot = ($collectionProfile.raw_window -ceq $R1_RAW_WINDOW_BOOT)
+    if ($entryIsSession -and -not [string]::IsNullOrWhiteSpace($IncrementalStreamControlRoot)) {
+        throw "IncrementalStreamControlRoot is supported only by the WMI collection path"
+    }
     # The registered policies the scenario was rendered with. A scenario whose
     # intermediate is started through WMI has to carry them: nothing is
     # started without them, not even a dry run.
@@ -3463,6 +3491,22 @@ function Invoke-R1PilotRun {
         # Target-A's clock; the Controller clock, read when that stamp arrived,
         # only schedules the offsets and measures durations.
         $startTime = ConvertTo-R1Utc $probe.utc "probe utc"
+
+        if (-not [string]::IsNullOrWhiteSpace($IncrementalStreamControlRoot)) {
+            $controlDir = Join-Path $IncrementalStreamControlRoot $RunId
+            New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
+            $startControl = [ordered]@{
+                schema = "r1-incremental-run-control"
+                contract_version = "v0.1"
+                message_type = "run_started"
+                run_id = $RunId
+                target_host = $targetHost
+                run_start = (Get-UtcStamp $startTime)
+            }
+            $utf8Control = New-Object System.Text.UTF8Encoding($false)
+            Write-R1AtomicNewFile -Path (Join-Path $controlDir "run-started.json") `
+                -Bytes $utf8Control.GetBytes(($startControl | ConvertTo-Json -Compress))
+        }
 
         # The raw export of this run starts here: at the start of the run, as it
         # always has, or at the boot of the target when the scenario says the
@@ -3696,6 +3740,21 @@ function Invoke-R1PilotRun {
                 & $Transport.close $session | Out-Null
                 $session = $null
                 Add-ExecutionRecord -Context $context -ActionId $actionId -Timestamp $runEnd.action_time
+                if (-not [string]::IsNullOrWhiteSpace($IncrementalStreamControlRoot)) {
+                    $boundaryControl = [ordered]@{
+                        schema = "r1-incremental-run-control"
+                        contract_version = "v0.1"
+                        message_type = "candidate_boundary_completed"
+                        run_id = $RunId
+                        target_host = $targetHost
+                        action_id = $actionId
+                        candidate_boundary_at = [string]$runEnd.completed_utc
+                    }
+                    $controlDir = Join-Path $IncrementalStreamControlRoot $RunId
+                    $utf8Control = New-Object System.Text.UTF8Encoding($false)
+                    Write-R1AtomicNewFile -Path (Join-Path $controlDir "candidate-boundary-completed.json") `
+                        -Bytes $utf8Control.GetBytes(($boundaryControl | ConvertTo-Json -Compress))
+                }
             }
         }
 
