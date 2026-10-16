@@ -349,7 +349,9 @@ def test_consume_spool_once_rolls_back_on_exception(tmp_path, monkeypatch):
     assert conn.commits == 0
 
 
-def test_export_accepted_close_and_load_close_export_enforce_contract_linkage(tmp_path, monkeypatch):
+def test_export_accepted_close_and_load_close_export_enforce_contract_linkage(
+    tmp_path, monkeypatch
+):
     contract_path, contract, raw = _inputs(tmp_path)
     spool = tmp_path / "spool"
     times = iter(datetime(2030, 1, 1, 0, 0, second, tzinfo=UTC) for second in range(1, 20))
@@ -387,7 +389,9 @@ def test_export_accepted_close_and_load_close_export_enforce_contract_linkage(tm
     ledger = _Ledger(object())
     monkeypatch.setattr(wiring, "R1StreamDeliveryRepository", lambda connection: ledger)
     connection = _Connection()
-    wiring.consume_spool_once(spool_root=spool, contract=contract, connection=connection, clock=lambda: next(times))
+    wiring.consume_spool_once(
+        spool_root=spool, contract=contract, connection=connection, clock=lambda: next(times)
+    )
 
     # Reject export with mismatched contract target host
     other_contract_path = render_required_partition_contract(
@@ -410,6 +414,8 @@ def test_export_accepted_close_and_load_close_export_enforce_contract_linkage(tm
     )
     run_closed, receipt = load_close_export(export_path)
     assert run_closed.run_id == RUN_ID
+    assert receipt.run_id == RUN_ID
+    assert receipt.content_sha256 != ""
 
     # load_close_export rejects if contract file is modified
     contract_bytes = contract_path.read_bytes()

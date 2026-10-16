@@ -384,7 +384,7 @@ def load_close_export(path: Path) -> tuple[R1RunClosed, R1AcceptedRunCloseReceip
 
     contract_info = payload.get("required_partition_contract")
     if not isinstance(contract_info, dict):
-        raise ValueError("close export is missing required_partition_contract linkage")
+        raise TypeError("close export is missing required_partition_contract linkage")
     contract_file = Path(contract_info["path"])
     if not contract_file.exists():
         raise ValueError(f"linked required-partition contract file not found: {contract_file}")
