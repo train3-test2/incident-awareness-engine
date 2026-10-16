@@ -1,4 +1,4 @@
-"""Read-only v0.2 execution-input validation, before Fusion output evaluation.
+"""Source-artifact-preserving v0.2 validation, before Fusion output evaluation.
 
 This boundary supports synthetic contract checks only. It does not manufacture a
 Role1 receive time, a Fusion provenance artifact, or performance eligibility.
@@ -18,7 +18,10 @@ from incident_awareness.evaluation.context_inputs import validate_context_inputs
 from incident_awareness.evidence.r1_multi_event import ApprovedLineagePolicy
 from incident_awareness.evidence.r1_provenance import resolve_r1_evidence_provenance
 from incident_awareness.evidence.r1_selector import R1SelectorPolicy
-from incident_awareness.pipeline.r1_artifacts import load_r1_evidence_artifacts
+from incident_awareness.pipeline.r1_artifacts import (
+    R1LineageInputProvenance,
+    load_r1_evidence_artifacts,
+)
 from incident_awareness.pipeline.r1_causal_replay import (
     R1CausalReplayInput,
     prepare_r1_incremental_causal_replay_input,
@@ -97,6 +100,10 @@ def validate_incremental_execution_input(
     Missing validation records fail before the producer adapter is called. The
     adapter receives a private byte snapshot, so it cannot create/overwrite the
     source record or quietly replace its first-observed availability with now.
+    Checkpoint recovery CAN WRITE to trust.ingress's ledger, even if later
+    validation fails. This function neither detects nor blocks a production ledger
+    and does not roll back its writes. Callers MUST supply a disposable isolated
+    verification ingress/ledger, never a live ingestion ingress.
     This result is replay input, NOT a CausalReplayEvaluationInput/metric result.
     """
     pins = IncrementalInputPins.model_validate(pins.model_dump())
@@ -151,6 +158,35 @@ def validate_incremental_execution_input(
             run_start=run.start_time,
             run_end=run.end_time,
         )
+        selector = artifact.summary.selector
+        if selector is None or (selector.policy_id, selector.version, selector.config_hash) != (
+            trust.selector.policy_id,
+            trust.selector.version,
+            trust.selector.config_hash,
+        ):
+            raise ValueError("summary selector identity differs from trusted policy")
+        if (selector.status, selector.diagnostics) != (
+            "selected" if restored.selector_result.selection is not None else "failed",
+            restored.selector_result.diagnostics,
+        ):
+            raise ValueError("summary selector result differs from recovered checkpoint")
+        lineage = restored.lineage_input
+        expected_lineage = (
+            ()
+            if lineage is None
+            else (
+                R1LineageInputProvenance(
+                    anchor_event_id=lineage.anchor_event_id,
+                    terminal_event_id=lineage.terminal_event_id,
+                    policy_id=trust.approved.policy_id,
+                    policy_version=trust.approved.version,
+                    policy_config_hash=trust.approved.config_hash,
+                    context_event_ids=lineage.context_event_ids,
+                ),
+            )
+        )
+        if tuple(artifact.summary.lineage_inputs or ()) != expected_lineage:
+            raise ValueError("summary lineage provenance differs from recovered checkpoint")
         expected_context = set(
             restored.lineage_input.context_event_ids if restored.lineage_input else ()
         )
