@@ -157,6 +157,8 @@ def test_dashboard_view_serves_html_shell_without_database_access(
         "selected-run-chart",
         "runs-status",
         "runs-list",
+        "runs-visibility-status",
+        "dashboard-runs-toggle",
     ):
         assert f'id="{status_id}"' in html
     assert "조회 완료 후 약 5초 간격으로 Runtime 상태 갱신" in html
@@ -164,6 +166,7 @@ def test_dashboard_view_serves_html_shell_without_database_access(
     assert "조회 범위 내 최신 Runtime 보고" in html
     assert '<table class="dashboard-table runtime-table">' in html
     assert '<table class="dashboard-table runs-table">' in html
+    assert 'aria-controls="runs-list" hidden>전체 Run 펼치기</button>' in html
     assert "Run Type" not in html
     assert database_connection_attempts == []
 
@@ -373,17 +376,17 @@ def test_dashboard_view_uses_shared_shell_and_responsive_layout() -> None:
     assert ".dashboard-monitor-grid" in stylesheet
     assert ".dashboard-replay-grid" in stylesheet
     assert ".dashboard-analysis-settings" in stylesheet
-    assert "grid-template-columns: repeat(6, minmax(7rem, 1fr))" in stylesheet
+    assert "grid-template-columns: repeat(6, minmax(0, 1fr))" in stylesheet
     assert ".dashboard-table-wrapper" in stylesheet
     assert "overflow-x: auto" in stylesheet
     assert "width: min(100%, var(--shell-page-width))" in shell
     assert ".app-page.dashboard-page" in stylesheet
     assert "width: 100%" in stylesheet
-    assert "max-width: 101rem" in stylesheet
+    assert "max-width: 116rem" in stylesheet
     monitor_rule = stylesheet.split(".dashboard-monitor-grid {", maxsplit=1)[1].split(
         "}", maxsplit=1
     )[0]
-    assert "grid-template-columns: minmax(0, 1.62fr) minmax(0, 1fr)" in monitor_rule
+    assert "grid-template-columns: minmax(0, 1.85fr) minmax(0, 1fr)" in monitor_rule
     assert "minmax(36rem, 0.9fr)" not in stylesheet
 
     runtime_index = html.index('id="runtime-summary-heading"')
@@ -426,7 +429,9 @@ def test_dashboard_script_uses_contract_and_safe_dom_rendering() -> None:
         assert forbidden_api not in script
     assert "displayValue(run.scenario_id)" in script
     assert "displayValue(run.target_host)" in script
-    assert "formatRunTimestamp(run.start_time)" in script
+    assert "createRunTimestamp(run.start_time)" in script
+    assert 'time.setAttribute("datetime", value)' in script
+    assert 'time.setAttribute("title", formatRunTimestamp(value))' in script
     assert "run.run_type" not in script
     assert 'document.createElement("a")' in script
     assert 'document.createElement("button")' in script
@@ -578,6 +583,25 @@ def test_dashboard_assets_do_not_serve_dashboard_html_shell() -> None:
     # Then
     assert response.status_code == 404
     assert "Incident Awareness Dashboard" not in response.text
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/tests/dashboard/preview/telemetry-preview.html",
+        "/dashboard/preview",
+        "/dashboard-assets/telemetry-preview-model.mjs",
+        "/dashboard-assets/telemetry-preview.mjs",
+    ),
+)
+def test_production_dashboard_does_not_serve_local_preview(path: str) -> None:
+    # Given
+    client = TestClient(create_app())
+    # When
+    response = client.get(path)
+    # Then
+    assert response.status_code == 404
+    assert "시연용 샘플 데이터" not in response.text
 
 
 def test_dashboard_view_does_not_shadow_overview_and_runs_apis(

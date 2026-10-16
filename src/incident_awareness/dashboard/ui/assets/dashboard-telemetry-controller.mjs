@@ -43,6 +43,12 @@ function replaceWithNotice(doc, frame, notice) {
     frame.replaceChildren(label);
 }
 
+function updateStatusText(element, message) {
+    if (element.textContent !== message) {
+        element.textContent = message;
+    }
+}
+
 function renderUnavailable(doc, nodes, kind) {
     replaceWithNotice(doc, nodes.throughputFrame,
         kind === "loading" ? "처리량 관측값 조회 중" : "처리량 조회 실패");
@@ -52,12 +58,15 @@ function renderUnavailable(doc, nodes, kind) {
     nodes.latencySummary.textContent = kind === "loading" ? "조회 중" : "조회 실패";
     nodes.throughputDetails.textContent = kind === "loading" ? "최근 60초 실측값 확인 중" : "최근 60초 조회 실패";
     nodes.latencyDetails.textContent = kind === "loading" ? "최근 60초 실측값 확인 중" : "최근 60초 조회 실패";
-    nodes.throughputStatus.textContent = kind === "loading"
+    updateStatusText(nodes.throughputStatus, kind === "loading"
         ? "처리량 측정 데이터를 조회하고 있습니다."
-        : "처리량 API 조회에 실패했습니다. 이전 측정값을 현재 값으로 표시하지 않습니다.";
-    nodes.latencyStatus.textContent = kind === "loading"
+        : "처리량 API 조회에 실패했습니다. 이전 측정값을 현재 값으로 표시하지 않습니다.");
+    updateStatusText(nodes.latencyStatus, kind === "loading"
         ? "처리 지연 데이터를 조회하고 있습니다."
-        : "처리 지연 API 조회에 실패했습니다. 이전 측정값을 현재 값으로 표시하지 않습니다.";
+        : "처리 지연 API 조회에 실패했습니다. 이전 측정값을 현재 값으로 표시하지 않습니다.");
+    // Keep the same explanation visible in the disclosure and available in the live region.
+    nodes.throughputDetails.textContent += ` · ${nodes.throughputStatus.textContent}`;
+    nodes.latencyDetails.textContent += ` · ${nodes.latencyStatus.textContent}`;
     nodes.throughputNote.textContent = kind === "loading" ? "조회 중" : "조회 오류";
     nodes.latencyNote.textContent = kind === "loading" ? "조회 중" : "조회 오류";
 }
@@ -83,9 +92,10 @@ function renderTelemetry(doc, nodes, model) {
     const statusParts = [];
     if (model.qualityStatus === "no_samples" || !observed) {
         statusParts.push("해당 조회 구간에 관측된 데이터가 없습니다. 미관측을 0건으로 계산하지 않습니다.");
-    } else if (model.qualityStatus === "partial") {
+    }
+    if (model.qualityStatus === "partial") {
         statusParts.push("일부 Execution의 관측이 불완전합니다.");
-    } else {
+    } else if (observed && model.qualityStatus !== "no_samples") {
         statusParts.push("보고된 Execution에서 실측값을 조회했습니다. 누락 초는 미관측입니다.");
     }
     if (model.freshnessStatus === "stale") {
@@ -93,13 +103,17 @@ function renderTelemetry(doc, nodes, model) {
     } else if (model.freshnessStatus === "unknown") {
         statusParts.push("최근 관측 여부를 확인할 수 없습니다.");
     }
-    statusParts.push(formatObservedTime(model.lastObservedAt));
+    // Counts and timestamps belong to the disclosure, not the live region:
+    // an otherwise unchanged observation state must not be announced each poll.
     const status = statusParts.join(" ");
-    nodes.throughputStatus.textContent = status;
-    nodes.latencyStatus.textContent = status;
-    const qualityLabel = model.qualityStatus === "no_samples"
-        ? "미관측"
-        : model.qualityStatus === "partial" ? "부분 관측" : "실측";
+    updateStatusText(nodes.throughputStatus, status);
+    updateStatusText(nodes.latencyStatus, status);
+    const detail = `${status} · ${formatObservedTime(model.lastObservedAt)}`;
+    nodes.throughputDetails.textContent += ` · ${detail}`;
+    nodes.latencyDetails.textContent += ` · ${detail}`;
+    const qualityLabel = model.qualityStatus === "partial"
+        ? "부분 관측"
+        : model.qualityStatus === "no_samples" || !observed ? "미관측" : "실측";
     const freshnessLabel = model.freshnessStatus === "stale"
         ? " · 관측 지연" : model.freshnessStatus === "unknown" ? " · 최신 여부 미확인" : "";
     nodes.throughputNote.textContent = qualityLabel + freshnessLabel;

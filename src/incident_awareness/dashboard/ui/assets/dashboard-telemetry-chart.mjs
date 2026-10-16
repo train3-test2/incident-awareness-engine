@@ -2,9 +2,9 @@
 // An absent one-second bucket is never replaced with an observed zero.
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
-const WIDTH = 960;
+const WIDTH = 640;
 const HEIGHT = 210;
-const PLOT = Object.freeze({ left: 64, right: 24, top: 16, bottom: 41 });
+const PLOT = Object.freeze({ left: 72, right: 40, top: 28, bottom: 41 });
 const PLOT_WIDTH = WIDTH - PLOT.left - PLOT.right;
 const PLOT_HEIGHT = HEIGHT - PLOT.top - PLOT.bottom;
 const CHART_KINDS = new Set(["throughput", "latency"]);
@@ -133,17 +133,19 @@ export function buildTelemetryChartPresentation(model, kind) {
             segments: [],
         }];
 
-    if (kind === "latency") {
+    // Each series owns its continuity. A missing bucket or null value breaks it,
+    // while an observed zero is a real endpoint (never a synthesized sample).
+    for (const item of series) {
         let previousMark = null;
         let previousIndex = -2;
         for (const [index, second] of model.seconds.entries()) {
-            if (!second.observed || second.processingLatencyMeanMs === null) {
+            if (!second.observed || second[item.key] === null) {
                 previousMark = null;
                 continue;
             }
-            const mark = makeMark(second, index, second.processingLatencyMeanMs, "latency");
+            const mark = makeMark(second, index, second[item.key], item.kind);
             if (previousMark !== null && index === previousIndex + 1) {
-                series[0].segments.push({ from: previousMark, to: mark });
+                item.segments.push({ from: previousMark, to: mark });
             }
             previousMark = mark;
             previousIndex = index;
@@ -215,7 +217,7 @@ export function createTelemetryChart(model, kind, doc = document) {
     description.setAttribute("id", descriptionId);
     description.textContent = presentation.markCount === 0
         ? "표시할 측정 샘플이 없습니다. 미관측 구간은 0으로 계산하지 않습니다."
-        : "실제로 관측된 1초 구간만 표시합니다. 비어 있는 구간은 미관측이며 0건이 아닙니다.";
+        : "실제로 관측된 인접 1초 버킷만 선으로 연결합니다. 선은 초 내부 순간 처리율이 아닙니다. 비어 있는 구간과 null은 연결하지 않으며 관측된 0만 기준선에 표시합니다.";
     svg.append(title, description);
 
     const grid = svgNode(doc, "g", "dashboard-telemetry-chart__grid");
@@ -233,6 +235,8 @@ export function createTelemetryChart(model, kind, doc = document) {
             "dashboard-telemetry-chart__x-label");
     }
     svg.append(grid);
+    addText(doc, svg, PLOT.left, 20, kind === "throughput" ? "건/초" : "ms",
+        "dashboard-telemetry-chart__unit");
 
     const dataLayer = svgNode(doc, "g", "dashboard-telemetry-chart__data");
     for (const series of presentation.series) {
@@ -242,10 +246,6 @@ export function createTelemetryChart(model, kind, doc = document) {
                 "dashboard-telemetry-chart__segment");
         }
         for (const mark of series.marks) {
-            if (kind === "throughput" && mark.value > 0) {
-                addLine(doc, group, mark.x, mark.zeroY, mark.x, mark.y,
-                    "dashboard-telemetry-chart__stem");
-            }
             const circle = svgNode(doc, "circle", "dashboard-telemetry-chart__mark");
             circle.setAttribute("cx", String(mark.x));
             circle.setAttribute("cy", String(mark.y));

@@ -16,6 +16,7 @@ class FakeNode {
         this.tagName = tagName;
         this.children = [];
         this.ownText = "";
+        this.textContentWrites = 0;
         this.attributes = new Map();
         this.classes = new Set();
         this.classList = { add: (...names) => names.forEach((name) => this.classes.add(name)) };
@@ -26,6 +27,7 @@ class FakeNode {
     }
 
     set textContent(value) {
+        this.textContentWrites += 1;
         this.ownText = String(value);
         this.children = [];
     }
@@ -110,6 +112,37 @@ function descendants(node, tagName) {
         ...descendants(child, tagName),
     ]);
 }
+
+test("New numeric observations and timestamps do not reannounce unchanged live status", async () => {
+    // Given
+    const doc = makeDocument();
+    let current = payload();
+    const controller = createDashboardTelemetryController(doc, {
+        ...fakeTimers(), fetchImpl: async () => ({ ok: true, json: async () => current }),
+    });
+    await controller.start();
+    const status = doc.elements.get("telemetry-throughput-status");
+    const writes = status.textContentWrites;
+    const originalDetails = doc.elements.get("telemetry-throughput-details").textContent;
+
+    // When
+    current = payload();
+    current.last_observed_at = "2026-10-15T05:23:18.642Z";
+    current.recent_60s_summary.input_accepted_count = 3;
+    await controller.poll();
+
+    // Then
+    assert.equal(status.textContentWrites, writes);
+    assert.equal(doc.elements.get("telemetry-latency-status").textContentWrites, writes);
+    assert.notEqual(doc.elements.get("telemetry-throughput-details").textContent, originalDetails);
+    assert.match(doc.elements.get("telemetry-throughput-summary").textContent, /입력 3건/);
+    assert.doesNotMatch(status.textContent, /마지막 관측:/);
+    current.observation_quality.status = "partial";
+    await controller.poll();
+    assert.equal(status.textContentWrites, writes + 1);
+    assert.match(status.textContent, /불완전/);
+    controller.stop();
+});
 
 test("Telemetry UI shows live stored AWS samples with proper units and coverage", async () => {
     // Given
@@ -204,6 +237,46 @@ test("Telemetry HTTP failure clears earlier chart instead of preserving it as a 
     controller.stop();
 });
 
+for (const quality of ["no_samples", "observed", "partial"]) {
+    for (const freshness of ["recent", "stale", "unknown"]) {
+        test(`No observed buckets: ${quality}/${freshness} preserves missing data and quality warnings`, async (t) => {
+            // Given
+            const doc = makeDocument();
+            const response = payload();
+            response.points = [];
+            response.observation_quality.status = quality;
+            response.freshness.status = freshness;
+            Object.assign(response.recent_60s_summary, {
+                observed_bucket_count: 0, missing_bucket_count: 60,
+                input_accepted_count: null, processing_completed_count: null,
+                processing_failed_count: null, processing_latency_sample_count: null,
+                processing_latency_mean_ms: null,
+            });
+            const controller = createDashboardTelemetryController(doc, {
+                ...fakeTimers(), fetchImpl: async () => ({ ok: true, json: async () => response }),
+            });
+            t.after(controller.stop);
+
+            // When
+            await controller.start();
+
+            // Then
+            const qualityLabel = quality === "partial" ? "부분 관측" : "미관측";
+            const freshnessLabel = freshness === "stale" ? " · 관측 지연"
+                : freshness === "unknown" ? " · 최신 여부 미확인" : "";
+            for (const kind of ["throughput", "latency"]) {
+                assert.equal(doc.elements.get(`telemetry-${kind}-note`).textContent, qualityLabel + freshnessLabel);
+                assert.equal(descendants(doc.elements.get(`telemetry-${kind}-chart`), "figure").length, 0);
+                assert.match(doc.elements.get(`telemetry-${kind}-summary`).textContent, /미관측/);
+                const status = doc.elements.get(`telemetry-${kind}-status`).textContent;
+                assert.match(status, /관측된 데이터가 없습니다/);
+                if (quality === "partial") assert.match(status, /불완전/);
+                if (freshness === "stale") assert.match(status, /관측이 지연/);
+            }
+        });
+    }
+}
+
 test("Telemetry repeated start avoids overlapping requests and stop ignores late responses", async () => {
     // Given
     const doc = makeDocument();
@@ -268,7 +341,78 @@ test("Partial observations and stale timestamps are labeled without asserting wo
     // Then
     assert.equal(doc.elements.get("telemetry-throughput-note").textContent, "부분 관측 · 관측 지연");
     assert.match(doc.elements.get("telemetry-latency-status").textContent, /Worker 장애로 단정하지/);
+    assert.ok(doc.elements.get("telemetry-latency-details").textContent.includes(
+        doc.elements.get("telemetry-latency-status").textContent,
+    ));
     assert.equal(doc.elements.get("telemetry-latency-summary").textContent, "0.775214 ms");
+    controller.stop();
+});
+
+test("Telemetry live messages announce changed no_samples and error states without duplicate polls", async () => {
+    // Given
+    const doc = makeDocument();
+    const response = payload();
+    response.points = [];
+    response.observation_quality.status = "no_samples";
+    response.freshness.status = "unknown";
+    response.last_observed_at = null;
+    Object.assign(response.recent_60s_summary, {
+        observed_bucket_count: 0, missing_bucket_count: 60,
+        input_accepted_count: null, processing_completed_count: null,
+        processing_failed_count: null, processing_latency_sample_count: null,
+        processing_latency_mean_ms: null,
+    });
+    let failed = false;
+    const controller = createDashboardTelemetryController(doc, {
+        ...fakeTimers(),
+        fetchImpl: async () => failed
+            ? { ok: false, status: 503 }
+            : { ok: true, json: async () => response },
+    });
+
+    // When / Then
+    await controller.start();
+    for (const kind of ["throughput", "latency"]) {
+        const status = doc.elements.get(`telemetry-${kind}-status`);
+        assert.match(status.textContent, /관측된 데이터가 없습니다.*최근 관측 여부/);
+        assert.ok(doc.elements.get(`telemetry-${kind}-details`).textContent.includes(status.textContent));
+    }
+    const status = doc.elements.get("telemetry-throughput-status");
+    let writes = status.textContentWrites;
+    await controller.poll();
+    assert.equal(status.textContentWrites, writes);
+    failed = true;
+    await controller.poll();
+    assert.equal(status.textContentWrites, ++writes);
+    assert.match(status.textContent, /API 조회에 실패/);
+    assert.ok(doc.elements.get("telemetry-throughput-details").textContent.includes(status.textContent));
+    await controller.poll();
+    assert.equal(status.textContentWrites, writes);
+    failed = false;
+    await controller.poll();
+    assert.equal(status.textContentWrites, ++writes);
+    assert.equal(doc.elements.get("telemetry-latency-summary").textContent, "미관측");
+    controller.stop();
+});
+
+test("An observed zero stays measured in the live message and summary", async () => {
+    // Given
+    const doc = makeDocument();
+    const response = payload();
+    response.points[0].input_accepted_count = 0;
+    response.recent_60s_summary.input_accepted_count = 0;
+    const controller = createDashboardTelemetryController(doc, {
+        ...fakeTimers(), fetchImpl: async () => ({ ok: true, json: async () => response }),
+    });
+
+    // When
+    await controller.start();
+
+    // Then
+    assert.match(doc.elements.get("telemetry-throughput-summary").textContent, /입력 0건/);
+    assert.match(doc.elements.get("telemetry-throughput-status").textContent, /실측값을 조회/);
+    assert.doesNotMatch(doc.elements.get("telemetry-throughput-status").textContent, /관측된 데이터가 없습니다/);
+    assert.equal(doc.elements.get("telemetry-throughput-note").textContent, "실측");
     controller.stop();
 });
 

@@ -251,3 +251,38 @@ WHERE table_schema = current_schema()
 이력에 `009_r1_stream_close_watermark_binding`이 있으면 그대로 진행한다. `schema_migrations`가
 없거나 009 이력이 빠졌는데 컬럼 수가 1이면 migrate를 실행하지 않고 조치를 따로 정한다. 009
 자체의 수정은 이 문서의 범위가 아니다.
+
+## 로컬 전용 Telemetry 시각 검증 Preview (Issue #297 Stage 2)
+
+```powershell
+uv run python tests/dashboard/preview/serve.py --port 8766
+```
+
+브라우저에서 `http://127.0.0.1:8766/`를 연다. Python 표준 라이브러리만 필요하며
+Backend, PostgreSQL, 추가 프런트엔드 패키지는 사용하지 않는다. 서버는 loopback에만
+바인딩하며 명시적 정적 파일 allowlist 밖의 요청(API, .env 포함)은 404로 거부한다.
+Preview CSP의 `connect-src 'none'`도 네트워크 API 호출을 차단한다.
+
+`tests/dashboard/preview/`의 합성 Generator는 완전한 `pipeline_telemetry_read_v1` 응답을
+생성한다. 같은 운영 `buildTelemetryChartModel`, `createTelemetryChart`,
+`createDashboardTelemetryController`를 사용하고, 해당 Controller 인스턴스에만 fetch를
+주입한다. 전역 fetch, 운영 API, DB, Runtime, Run, Decision, Fusion Replay는 변경하지
+않는다. 프로덕션 정적 mount에는 tests 디렉터리가 포함되지 않는다.
+
+시작·일시정지·재개·초기화 및 시나리오 선택을 제공한다. 시작 시 조회 후 운영 Controller의
+5초 cadence로 반복한다. 연속·희소·미관측·실측 0·관측 중단·부분 관측·최신 여부 미확인·
+HTTP 500/503을 확인할 수 있다. 관측 중단은 Polling은 유지하고 새 관측만 멈추므로 15초가
+지나면 stale이 된다. 일시정지는 합성 시계와 Polling 모두 정지하며 재개 시 이어진다.
+시나리오 변경/초기화는 대기 상태로 돌아간다. 항상 합성 데이터 경고를 고정 표시한다.
+
+합성 시간은 `2026-10-16T00:05:00.000Z` 기준으로 이동한다. 최근 300초 바깥 버킷은 제외하고
+최근 60초 요약은 실제 포함된 버킷 합계 및 지연 샘플 가중 평균으로 계산한다. Batch 입력은
+수락 시점에만 증가하고, 활동 없는 누락 버킷을 0으로 생성하지 않는다. 프런트엔드 검증기와
+Python의 실제 응답 스키마로 샘플을 검증하며 Fake Clock으로 연속 갱신을 재현한다.
+
+운영 Throughput의 블루/그린 및 Latency의 레드 선분은 각 계열의 인접한 관측 1초 버킷만
+연결한다. 미관측/null에서는 끊고 관측된 0은 기준선 마커로 유지한다. 선은 초 내부 순간
+처리율이나 누락 구간 보간을 의미하지 않는다. 입력은 검증된 Batch 수락량이지 지속적 외부
+EDR ingest rate가 아니며 지연은 Normalization + Evidence 구간이지 End-to-End 지연이 아니다.
+운영 도움말에도 같은 정의를 유지한다. 수치/마지막 관측 시각은 상세에서 갱신하고 Live Region은
+품질/신선도/오류 상태가 바뀔 때만 갱신한다. 좁은 화면의 차트는 키보드로 가로 스크롤할 수 있다.

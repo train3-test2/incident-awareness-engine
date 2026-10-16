@@ -126,6 +126,7 @@ test("Missing second buckets do not create marks or connecting lines", () => {
 
     // Then
     assert.deepEqual(throughput.series.map((item) => item.marks.length), [2, 2]);
+    assert.deepEqual(throughput.series.map((item) => item.segments.length), [0, 0]);
     assert.equal(latency.series[0].segments.length, 0);
     assert.equal(model.seconds[36].observed, false);
 });
@@ -213,4 +214,43 @@ test("Invalid chart mode is rejected", () => {
 
     // When / Then
     assert.throws(() => buildTelemetryChartPresentation(model, "unknown"), /Unknown Telemetry chart kind/);
+});
+
+test("Throughput connects only adjacent observations independently in each series", () => {
+    // Given
+    const response = makeResponse();
+    response.points = [shiftedPoint(14), shiftedPoint(15), shiftedPoint(16), shiftedPoint(18)];
+    const model = buildTelemetryChartModel(response);
+    // Model-level defensive check: one series may have a missing value independently.
+    model.seconds.find((second) => second.timestamp === shiftedPoint(15).bucket_start).inputAcceptedCount = null;
+
+    // When
+    const view = buildTelemetryChartPresentation(model, "throughput");
+
+    // Then
+    assert.deepEqual(view.series.map((item) => item.segments.length), [0, 2]);
+    assert.deepEqual(view.series[0].marks.map((mark) => mark.value), [0, 0, 0]);
+    const chart = createTelemetryChart(model, "throughput", fakeDocument);
+    assert.equal(descendants(chart, "line").filter((line) =>
+        line.attributes.get("class") === "dashboard-telemetry-chart__segment").length, 2);
+    assert.equal(descendants(chart, "line").filter((line) =>
+        line.attributes.get("class") === "dashboard-telemetry-chart__stem").length, 0);
+    assert.match(chart.textContent, /건\/초/);
+});
+
+test("An adjacent null latency bucket breaks the line without hiding observed zero", () => {
+    // Given
+    const response = makeResponse();
+    response.points = [shiftedPoint(14, { processing_latency_mean_ms: 0 }),
+        shiftedPoint(15, { processing_latency_sample_count: 0, processing_latency_mean_ms: null }),
+        shiftedPoint(16), shiftedPoint(17)];
+
+    // When
+    const view = buildTelemetryChartPresentation(buildTelemetryChartModel(response), "latency");
+
+    // Then
+    assert.equal(view.series[0].segments.length, 1);
+    assert.equal(view.series[0].marks.length, 3);
+    assert.equal(view.series[0].marks[0].value, 0);
+    assert.equal(view.series[0].marks[0].y, view.series[0].marks[0].zeroY);
 });
