@@ -59,9 +59,12 @@ const RUNTIME_POLL_INTERVAL_MS = 5000;
 const RUNTIME_REQUEST_TIMEOUT_MS = 10000;
 const ANALYSIS_REQUEST_TIMEOUT_MS = 10000;
 const EVENT_TIMELINE_LIMIT = 50;
+const RECENT_RUNS_VISIBLE_COUNT = 5;
+const PIPELINE_STAGE_SYMBOLS = ["⬡", "⇄", "∑", "ϟ", "◇", "▤"];
+const PIPELINE_STATUS_SYMBOLS = { completed: "✓", current: "▶", failed: "×", stale: "!" };
 const SCORE_CHART_DIMENSIONS = {
     width: 960,
-    height: 180,
+    height: 280,
     padding: { top: 50, right: 72, bottom: 27, left: 50 },
 };
 
@@ -93,6 +96,8 @@ const previousRunButton = document.getElementById("dashboard-prev-run");
 const nextRunButton = document.getElementById("dashboard-next-run");
 const runsStatus = document.getElementById("runs-status");
 const runsList = document.getElementById("runs-list");
+const runsToggle = document.getElementById("dashboard-runs-toggle");
+const runsVisibilityStatus = document.getElementById("runs-visibility-status");
 const decisionTimelineList = document.getElementById("decision-timeline-list");
 const decisionTimelineStatus = document.getElementById("decision-timeline-status");
 const eventTypeSummary = document.getElementById("event-type-summary");
@@ -131,6 +136,7 @@ let overviewState = resolveOverviewQueryState(null, { kind: "loading" });
 let runListState = resolveRunListQueryState(null, { kind: "loading" });
 let runtimeState = resolveRuntimeSummaryQueryState(null, { kind: "loading" });
 let selectedRunId = null;
+let runsExpanded = false;
 let selectedRuntimeEntityId = null;
 let selectedRuntimeTracking = createSelectedRuntimeTracking(null);
 let selectedAnalysisQueryStates = null;
@@ -288,15 +294,39 @@ function createRunRow(run) {
         : "-";
 
     row.append(
-        createTableCell(formatRunTimestamp(run.start_time)),
+        createTableCell(createRunTimestamp(run.start_time)),
         createTableCell(runIdentifier, "dashboard-table__run"),
-        createTableCell(runtimeStatus),
+        createTableCell(runtimePresentation === null
+            ? runtimeStatus
+            : createStatusBadge({ ...runtimePresentation, statusLabel: runtimeStatus })),
         createTableCell(displayValue(run.scenario_id)),
         createTableCell(runtimeProgress),
         createTableCell(observationDuration),
         createTableCell(detailLink),
     );
     return row;
+}
+
+function createRunTimestamp(value) {
+    const date = new Date(value);
+    if (!value || Number.isNaN(date.getTime())) {
+        return formatRunTimestamp(value);
+    }
+    const time = document.createElement("time");
+    time.classList.add("dashboard-run-time");
+    time.setAttribute("datetime", value);
+    time.setAttribute("title", formatRunTimestamp(value));
+    const day = document.createElement("span");
+    day.textContent = date.toLocaleDateString("ko-KR", {
+        year: "numeric", month: "2-digit", day: "2-digit",
+    });
+    const clock = document.createElement("small");
+    clock.textContent = date.toLocaleTimeString("ko-KR", {
+        hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit",
+        timeZoneName: "short",
+    });
+    time.append(day, clock);
+    return time;
 }
 
 function renderOverviewState(state) {
@@ -323,8 +353,7 @@ function renderSelectedScope() {
 function getPipelineStageContext(runtime) {
     if (selectedRunId !== null && selectedRuntimeEntityId === null) {
         return (
-            "Run 목록 선택은 Entity를 지정하지 않아 Runtime 단계를 표시하지 않습니다. "
-            + "Runtime 표에서 Run과 Entity를 선택하세요."
+            "Run 목록 선택 · Entity 미지정 (아래 Runtime 표에서 선택)"
         );
     }
     if (selectedRuntimeTracking.outsideQuery) {
@@ -356,19 +385,23 @@ function renderPipelineStages() {
         runtimeState.telemetryAvailable,
     );
     pipelineStageContext.textContent = getPipelineStageContext(runtime);
+    document.getElementById("pipeline-status-note").textContent = stages.some((stage) => stage.state === "unknown")
+        ? "단계 완료 미확인 · 상세 보고에서 범위 확인" : "최근 저장 Runtime 기준";
 
     const items = stages.map((stage, index) => {
         const item = document.createElement("li");
         item.classList.add("pipeline-stage", `pipeline-stage--${stage.state}`);
         const number = document.createElement("span");
         number.classList.add("pipeline-stage__number");
-        number.textContent = String(index + 1);
+        number.textContent = PIPELINE_STATUS_SYMBOLS[stage.state] ?? PIPELINE_STAGE_SYMBOLS[index];
+        number.setAttribute("aria-hidden", "true");
+        item.setAttribute("aria-label", `${index + 1}. ${stage.stageLabel} · ${stage.stateLabel}`);
         const content = document.createElement("span");
         content.classList.add("pipeline-stage__content");
         const label = document.createElement("strong");
         label.textContent = stage.stageLabel;
         const state = document.createElement("span");
-        state.textContent = stage.stateLabel;
+        state.textContent = stage.state === "unknown" ? "미확인" : stage.stateLabel;
         content.append(label, state);
         item.append(number, content);
         return item;
@@ -429,6 +462,7 @@ function renderRuntimeState(state) {
 
 function renderRunListState(state) {
     runsStatus.textContent = state.message;
+    runsStatus.hidden = state.queryState === "success";
     replaceSelectionRows(
         runsList,
         state.items.map((run) => createRunRow(run)),
@@ -436,9 +470,41 @@ function renderRunListState(state) {
         runtimeState.items,
         state.items,
     );
+    updateRunVisibility();
     const selectedIndex = state.items.findIndex((run) => run.run_id === selectedRunId);
     previousRunButton.disabled = selectedIndex < 0 || selectedIndex >= state.items.length - 1;
     nextRunButton.disabled = selectedIndex <= 0;
+}
+
+function updateRunVisibility() {
+    const rows = Array.from(runsList.children);
+    const visibleCount = runsExpanded
+        ? rows.length
+        : Math.min(RECENT_RUNS_VISIBLE_COUNT, rows.length);
+    const focusedRowWillHide = rows.some((row, index) => (
+        index >= visibleCount && row.contains(document.activeElement)
+    ));
+    if (focusedRowWillHide) {
+        runsToggle.focus({ preventScroll: true });
+    }
+    for (const [index, row] of rows.entries()) {
+        row.hidden = index >= visibleCount;
+    }
+    runsToggle.hidden = rows.length <= RECENT_RUNS_VISIBLE_COUNT;
+    runsToggle.setAttribute("aria-expanded", String(runsExpanded));
+    runsToggle.textContent = runsExpanded
+        ? "최근 5개만 보기"
+        : `전체 ${rows.length}개 Run 펼치기`;
+    const selectedHidden = !runsExpanded && runListState.items.some((run, index) => (
+        index >= RECENT_RUNS_VISIBLE_COUNT && run.run_id === selectedRunId
+    ));
+    const visibilityMessage = rows.length === 0
+        ? ""
+        : `${rows.length}개 중 ${visibleCount}개 표시`
+            + (selectedHidden ? ` · 선택 유지: ${selectedRunId} (접힌 목록)` : "");
+    if (runsVisibilityStatus.textContent !== visibilityMessage) {
+        runsVisibilityStatus.textContent = visibilityMessage;
+    }
 }
 
 function renderSelectionRows() {
@@ -527,11 +593,7 @@ function renderEventTypeSummary(state) {
     for (const event of state.payload.items) {
         counts.set(event.event_type, (counts.get(event.event_type) ?? 0) + 1);
     }
-    eventTypeSummaryStatus.textContent = (
-        `조회된 Event ${state.payload.items.length}건 기준 (전체 ${state.payload.total}건). `
-        + "Run 단위 조회이며 선택 Runtime Entity로 한정되지 않습니다. "
-        + "Event 시각과 기술적 판정 시각은 별도 의미입니다."
-    );
+    eventTypeSummaryStatus.textContent = `조회된 Event ${state.payload.items.length}건 / 전체 ${state.payload.total}건 · Run 범위`;
     eventTypeSummary.replaceChildren(...Array.from(counts, ([eventType, count]) => {
         const item = document.createElement("li");
         const label = document.createElement("span");
@@ -1206,6 +1268,10 @@ if (dashboardView !== null) {
     renderRunListState(runListState);
     renderRuntimeState(runtimeState);
     selectedRunRefreshButton.addEventListener("click", refreshSelectedRunAnalysis);
+    runsToggle.addEventListener("click", () => {
+        runsExpanded = !runsExpanded;
+        updateRunVisibility();
+    });
     previousRunButton.addEventListener("click", () => selectAdjacentRun(1));
     nextRunButton.addEventListener("click", () => selectAdjacentRun(-1));
     void loadOverview();

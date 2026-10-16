@@ -47,6 +47,7 @@ import {
 } from "../../../src/incident_awareness/dashboard/ui/assets/operations-contract.mjs";
 import {
     buildRunDetailApiPath,
+    buildRunDetailViewPath,
 } from "../../../src/incident_awareness/dashboard/ui/assets/run-detail-contract.mjs";
 
 test("Run Type presentation maps the persisted vocabulary with a safe fallback", () => {
@@ -1675,7 +1676,7 @@ test("Dashboard renders dense Runtime and Run tables without exposing Run Type",
     assert.match(script, /state\.items\.map\(\(run\) => createRunRow\(run\)\)/);
     assert.match(script, /displayValue\(run\.scenario_id\)/);
     assert.match(script, /displayValue\(run\.target_host\)/);
-    assert.match(script, /formatRunTimestamp\(run\.start_time\)/);
+    assert.match(script, /createRunTimestamp\(run\.start_time\)/);
     assert.match(script, /buildRunDetailViewPath\(run\.run_id\)/);
     assert.doesNotMatch(script, /run\.run_type|getRunTypeLabel/);
     assert.match(html, /<table class="dashboard-table runtime-table">/);
@@ -1700,11 +1701,11 @@ test("Dashboard renders dense Runtime and Run tables without exposing Run Type",
     assert.match(html, /id="selected-run-settings"/);
     assert.match(html, /class="dashboard-stage-scroll"/);
     assert.match(stylesheet, /\.app-page\.dashboard-page\s*{[^}]*width: 100%;/s);
-    assert.match(stylesheet, /\.app-page\.dashboard-page\s*{[^}]*max-width: 101rem;/s);
-    assert.match(stylesheet, /grid-template-columns: repeat\(6, minmax\(7rem, 1fr\)\)/);
+    assert.match(stylesheet, /\.app-page\.dashboard-page\s*{[^}]*max-width: 116rem;/s);
+    assert.match(stylesheet, /grid-template-columns: repeat\(6, minmax\(0, 1fr\)\)/);
     assert.match(
         stylesheet,
-        /\.dashboard-monitor-grid\s*{[^}]*grid-template-columns: minmax\(0, 1\.62fr\) minmax\(0, 1fr\);/s,
+        /\.dashboard-monitor-grid\s*{[^}]*grid-template-columns: minmax\(0, 1\.85fr\) minmax\(0, 1fr\);/s,
     );
     assert.match(stylesheet, /\.dashboard-event-types li\s*{[^}]*grid-template-columns: minmax\(0, 1fr\) auto;/s);
     assert.match(stylesheet, /\.dashboard-event-types li strong\s*{[^}]*text-align: center;/s);
@@ -1770,6 +1771,11 @@ class FakeElement extends FakeNode {
         this.href = "";
         this.type = "";
         this.ownText = "";
+        this.textContentWrites = 0;
+    }
+
+    get children() {
+        return this.childNodes;
     }
 
     get textContent() {
@@ -1777,6 +1783,7 @@ class FakeElement extends FakeNode {
     }
 
     set textContent(value) {
+        this.textContentWrites += 1;
         this.replaceChildren();
         this.ownText = String(value);
     }
@@ -2182,6 +2189,177 @@ async function startDashboardWithRuntime(runtimeItems, runs) {
     return harness;
 }
 
+test("Recent Runs defaults to five rows and explicitly expands all twenty without refetching", async (t) => {
+    // Given
+    const runs = Array.from({ length: 20 }, (_, index) => runListItem(`RUN-${index}`, "WIN-A"));
+    const harness = await startDashboardWithRuntime([], runs);
+    t.after(harness.restore);
+    const list = harness.document.getElementById("runs-list");
+    const toggle = harness.document.getElementById("dashboard-runs-toggle");
+    const visibleIds = () => list.children.filter((row) => !row.hidden).map(
+        (row) => row.querySelectorAll(".dashboard-run-selector")[0].dataset.runId,
+    );
+
+    // When / Then
+    assert.equal(list.children.length, 20);
+    assert.deepEqual(visibleIds(), runs.slice(0, 5).map((run) => run.run_id));
+    assert.equal(toggle.hidden, false);
+    assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    toggle.focus();
+    toggle.click(); // Native button activation also handles Enter and Space in a browser.
+    assert.deepEqual(visibleIds(), runs.map((run) => run.run_id));
+    assert.equal(toggle.getAttribute("aria-expanded"), "true");
+    await harness.poll([]);
+    assert.deepEqual(visibleIds(), runs.map((run) => run.run_id));
+    assert.equal(toggle.getAttribute("aria-expanded"), "true");
+    assert.equal(harness.document.activeElement, toggle);
+    toggle.click();
+    assert.equal(visibleIds().length, 5);
+    assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    assert.equal(harness.requestCount("/runs?limit=20"), 1);
+    assert.equal(harness.text("selected-run-id"), "RUN-0");
+});
+
+test("Collapsing and Runtime polling preserve a hidden Run selection, links and navigation", async (t) => {
+    // Given
+    const runs = Array.from({ length: 8 }, (_, index) => runListItem(`RUN-${index}`, "WIN-A"));
+    const harness = await startDashboardWithRuntime([], runs);
+    t.after(harness.restore);
+    const toggle = harness.document.getElementById("dashboard-runs-toggle");
+    toggle.click();
+    harness.runButton("RUN-6").focus();
+    harness.runButton("RUN-6").click();
+    await harness.respondAnalysis("RUN-6", storedDetail("RUN-6", "WIN-A"), notFound());
+    const detailLink = harness.document.getElementById("selected-run-detail-link");
+
+    // When
+    toggle.click();
+    await harness.poll([]);
+
+    // Then
+    assert.equal(harness.text("selected-run-id"), "RUN-6");
+    assert.equal(harness.runButton("RUN-6").getAttribute("aria-pressed"), "true");
+    assert.equal(harness.document.getElementById("runs-list").children[6].hidden, true);
+    assert.equal(harness.document.activeElement, toggle);
+    assert.match(harness.text("runs-visibility-status"), /선택 유지: RUN-6 \(접힌 목록\)/);
+    assert.equal(detailLink.hidden, false);
+    assert.equal(detailLink.href, buildRunDetailViewPath("RUN-6"));
+    const requestsBeforeToggle = harness.requestCount(buildRunDetailApiPath("RUN-6"));
+    toggle.click();
+    assert.equal(harness.runButton("RUN-6").getAttribute("aria-pressed"), "true");
+    assert.equal(harness.requestCount(buildRunDetailApiPath("RUN-6")), requestsBeforeToggle);
+    toggle.click();
+    harness.document.getElementById("dashboard-prev-run").click();
+    assert.equal(harness.text("selected-run-id"), "RUN-7");
+    assert.equal(harness.document.getElementById("dashboard-prev-run").disabled, true);
+    harness.document.getElementById("dashboard-next-run").click();
+    assert.equal(harness.text("selected-run-id"), "RUN-6");
+    assert.equal(harness.document.getElementById("runs-list").children.filter((row) => !row.hidden).length, 5);
+});
+
+test("A Runtime selection outside the first five Runs survives collapse and polling with its Entity", async (t) => {
+    // Given
+    const runs = Array.from({ length: 8 }, (_, index) => runListItem(`RUN-${index}`, "WIN-A"));
+    const runtime = runtimeReport("RUN-7", "WIN-A", "running", "normalization");
+    const harness = await startDashboardWithRuntime([runtime], runs);
+    t.after(harness.restore);
+    const toggle = harness.document.getElementById("dashboard-runs-toggle");
+
+    // When
+    toggle.click();
+    toggle.click();
+    await harness.poll([runtime]);
+
+    // Then
+    assert.equal(harness.text("selected-run-id"), "RUN-7");
+    assert.equal(harness.runtimeButton("RUN-7", "WIN-A").getAttribute("aria-pressed"), "true");
+    assert.equal(harness.runButton("RUN-7").getAttribute("aria-pressed"), "false");
+    assert.match(harness.text("runs-visibility-status"), /선택 유지: RUN-7/);
+    assert.equal(harness.stageStates()[1], "current");
+});
+
+test("Recent Runs disclosure is hidden for an empty list and exposes its controlled rows", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], []);
+    t.after(harness.restore);
+    const toggle = harness.document.getElementById("dashboard-runs-toggle");
+    const html = await readFile(new URL("../dashboard.html", DASHBOARD_ASSETS_URL), "utf8");
+
+    // When / Then
+    assert.equal(toggle.hidden, true);
+    assert.equal(harness.text("runs-visibility-status"), "");
+    assert.match(html, /id="dashboard-runs-toggle"[^>]*type="button"[^>]*aria-expanded="false"\s+aria-controls="runs-list"/);
+    assert.match(html, /id="runs-visibility-status" role="status" aria-live="polite"/);
+});
+
+test("Recent Runs never hides any rows when there are at most five Runs", async (t) => {
+    // Given
+    const runs = Array.from({ length: 5 }, (_, index) => runListItem(`RUN-${index}`, "WIN-A"));
+    const harness = await startDashboardWithRuntime([], runs);
+    t.after(harness.restore);
+
+    // When / Then
+    assert.equal(harness.document.getElementById("dashboard-runs-toggle").hidden, true);
+    assert.equal(harness.document.getElementById("runs-list").children.every((row) => !row.hidden), true);
+    assert.equal(harness.text("runs-visibility-status"), "5개 중 5개 표시");
+});
+
+test("Runtime polling never rewrites an unchanged Run visibility live region", async (t) => {
+    // Given
+    const runs = Array.from({ length: 20 }, (_, index) => runListItem(`RUN-${index}`, "WIN-A"));
+    const runtime = runtimeReport("RUN-7", "WIN-A", "running", "normalization");
+    const harness = await startDashboardWithRuntime([runtime], runs);
+    t.after(harness.restore);
+    const status = harness.document.getElementById("runs-visibility-status");
+    const toggle = harness.document.getElementById("dashboard-runs-toggle");
+    let writes = status.textContentWrites;
+
+    // When / Then: collapsed selection, expanded list, and collapsed list remain stable on polls.
+    for (let index = 0; index < 3; index += 1) {
+        await harness.poll([runtime]);
+    }
+    assert.equal(status.textContentWrites, writes);
+    assert.match(status.textContent, /선택 유지: RUN-7/);
+    toggle.click();
+    assert.equal(status.textContentWrites, ++writes);
+    await harness.poll([runtime]);
+    assert.equal(status.textContentWrites, writes);
+    toggle.click();
+    assert.equal(status.textContentWrites, ++writes);
+    await harness.poll([runtime]);
+    assert.equal(status.textContentWrites, writes);
+    harness.document.getElementById("dashboard-prev-run").click();
+    assert.equal(status.textContentWrites, ++writes);
+    assert.match(status.textContent, /선택 유지: RUN-8/);
+    assert.equal(harness.text("selected-run-id"), "RUN-8");
+    assert.equal(harness.timerCount(RUNTIME_POLL_DELAY_MS), 1);
+});
+
+test("Pipeline icons distinguish reported states while unknown stages never show a completed mark", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    const symbols = () => harness.document.getElementById("pipeline-stage-list").children.map(
+        (stage) => stage.children[0].textContent,
+    );
+    assert.equal(symbols().length, 6);
+    assert.equal(symbols().includes("✓"), false);
+
+    // When / Then
+    const running = runtimeReport("RUN-A", "WIN-A", "running", "normalization");
+    await harness.poll([running]);
+    harness.runtimeButton("RUN-A", "WIN-A").click();
+    assert.equal(symbols()[1], "▶");
+    assert.equal(symbols().includes("✓"), false);
+    await harness.poll([{ ...running, is_stale: true }]);
+    assert.equal(symbols()[1], "!");
+    await harness.poll([runtimeReport("RUN-A", "WIN-A", "failed", "hybrid")]);
+    assert.equal(symbols()[4], "×");
+    assert.equal(symbols().includes("✓"), false);
+    await harness.poll([runtimeReport("RUN-A", "WIN-A", "completed", null)]);
+    assert.deepEqual(symbols(), Array(6).fill("✓"));
+});
+
 test("Dashboard opens the Replay panel and switches detail tabs without changing the selection", async (t) => {
     // Given
     const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
@@ -2269,10 +2447,11 @@ test("Dashboard requests the selected Run timeline once and labels fetched Event
     ]);
     assert.equal(
         status,
-        "조회된 Event 2건 기준 (전체 75건). "
-            + "Run 단위 조회이며 선택 Runtime Entity로 한정되지 않습니다. "
-            + "Event 시각과 기술적 판정 시각은 별도 의미입니다.",
+        "조회된 Event 2건 / 전체 75건 · Run 범위",
     );
+    const html = await readFile(new URL("../../../src/incident_awareness/dashboard/ui/dashboard.html", import.meta.url), "utf8");
+    assert.match(html, /<summary>집계 기준<\/summary>\s*<p>조회된 Event에 포함된 유형만 집계합니다\. Run 단위 조회이며 선택 Runtime Entity로 한정되지 않습니다\./);
+    assert.match(html, /Event 시각과 기술적 판정 시각은 별도 의미입니다/);
     assert.equal(harness.requestCount(timelinePath), 1);
 });
 
@@ -2839,7 +3018,7 @@ test("Dashboard Runtime rows select one Run and Entity pair at a time", async (t
     assert.deepEqual(runListSelection.runRows, [
         { runId: "RUN-A", entityId: null, pressed: "true", selected: true },
     ]);
-    assert.match(runListSelection.context, /Run 목록 선택은 Entity를 지정하지 않아/);
+    assert.match(runListSelection.context, /Run 목록 선택 · Entity 미지정/);
     assert.equal(runListSelection.stages.every((state) => state === "unknown"), true);
     assert.match(runListSelection.scope, /run_id 범위.*RunMetadata\.target_host WIN-A/);
 });
@@ -3262,7 +3441,7 @@ test("Dashboard manual refresh retries after failure and keeps Decision checks",
         harness.text("selected-run-scope"),
         /Run 목록 선택: run_id 범위입니다\. 저장 분석 대상은 RunMetadata\.target_host WIN-A/,
     );
-    assert.match(harness.text("pipeline-stage-context"), /Run 목록 선택은 Entity를 지정하지 않아/);
+    assert.match(harness.text("pipeline-stage-context"), /Run 목록 선택 · Entity 미지정/);
     assert.equal(harness.requestCount(detailPath), 5);
     assert.equal(harness.pendingCount(detailPath), 0);
 });
