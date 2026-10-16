@@ -36,13 +36,15 @@
                 <span id="dashboard-header-updated">마지막 저장 보고 확인 중</span>
                 <details class="dashboard-time-note">
                     <summary>표시 기준 및 상태 안내</summary>
-                    <p>저장된 Runtime 보고와 Run 분석 결과를 한 화면에서 확인합니다.
-                        조회 완료 후 약 5초 간격으로 Runtime 상태 갱신</p>
-                    <p>
-                        Run 시각은 원본 관측 구간이며 Runtime updated_at은 마지막 저장 보고 시각입니다.
-                        Running과 오래된 보고는 현재 실행 여부를 보장하지 않고, 최근 Runtime 조회 결과는
-                        전체 실행 통계가 아닙니다. 상태는 색상뿐 아니라 텍스트로도 함께 표시합니다.
-                    </p>
+                    <div class="dashboard-time-note__content">
+                        <p>저장된 Runtime 보고와 Run 분석 결과를 한 화면에서 확인합니다.
+                            조회 완료 후 약 5초 간격으로 Runtime 상태 갱신</p>
+                        <p>
+                            Run 시각은 원본 관측 구간이며 Runtime updated_at은 마지막 저장 보고 시각입니다.
+                            Running과 오래된 보고는 현재 실행 여부를 보장하지 않고, 최근 Runtime 조회 결과는
+                            전체 실행 통계가 아닙니다. 상태는 색상뿐 아니라 텍스트로도 함께 표시합니다.
+                        </p>
+                    </div>
                 </details>
             </div>
         </header>
@@ -103,6 +105,9 @@
                     </div>
                     <a class="dashboard-header-link" href="/operations">운영 기록 보기</a>
                 </div>
+                <p id="pipeline-stage-context" class="section-description dashboard-pipeline-context">
+                    Runtime을 선택하면 마지막 보고 단계를 표시합니다.
+                </p>
                 <div class="dashboard-stage-panel">
                     <div class="dashboard-stage-scroll">
                         <ol id="pipeline-stage-list" class="pipeline-stage-list"></ol>
@@ -110,9 +115,6 @@
                 </div>
                 <details class="dashboard-runtime-disclosure">
                     <summary id="runtime-summary-heading">최근 Runtime 보고 최대 5건 · Entity별 선택</summary>
-                    <p id="pipeline-stage-context" class="section-description">
-                        Runtime을 선택하면 마지막 보고 단계를 표시합니다.
-                    </p>
                     <p class="section-description">
                         API 순서를 유지합니다. Runtime은 Run ID와 Entity ID 조합으로 선택하며,
                         저장 분석 결과는 run_id 기준으로 조회합니다.

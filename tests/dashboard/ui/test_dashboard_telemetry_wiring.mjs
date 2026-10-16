@@ -96,13 +96,22 @@ test("The four KPI regions share a panel with dividers and insights state missin
     assert.equal((html.match(/<strong>계측 미연결<\/strong>/g) ?? []).length, 4);
 });
 
-test("Concise cards keep technical definitions and scope in native keyboard-accessible disclosures", async () => {
+test("Concise cards expose Pipeline scope while keeping technical definitions in native disclosures", async () => {
     // Given
     const html = await readFile(htmlPath, "utf8");
     // When / Then
     const context = locateElement(html, "pipeline-stage-context");
-    assert.ok(context.ancestors.some((ancestor) => ancestor.tag === "details"));
-    assert.doesNotMatch(context.markup, /hidden|aria-hidden/);
+    assert.equal(context.ancestors.some((ancestor) => ancestor.tag === "details"), false);
+    assert.ok(context.ancestors.some((ancestor) => ancestor.markup.includes("dashboard-pipeline-section")));
+    for (const element of [context, ...context.ancestors]) {
+        assert.doesNotMatch(element.markup, /\s(?:hidden|inert)(?:\s|>|=)|aria-hidden="true"|dashboard-visually-hidden/);
+    }
+    assert.equal((html.match(/id="pipeline-stage-context"/g) ?? []).length, 1);
+    assert.ok(html.indexOf('id="pipeline-stage-context"') < html.indexOf('id="pipeline-stage-list"'));
+    const runtimeDetails = html.match(/<details class="dashboard-runtime-disclosure">([\s\S]*?)<\/details>/)[1];
+    assert.match(runtimeDetails, /API 순서를 유지합니다\. Runtime은 Run ID와 Entity ID 조합으로 선택하며/);
+    assert.match(runtimeDetails, /저장 분석 결과는 run_id 기준으로 조회합니다/);
+    assert.match(runtimeDetails, /id="runtime-summary-list"/);
     for (const kind of ["throughput", "latency"]) {
         const frame = locateElement(html, `telemetry-${kind}-chart`);
         assert.match(frame.markup, /tabindex="0"/);
@@ -120,4 +129,27 @@ test("Concise cards keep technical definitions and scope in native keyboard-acce
     }
     assert.match(html, /자동 갱신 · 5초/);
     assert.equal((html.match(/<strong>계측 미연결<\/strong>/g) ?? []).length, 4);
+});
+
+test("Time guidance positions one wrapper while paragraphs remain in document flow", async () => {
+    // Given
+    const [html, style] = await Promise.all([readFile(htmlPath, "utf8"), readFile(cssPath, "utf8")]);
+    // When
+    const content = html.match(/<div class="dashboard-time-note__content">([\s\S]*?)<\/div>/)[1];
+    const wrapperRule = style.split(".dashboard-time-note__content {")[1].split("}")[0];
+    const paragraphRule = style.split(".dashboard-time-note p {")[1].split("}")[0];
+    const mobileRule = style.split(".dashboard-time-note[open] .dashboard-time-note__content {")[1].split("}")[0];
+    // Then
+    assert.equal((content.match(/<p(?:\s|>)/g) ?? []).length, 2);
+    assert.match(content, /저장된 Runtime 보고와 Run 분석 결과/);
+    assert.match(content, /Runtime updated_at은 마지막 저장 보고 시각/);
+    assert.match(content, /전체 실행 통계가 아닙니다/);
+    assert.match(wrapperRule, /position: absolute/);
+    assert.match(wrapperRule, /overflow-y: auto/);
+    assert.match(wrapperRule, /width: min\(28rem, calc\(100vw - 2rem\)\)/);
+    assert.doesNotMatch(paragraphRule, /position: absolute|top:|right:/);
+    assert.match(style, /\.dashboard-time-note p \+ p\s*\{\s*margin-top: var\(--shell-space-3\)/);
+    assert.match(mobileRule, /position: static/);
+    assert.match(mobileRule, /max-height: none/);
+    assert.match(html, /<details class="dashboard-time-note">\s*<summary>표시 기준 및 상태 안내<\/summary>/);
 });

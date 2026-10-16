@@ -386,7 +386,7 @@ function renderPipelineStages() {
     );
     pipelineStageContext.textContent = getPipelineStageContext(runtime);
     document.getElementById("pipeline-status-note").textContent = stages.some((stage) => stage.state === "unknown")
-        ? "단계 완료 미확인 · 상세 보고에서 범위 확인" : "최근 저장 Runtime 기준";
+        ? "단계 완료 미확인" : "최근 저장 Runtime 기준";
 
     const items = stages.map((stage, index) => {
         const item = document.createElement("li");

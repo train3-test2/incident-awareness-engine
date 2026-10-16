@@ -2189,6 +2189,37 @@ async function startDashboardWithRuntime(runtimeItems, runs) {
     return harness;
 }
 
+test("Pipeline context keeps the same element across status, Entity, query-error and range changes", async (t) => {
+    // Given
+    const first = runtimeReport("RUN-A", "WIN-A", "running", "fusion");
+    const second = runtimeReport("RUN-A", "WIN-B", "running", "hybrid");
+    const harness = await startDashboardWithRuntime([first, second], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    const context = harness.document.getElementById("pipeline-stage-context");
+    assert.equal(context.textContent, `RUN-A · WIN-A · ${RUNNING_LABEL}`);
+
+    // When / Then
+    await harness.poll([runtimeReport("RUN-A", "WIN-A", "completed", null), second]);
+    assert.strictEqual(harness.document.getElementById("pipeline-stage-context"), context);
+    assert.equal(context.textContent, `RUN-A · WIN-A · ${COMPLETED_LABEL}`);
+    assert.deepEqual(harness.stageStates(), Array(6).fill("completed"));
+    harness.runtimeButton("RUN-A", "WIN-B").click();
+    await harness.flush();
+    assert.strictEqual(harness.document.getElementById("pipeline-stage-context"), context);
+    assert.equal(context.textContent, `RUN-A · WIN-B · ${RUNNING_LABEL}`);
+    assert.deepEqual(harness.stageStates(), ["unknown", "unknown", "unknown", "unknown", "current", "unknown"]);
+    await harness.pollFailure();
+    assert.strictEqual(harness.document.getElementById("pipeline-stage-context"), context);
+    assert.equal(context.textContent, `RUN-A · WIN-B · ${RUNNING_LABEL}`);
+    assert.match(harness.text("runtime-top-status"), /불러오지 못했습니다/);
+    await harness.poll(otherRunningReports());
+    assert.strictEqual(harness.document.getElementById("pipeline-stage-context"), context);
+    assert.match(context.textContent, /RUN-A · WIN-B · 최근 5건 조회 범위 밖/);
+    assert.equal(context.hidden, false);
+    assert.equal(harness.stageStates().length, 6);
+    assert.equal(harness.text("pipeline-status-note"), "단계 완료 미확인");
+});
+
 test("Recent Runs defaults to five rows and explicitly expands all twenty without refetching", async (t) => {
     // Given
     const runs = Array.from({ length: 20 }, (_, index) => runListItem(`RUN-${index}`, "WIN-A"));

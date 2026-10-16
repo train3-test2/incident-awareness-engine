@@ -217,12 +217,15 @@
     outline-offset: 0.125rem;
 }
 
-.dashboard-time-note p {
+.dashboard-time-note__content {
     position: absolute;
     top: calc(100% + 0.25rem);
     right: 0;
     z-index: 3;
     width: min(28rem, calc(100vw - 2rem));
+    max-height: min(32rem, calc(100dvh - 8rem));
+    overflow-y: auto;
+    overflow-wrap: anywhere;
     margin: 0;
     padding: var(--shell-space-3);
     font-size: 0.8125rem;
@@ -231,6 +234,19 @@
     border: 1px solid var(--shell-color-border);
     border-radius: var(--shell-radius-small);
     box-shadow: var(--shell-shadow-card);
+}
+
+.dashboard-time-note p {
+    margin: 0;
+}
+
+.dashboard-time-note p + p {
+    margin-top: var(--shell-space-3);
+}
+
+.dashboard-pipeline-context {
+    margin: 0 0 0.5rem;
+    overflow-wrap: anywhere;
 }
 
 .dashboard-section {
@@ -1410,9 +1426,11 @@
         flex-basis: 100%;
     }
 
-    .dashboard-time-note[open] p {
+    .dashboard-time-note[open] .dashboard-time-note__content {
         position: static;
         width: auto;
+        max-height: none;
+        overflow-y: visible;
         box-shadow: none;
     }
 
