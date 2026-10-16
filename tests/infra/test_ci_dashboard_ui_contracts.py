@@ -14,8 +14,7 @@ WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 def test_quality_job_runs_every_dashboard_ui_contract_once() -> None:
     # Given
     expected_targets = sorted(
-        path.relative_to(ROOT).as_posix()
-        for path in UI_CONTRACT_DIRECTORY.glob("test_*_contract.mjs")
+        path.relative_to(ROOT).as_posix() for path in UI_CONTRACT_DIRECTORY.glob("test_*.mjs")
     )
     workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
     quality_steps = workflow["jobs"]["quality"]["steps"]
@@ -30,7 +29,7 @@ def test_quality_job_runs_every_dashboard_ui_contract_once() -> None:
         token
         for command in node_test_commands
         for token in shlex.split(command)[2:]
-        if token.startswith("tests/dashboard/ui/test_") and token.endswith("_contract.mjs")
+        if token.startswith("tests/dashboard/ui/test_") and token.endswith(".mjs")
     ]
     duplicate_targets = sorted(
         target for target, count in Counter(configured_targets).items() if count > 1
