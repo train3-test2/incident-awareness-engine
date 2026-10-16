@@ -56,3 +56,18 @@ uv run pytest tests/evaluation/test_incremental_fusion_inputs.py -q
 정상 탐지, horizon 양끝 경계, 결과/trace 변조, pin 갱신에도 불일치한 replay 거부,
 설정 변경, 성능 용도 승격, 누락 파일 거부를 검사한다. 수령 synthetic miss도 동일
 입력/설정으로 재현하여 평가 입력 timestamp=null 연결을 별도 확인했다.
+
+## Horizon 및 시간 경계
+
+반환 frame은 pin의 `evaluation_horizon_sec`를 보존한다. `evaluate()`에 전달하는
+horizon이 이 값과 다르면 오류로 거부한다. 이미 상한으로 제거된 탐지를 더 긴
+horizon으로 재평가하려면 새 pin에 맞춰 원본 실행 증적에서 frame을 다시 생성해야 한다.
+이 컬럼이 없는 기존 평가 입력은 기존 계약을 유지한다.
+
+공격 Run은 reference_time 하한과 min(reference_time + horizon, run_end) 상한을
+포함하며 reference_time은 UTC millisecond 정밀도여야 한다. Normal의 reference_time은
+null이고, 실제 탐지는 FPR 계산을 위해 보존한다. 탐지가 없는 Run의 timestamp는 null이다.
+
+300초 window의 지연 테스트는 검증된 scheduled input 경계를 합성 입력으로 대체해
+실제 causal runner와 소비 변환을 확인하는 단위 테스트다. 지연 100/301초는
+실측 처리 지연이나 v0.2 실제 게시·수신 시각을 의미하지 않는다.

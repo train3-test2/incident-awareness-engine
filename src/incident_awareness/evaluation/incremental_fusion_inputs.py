@@ -16,6 +16,7 @@ from incident_awareness.common.models.fusion import (
 from incident_awareness.common.models.run import RunMetadata
 from incident_awareness.decision.fusion.config import FusionConfig
 from incident_awareness.decision.fusion.result_builder import build_fusion_result
+from incident_awareness.evaluation.evaluation_v0 import _validate_precision
 from incident_awareness.evaluation.incremental_inputs import (
     IncrementalInputPins,
     IncrementalInputTrust,
@@ -90,6 +91,8 @@ def build_incremental_fusion_input(
     trace = FusionStoppingTrace.model_validate_json(trace_bytes)
     if run.end_time is None:
         raise ValueError("completed observation requires Run end")
+    if run.reference_time is not None:
+        _validate_precision(run.reference_time, "reference_time")
     if run.run_type == "attack":
         if run.reference_time is None or not run.start_time <= run.reference_time <= run.end_time:
             raise ValueError("attack requires an in-Run reference_time")
@@ -167,6 +170,7 @@ def build_incremental_fusion_input(
                 "run_end": run.end_time,
                 "reference_time": run.reference_time,
                 "timestamp": eligible,
+                "evaluation_horizon_sec": pins.evaluation_horizon_sec,
                 "method": "Fusion",
                 "scoring_config_version": fusion.scoring_config_version,
                 "usage": pins.usage,
