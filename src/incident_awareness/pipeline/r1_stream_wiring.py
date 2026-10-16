@@ -266,36 +266,46 @@ def consume_spool_once(
             dead_letter_sink=_FileDeadLetterSink(spool_root),
             clock=clock,
         )
-        if message_type == "event_chunk":
-            message = R1EventChunk.model_validate(payload)
-            _require_partition(contract, message.partition)
-            result = ingress.accept_chunk(message)
-        elif message_type == "source_watermark":
-            message = R1SourceWatermark.model_validate(payload)
-            _require_partition(contract, message.partition)
-            result = ingress.accept_watermark(message)
-        elif message_type == "run_closed":
-            message = R1RunClosed.model_validate(payload)
-            expected = {
-                (contract.target_host, item.source, item.source_channel)
-                for item in contract.required_partitions
-            }
-            actual = {
-                (item.partition.host_id, item.partition.source, item.partition.source_channel)
-                for item in message.final_watermarks
-            }
-            if actual != expected:
-                raise ValueError("run_closed does not exactly cover required partitions")
-            result = ingress.accept_run_closed(message)
-        else:
-            raise ValueError(f"unsupported spool message_type: {message_type!r}")
-        connection.commit()
-        ack = {
+        try:
+            if message_type == "event_chunk":
+                message = R1EventChunk.model_validate(payload)
+                _require_partition(contract, message.partition)
+                result = ingress.accept_chunk(message)
+            elif message_type == "source_watermark":
+                message = R1SourceWatermark.model_validate(payload)
+                _require_partition(contract, message.partition)
+                result = ingress.accept_watermark(message)
+            elif message_type == "run_closed":
+                message = R1RunClosed.model_validate(payload)
+                expected = {
+                    (contract.target_host, item.source, item.source_channel)
+                    for item in contract.required_partitions
+                }
+                actual = {
+                    (item.partition.host_id, item.partition.source, item.partition.source_channel)
+                    for item in message.final_watermarks
+                }
+                if actual != expected:
+                    raise ValueError("run_closed does not exactly cover required partitions")
+                result = ingress.accept_run_closed(message)
+            else:
+                raise ValueError(f"unsupported spool message_type: {message_type!r}")
+            connection.commit()
+        except BaseException:
+            if hasattr(connection, "rollback"):
+                connection.rollback()
+            raise
+
+        ack: dict[str, Any] = {
             "message_path": str(path.resolve()),
             "message_sha256": _sha256(path.read_bytes()),
             "disposition": result.disposition.value,
             "accepted_at": _utc_milliseconds(clock()).isoformat().replace("+00:00", "Z"),
         }
+        if message_type == "run_closed":
+            ack["required_partition_contract_sha256"] = _sha256(
+                _canonical_bytes(contract.model_dump(mode="json"))
+            )
         _publish_immutable(ack_path, _canonical_bytes(ack))
         accepted.append(path)
     return tuple(accepted)
@@ -311,6 +321,22 @@ def export_accepted_close(
     """Export the close payload only when its binding is present in Role3 ledger."""
 
     run_closed = R1RunClosed.model_validate_json(accepted_run_closed_path.read_bytes())
+    if not run_closed.final_watermarks:
+        raise ValueError("accepted run_closed has no final watermarks")
+    target_host = run_closed.final_watermarks[0].partition.host_id
+    contract = load_r1_required_partition_contract(contract_path, expected_target_host=target_host)
+
+    expected_partitions = {
+        (contract.target_host, item.source, item.source_channel)
+        for item in contract.required_partitions
+    }
+    actual_partitions = {
+        (item.partition.host_id, item.partition.source, item.partition.source_channel)
+        for item in run_closed.final_watermarks
+    }
+    if actual_partitions != expected_partitions:
+        raise ValueError("run_closed does not match required-partition contract partitions")
+
     receipt = R1StreamDeliveryRepository(connection).load_accepted_run_close_receipt(
         run_closed.run_id
     )
@@ -319,6 +345,15 @@ def export_accepted_close(
     expected_hash = r1_stream_message_sha256(run_closed)
     if receipt.close_id != run_closed.close_id or receipt.content_sha256 != expected_hash:
         raise ValueError("accepted close payload does not match the Role3 ledger receipt")
+
+    ack_path = spool_root / "acks" / f"{accepted_run_closed_path.name}.ack.json"
+    contract_digest = _sha256(_canonical_bytes(contract.model_dump(mode="json")))
+    if ack_path.exists():
+        ack_payload = json.loads(ack_path.read_text(encoding="utf-8"))
+        accepted_contract_sha256 = ack_payload.get("required_partition_contract_sha256")
+        if accepted_contract_sha256 and accepted_contract_sha256 != contract_digest:
+            raise ValueError("contract digest does not match the contract used during acceptance")
+
     payload = {
         "schema": "r1-accepted-close-export",
         "contract_version": "v0.1",
@@ -331,6 +366,8 @@ def export_accepted_close(
         "required_partition_contract": {
             "path": str(contract_path.resolve()),
             "sha256": _sha256(contract_path.read_bytes()),
+            "content_sha256": contract_digest,
+            "target_host": contract.target_host,
         },
     }
     destination = spool_root / "exports" / run_closed.run_id / "accepted-run-closed.json"
@@ -344,6 +381,32 @@ def load_close_export(path: Path) -> tuple[R1RunClosed, R1AcceptedRunCloseReceip
     receipt = R1AcceptedRunCloseReceipt(**payload["acceptance_receipt"])
     if receipt.content_sha256 != r1_stream_message_sha256(run_closed):
         raise ValueError("exported accepted close does not match its ledger receipt")
+
+    contract_info = payload.get("required_partition_contract")
+    if not isinstance(contract_info, dict):
+        raise ValueError("close export is missing required_partition_contract linkage")
+    contract_file = Path(contract_info["path"])
+    if not contract_file.exists():
+        raise ValueError(f"linked required-partition contract file not found: {contract_file}")
+    if _sha256(contract_file.read_bytes()) != contract_info["sha256"]:
+        raise ValueError("linked required-partition contract sha256 mismatch")
+
+    target_host = run_closed.final_watermarks[0].partition.host_id
+    contract = load_r1_required_partition_contract(contract_file, expected_target_host=target_host)
+    expected_partitions = {
+        (contract.target_host, item.source, item.source_channel)
+        for item in contract.required_partitions
+    }
+    actual_partitions = {
+        (item.partition.host_id, item.partition.source, item.partition.source_channel)
+        for item in run_closed.final_watermarks
+    }
+    if actual_partitions != expected_partitions:
+        raise ValueError("exported close does not match linked required-partition contract")
+    contract_digest = _sha256(_canonical_bytes(contract.model_dump(mode="json")))
+    if "content_sha256" in contract_info and contract_info["content_sha256"] != contract_digest:
+        raise ValueError("linked required-partition contract content digest mismatch")
+
     return run_closed, receipt
 
 
