@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>로컬 Telemetry Preview · 합성 샘플</title>
+    <link rel="stylesheet" href="/dashboard-assets/dashboard-shell.css">
+    <link rel="stylesheet" href="/dashboard-assets/dashboard.css">
+    <link rel="stylesheet" href="./telemetry-preview.css">
+    <script type="module" src="./telemetry-preview.mjs"></script>
+</head>
+<body class="dashboard-body">
+    <div class="preview-warning">시연용 샘플 데이터 · 실제 관측 아님</div>
+    <main class="app-page preview-page">
+        <h1>Telemetry 시각 검증</h1>
+        <p>운영 차트·검증기·5초 Polling Controller 재사용 · Backend 및 DB 연결 없음</p>
+        <section class="section-card preview-controls" aria-label="Preview 조작">
+            <label for="preview-scenario">시나리오</label>
+            <select id="preview-scenario">
+                <option value="continuous">연속 관측 · Batch 수락 + 처리</option>
+                <option value="sparse">희소 관측 · 누락 구간</option>
+                <option value="no_samples">미관측 · no_samples</option>
+                <option value="observed_zero">실측 0 · null 지연 구별</option>
+                <option value="stale">관측 중단 · 15초 후 지연</option>
+                <option value="partial">부분 관측 · partial</option>
+                <option value="unknown">최신 여부 미확인 · unknown</option>
+                <option value="api_500">API 오류 · 500</option>
+                <option value="api_503">API 오류 · 503</option>
+            </select>
+            <button id="preview-start" type="button">Preview 시작</button>
+            <button id="preview-pause" type="button" disabled>일시정지</button>
+            <button id="preview-resume" type="button" disabled>재개</button>
+            <button id="preview-reset" type="button">초기화</button>
+            <p id="preview-state" role="status" aria-live="polite" aria-atomic="true">시작 대기</p>
+        </section>
+        <p id="preview-response">조회 0회 · 시작하면 합성 시간의 최근 300초를 조회합니다.</p>
+        <div class="preview-charts">
+            <section class="section-card dashboard-section" aria-labelledby="throughput-heading">
+                <div class="dashboard-section-header">
+                    <h2 id="throughput-heading">실시간 처리 흐름</h2>
+                    <span id="telemetry-throughput-note" class="dashboard-measurement-note">대기</span>
+                </div>
+                <p class="dashboard-chart-range">최근 5분 · 1초 버킷 · 건/초</p>
+                <div id="telemetry-throughput-chart" class="dashboard-metric-frame dashboard-telemetry-frame" tabindex="0" role="region" aria-label="처리량 그래프 · 좁은 화면에서 좌우 스크롤"><span>Preview 시작 대기</span></div>
+                <div class="dashboard-metric-summary"><p>최근 60초 입력·처리</p><strong id="telemetry-throughput-summary">미관측</strong></div>
+                <p id="telemetry-throughput-status" class="dashboard-visually-hidden" role="status" aria-live="polite" aria-atomic="true">시작 대기</p>
+                <details class="dashboard-telemetry-disclosure"><summary>측정 기준 · 관측 품질</summary>
+                    <p>입력은 검증된 Batch 수락 시점의 샘플이며 지속적 외부 EDR ingest rate가 아닙니다. 선은 인접 1초 버킷만 연결합니다. 미관측 ≠ 실측 0.</p>
+                    <p id="telemetry-throughput-details">시작 대기</p>
+                </details>
+            </section>
+            <section class="section-card dashboard-section" aria-labelledby="latency-heading">
+                <div class="dashboard-section-header">
+                    <h2 id="latency-heading">처리 지연 시간</h2>
+                    <span id="telemetry-latency-note" class="dashboard-measurement-note">대기</span>
+                </div>
+                <p class="dashboard-chart-range">최근 5분 · 1초 버킷 · ms</p>
+                <div id="telemetry-latency-chart" class="dashboard-metric-frame dashboard-telemetry-frame" tabindex="0" role="region" aria-label="처리 지연 그래프 · 좁은 화면에서 좌우 스크롤"><span>Preview 시작 대기</span></div>
+                <div class="dashboard-metric-summary"><p>최근 60초 샘플 가중 평균</p><strong id="telemetry-latency-summary">미관측</strong></div>
+                <p id="telemetry-latency-status" class="dashboard-visually-hidden" role="status" aria-live="polite" aria-atomic="true">시작 대기</p>
+                <details class="dashboard-telemetry-disclosure"><summary>측정 기준 · 관측 품질</summary>
+                    <p>Normalization + Evidence 처리 지연이며 전체 End-to-End 판단 지연이 아닙니다. 지연 샘플 없는 버킷(null)은 연결하지 않습니다.</p>
+                    <p id="telemetry-latency-details">시작 대기</p>
+                </details>
+            </section>
+        </div>
+        <details class="dashboard-help"><summary>검증 방법</summary>
+            <p>시작 후 5초 간격으로 조회 횟수·기준시각·최근 60초 요약·SVG를 확인합니다. 관측 중단 시나리오는 조회를 계속하며 새 관측만 중단하므로 15초 후 지연 상태가 됩니다. 일시정지는 시간과 Polling을 모두 멈춥니다.</p>
+            <p>시나리오를 바꾸면 초기화됩니다. 합성 시각은 2026-10-16 UTC부터 시작합니다. 실제 Run / Decision / Fusion Replay는 포함하지 않습니다.</p>
+        </details>
+    </main>
+</body>
+</html>

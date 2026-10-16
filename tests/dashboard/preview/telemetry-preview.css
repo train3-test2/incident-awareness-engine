@@ -1,0 +1,22 @@
+.preview-warning {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    padding: 0.75rem 1rem;
+    color: #713600;
+    background: #fff0c2;
+    border-bottom: 2px solid #b66a10;
+    text-align: center;
+    font-weight: 800;
+}
+.preview-page { max-width: 1840px; }
+.preview-page h1 { margin-bottom: 0.5rem; }
+.preview-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; padding: 1rem; }
+.preview-controls button, .preview-controls select { min-height: 2.75rem; max-width: 100%; padding: 0.5rem 0.75rem; font: inherit; }
+.preview-controls p { flex-basis: 100%; margin: 0; }
+.preview-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.preview-charts h2 { margin: 0; font-size: 1.125rem; }
+.preview-charts .dashboard-metric-summary { margin-top: 0.75rem; }
+.preview-charts .dashboard-telemetry-frame { margin-top: 0.5rem; min-height: 15rem; }
+#preview-response { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+@media (max-width: 60rem) { .preview-charts { grid-template-columns: minmax(0, 1fr); } }
