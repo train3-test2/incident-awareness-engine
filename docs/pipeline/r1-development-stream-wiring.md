@@ -26,17 +26,21 @@ content, gaps, late Events, unsupported partitions and host mismatch fail closed
 
 The raw segment number and 1-based line number become `raw_ref.segment_no` and
 `raw_ref.record_no`; Sysmon `RecordId` remains `raw_ref.source_record_id`. The
-producer records `ingest_time` when the Controller observes and normalizes the
-live segment. It never derives it from Event time.
+producer records `ingest_time` as the Controller reception time immediately after
+the live query returns. Target-A query completion time is preserved as separate
+capture metadata. Incomplete raw/capture pairs are cleaned up on restart recovery
+so only verified complete pairs are replayed.
 
 ## Required configuration and commands
 
 The cadence values are explicit operator inputs, not validated production
 defaults. Before an actual development run, Role3 and the collection owner must
 approve `PollIntervalSec`, `ChunkMaxEvents` and `AllowedLatenessMs`. The watermark
-is the Target-A query completion time minus the configured allowed lateness. It
-is not `max(Event.timestamp)` and advances only after all records returned by
-that query have been chunked.
+is derived from the verified source channel cursor time minus the configured allowed
+lateness, never from wall-clock timeout or max Event time. Final watermark and
+`run_closed` require verified source drain (the Target-A Sysmon channel cursor reaching
+or passing the candidate boundary and all records retrieved). If the runner fails,
+`run-failed.json` is published atomically and the sidecar terminates without close.
 
 Render the existing required-partition contract with the runner-verified host:
 
@@ -95,11 +99,11 @@ uv run python -m incident_awareness.pipeline.r1_stream_wiring consume `
 - rendered contract: `<spool>/contracts/<run_id>-required-partitions.json`
 
 The accepted-close export contains the exact `R1RunClosed`, the ledger-loaded
-`R1AcceptedRunCloseReceipt`, and the contract path/hash. Role4 loads the two
-typed values with `load_close_export()` and supplies them to the existing
-seal/proof API; it must not reconstruct a close. Role2 uses the same export,
-contract and durable ledger receipt at its existing checkpoint/availability
-boundary. For chunks and watermarks it calls
+`R1AcceptedRunCloseReceipt`, and the strictly bound contract path, hash and digest.
+Role4 loads the typed values with `load_close_export()` (which verifies the required-partition
+contract linkage fail-closed) and supplies them to the existing seal/proof API; it must
+not reconstruct a close. Role2 uses the same export, contract and durable ledger receipt
+at its existing checkpoint/availability boundary. For chunks and watermarks it calls
 `load_accepted_spool_message(outbox_path, ack_path)`; this refuses unacknowledged
 or changed bytes, then returns the existing typed stream model that
 `R1IncrementalEvidenceState.accept_chunk()` consumes. `emitted_at`, ledger
