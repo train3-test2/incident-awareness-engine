@@ -4108,6 +4108,27 @@ function Invoke-R1PilotRun {
                 -LaunchReturned $launchReturned -Reference $reference
             if ($null -ne $failurePath) { Write-Fail ("failure record written: " + $failurePath) }
         }
+        if (-not [string]::IsNullOrWhiteSpace($IncrementalStreamControlRoot)) {
+            try {
+                $failedControl = [ordered]@{
+                    schema = "r1-incremental-run-control"
+                    contract_version = "v0.1"
+                    message_type = "run_failed"
+                    run_id = $RunId
+                    target_host = $targetHost
+                    stage = $stage
+                    error = [string]$runFailure.Exception.Message
+                    failed_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                }
+                $controlDir = Join-Path $IncrementalStreamControlRoot $RunId
+                New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
+                $utf8Control = New-Object System.Text.UTF8Encoding($false)
+                Write-R1AtomicNewFile -Path (Join-Path $controlDir "run-failed.json") `
+                    -Bytes $utf8Control.GetBytes(($failedControl | ConvertTo-Json -Compress))
+            } catch {
+                Write-Fail ("writing run-failed control failed: " + $_.Exception.Message)
+            }
+        }
         throw $runFailure
     }
     finally {

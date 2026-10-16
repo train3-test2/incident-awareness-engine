@@ -62,17 +62,67 @@ function Invoke-Wiring([string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "r1_stream_wiring failed with exit code $LASTEXITCODE" }
 }
 
+$runControlDir = Join-Path $ControlRoot $RunId
+$failedControlPath = Join-Path $runControlDir "run-failed.json"
+$abortedControlPath = Join-Path $runControlDir "run-aborted.json"
+if (Test-Path -LiteralPath $failedControlPath) {
+    throw "runner failed before completion (found $failedControlPath)"
+}
+if (Test-Path -LiteralPath $abortedControlPath) {
+    throw "runner was aborted before completion (found $abortedControlPath)"
+}
+
 $state = [ordered]@{
     last_record_id = 0
     segment_no = 0
     chunk_sequence = 0
     watermark_sequence = 0
     message_ordinal = 0
+    last_watermark_at = ""
 }
 if (Test-Path -LiteralPath $statePath) {
     $loaded = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
-    foreach ($name in @($state.Keys)) { $state[$name] = [int64]$loaded.$name }
+    foreach ($name in @($state.Keys)) {
+        if ($name -eq "last_watermark_at") {
+            if ($null -ne $loaded.$name) { $state[$name] = [string]$loaded.$name }
+        } else {
+            $state[$name] = [int64]$loaded.$name
+        }
+    }
 }
+
+# Check for existing accepted close and exit if already completed
+$existingClose = Get-ChildItem (Join-Path $runSpool "outbox") -Filter "*-run_closed.json" -ErrorAction SilentlyContinue |
+    Sort-Object Name | Select-Object -Last 1
+$existingExport = Join-Path (Join-Path $runSpool "exports") (Join-Path $RunId "accepted-run-closed.json")
+if ($null -ne $existingClose) {
+    if (-not $NoConsume) {
+        Invoke-Wiring @("consume", "--spool-root", $runSpool,
+            "--required-partition-contract", $RequiredPartitionContract,
+            "--target-host", $TargetHost)
+        if (-not (Test-Path -LiteralPath $existingExport)) {
+            Invoke-Wiring @("export-close", "--spool-root", $runSpool,
+                "--accepted-run-closed", $existingClose.FullName,
+                "--required-partition-contract", $RequiredPartitionContract)
+        }
+    }
+    return
+}
+
+# Clean up orphan raw/capture pairs before recovery
+foreach ($rawFile in @(Get-ChildItem -LiteralPath $rawRoot -Filter "sysmon-*.jsonl" -ErrorAction SilentlyContinue)) {
+    $metaPath = $rawFile.FullName + ".capture.json"
+    if (-not (Test-Path -LiteralPath $metaPath)) {
+        Remove-Item -LiteralPath $rawFile.FullName -Force
+    }
+}
+foreach ($metaFile in @(Get-ChildItem -LiteralPath $rawRoot -Filter "sysmon-*.jsonl.capture.json" -ErrorAction SilentlyContinue)) {
+    $rawPath = $metaFile.FullName.Substring(0, $metaFile.FullName.Length - ".capture.json".Length)
+    if (-not (Test-Path -LiteralPath $rawPath)) {
+        Remove-Item -LiteralPath $metaFile.FullName -Force
+    }
+}
+
 # Recover counters from immutable source/output files. This closes the crash
 # gap where publication succeeded before producer-state.json was replaced.
 foreach ($rawFile in @(Get-ChildItem -LiteralPath $rawRoot -Filter "sysmon-*.jsonl" -ErrorAction SilentlyContinue)) {
@@ -92,9 +142,13 @@ foreach ($messageFile in @(Get-ChildItem (Join-Path $runSpool "outbox") -Filter 
     if ($message.message_type -ceq "event_chunk" -and [int64]$message.chunk_sequence -gt $state.chunk_sequence) {
         $state.chunk_sequence = [int64]$message.chunk_sequence
     }
-    if ($message.message_type -ceq "source_watermark" -and
-        [int64]$message.watermark_sequence -gt $state.watermark_sequence) {
-        $state.watermark_sequence = [int64]$message.watermark_sequence
+    if ($message.message_type -ceq "source_watermark") {
+        if ([int64]$message.watermark_sequence -gt $state.watermark_sequence) {
+            $state.watermark_sequence = [int64]$message.watermark_sequence
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$message.watermark_at)) {
+            $state.last_watermark_at = [string]$message.watermark_at
+        }
     }
 }
 while ($state.chunk_sequence -lt $state.segment_no) {
@@ -123,6 +177,13 @@ if ($UseSsl) { $sessionArgs.UseSSL = $true }
 $session = New-PSSession @sessionArgs
 try {
     while ($true) {
+        if (Test-Path -LiteralPath $failedControlPath) {
+            throw "runner failed during polling (found $failedControlPath)"
+        }
+        if (Test-Path -LiteralPath $abortedControlPath) {
+            throw "runner was aborted during polling (found $abortedControlPath)"
+        }
+
         $answer = Invoke-Command -Session $session -ScriptBlock {
             param($LastRecordId, $ContextStart)
             $records = @(Get-WinEvent -FilterHashtable @{
@@ -143,12 +204,19 @@ try {
                     EventData = $eventData
                 }
             }
+            $latestInLog = Get-WinEvent -LogName "Microsoft-Windows-Sysmon/Operational" -MaxEvents 1 -ErrorAction SilentlyContinue
+            $cursorRecordId = if ($null -ne $latestInLog) { [long]$latestInLog.RecordId } else { 0 }
+            $cursorUtc = if ($null -ne $latestInLog) { $latestInLog.TimeCreated.ToUniversalTime().ToString("o") } else { $null }
+
             [ordered]@{
-                observed_at_utc = [DateTime]::UtcNow.ToString("o")
+                target_queried_at_utc = [DateTime]::UtcNow.ToString("o")
+                channel_cursor_record_id = $cursorRecordId
+                channel_cursor_utc = $cursorUtc
                 records = @($converted)
             }
         } -ArgumentList @([long]$state.last_record_id, $ContextStartUtc)
 
+        $controllerReceivedAtUtc = [DateTime]::UtcNow.ToString("o")
         $records = @($answer.records)
         for ($offset = 0; $offset -lt $records.Count; $offset += $ChunkMaxEvents) {
             $end = [Math]::Min($offset + $ChunkMaxEvents - 1, $records.Count - 1)
@@ -159,12 +227,14 @@ try {
             $rawPath = Join-Path $rawRoot ("sysmon-{0:D8}.jsonl" -f $state.segment_no)
             $metaPath = $rawPath + ".capture.json"
             $lines = @($slice | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 8 })
-            Write-AtomicText $rawPath (($lines -join "`n") + "`n")
             if (-not (Test-Path -LiteralPath $metaPath)) {
                 Write-AtomicText $metaPath (([ordered]@{
-                    observed_at_utc = [string]$answer.observed_at_utc
+                    target_queried_at_utc = [string]$answer.target_queried_at_utc
+                    controller_received_at_utc = $controllerReceivedAtUtc
+                    observed_at_utc = $controllerReceivedAtUtc
                 } | ConvertTo-Json -Compress) + "`n")
             }
+            Write-AtomicText $rawPath (($lines -join "`n") + "`n")
             $capture = Get-Content -LiteralPath $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
             Invoke-Wiring @("publish-segment", "--spool-root", $runSpool,
                 "--required-partition-contract", $RequiredPartitionContract,
@@ -177,19 +247,27 @@ try {
             $state.last_record_id = [long]$slice[-1].RecordId
         }
 
-        if ($state.chunk_sequence -gt 0) {
-            $observed = [DateTime]::Parse([string]$answer.observed_at_utc).ToUniversalTime()
-            $frontier = $observed.AddMilliseconds(-$AllowedLatenessMs)
-            $state.watermark_sequence++
-            $state.message_ordinal++
-            Invoke-Wiring @("publish-watermark", "--spool-root", $runSpool,
-                "--required-partition-contract", $RequiredPartitionContract,
-                "--target-host", $TargetHost, "--run-id", $RunId,
-                "--watermark-sequence", [string]$state.watermark_sequence,
-                "--covered-through-chunk-sequence", [string]$state.chunk_sequence,
-                "--watermark-at", $frontier.ToString("o"),
-                "--allowed-lateness-ms", [string]$AllowedLatenessMs,
-                "--message-ordinal", [string]$state.message_ordinal)
+        if ($state.chunk_sequence -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$answer.channel_cursor_utc)) {
+            $sourceCursorTime = [DateTime]::Parse([string]$answer.channel_cursor_utc).ToUniversalTime()
+            $frontier = $sourceCursorTime.AddMilliseconds(-$AllowedLatenessMs)
+            $canAdvance = $true
+            if ($state.Contains("last_watermark_at") -and -not [string]::IsNullOrWhiteSpace([string]$state.last_watermark_at)) {
+                $prev = [DateTime]::Parse([string]$state.last_watermark_at).ToUniversalTime()
+                if ($frontier -lt $prev) { $canAdvance = $false }
+            }
+            if ($canAdvance) {
+                $state.watermark_sequence++
+                $state.message_ordinal++
+                $state.last_watermark_at = $frontier.ToString("o")
+                Invoke-Wiring @("publish-watermark", "--spool-root", $runSpool,
+                    "--required-partition-contract", $RequiredPartitionContract,
+                    "--target-host", $TargetHost, "--run-id", $RunId,
+                    "--watermark-sequence", [string]$state.watermark_sequence,
+                    "--covered-through-chunk-sequence", [string]$state.chunk_sequence,
+                    "--watermark-at", $frontier.ToString("o"),
+                    "--allowed-lateness-ms", [string]$AllowedLatenessMs,
+                    "--message-ordinal", [string]$state.message_ordinal)
+            }
         }
 
         $stateTemp = $statePath + "." + [Guid]::NewGuid().ToString("N") + ".next"
@@ -201,13 +279,46 @@ try {
                 "--target-host", $TargetHost)
         }
 
-        $boundaryPath = Join-Path (Join-Path $ControlRoot $RunId) "candidate-boundary-completed.json"
+        $boundaryPath = Join-Path $runControlDir "candidate-boundary-completed.json"
         if ((Test-Path -LiteralPath $boundaryPath) -and $state.watermark_sequence -gt 0) {
             $boundary = Get-Content -LiteralPath $boundaryPath -Raw -Encoding UTF8 | ConvertFrom-Json
             if ($boundary.run_id -cne $RunId -or $boundary.target_host -cne $TargetHost) {
                 throw "candidate boundary control is bound to another run or host"
             }
-            if ($frontier -ge [DateTime]::Parse([string]$boundary.candidate_boundary_at).ToUniversalTime()) {
+            $boundaryUtc = [DateTime]::Parse([string]$boundary.candidate_boundary_at).ToUniversalTime()
+
+            # Verified source cursor / final-drain completeness check:
+            $cursorUtc = if (-not [string]::IsNullOrWhiteSpace([string]$answer.channel_cursor_utc)) {
+                [DateTime]::Parse([string]$answer.channel_cursor_utc).ToUniversalTime()
+            } else { [DateTime]::MinValue }
+            $cursorRecordId = [long]$answer.channel_cursor_record_id
+
+            $isDrained = ($cursorUtc -ge $boundaryUtc) -and ($state.last_record_id -ge $cursorRecordId -or $records.Count -eq 0)
+            if ($isDrained) {
+                $finalWatermarkTicks = [Math]::Max($boundaryUtc.Ticks, $cursorUtc.AddMilliseconds(-$AllowedLatenessMs).Ticks)
+                $finalWatermarkTime = [DateTime]::new($finalWatermarkTicks, [DateTimeKind]::Utc)
+                if ($finalWatermarkTime -lt $boundaryUtc) {
+                    $finalWatermarkTime = $boundaryUtc
+                }
+
+                $state.watermark_sequence++
+                $state.message_ordinal++
+                $state.last_watermark_at = $finalWatermarkTime.ToString("o")
+                Invoke-Wiring @("publish-watermark", "--spool-root", $runSpool,
+                    "--required-partition-contract", $RequiredPartitionContract,
+                    "--target-host", $TargetHost, "--run-id", $RunId,
+                    "--watermark-sequence", [string]$state.watermark_sequence,
+                    "--covered-through-chunk-sequence", [string]$state.chunk_sequence,
+                    "--watermark-at", $finalWatermarkTime.ToString("o"),
+                    "--allowed-lateness-ms", [string]$AllowedLatenessMs,
+                    "--message-ordinal", [string]$state.message_ordinal)
+
+                if (-not $NoConsume) {
+                    Invoke-Wiring @("consume", "--spool-root", $runSpool,
+                        "--required-partition-contract", $RequiredPartitionContract,
+                        "--target-host", $TargetHost)
+                }
+
                 $watermarkPath = Get-ChildItem (Join-Path $runSpool "outbox") -Filter "*-source_watermark.json" |
                     Sort-Object Name | Select-Object -Last 1
                 $state.message_ordinal++
