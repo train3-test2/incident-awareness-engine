@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -42,9 +43,13 @@ def _raw_record(record_id: int = 10) -> str:
 class _Connection:
     def __init__(self) -> None:
         self.commits = 0
+        self.rollbacks = 0
 
     def commit(self) -> None:
         self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
 
 
 class _Ledger:
@@ -318,3 +323,130 @@ def test_close_requires_final_watermark_to_cover_candidate_boundary(tmp_path):
             message_ordinal=2,
             clock=lambda: T0,
         )
+
+
+def test_consume_spool_once_rolls_back_on_exception(tmp_path, monkeypatch):
+    _, contract, raw = _inputs(tmp_path)
+    spool = tmp_path / "spool"
+    publish_sysmon_segment(
+        raw_jsonl=raw,
+        spool_root=spool,
+        run_id=RUN_ID,
+        host_id=HOST,
+        raw_log_id="raw-live",
+        segment_no=2,
+        chunk_sequence=2,
+        message_ordinal=1,
+        required_partition_contract=contract,
+        clock=lambda: T0,
+    )
+    ledger = _Ledger(object())
+    monkeypatch.setattr(wiring, "R1StreamDeliveryRepository", lambda connection: ledger)
+    conn = _Connection()
+    with pytest.raises(ValueError, match="contiguous"):
+        wiring.consume_spool_once(spool_root=spool, contract=contract, connection=conn)
+    assert conn.rollbacks >= 1
+    assert conn.commits == 0
+
+
+def test_export_accepted_close_and_load_close_export_enforce_contract_linkage(tmp_path, monkeypatch):
+    contract_path, contract, raw = _inputs(tmp_path)
+    spool = tmp_path / "spool"
+    times = iter(datetime(2030, 1, 1, 0, 0, second, tzinfo=UTC) for second in range(1, 20))
+    publish_sysmon_segment(
+        raw_jsonl=raw,
+        spool_root=spool,
+        run_id=RUN_ID,
+        host_id=HOST,
+        raw_log_id="raw-live",
+        segment_no=1,
+        chunk_sequence=1,
+        message_ordinal=1,
+        required_partition_contract=contract,
+        clock=lambda: next(times),
+    )
+    watermark_path = publish_source_watermark(
+        spool_root=spool,
+        run_id=RUN_ID,
+        host_id=HOST,
+        watermark_sequence=1,
+        covered_through_chunk_sequence=1,
+        watermark_at=datetime(2030, 1, 1, 0, 0, 4, tzinfo=UTC),
+        allowed_lateness_ms=2000,
+        message_ordinal=2,
+        required_partition_contract=contract,
+        clock=lambda: next(times),
+    )
+    close_path = publish_run_closed(
+        spool_root=spool,
+        final_watermark_path=watermark_path,
+        candidate_boundary_at=datetime(2030, 1, 1, 0, 0, 3, tzinfo=UTC),
+        message_ordinal=3,
+        clock=lambda: next(times),
+    )
+    ledger = _Ledger(object())
+    monkeypatch.setattr(wiring, "R1StreamDeliveryRepository", lambda connection: ledger)
+    connection = _Connection()
+    wiring.consume_spool_once(spool_root=spool, contract=contract, connection=connection, clock=lambda: next(times))
+
+    # Reject export with mismatched contract target host
+    other_contract_path = render_required_partition_contract(
+        path=tmp_path / "other-contract.json", target_host="Other-Host"
+    )
+    with pytest.raises(ValueError, match="target_host"):
+        wiring.export_accepted_close(
+            spool_root=spool,
+            accepted_run_closed_path=close_path,
+            connection=connection,
+            contract_path=other_contract_path,
+        )
+
+    # Valid export succeeds
+    export_path = wiring.export_accepted_close(
+        spool_root=spool,
+        accepted_run_closed_path=close_path,
+        connection=connection,
+        contract_path=contract_path,
+    )
+    run_closed, receipt = load_close_export(export_path)
+    assert run_closed.run_id == RUN_ID
+
+    # load_close_export rejects if contract file is modified
+    contract_bytes = contract_path.read_bytes()
+    contract_path.write_bytes(contract_bytes + b" ")
+    with pytest.raises(ValueError, match="sha256 mismatch"):
+        load_close_export(export_path)
+    contract_path.write_bytes(contract_bytes)
+
+    # load_close_export rejects if export JSON has wrong contract content hash
+    export_payload = json.loads(export_path.read_text(encoding="utf-8"))
+    export_payload["required_partition_contract"]["content_sha256"] = "0" * 64
+    export_path.write_text(json.dumps(export_payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="content digest mismatch"):
+        load_close_export(export_path)
+
+
+def test_observed_at_sets_event_ingest_time_from_controller_clock(tmp_path):
+    _, contract, raw = _inputs(tmp_path)
+    spool = tmp_path / "spool"
+    target_a_query_time = datetime(2030, 1, 1, 0, 0, 2, tzinfo=UTC)
+    controller_received_time = datetime(2030, 1, 1, 0, 0, 5, tzinfo=UTC)
+
+    chunk_path = publish_sysmon_segment(
+        raw_jsonl=raw,
+        spool_root=spool,
+        run_id=RUN_ID,
+        host_id=HOST,
+        raw_log_id="raw-live",
+        segment_no=1,
+        chunk_sequence=1,
+        message_ordinal=1,
+        required_partition_contract=contract,
+        observed_at=controller_received_time,
+        clock=lambda: target_a_query_time,
+    )
+
+    chunk = wiring.R1EventChunk.model_validate_json(chunk_path.read_bytes())
+    # ingest_time must reflect Controller receipt time (not Target-A clock)
+    assert chunk.events[0].ingest_time == controller_received_time
+    assert chunk.events[0].ingest_time != target_a_query_time
