@@ -153,6 +153,14 @@ def _canonical_sha256(message: R1EventChunk | R1SourceWatermark | R1RunClosed) -
     return _canonical_payload_sha256(payload)
 
 
+def r1_stream_message_sha256(
+    message: R1EventChunk | R1SourceWatermark | R1RunClosed,
+) -> str:
+    """Return the canonical content digest used by the durable Role3 ledger."""
+
+    return _canonical_sha256(message)
+
+
 def _canonical_event_sha256(event: NormalizedEvent) -> str:
     return _canonical_payload_sha256(event.model_dump(mode="json", by_alias=True))
 
@@ -168,4 +176,9 @@ def _utc_milliseconds(value: datetime) -> datetime:
     return value.astimezone(UTC).replace(microsecond=value.microsecond // 1000 * 1000)
 
 
-__all__ = ["R1StreamDeliveryDisposition", "R1StreamDeliveryResult", "R1StreamIngress"]
+__all__ = [
+    "R1StreamDeliveryDisposition",
+    "R1StreamDeliveryResult",
+    "R1StreamIngress",
+    "r1_stream_message_sha256",
+]
