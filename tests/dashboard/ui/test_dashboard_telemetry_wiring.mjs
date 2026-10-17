@@ -153,3 +153,131 @@ test("Time guidance positions one wrapper while paragraphs remain in document fl
     assert.match(mobileRule, /max-height: none/);
     assert.match(html, /<details class="dashboard-time-note">\s*<summary>표시 기준 및 상태 안내<\/summary>/);
 });
+
+test("Asymmetric independent columns retain side summaries and legends outside scrolling plots", async () => {
+    // Given
+    const [html, style, renderer] = await Promise.all([
+        readFile(htmlPath, "utf8"), readFile(cssPath, "utf8"),
+        readFile(new URL("src/incident_awareness/dashboard/ui/assets/dashboard-telemetry-chart.mjs", root), "utf8"),
+    ]);
+    // When / Then
+    for (const [id, column] of [
+        ["pipeline-heading", "primary"], ["throughput-heading", "primary"], ["runs-heading", "primary"],
+        ["insights-heading", "secondary"], ["latency-heading", "secondary"], ["workflow-heading", "secondary"],
+    ]) {
+        const heading = locateElement(html, id);
+        assert.ok(heading.ancestors.some((ancestor) => ancestor.markup.includes(`dashboard-monitor-column--${column}`)));
+    }
+    const grid = style.split(".dashboard-monitor-grid {")[1].split("}")[0];
+    assert.match(grid, /grid-template-columns: minmax\(0, 906fr\) minmax\(0, 548fr\)/);
+    assert.doesNotMatch(html, /class="dashboard-telemetry-grid"/);
+    const column = style.split(".dashboard-monitor-column {")[1].split("}")[0];
+    assert.match(column, /flex-direction: column/);
+    const metrics = style.split(".dashboard-metric-layout {")[1].split("}")[0];
+    assert.match(metrics, /grid-template-columns: minmax\(0, 1fr\) 8\.75rem/);
+    for (const kind of ["throughput", "latency"]) {
+        const note = locateElement(html, `telemetry-${kind}-note`);
+        assert.ok(note.ancestors.some((ancestor) => ancestor.tag === "summary"), "Quality remains visible when technical details are closed");
+    }
+    assert.match(renderer, /figure\.append\(plot\)/);
+    assert.match(renderer, /figure\.append\(legend\)/);
+    assert.doesNotMatch(renderer, /plot\.append\(legend\)/);
+    assert.match(style, /\.dashboard-telemetry-chart__plot\s*\{[^}]*overflow-x: auto/);
+    const sprite = await readFile(new URL("src/incident_awareness/dashboard/ui/assets/dashboard-icons.svg", root), "utf8");
+    for (const name of ["artifact_validation", "normalization", "fusion", "fast_handoff", "hybrid", "persistence"]) {
+        assert.ok(sprite.includes(`id="${name}"`));
+    }
+    assert.equal((html.match(/href="\/dashboard-assets\/dashboard-icons\.svg#/g) ?? []).length, 13);
+    assert.doesNotMatch(html, />[◈▷◷↻⇥↧≋]</);
+});
+
+test("Compact Replay keeps analysis tools reachable and retains complete semantic content", async () => {
+    // Given
+    const [html, style] = await Promise.all([readFile(htmlPath, "utf8"), readFile(cssPath, "utf8")]);
+    // When / Then
+    for (const id of ["selected-run-refresh", "selected-run-detail-link", "selected-run-fusion-link"]) {
+        const tool = locateElement(html, id);
+        assert.ok(tool.ancestors.some((ancestor) => ancestor.markup.includes('class="dashboard-detail-context"')));
+        assert.ok(tool.ancestors.some((ancestor) => ancestor.markup.includes('class="dashboard-detail-context__content"')));
+    }
+    for (const id of ["dashboard-prev-run", "dashboard-next-run", "selected-run-heading", "dashboard-tab-replay"]) {
+        assert.equal(locateElement(html, id).ancestors.some((ancestor) => ancestor.tag === "details"), false);
+    }
+    for (const id of ["selected-run-chart", "decision-timeline-list", "event-type-summary"]) {
+        assert.equal(locateElement(html, id).ancestors.some((ancestor) => ancestor.tag === "details"), false);
+    }
+    assert.match(style, /\.dashboard-analysis\s*\{[^}]*min-height: 14\.4375rem/);
+    assert.doesNotMatch(style, /\.dashboard-analysis\s*\{[^}]*\n\s*(?:height|max-height):/);
+    assert.match(style, /\.dashboard-detail-context__content\s*\{[^}]*overflow-y: auto/);
+    assert.match(style, /\.dashboard-detail-context__content\s*\{[^}]*position: static/);
+    assert.match(html, /aria-label="연관 Event 집계 기준"/);
+});
+
+test("Dashboard state text tokens keep readable contrast without remote font dependencies", async () => {
+    // Given
+    const style = await readFile(cssPath, "utf8");
+    const tokens = new Map([...style.matchAll(/(--[a-z-]+):\s*(#[a-f0-9]{6});/g)].map((match) => [match[1], match[2]]));
+    const luminance = (hex) => {
+        const channels = hex.slice(1).match(/../g).map((channel) => parseInt(channel, 16) / 255)
+            .map((channel) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+        return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+    };
+    // When / Then
+    for (const [ink, background] of [
+        ["--shell-color-text", "#ffffff"], ["--shell-color-muted", "#ffffff"],
+        ["--shell-color-success", tokens.get("--shell-color-success-soft")],
+        ["--shell-color-warning", tokens.get("--shell-color-warning-soft")],
+        ["--shell-color-danger", tokens.get("--shell-color-danger-soft")],
+    ]) {
+        const values = [luminance(tokens.get(ink)), luminance(background)].sort((left, right) => left - right);
+        assert.ok((values[1] + 0.05) / (values[0] + 0.05) >= 4.5, ink);
+    }
+    assert.match(style, /--dashboard-font: Arial, "Noto Sans KR", "Malgun Gothic", sans-serif/);
+    for (const name of ["--dashboard-input", "--dashboard-processing", "--dashboard-latency"]) {
+        assert.ok((1 + 0.05) / (luminance(tokens.get(name)) + 0.05) >= 3, name);
+    }
+    assert.doesNotMatch(style, /@import|@font-face|https?:\/\//);
+});
+
+test("Recent Runs keeps its existing disclosure in the header and wraps full identifiers naturally", async () => {
+    // Given
+    const [html, style] = await Promise.all([readFile(htmlPath, "utf8"), readFile(cssPath, "utf8")]);
+
+    // When
+    const toggle = locateElement(html, "dashboard-runs-toggle");
+    const identifier = style.split(".runs-table .dashboard-table__run > span {")[1].split("}")[0];
+    const timestamp = style.split(".dashboard-run-time {")[1].split("}")[0];
+
+    // Then
+    assert.ok(toggle.ancestors.some((ancestor) => ancestor.markup.includes('class="section-header dashboard-section-header"')));
+    assert.ok(toggle.ancestors.some((ancestor) => ancestor.markup.includes("dashboard-runs-section")));
+    assert.equal(toggle.ancestors.some((ancestor) => ancestor.tag === "details"), false);
+    assert.equal((html.match(/id="dashboard-runs-toggle"/g) ?? []).length, 1);
+    assert.match(identifier, /display: flex/);
+    assert.match(identifier, /flex-wrap: wrap/);
+    assert.match(timestamp, /display: inline-flex/);
+    assert.match(timestamp, /flex-wrap: wrap/);
+    assert.doesNotMatch(identifier + timestamp, /overflow: hidden|text-overflow: ellipsis|max-height:/);
+    assert.match(style, /\.dashboard-telemetry-chart__segment\s*\{[^}]*stroke-width: 2;/);
+});
+
+test("Navigation alignment polish is scoped to Dashboard and preserves compact mobile spacing", async () => {
+    // Given
+    const [html, style] = await Promise.all([readFile(htmlPath, "utf8"), readFile(cssPath, "utf8")]);
+
+    // When
+    const header = style.split(".dashboard-app-header .app-header__inner {")[1].split("}")[0];
+    const navigation = style.split(".dashboard-app-header .app-navigation {")[1].split("}")[0];
+    const desktop = style.split("@media (min-width: 70rem) {")[1];
+    const mobile = style.split("@media (max-width: 48rem) {")[1];
+
+    // Then
+    assert.match(header, /min-height: 2\.6875rem/);
+    assert.match(header, /padding: 0\.25rem 1rem 0\.25rem 1\.5rem/);
+    assert.match(navigation, /gap: 0\.375rem/);
+    assert.doesNotMatch(navigation, /margin-left:/);
+    assert.match(desktop, /\.dashboard-app-header \.app-navigation\s*\{\s*margin-left: 0\.1875rem/);
+    assert.match(mobile, /\.dashboard-app-header \.app-header__inner\s*\{\s*gap: var\(--shell-space-2\)/);
+    assert.match(html, /aria-current="page"/);
+    assert.match(html, /사건 검색 · 연동 전/);
+});

@@ -98,6 +98,35 @@ function descendants(node, tag) {
     ]);
 }
 
+test("Compact asymmetric charts adapt ticks without changing observations or connecting gaps", () => {
+    // Given
+    const model = buildTelemetryChartModel(makeResponse());
+    const original = JSON.stringify(model);
+    // When / Then
+    for (const kind of ["throughput", "latency"]) {
+        const normal = buildTelemetryChartPresentation(model, kind);
+        for (const width of [300, 342, 700]) {
+            const compact = buildTelemetryChartPresentation(model, kind, { width });
+            assert.equal(compact.width, width);
+            assert.equal(compact.height, kind === "latency" ? 112 : 128);
+            assert.equal(compact.xTicks.length, width < 472 ? 3 : 5);
+            assert.deepEqual(compact.series.map((series) => series.marks.map(({ value, timestamp }) => ({ value, timestamp }))),
+                normal.series.map((series) => series.marks.map(({ value, timestamp }) => ({ value, timestamp }))));
+            assert.ok(compact.series.every((series) => series.segments.length === 0));
+            assert.ok(compact.series.flatMap((series) => series.marks).every((mark) => (
+                mark.x >= compact.plot.left && mark.x <= width - compact.plot.right
+                && mark.y >= compact.plot.top && mark.y <= compact.height - compact.plot.bottom
+            )));
+            const figure = createTelemetryChart(model, kind, fakeDocument, { width });
+            assert.ok(figure.classes.has("dashboard-telemetry-chart--compact"));
+            assert.equal(descendants(figure, "svg")[0].attributes.get("viewBox"), `0 0 ${width} ${compact.height}`);
+            assert.ok(descendants(figure, "circle").every((mark) => mark.attributes.get("aria-label").includes("GMT")
+                || mark.attributes.get("aria-label").includes("UTC")));
+        }
+    }
+    assert.equal(JSON.stringify(model), original);
+});
+
 test("Actual AWS bucket plots one input and one completion mark, plus server latency", () => {
     // Given
     const model = buildTelemetryChartModel(makeResponse());
@@ -112,6 +141,8 @@ test("Actual AWS bucket plots one input and one completion mark, plus server lat
     assert.equal(latency.markCount, 1);
     assert.equal(latency.series[0].marks[0].value, 0.775214);
     assert.equal(latency.series[0].segments.length, 0);
+    assert.match(createTelemetryChart(model, "throughput", fakeDocument).textContent,
+        /입력 수락 2건 · 처리 완료 2건/);
 });
 
 test("Missing second buckets do not create marks or connecting lines", () => {
@@ -214,6 +245,38 @@ test("Invalid chart mode is rejected", () => {
 
     // When / Then
     assert.throws(() => buildTelemetryChartPresentation(model, "unknown"), /Unknown Telemetry chart kind/);
+});
+
+test("A synthetic 7/7 single-bucket example keeps two concentric marks, time and precise latency", () => {
+    // Given: reconstruction of user-provided values, not an original AWS response.
+    const response = makeResponse();
+    Object.assign(response.points[0], {
+        input_accepted_count: 7, processing_completed_count: 7,
+        processing_latency_sample_count: 7, processing_latency_mean_ms: 0.354226857,
+    });
+    const model = buildTelemetryChartModel(response);
+
+    // When
+    const throughput = createTelemetryChart(model, "throughput", fakeDocument);
+    const latency = createTelemetryChart(model, "latency", fakeDocument);
+    const marks = descendants(throughput, "circle");
+
+    // Then
+    assert.equal(marks.length, 2);
+    assert.equal(marks[0].attributes.get("cx"), marks[1].attributes.get("cx"));
+    assert.equal(marks[0].attributes.get("cy"), marks[1].attributes.get("cy"));
+    assert.ok(Number(marks[0].attributes.get("r")) > Number(marks[1].attributes.get("r")));
+    assert.ok(marks.every((mark) => mark.attributes.get("tabindex") === "0"));
+    assert.match(marks[0].attributes.get("aria-label"), /입력 수락.*7 건\/초/);
+    assert.match(marks[1].attributes.get("aria-label"), /처리 완료.*7 건\/초/);
+    assert.match(throughput.textContent, /입력 수락 7건 · 처리 완료 7건/);
+    assert.match(throughput.textContent, /관측 버킷/);
+    assert.match(descendants(throughput, "desc")[0].textContent, /입력 수락 7건/);
+    assert.match(latency.textContent, /버킷 평균 0.354 ms/);
+    assert.match(descendants(latency, "circle")[0].textContent, /0.354226857 ms/);
+    for (const kind of ["throughput", "latency"]) {
+        assert.ok(buildTelemetryChartPresentation(model, kind).series.every((series) => series.segments.length === 0));
+    }
 });
 
 test("Throughput connects only adjacent observations independently in each series", () => {

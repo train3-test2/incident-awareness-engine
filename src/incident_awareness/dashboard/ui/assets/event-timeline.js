@@ -19,6 +19,8 @@ const eventTimelinePagination = document.getElementById("event-timeline-paginati
 const runDetailBackNavigation = document.getElementById("run-detail-back-navigation");
 
 let timelineState = null;
+// Page control ("previous" or "next") that held keyboard focus when a page load started.
+let pendingPaginationFocus = null;
 
 function createDetailField(label, value) {
     const field = document.createElement("div");
@@ -77,33 +79,71 @@ function setPaginationDisabled(disabled) {
     }
 }
 
-function createPaginationButton(label, disabled, onClick) {
+function createPaginationButton(label, control, disabled, onClick) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = label;
+    button.dataset.paginationControl = control;
     button.disabled = disabled;
     button.addEventListener("click", onClick);
     return button;
 }
 
+function navigateToPage(runId, offset, control) {
+    // A pointer activation that did not focus the control leaves focus untouched.
+    pendingPaginationFocus = eventTimelinePagination.contains(document.activeElement)
+        ? control
+        : null;
+    setPaginationDisabled(true);
+    void loadEventTimelinePage(runId, offset);
+}
+
 function renderPagination(runId, payload, pagination) {
     const previousButton = createPaginationButton(
         "이전",
+        "previous",
         !pagination.hasPrevious,
-        () => {
-            setPaginationDisabled(true);
-            void loadEventTimelinePage(runId, pagination.previousOffset);
-        },
+        () => navigateToPage(runId, pagination.previousOffset, "previous"),
     );
     const nextButton = createPaginationButton(
         "다음",
+        "next",
         !pagination.hasNext,
-        () => {
-            setPaginationDisabled(true);
-            void loadEventTimelinePage(runId, pagination.nextOffset);
-        },
+        () => navigateToPage(runId, pagination.nextOffset, "next"),
     );
     eventTimelinePagination.replaceChildren(previousButton, nextButton);
+}
+
+// Returns the activated control unless focus moved to another element while loading;
+// disabling or replacing the control itself only drops focus to the document body.
+function takePaginationFocus() {
+    const control = pendingPaginationFocus;
+    pendingPaginationFocus = null;
+    const activeElement = document.activeElement;
+    const focusUnclaimed = activeElement === null
+        || activeElement === document.body
+        || eventTimelinePagination.contains(activeElement);
+    return focusUnclaimed ? control : null;
+}
+
+function restorePaginationFocus(control) {
+    if (control === null) {
+        return;
+    }
+    const buttons = Array.from(eventTimelinePagination.querySelectorAll("button"))
+        .filter((button) => !button.disabled);
+    // The same control, else the remaining page control (the last page disables "다음").
+    const target = buttons.find((button) => button.dataset.paginationControl === control)
+        ?? buttons[0]
+        ?? null;
+    if (target === null) {
+        // No page control is operable: keep the keyboard position on the page status
+        // without adding the status message to the Tab order.
+        eventTimelineStatus.tabIndex = -1;
+    }
+    const focusTarget = target ?? eventTimelineStatus;
+    focusTarget.focus({ preventScroll: true });
+    focusTarget.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
 function renderTimelinePayload(runId, payload) {
@@ -127,11 +167,13 @@ function renderTimelineState(state, runId) {
         setPaginationDisabled(true);
         return;
     }
+    const focusControl = takePaginationFocus();
     if (state.queryState === "success" || state.queryState === "empty") {
         renderTimelinePayload(runId, state.payload);
-        return;
+    } else {
+        clearTimelineContent();
     }
-    clearTimelineContent();
+    restorePaginationFocus(focusControl);
 }
 
 function renderRunDetailBackNavigation(runId) {

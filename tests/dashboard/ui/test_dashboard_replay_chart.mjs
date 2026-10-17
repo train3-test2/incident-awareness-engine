@@ -9,8 +9,8 @@ import {
 
 const DIMENSIONS = {
     width: 960,
-    height: 180,
-    padding: { top: 50, right: 72, bottom: 27, left: 50 },
+    height: 140,
+    padding: { top: 50, right: 72, bottom: 23, left: 50 },
 };
 
 function makeTrace(count = 67) {

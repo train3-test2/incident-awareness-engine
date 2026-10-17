@@ -377,3 +377,354 @@ test("Operations DOM renderer links completed Runs and leaves running Runs as te
         }
     }
 });
+
+// The polling scenarios below run the real operations.js against a minimal DOM, fetch, and
+// timer double. Focus follows browser rules: a removed element cannot keep focus.
+const OPERATIONS_ASSETS_URL = new URL(
+    "../../../src/incident_awareness/dashboard/ui/assets/",
+    import.meta.url,
+);
+const OPERATIONS_POLL_DELAY_MS = 5000;
+let operationsHarnessCount = 0;
+
+class OperationsElement {
+    constructor(ownerDocument, tagName) {
+        this.ownerDocument = ownerDocument;
+        this.tagName = tagName.toUpperCase();
+        this.parentNode = null;
+        this.childNodes = [];
+        this.classNames = new Set();
+        this.classList = {
+            add: (...names) => names.forEach((name) => this.classNames.add(name)),
+            contains: (name) => this.classNames.has(name),
+        };
+        this.attributes = new Map();
+        this.ownText = "";
+        this.href = "";
+        this.focusCalls = [];
+    }
+
+    get children() {
+        return this.childNodes;
+    }
+
+    get textContent() {
+        return this.ownText + this.childNodes.map((child) => child.textContent).join("");
+    }
+
+    set textContent(value) {
+        this.replaceChildren();
+        this.ownText = String(value);
+    }
+
+    get isConnected() {
+        return this.ownerDocument.body.contains(this);
+    }
+
+    append(...nodes) {
+        for (const node of nodes) {
+            node.parentNode = this;
+            this.childNodes.push(node);
+        }
+    }
+
+    replaceChildren(...nodes) {
+        for (const child of this.childNodes) {
+            child.parentNode = null;
+        }
+        this.childNodes = [];
+        this.ownText = "";
+        this.append(...nodes);
+    }
+
+    setAttribute(name, value) {
+        this.attributes.set(name, String(value));
+    }
+
+    getAttribute(name) {
+        return this.attributes.get(name) ?? null;
+    }
+
+    focus(options = {}) {
+        if (!this.isConnected || (this.tagName === "A" && this.href === "")) {
+            return;
+        }
+        this.focusCalls.push({ ...options });
+        this.ownerDocument.focusedElement = this;
+    }
+
+    scrollIntoView() {
+        throw new Error("Operations focus restoration must not scroll the page");
+    }
+
+    contains(node) {
+        for (let current = node; current !== null && current !== undefined;) {
+            if (current === this) {
+                return true;
+            }
+            current = current.parentNode;
+        }
+        return false;
+    }
+
+    querySelectorAll(selector) {
+        assert.match(selector, /^\.[\w-]+$/);
+        const className = selector.slice(1);
+        const matches = [];
+        const visit = (element) => {
+            for (const child of element.childNodes) {
+                if (child.classList.contains(className)) {
+                    matches.push(child);
+                }
+                visit(child);
+            }
+        };
+        visit(this);
+        return matches;
+    }
+}
+
+async function startOperationsHarness(initialItems) {
+    const document = {
+        focusedElement: null,
+        createElement: (tagName) => new OperationsElement(document, tagName),
+        getElementById: (id) => document.elements.get(id) ?? null,
+        get activeElement() {
+            const focused = this.focusedElement;
+            return focused === null || !focused.isConnected ? this.body : focused;
+        },
+    };
+    document.body = new OperationsElement(document, "body");
+    document.elements = new Map([
+        ["runtime-status", new OperationsElement(document, "p")],
+        ["runtime-list", new OperationsElement(document, "div")],
+    ]);
+    const navigationLink = new OperationsElement(document, "a");
+    navigationLink.href = "/dashboard";
+    document.body.append(navigationLink, ...document.elements.values());
+
+    const requests = [];
+    const timers = new Map();
+    let nextTimerId = 1;
+    const fakeGlobals = {
+        document,
+        fetch: (url) => new Promise((resolve) => {
+            requests.push({ url: String(url), resolve, settled: false });
+        }),
+        setTimeout: (callback, delay) => {
+            const id = nextTimerId;
+            nextTimerId += 1;
+            timers.set(id, { callback, delay });
+            return id;
+        },
+        clearTimeout: (id) => {
+            timers.delete(id);
+        },
+    };
+    const originalGlobals = new Map(
+        Object.keys(fakeGlobals).map(
+            (name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)],
+        ),
+    );
+    const restore = () => {
+        for (const [name, descriptor] of originalGlobals) {
+            if (descriptor === undefined) {
+                delete globalThis[name];
+            } else {
+                Object.defineProperty(globalThis, name, descriptor);
+            }
+        }
+    };
+    for (const [name, value] of Object.entries(fakeGlobals)) {
+        Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    }
+    const flush = async () => {
+        for (let index = 0; index < 10; index += 1) {
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+    };
+    const respond = async (status, body) => {
+        const request = requests.find((candidate) => !candidate.settled);
+        assert.ok(request, "Expected a pending Runtime request");
+        assert.equal(request.url, "/operations/runtime");
+        request.settled = true;
+        request.resolve({ ok: status >= 200 && status < 300, status, json: async () => body });
+        await flush();
+    };
+    const triggerPollTimer = async () => {
+        const pollTimers = [...timers].filter(
+            ([, timer]) => timer.delay === OPERATIONS_POLL_DELAY_MS,
+        );
+        assert.equal(pollTimers.length, 1, "Exactly one Runtime poll must be scheduled");
+        const [[timerId, timer]] = pollTimers;
+        timers.delete(timerId);
+        timer.callback();
+        await flush();
+    };
+
+    const source = await readFile(new URL("operations.js", OPERATIONS_ASSETS_URL), "utf8");
+    const moduleSource = source.replaceAll(
+        /from "\.\/([^"]+)"/g,
+        (_, file) => `from "${new URL(file, OPERATIONS_ASSETS_URL).href}"`,
+    );
+    operationsHarnessCount += 1;
+    try {
+        await import(
+            "data:text/javascript;charset=utf-8,"
+            + encodeURIComponent(`${moduleSource}\n// operations harness ${operationsHarnessCount}\n`)
+        );
+        await flush();
+        await respond(200, { items: initialItems });
+    } catch (error) {
+        restore();
+        throw error;
+    }
+
+    const runtimeList = document.getElementById("runtime-list");
+    // card > header > heading > completed-Run link
+    const headingOf = (card) => card.children[0].children[0];
+    return {
+        document,
+        navigationLink,
+        restore,
+        respond,
+        triggerPollTimer,
+        async poll(items) {
+            await triggerPollTimer();
+            await respond(200, { items });
+        },
+        async pollFailure() {
+            await triggerPollTimer();
+            await respond(503, { detail: "Runtime unavailable" });
+        },
+        cards: () => runtimeList.children,
+        completedLink(runId, entityId) {
+            const card = runtimeList.children.find(
+                (candidate) => (
+                    headingOf(candidate).textContent === runId
+                    && candidate.children[1].children[0].children[1].textContent === entityId
+                ),
+            );
+            return headingOf(card).children[0];
+        },
+        cardSummary: () => runtimeList.children.map((card) => ({
+            runId: headingOf(card).textContent,
+            entityId: card.children[1].children[0].children[1].textContent,
+            linked: headingOf(card).children.length === 1,
+            status: card.children[0].children[1].textContent,
+            modifiers: [...card.classNames].filter((name) => name !== "runtime-card"),
+        })),
+    };
+}
+
+function pollingRuntime(runId, entityId, status, updatedAt = "2026-09-20T01:00:00Z") {
+    return {
+        ...runtime({
+            run_id: runId,
+            status,
+            current_stage: status === "running" ? "normalization" : null,
+            failed_stage: status === "failed" ? "hybrid" : null,
+            has_error: status === "failed",
+        }),
+        execution_id: `${runId}-${entityId}`,
+        entity_id: entityId,
+        started_at: "2026-09-20T00:59:00Z",
+        stage_started_at: null,
+        updated_at: updatedAt,
+        completed_at: status === "completed" ? "2026-09-20T01:00:00Z" : null,
+    };
+}
+
+function operationsPollingItems(runningUpdatedAt) {
+    return [
+        pollingRuntime("RUN-S0", "WIN-01", "completed"),
+        pollingRuntime("RUN-S0", "WIN-02", "completed"),
+        pollingRuntime("RUN-DEMO", "WIN-DEMO", "running", runningUpdatedAt),
+        pollingRuntime("RUN-FAILED", "WIN-03", "failed"),
+    ];
+}
+
+test("Operations polling restores completed Run link focus by Run, Entity and link kind", async (t) => {
+    // Given
+    const harness = await startOperationsHarness(operationsPollingItems("2026-09-20T01:00:00Z"));
+    t.after(harness.restore);
+    const cardsBefore = harness.cardSummary();
+    const original = harness.completedLink("RUN-S0", "WIN-02");
+    original.focus();
+
+    // When
+    await harness.poll(operationsPollingItems("2026-09-20T01:00:05Z"));
+    const firstRestore = harness.document.activeElement;
+    await harness.poll(operationsPollingItems("2026-09-20T01:00:10Z"));
+    const secondRestore = harness.document.activeElement;
+
+    // Then
+    assert.equal(original.isConnected, false);
+    assert.notStrictEqual(firstRestore, original);
+    assert.notStrictEqual(secondRestore, firstRestore);
+    assert.strictEqual(secondRestore, harness.completedLink("RUN-S0", "WIN-02"));
+    assert.notStrictEqual(secondRestore, harness.completedLink("RUN-S0", "WIN-01"));
+    for (const restored of [firstRestore, secondRestore]) {
+        assert.equal(restored.tagName, "A");
+        assert.equal(restored.href, "/dashboard/runs/RUN-S0");
+        assert.equal(restored.textContent, "RUN-S0");
+        assert.deepEqual(restored.focusCalls, [{ preventScroll: true }]);
+    }
+    assert.deepEqual(harness.cardSummary(), cardsBefore);
+    assert.deepEqual(
+        cardsBefore.map(({ runId, entityId, linked, modifiers }) => ({
+            runId,
+            entityId,
+            linked,
+            modifiers,
+        })),
+        [
+            { runId: "RUN-S0", entityId: "WIN-01", linked: true, modifiers: ["runtime-card--completed"] },
+            { runId: "RUN-S0", entityId: "WIN-02", linked: true, modifiers: ["runtime-card--completed"] },
+            { runId: "RUN-DEMO", entityId: "WIN-DEMO", linked: false, modifiers: ["runtime-card--running"] },
+            { runId: "RUN-FAILED", entityId: "WIN-03", linked: false, modifiers: ["runtime-card--failed"] },
+        ],
+    );
+});
+
+test("Operations polling restores the completed Run link after a failed Runtime query", async (t) => {
+    // Given
+    const harness = await startOperationsHarness(operationsPollingItems("2026-09-20T01:00:00Z"));
+    t.after(harness.restore);
+    harness.completedLink("RUN-S0", "WIN-01").focus();
+
+    // When
+    await harness.pollFailure();
+
+    // Then
+    assert.strictEqual(harness.document.activeElement, harness.completedLink("RUN-S0", "WIN-01"));
+    assert.equal(harness.cards().length, 4);
+    assert.equal(harness.document.getElementById("runtime-status").textContent.includes("불러오지 못했습니다"), true);
+});
+
+test("Operations polling never moves focus to another card or away from a new user target", async (t) => {
+    // Given
+    const harness = await startOperationsHarness(operationsPollingItems("2026-09-20T01:00:00Z"));
+    t.after(harness.restore);
+
+    // When: the user moves to the navigation link while the Runtime request is pending.
+    harness.completedLink("RUN-S0", "WIN-02").focus();
+    await harness.triggerPollTimer();
+    harness.navigationLink.focus();
+    await harness.respond(200, { items: operationsPollingItems("2026-09-20T01:00:05Z") });
+    const afterUserMove = harness.document.activeElement;
+    // When: the focused Run/Entity card is no longer reported.
+    harness.completedLink("RUN-S0", "WIN-02").focus();
+    await harness.poll(
+        operationsPollingItems("2026-09-20T01:00:10Z").filter(
+            (item) => item.entity_id !== "WIN-02",
+        ),
+    );
+    const afterCardRemoved = harness.document.activeElement;
+
+    // Then
+    assert.strictEqual(afterUserMove, harness.navigationLink);
+    assert.strictEqual(afterCardRemoved, harness.document.body);
+    assert.deepEqual(harness.completedLink("RUN-S0", "WIN-01").focusCalls, []);
+    assert.equal(harness.cards().length, 3);
+});

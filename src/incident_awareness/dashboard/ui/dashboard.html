@@ -13,7 +13,7 @@
     <header class="app-header dashboard-app-header">
         <div class="app-header__inner">
             <div class="app-brand">
-                <a class="app-brand__name" href="/dashboard">Detection Hub</a>
+                <a class="app-brand__name" href="/dashboard"><svg class="dashboard-brand-mark" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#brand"></use></svg>Detection Hub</a>
             </div>
             <nav class="app-navigation" aria-label="주요 화면">
                 <a href="/dashboard" aria-current="page">운영 View</a>
@@ -21,18 +21,20 @@
                 <a href="/operations">시스템 운영</a>
             </nav>
             <div class="dashboard-header-search">
+                <svg class="dashboard-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#search"></use></svg>
                 <input type="search" aria-label="사건 검색 기능 연동 전" placeholder="사건 검색 · 연동 전" disabled>
             </div>
-            <span class="dashboard-header-user" aria-hidden="true"></span>
+            <span class="dashboard-header-user" aria-hidden="true"><svg class="dashboard-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#user"></use></svg></span>
         </div>
     </header>
     <main id="dashboard-view" class="app-page dashboard-page">
         <header class="page-header dashboard-page-header">
             <div class="dashboard-page-title">
                 <h1 class="page-title">운영 View</h1>
+                <p class="page-description">실시간 운영 및 사건 분석 화면</p>
             </div>
             <div class="dashboard-header-meta">
-                <span class="dashboard-data-note">자동 갱신 · 5초</span>
+                <span class="dashboard-data-note"><svg class="dashboard-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#refresh"></use></svg>자동 갱신 · 5초</span>
                 <span id="dashboard-header-updated">마지막 저장 보고 확인 중</span>
                 <details class="dashboard-time-note">
                     <summary>표시 기준 및 상태 안내</summary>
@@ -53,7 +55,7 @@
             <h2 id="command-heading" class="dashboard-visually-hidden">운영 상태 요약</h2>
             <div class="dashboard-kpi-grid">
                 <article class="dashboard-kpi dashboard-kpi--system">
-                    <span class="dashboard-kpi__indicator" aria-hidden="true">◈</span>
+                    <span class="dashboard-kpi__indicator" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#shield"></use></svg></span>
                     <div>
                         <p class="dashboard-kpi__label">최근 Runtime 기반 상태</p>
                         <p id="system-status-value" class="dashboard-kpi__value dashboard-kpi__value--system">확인 중</p>
@@ -64,19 +66,19 @@
                     </div>
                 </article>
                 <article class="dashboard-kpi">
-                    <span class="dashboard-kpi__icon" aria-hidden="true">▷</span>
+                    <span class="dashboard-kpi__icon" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#activity"></use></svg></span>
                     <p class="dashboard-kpi__label">최근 실행 중으로 보고된 Run</p>
                     <p id="active-runtime-run" class="dashboard-kpi__value dashboard-kpi__value--run">확인 중</p>
                     <p class="dashboard-kpi__secondary">전체 Run <strong id="total-runs-value">-</strong></p>
                 </article>
                 <article class="dashboard-kpi">
-                    <span class="dashboard-kpi__icon" aria-hidden="true">◷</span>
+                    <span class="dashboard-kpi__icon" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#clock"></use></svg></span>
                     <p class="dashboard-kpi__label">가동 시간</p>
                     <p class="dashboard-kpi__value dashboard-kpi__value--status">미계측</p>
                     <p class="dashboard-kpi__secondary">시작 시각 미계측</p>
                 </article>
                 <article class="dashboard-kpi">
-                    <span class="dashboard-kpi__icon" aria-hidden="true">↻</span>
+                    <span class="dashboard-kpi__icon" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#refresh"></use></svg></span>
                     <p class="dashboard-kpi__label">조회 범위 내 최신 Runtime 보고</p>
                     <p id="latest-runtime-updated" class="dashboard-kpi__value dashboard-kpi__value--time">-</p>
                     <p class="dashboard-kpi__secondary">마지막 저장 보고 시각</p>
@@ -97,199 +99,202 @@
         </section>
 
         <div class="dashboard-monitor-grid">
-            <section class="section-card dashboard-section dashboard-pipeline-section" aria-labelledby="pipeline-heading">
-                <div class="section-header dashboard-section-header">
-                    <div>
-                        <h2 id="pipeline-heading" class="section-heading">파이프라인 상태 <span class="dashboard-heading-english">Pipeline Status</span></h2>
-                        <p id="pipeline-status-note" class="section-description">단계 완료 미확인</p>
+            <div class="dashboard-monitor-column dashboard-monitor-column--primary">
+                <section class="section-card dashboard-section dashboard-pipeline-section" aria-labelledby="pipeline-heading">
+                    <div class="section-header dashboard-section-header">
+                        <div>
+                            <h2 id="pipeline-heading" class="section-heading">파이프라인 상태 <span class="dashboard-heading-english">Pipeline Status</span></h2>
+                            <p id="pipeline-status-note" class="section-description">단계 완료 미확인</p>
+                        </div>
+                        <a class="dashboard-header-link" href="/operations">운영 기록 보기</a>
                     </div>
-                    <a class="dashboard-header-link" href="/operations">운영 기록 보기</a>
-                </div>
-                <p id="pipeline-stage-context" class="section-description dashboard-pipeline-context">
-                    Runtime을 선택하면 마지막 보고 단계를 표시합니다.
-                </p>
-                <div class="dashboard-stage-panel">
-                    <div class="dashboard-stage-scroll">
-                        <ol id="pipeline-stage-list" class="pipeline-stage-list"></ol>
-                    </div>
-                </div>
-                <details class="dashboard-runtime-disclosure">
-                    <summary id="runtime-summary-heading">최근 Runtime 보고 최대 5건 · Entity별 선택</summary>
-                    <p class="section-description">
-                        API 순서를 유지합니다. Runtime은 Run ID와 Entity ID 조합으로 선택하며,
-                        저장 분석 결과는 run_id 기준으로 조회합니다.
+                    <p id="pipeline-stage-context" class="section-description dashboard-pipeline-context">
+                        Runtime을 선택하면 마지막 보고 단계를 표시합니다.
                     </p>
-                    <div id="runtime-summary-status" class="status-message dashboard-status" role="status" aria-live="polite">
-                        Runtime 정보를 불러오는 중입니다.
+                    <div class="dashboard-stage-panel">
+                        <div class="dashboard-stage-scroll">
+                            <ol id="pipeline-stage-list" class="pipeline-stage-list"></ol>
+                        </div>
+                    </div>
+                    <details class="dashboard-runtime-disclosure">
+                        <summary id="runtime-summary-heading">최근 Runtime 보고 최대 5건 · Entity별 선택</summary>
+                        <p class="section-description">
+                            API 순서를 유지합니다. Runtime은 Run ID와 Entity ID 조합으로 선택하며,
+                            저장 분석 결과는 run_id 기준으로 조회합니다.
+                        </p>
+                        <div id="runtime-summary-status" class="status-message dashboard-status" role="status" aria-live="polite">
+                            Runtime 정보를 불러오는 중입니다.
+                        </div>
+                        <div class="dashboard-table-wrapper">
+                            <table class="dashboard-table runtime-table">
+                                <thead>
+                                    <tr>
+                                        <th scope="col">Run ID</th>
+                                        <th scope="col">Entity ID</th>
+                                        <th scope="col">상태</th>
+                                        <th scope="col">현재 단계</th>
+                                        <th scope="col">마지막 보고</th>
+                                        <th scope="col">저장된 진행</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="runtime-summary-list"></tbody>
+                            </table>
+                        </div>
+                    </details>
+                </section>
+
+                <section class="section-card dashboard-section dashboard-throughput-section" aria-labelledby="throughput-heading">
+                    <div class="section-header dashboard-section-header">
+                        <div>
+                            <h2 id="throughput-heading" class="section-heading">실시간 처리 흐름 <span class="dashboard-heading-english">Throughput</span></h2>
+                            <p class="dashboard-chart-range">최근 5분 · 1초 버킷 · 건/초</p>
+                        </div>
+
+                    </div>
+                    <div class="dashboard-metric-layout">
+                        <div id="telemetry-throughput-chart" class="dashboard-metric-frame dashboard-telemetry-frame" tabindex="0" role="region" aria-label="처리량 그래프 · 좁은 화면에서 좌우 스크롤">
+                            <span>실측 처리량 조회 중</span>
+                        </div>
+                        <div class="dashboard-metric-summary">
+                            <p>최근 60초 입력·처리</p>
+                            <strong id="telemetry-throughput-summary">조회 중</strong>
+                        </div>
+                    </div>
+                    <p id="telemetry-throughput-status" class="dashboard-telemetry-status dashboard-visually-hidden"
+                       role="status" aria-live="polite" aria-atomic="true">처리량 측정 데이터를 조회하고 있습니다.</p>
+                    <details class="dashboard-telemetry-disclosure">
+                        <summary>관측 품질 · 마지막 관측 시각 <span id="telemetry-throughput-note" class="dashboard-measurement-note">조회 중</span></summary>
+                        <p>최근 5분 · Batch 입력 수락 / Normalization + Evidence 처리 완료 · 1초 버킷</p>
+                        <p>입력 수락은 검증된 Batch의 수락 시각 기준이며 지속적 외부 EDR ingest rate가 아닙니다.
+                            선분은 인접한 관측 버킷의 연결이며 초 내부 순간 처리율이 아닙니다. 미관측은 실측 0과 다릅니다.</p>
+                        <p id="telemetry-throughput-details">최근 60초 실측값 확인 중</p>
+                    </details>
+                </section>
+
+                <section class="section-card dashboard-section dashboard-runs-section" aria-labelledby="runs-heading">
+                    <div class="section-header dashboard-section-header">
+                        <div>
+                            <h2 id="runs-heading" class="section-heading">최근 Run 목록 (Recent Runs)</h2>
+                        </div>
+                        <button id="dashboard-runs-toggle" type="button" aria-expanded="false"
+                                aria-controls="runs-list" hidden>전체 Run 펼치기</button>
+                    </div>
+                    <div id="runs-status" class="status-message dashboard-status" role="status" aria-live="polite">
+                        Run 목록을 불러오는 중입니다.
                     </div>
                     <div class="dashboard-table-wrapper">
-                        <table class="dashboard-table runtime-table">
+                        <table class="dashboard-table runs-table">
                             <thead>
                                 <tr>
+                                    <th scope="col">실행 시작</th>
                                     <th scope="col">Run ID</th>
-                                    <th scope="col">Entity ID</th>
-                                    <th scope="col">상태</th>
-                                    <th scope="col">현재 단계</th>
-                                    <th scope="col">마지막 보고</th>
+                                    <th scope="col">최근 Runtime 상태</th>
+                                    <th scope="col">Scenario</th>
                                     <th scope="col">저장된 진행</th>
+                                    <th scope="col">관측 구간</th>
+                                    <th scope="col">상세</th>
                                 </tr>
                             </thead>
-                            <tbody id="runtime-summary-list"></tbody>
+                            <tbody id="runs-list"></tbody>
                         </table>
                     </div>
-                </details>
-            </section>
-
-            <section class="section-card dashboard-section dashboard-insights-section" aria-labelledby="insights-heading">
-                <div class="section-header dashboard-section-header">
-                    <div>
-                        <h2 id="insights-heading" class="section-heading">실시간 운영 인사이트</h2>
+                    <div class="dashboard-runs-footer">
+                        <span id="runs-visibility-status" role="status" aria-live="polite"></span>
+                        <details class="dashboard-runs-context">
+                            <summary>조회 범위</summary>
+                            <p>관측 시작 시각 최근순 최대 20건 · 기본 5건 표시.
+                                Runtime 상태·진행은 Run·Entity 범위가 일치할 때만 표시합니다.</p>
+                        </details>
                     </div>
-                </div>
-                <div class="dashboard-insight-grid">
-                    <div class="dashboard-insight-cell">
-                        <span class="dashboard-insight-icon" aria-hidden="true">⇥</span>
-                        <h3>병목 단계</h3>
-                        <strong>계측 미연결</strong>
+                </section>
+            </div>
+            <div class="dashboard-monitor-column dashboard-monitor-column--secondary">
+                <section class="section-card dashboard-section dashboard-insights-section" aria-labelledby="insights-heading">
+                    <div class="section-header dashboard-section-header">
+                        <div>
+                            <h2 id="insights-heading" class="section-heading"><svg class="dashboard-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#insight"></use></svg>실시간 운영 인사이트</h2>
+                        </div>
                     </div>
-                    <div class="dashboard-insight-cell">
-                        <span class="dashboard-insight-icon" aria-hidden="true">!</span>
-                        <h3>SLA 경고 여부</h3>
-                        <strong>계측 미연결</strong>
+                    <div class="dashboard-insight-grid">
+                        <div class="dashboard-insight-cell">
+                            <span class="dashboard-insight-icon" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#bottleneck"></use></svg></span>
+                            <h3>병목 단계</h3>
+                            <strong>계측 미연결</strong>
+                        </div>
+                        <div class="dashboard-insight-cell">
+                            <span class="dashboard-insight-icon" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#signal"></use></svg></span>
+                            <h3>SLA 경고 여부</h3>
+                            <strong>계측 미연결</strong>
+                        </div>
+                        <div class="dashboard-insight-cell">
+                            <span class="dashboard-insight-icon" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#clock"></use></svg></span>
+                            <h3>최신 이벤트 수신</h3>
+                            <strong>계측 미연결</strong>
+                        </div>
+                        <div class="dashboard-insight-cell">
+                            <span class="dashboard-insight-icon" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#alert"></use></svg></span>
+                            <h3>큐 적체 위험</h3>
+                            <strong>계측 미연결</strong>
+                        </div>
                     </div>
-                    <div class="dashboard-insight-cell">
-                        <span class="dashboard-insight-icon" aria-hidden="true">↧</span>
-                        <h3>최신 이벤트 수신</h3>
-                        <strong>계측 미연결</strong>
-                    </div>
-                    <div class="dashboard-insight-cell">
-                        <span class="dashboard-insight-icon" aria-hidden="true">≋</span>
-                        <h3>큐 적체 위험</h3>
-                        <strong>계측 미연결</strong>
-                    </div>
-                </div>
-                <details class="dashboard-help">
-                    <summary>인사이트 계측 안내</summary>
-                    <p>단계별 지연 통계, SLA 임계치, 이벤트 수신 시각, 큐 적체량은 아직 연결되지 않았습니다.
-                        실행 완료만으로 모든 시스템이 정상이라고 판단하지 않습니다.</p>
-                </details>
-            </section>
-
-            <section class="section-card dashboard-section dashboard-throughput-section" aria-labelledby="throughput-heading">
-                <div class="section-header dashboard-section-header">
-                    <div>
-                        <h2 id="throughput-heading" class="section-heading">실시간 처리 흐름 <span class="dashboard-heading-english">Throughput</span></h2>
-                        <p class="dashboard-chart-range">최근 5분 · 1초 버킷 · 건/초</p>
-                    </div>
-                    <span id="telemetry-throughput-note" class="dashboard-measurement-note">조회 중</span>
-                </div>
-                <div class="dashboard-metric-layout">
-                    <div id="telemetry-throughput-chart" class="dashboard-metric-frame dashboard-telemetry-frame" tabindex="0" role="region" aria-label="처리량 그래프 · 좁은 화면에서 좌우 스크롤">
-                        <span>실측 처리량 조회 중</span>
-                    </div>
-                    <div class="dashboard-metric-summary">
-                        <p>최근 60초 입력·처리</p>
-                        <strong id="telemetry-throughput-summary">조회 중</strong>
-                    </div>
-                </div>
-                <p id="telemetry-throughput-status" class="dashboard-telemetry-status dashboard-visually-hidden"
-                   role="status" aria-live="polite" aria-atomic="true">처리량 측정 데이터를 조회하고 있습니다.</p>
-                <details class="dashboard-telemetry-disclosure">
-                    <summary>관측 품질 · 마지막 관측 시각</summary>
-                    <p>최근 5분 · Batch 입력 수락 / Normalization + Evidence 처리 완료 · 1초 버킷</p>
-                    <p>입력 수락은 검증된 Batch의 수락 시각 기준이며 지속적 외부 EDR ingest rate가 아닙니다.
-                        선분은 인접한 관측 버킷의 연결이며 초 내부 순간 처리율이 아닙니다. 미관측은 실측 0과 다릅니다.</p>
-                    <p id="telemetry-throughput-details">최근 60초 실측값 확인 중</p>
-                </details>
-            </section>
-
-            <section class="section-card dashboard-section dashboard-latency-section" aria-labelledby="latency-heading">
-                <div class="section-header dashboard-section-header">
-                    <div>
-                        <h2 id="latency-heading" class="section-heading">처리 지연 시간 <span class="dashboard-heading-english">Processing Latency · ms</span></h2>
-                        <p class="dashboard-chart-range">최근 5분 · 1초 버킷 · ms</p>
-                    </div>
-                    <span id="telemetry-latency-note" class="dashboard-measurement-note">조회 중</span>
-                </div>
-                <div class="dashboard-metric-layout">
-                    <div id="telemetry-latency-chart" class="dashboard-metric-frame dashboard-telemetry-frame" tabindex="0" role="region" aria-label="처리 지연 그래프 · 좁은 화면에서 좌우 스크롤">
-                        <span>실측 지연시간 조회 중</span>
-                    </div>
-                    <div class="dashboard-metric-summary">
-                        <p>최근 60초 평균</p>
-                        <strong id="telemetry-latency-summary">조회 중</strong>
-                    </div>
-                </div>
-                <p id="telemetry-latency-status" class="dashboard-telemetry-status dashboard-visually-hidden"
-                   role="status" aria-live="polite" aria-atomic="true">처리 지연 데이터를 조회하고 있습니다.</p>
-                <details class="dashboard-telemetry-disclosure">
-                    <summary>관측 품질 · 마지막 관측 시각</summary>
-                    <p>최근 5분 · Normalization + Evidence 구간의 실제 레코드 처리 지연(ms)</p>
-                    <p>전체 End-to-End 판단 지연이나 전체 Pipeline 소요시간이 아닙니다.
-                        최근 60초 평균은 실제 지연 샘플 수로 가중 집계합니다. null은 0ms가 아닙니다.</p>
-                    <p id="telemetry-latency-details">최근 60초 실측값 확인 중</p>
-                </details>
-            </section>
-
-            <section class="section-card dashboard-section dashboard-runs-section" aria-labelledby="runs-heading">
-                <div class="section-header dashboard-section-header">
-                    <div>
-                        <h2 id="runs-heading" class="section-heading">최근 Run 목록 (Recent Runs)</h2>
-                    </div>
-                </div>
-                <div id="runs-status" class="status-message dashboard-status" role="status" aria-live="polite">
-                    Run 목록을 불러오는 중입니다.
-                </div>
-                <div class="dashboard-table-wrapper">
-                    <table class="dashboard-table runs-table">
-                        <thead>
-                            <tr>
-                                <th scope="col">실행 시작</th>
-                                <th scope="col">Run ID</th>
-                                <th scope="col">최근 Runtime 상태</th>
-                                <th scope="col">Scenario</th>
-                                <th scope="col">저장된 진행</th>
-                                <th scope="col">관측 구간</th>
-                                <th scope="col">상세</th>
-                            </tr>
-                        </thead>
-                        <tbody id="runs-list"></tbody>
-                    </table>
-                </div>
-                <div class="dashboard-runs-footer">
-                    <span id="runs-visibility-status" role="status" aria-live="polite"></span>
-                    <details class="dashboard-runs-context">
-                        <summary>조회 범위</summary>
-                        <p>관측 시작 시각 최근순 최대 20건 · 기본 5건 표시.
-                            Runtime 상태·진행은 Run·Entity 범위가 일치할 때만 표시합니다.</p>
+                    <details class="dashboard-help">
+                        <summary>인사이트 계측 안내</summary>
+                        <p>단계별 지연 통계, SLA 임계치, 이벤트 수신 시각, 큐 적체량은 아직 연결되지 않았습니다.
+                            실행 완료만으로 모든 시스템이 정상이라고 판단하지 않습니다.</p>
                     </details>
-                    <button id="dashboard-runs-toggle" type="button" aria-expanded="false"
-                            aria-controls="runs-list" hidden>전체 Run 펼치기</button>
-                </div>
-            </section>
+                </section>
 
-            <section class="section-card dashboard-section dashboard-workflow-section" aria-labelledby="workflow-heading">
-                <div class="section-header dashboard-section-header">
-                    <div>
-                        <h2 id="workflow-heading" class="section-heading">Human Workflow</h2>
+                <section class="section-card dashboard-section dashboard-latency-section" aria-labelledby="latency-heading">
+                    <div class="section-header dashboard-section-header">
+                        <div>
+                            <h2 id="latency-heading" class="section-heading">처리 지연 시간 <span class="dashboard-heading-english">Processing Latency · ms</span></h2>
+                            <p class="dashboard-chart-range">최근 5분 · 1초 버킷 · ms</p>
+                        </div>
+
                     </div>
-                    <span class="dashboard-unavailable-badge">연동 전</span>
-                </div>
-                <ol class="dashboard-workflow-list">
-                    <li><span>Alert Sent</span><strong>확인 대기</strong></li>
-                    <li><span>Analyst Ack</span><strong>연동 전</strong></li>
-                    <li><span>t_h (조직 인지)</span><strong>연동 전</strong></li>
-                    <li><span>24h 상태</span><strong>기산점 없음</strong></li>
-                </ol>
-                <details class="dashboard-help">
-                    <summary>워크플로우 안내</summary>
-                    <p>조직 인지 및 판단 기록은 현재 연결되지 않았습니다.</p>
-                    <p class="dashboard-workflow-note">
-                    기술적 판정 시각 t_e는 조직 인지 시각 t_h가 아닙니다.
-                    실제 판단 기록과 기산점이 연결되기 전에는 입력과 카운트다운을 제공하지 않습니다.
-                    </p>
-                </details>
-            </section>
+                    <div class="dashboard-metric-layout">
+                        <div id="telemetry-latency-chart" class="dashboard-metric-frame dashboard-telemetry-frame" tabindex="0" role="region" aria-label="처리 지연 그래프 · 좁은 화면에서 좌우 스크롤">
+                            <span>실측 지연시간 조회 중</span>
+                        </div>
+                        <div class="dashboard-metric-summary">
+                            <p>최근 60초 평균</p>
+                            <strong id="telemetry-latency-summary">조회 중</strong>
+                        </div>
+                    </div>
+                    <p id="telemetry-latency-status" class="dashboard-telemetry-status dashboard-visually-hidden"
+                       role="status" aria-live="polite" aria-atomic="true">처리 지연 데이터를 조회하고 있습니다.</p>
+                    <details class="dashboard-telemetry-disclosure">
+                        <summary>관측 품질 · 마지막 관측 시각 <span id="telemetry-latency-note" class="dashboard-measurement-note">조회 중</span></summary>
+                        <p>최근 5분 · Normalization + Evidence 구간의 실제 레코드 처리 지연(ms)</p>
+                        <p>전체 End-to-End 판단 지연이나 전체 Pipeline 소요시간이 아닙니다.
+                            최근 60초 평균은 실제 지연 샘플 수로 가중 집계합니다. null은 0ms가 아닙니다.</p>
+                        <p id="telemetry-latency-details">최근 60초 실측값 확인 중</p>
+                    </details>
+                </section>
+
+                <section class="section-card dashboard-section dashboard-workflow-section" aria-labelledby="workflow-heading">
+                    <div class="section-header dashboard-section-header">
+                        <div>
+                            <h2 id="workflow-heading" class="section-heading">Human Workflow</h2>
+                        </div>
+                        <span class="dashboard-unavailable-badge">연동 전</span>
+                    </div>
+                    <ol class="dashboard-workflow-list">
+                        <li><span>Alert Sent</span><strong>확인 대기</strong></li>
+                        <li><span>Analyst Ack</span><strong>연동 전</strong></li>
+                        <li><span>t_h (조직 인지)</span><strong>연동 전</strong></li>
+                        <li><span>24h 상태</span><strong>기산점 없음</strong></li>
+                    </ol>
+                    <details class="dashboard-help">
+                        <summary>워크플로우 안내</summary>
+                        <p>조직 인지 및 판단 기록은 현재 연결되지 않았습니다.</p>
+                        <p class="dashboard-workflow-note">
+                        기술적 판정 시각 t_e는 조직 인지 시각 t_h가 아닙니다.
+                        실제 판단 기록과 기산점이 연결되기 전에는 입력과 카운트다운을 제공하지 않습니다.
+                        </p>
+                    </details>
+                </section>
+            </div>
         </div>
 
         <section class="section-card dashboard-section dashboard-analysis" aria-labelledby="selected-run-heading">
@@ -299,12 +304,19 @@
                         사건 상세 · <span id="selected-run-id">선택된 Run 없음</span>
                     </h2>
                     <details class="dashboard-detail-context">
-                        <summary>저장 결과·조회 범위 안내</summary>
-                        <p>저장된 Run Detail과 Fusion Engine 결과입니다. 실시간 점수 화면이 아닙니다.</p>
-                        <p id="selected-run-scope" class="section-description dashboard-detail-scope">
-                            Runtime 또는 Run 목록에서 항목을 선택하면 조회 범위를 표시합니다.
-                        </p>
-                        <p>Runtime은 Run·Entity 단위이며 저장 분석은 Run 단위입니다.</p>
+                        <summary>조회·범위 안내</summary>
+                        <div class="dashboard-detail-context__content">
+                            <p>저장된 Run Detail과 Fusion Engine 결과입니다. 실시간 점수 화면이 아닙니다.</p>
+                            <p id="selected-run-scope" class="section-description dashboard-detail-scope">
+                                Runtime 또는 Run 목록에서 항목을 선택하면 조회 범위를 표시합니다.
+                            </p>
+                            <p>Runtime은 Run·Entity 단위이며 저장 분석은 Run 단위입니다.</p>
+                            <div class="dashboard-analysis-links">
+                                <button id="selected-run-refresh" class="dashboard-analysis-refresh" type="button" hidden>결과 다시 조회</button>
+                                <a id="selected-run-detail-link" href="/dashboard" hidden>Run Detail</a>
+                                <a id="selected-run-fusion-link" href="/dashboard" hidden>Fusion Engine 상세</a>
+                            </div>
+                        </div>
                     </details>
                 </div>
                 <div class="dashboard-detail-tabs" role="tablist" aria-label="선택한 Run의 상세 정보">
@@ -320,11 +332,6 @@
                             aria-selected="false" tabindex="-1" data-panel="workflow">워크플로우 (Workflow)</button>
                 </div>
                 <div class="dashboard-detail-actions">
-                    <div class="dashboard-analysis-links">
-                        <button id="selected-run-refresh" class="dashboard-analysis-refresh" type="button" hidden>결과 다시 조회</button>
-                        <a id="selected-run-detail-link" href="/dashboard" hidden>Run Detail</a>
-                        <a id="selected-run-fusion-link" href="/dashboard" hidden>Fusion Engine 상세</a>
-                    </div>
                     <div class="dashboard-detail-navigation" aria-label="Run 목록 내 이동">
                         <button id="dashboard-prev-run" type="button" aria-label="조회된 Run 목록에서 이전 Run" disabled>이전 Run</button>
                         <button id="dashboard-next-run" type="button" aria-label="조회된 Run 목록에서 다음 Run" disabled>다음 Run</button>
@@ -363,20 +370,24 @@
                         <div id="selected-run-chart"></div>
                     </section>
                     <section class="dashboard-replay-aside" aria-labelledby="decision-timeline-heading">
-                        <h3 id="decision-timeline-heading">Decision 타임라인</h3>
-                        <details class="dashboard-help"><summary>시각 기준</summary>
-                            <p>저장 Decision 이력의 t_e를 표시하며 Event 시각과 구분합니다. t_e는 조직 인지 시각 t_h가 아닙니다.</p>
-                        </details>
+                        <div class="dashboard-replay-aside__heading">
+                            <h3 id="decision-timeline-heading">Decision 타임라인</h3>
+                            <details class="dashboard-help"><summary>시각 기준</summary>
+                                <p>저장 Decision 이력의 t_e를 표시하며 Event 시각과 구분합니다. t_e는 조직 인지 시각 t_h가 아닙니다.</p>
+                            </details>
+                        </div>
                         <div id="decision-timeline-status" class="status-message dashboard-status" role="status"
                              aria-live="polite">Run을 선택하면 저장된 Decision 이력을 조회합니다.</div>
                         <ol id="decision-timeline-list" class="dashboard-event-timeline"></ol>
                     </section>
                     <section class="dashboard-replay-aside" aria-labelledby="event-type-heading">
-                        <h3 id="event-type-heading">연관 Event 유형</h3>
-                        <details class="dashboard-help"><summary>집계 기준</summary>
-                            <p>조회된 Event에 포함된 유형만 집계합니다. Run 단위 조회이며 선택 Runtime Entity로 한정되지 않습니다.
-                                Event 시각과 기술적 판정 시각은 별도 의미입니다.</p>
-                        </details>
+                        <div class="dashboard-replay-aside__heading">
+                            <h3 id="event-type-heading">연관 Event 유형</h3>
+                            <details class="dashboard-help"><summary aria-label="연관 Event 집계 기준">집계</summary>
+                                <p>조회된 Event에 포함된 유형만 집계합니다. Run 단위 조회이며 선택 Runtime Entity로 한정되지 않습니다.
+                                    Event 시각과 기술적 판정 시각은 별도 의미입니다.</p>
+                            </details>
+                        </div>
                         <div id="event-type-summary-status" class="status-message dashboard-status" role="status">
                             Run을 선택하면 Event 유형을 표시합니다.
                         </div>

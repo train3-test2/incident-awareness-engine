@@ -3,7 +3,7 @@
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const WIDTH = 640;
-const HEIGHT = 210;
+const HEIGHT = 240;
 const PLOT = Object.freeze({ left: 72, right: 40, top: 28, bottom: 41 });
 const PLOT_WIDTH = WIDTH - PLOT.left - PLOT.right;
 const PLOT_HEIGHT = HEIGHT - PLOT.top - PLOT.bottom;
@@ -27,7 +27,16 @@ function formatNumber(value, kind) {
     if (kind === "throughput") {
         return String(value);
     }
-    return value.toLocaleString("ko-KR", { maximumFractionDigits: 6 });
+    return value.toLocaleString("ko-KR", { maximumFractionDigits: 9 });
+}
+
+function formatCompactLatency(value) {
+    return value.toLocaleString("ko-KR", value > 0 && value < 0.001
+        ? { maximumSignificantDigits: 3 } : { maximumFractionDigits: 3 });
+}
+
+function formatBucketTime(timestamp) {
+    return new Date(timestamp).toLocaleString("ko-KR", { hour12: false, timeZoneName: "short" });
 }
 
 function axisMaximum(maximum, kind) {
@@ -42,19 +51,20 @@ function axisMaximum(maximum, kind) {
     return Math.ceil(maximum / interval) * interval;
 }
 
-function pointX(index, length) {
-    return PLOT.left + ((index + 0.5) / length) * PLOT_WIDTH;
+function pointX(index, length, plot) {
+    return plot.left + ((index + 0.5) / length) * plot.width;
 }
 
-function pointY(value, yMaximum) {
-    return PLOT.top + PLOT_HEIGHT * (1 - value / yMaximum);
+function pointY(value, yMaximum, plot) {
+    return plot.top + plot.height * (1 - value / yMaximum);
 }
 
-function axisTimeTicks(model) {
+function axisTimeTicks(model, plot) {
     const start = Date.parse(model.rangeStart);
     const end = Date.parse(model.rangeEnd);
-    return [0, 0.25, 0.5, 0.75, 1].map((ratio) => ({
-        x: PLOT.left + ratio * PLOT_WIDTH,
+    const ratios = plot.width < 380 ? [0, 0.5, 1] : [0, 0.25, 0.5, 0.75, 1];
+    return ratios.map((ratio) => ({
+        x: plot.left + ratio * plot.width,
         label: formatTime(new Date(start + (end - start) * ratio).toISOString()),
     }));
 }
@@ -81,8 +91,18 @@ function requireChartModel(model, kind) {
  * Layout data only. Missing seconds generate no marks or connecting lines.
  * A real observed value of zero generates a visible marker at the baseline.
  */
-export function buildTelemetryChartPresentation(model, kind) {
+export function buildTelemetryChartPresentation(model, kind, dimensions = null) {
     requireChartModel(model, kind);
+    // Presentation only: adapt the plot, not the samples or the time window.
+    const compact = Number.isFinite(dimensions?.width);
+    const width = compact ? Math.max(300, Math.min(960, dimensions.width)) : WIDTH;
+    const height = compact ? (kind === "latency" ? 112 : 128) : HEIGHT;
+    const padding = compact ? { left: 58, right: 34, top: 20, bottom: 28 } : PLOT;
+    const plot = {
+        ...padding,
+        width: compact ? width - padding.left - padding.right : PLOT_WIDTH,
+        height: compact ? height - padding.top - padding.bottom : PLOT_HEIGHT,
+    };
     const values = [];
     for (const second of model.seconds) {
         if (!second.observed) {
@@ -100,14 +120,20 @@ export function buildTelemetryChartPresentation(model, kind) {
         }
     }
     const yMaximum = axisMaximum(Math.max(0, ...values), kind);
-    const zeroY = pointY(0, yMaximum);
+    const zeroY = pointY(0, yMaximum, plot);
     const makeMark = (second, index, value, seriesKind) => ({
-        x: pointX(index, model.seconds.length),
-        y: pointY(value, yMaximum),
+        x: pointX(index, model.seconds.length, plot),
+        y: pointY(value, yMaximum, plot),
         zeroY,
         value,
         timestamp: second.timestamp,
         seriesKind,
+        isolated: ![index - 1, index + 1].some((neighbor) => {
+            const candidate = model.seconds[neighbor];
+            const key = seriesKind === "latency" ? "processingLatencyMeanMs"
+                : seriesKind === "input" ? "inputAcceptedCount" : "processingCompletedCount";
+            return candidate?.observed && candidate[key] !== null;
+        }),
         tooltip: `${formatTime(second.timestamp)} · ${formatNumber(value, kind)} ${kind === "throughput" ? "건/초" : "ms"}`,
     });
 
@@ -154,19 +180,22 @@ export function buildTelemetryChartPresentation(model, kind) {
 
     return {
         kind,
-        width: WIDTH,
-        height: HEIGHT,
-        plot: { ...PLOT, width: PLOT_WIDTH, height: PLOT_HEIGHT },
+        width,
+        height,
+        compact,
+        plot,
         yMaximum,
         yTicks: Array.from({ length: 5 }, (_, index) => {
             const value = (yMaximum * index) / 4;
             return {
                 value,
-                label: formatNumber(value, kind),
-                y: pointY(value, yMaximum),
+                label: kind === "throughput" ? formatNumber(value, kind)
+                    : value > 0 && (value < 0.001 || value >= 1000000)
+                        ? value.toExponential(1) : value.toLocaleString("ko-KR", { maximumSignificantDigits: 3 }),
+                y: pointY(value, yMaximum, plot),
             };
         }),
-        xTicks: axisTimeTicks(model),
+        xTicks: axisTimeTicks(model, plot),
         series,
         markCount: series.reduce((total, item) => total + item.marks.length, 0),
     };
@@ -198,14 +227,16 @@ function addLine(doc, parent, x1, y1, x2, y2, className) {
 }
 
 /** Return a responsive figure. SVG elements contain no synthesized observations. */
-export function createTelemetryChart(model, kind, doc = document) {
-    const presentation = buildTelemetryChartPresentation(model, kind);
+export function createTelemetryChart(model, kind, doc = document, dimensions = null) {
+    const presentation = buildTelemetryChartPresentation(model, kind, dimensions);
+    const { width, height, plot: bounds } = presentation;
     const figure = doc.createElement("figure");
     figure.classList.add("dashboard-telemetry-chart");
     figure.classList.add(`dashboard-telemetry-chart--${kind}`);
+    if (presentation.compact) figure.classList.add("dashboard-telemetry-chart--compact");
 
     const svg = svgNode(doc, "svg", "dashboard-telemetry-chart__svg");
-    svg.setAttribute("viewBox", `0 0 ${WIDTH} ${HEIGHT}`);
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
     svg.setAttribute("role", "img");
     const titleId = `dashboard-telemetry-${kind}-chart-title`;
     const descriptionId = `dashboard-telemetry-${kind}-chart-description`;
@@ -223,19 +254,19 @@ export function createTelemetryChart(model, kind, doc = document) {
     const grid = svgNode(doc, "g", "dashboard-telemetry-chart__grid");
     for (const tick of presentation.yTicks) {
         addLine(
-            doc, grid, PLOT.left, tick.y,
-            PLOT.left + PLOT_WIDTH, tick.y,
+            doc, grid, bounds.left, tick.y,
+            bounds.left + bounds.width, tick.y,
             "dashboard-telemetry-chart__grid-line",
         );
-        addText(doc, grid, PLOT.left - 10, tick.y + 4, tick.label,
+        addText(doc, grid, bounds.left - 10, tick.y + 4, tick.label,
             "dashboard-telemetry-chart__y-label");
     }
     for (const tick of presentation.xTicks) {
-        addText(doc, grid, tick.x, HEIGHT - 13, tick.label,
+        addText(doc, grid, tick.x, height - (presentation.compact ? 8 : 13), tick.label,
             "dashboard-telemetry-chart__x-label");
     }
     svg.append(grid);
-    addText(doc, svg, PLOT.left, 20, kind === "throughput" ? "건/초" : "ms",
+    addText(doc, svg, bounds.left, presentation.compact ? 13 : 20, kind === "throughput" ? "건/초" : "ms",
         "dashboard-telemetry-chart__unit");
 
     const dataLayer = svgNode(doc, "g", "dashboard-telemetry-chart__data");
@@ -249,16 +280,30 @@ export function createTelemetryChart(model, kind, doc = document) {
             const circle = svgNode(doc, "circle", "dashboard-telemetry-chart__mark");
             circle.setAttribute("cx", String(mark.x));
             circle.setAttribute("cy", String(mark.y));
-            circle.setAttribute("r", kind === "latency" ? "3" : "2.5");
+            circle.setAttribute("r", String(mark.isolated
+                ? series.kind === "input" ? 8 : 4.5
+                : series.kind === "input" ? 3.5 : 2.5));
+            const accessibleValue = `${series.label} · ${formatBucketTime(mark.timestamp)} · ${mark.tooltip}`;
+            circle.setAttribute("aria-label", accessibleValue);
+            circle.setAttribute("role", "img");
+            circle.setAttribute("data-timestamp", mark.timestamp);
+            circle.setAttribute("data-series", series.kind);
+            if (mark.isolated) circle.setAttribute("tabindex", "0");
             const tooltip = svgNode(doc, "title");
-            tooltip.textContent = `${series.label} · ${mark.tooltip}`;
+            tooltip.textContent = accessibleValue;
             circle.append(tooltip);
             group.append(circle);
         }
         dataLayer.append(group);
     }
     svg.append(dataLayer);
-    figure.append(svg);
+    const plot = doc.createElement("div");
+    plot.classList.add("dashboard-telemetry-chart__plot");
+    plot.setAttribute("tabindex", "0");
+    plot.setAttribute("role", "region");
+    plot.setAttribute("aria-label", `${kind === "throughput" ? "처리량" : "처리 지연"} 시간축 · 좁은 화면에서 좌우 스크롤`);
+    plot.append(svg);
+    figure.append(plot);
 
     const legend = doc.createElement("ul");
     legend.classList.add("dashboard-telemetry-chart__legend");
@@ -272,6 +317,31 @@ export function createTelemetryChart(model, kind, doc = document) {
         legend.append(item);
     }
     figure.append(legend);
+
+    const observations = model.seconds.filter((second) => second.observed);
+    if (observations.length > 0) {
+        const observation = doc.createElement("div");
+        observation.classList.add("dashboard-telemetry-chart__observation");
+        const latest = observations.at(-1);
+        const time = doc.createElement("p");
+        time.textContent = `최근 5분 관측 ${observations.length}버킷 · ${observations.length === 1 ? "관측" : "최종 관측"} 버킷 ${formatBucketTime(latest.timestamp)}`;
+        observation.append(time);
+        if (observations.length === 1) {
+            const values = doc.createElement("strong");
+            values.textContent = kind === "throughput"
+                ? `입력 수락 ${latest.inputAcceptedCount}건 · 처리 완료 ${latest.processingCompletedCount}건`
+                : latest.processingLatencyMeanMs === null ? "해당 버킷의 지연 샘플 미관측"
+                    : `버킷 평균 ${formatCompactLatency(latest.processingLatencyMeanMs)} ms`;
+            observation.append(values);
+        }
+        if (model.observedBucketCount === 0) {
+            const historical = doc.createElement("p");
+            historical.textContent = "최근 60초 미관측 · 위 값은 최근 5분 내 과거 실측이며 현재 처리량이 아닙니다.";
+            observation.append(historical);
+        }
+        figure.append(observation);
+        description.textContent += ` ${observation.textContent}`;
+    }
 
     if (presentation.markCount === 0) {
         const empty = doc.createElement("figcaption");

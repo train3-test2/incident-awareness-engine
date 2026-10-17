@@ -288,3 +288,421 @@ test("Event Timeline contract remains independent of browser and network APIs", 
         assert.equal(source.includes(forbiddenApi), false);
     }
 });
+
+// The scenarios below run the real event-timeline.js against a minimal DOM whose focus
+// follows browser rules: removed, disabled, or non-focusable elements cannot hold focus.
+const TIMELINE_ASSETS_URL = new URL(
+    "../../../src/incident_awareness/dashboard/ui/assets/",
+    import.meta.url,
+);
+const TIMELINE_RUN_ID = "RUN-1";
+const TIMELINE_ELEMENT_IDS = [
+    "event-timeline-view",
+    "event-timeline-status",
+    "event-timeline-summary",
+    "event-timeline-list",
+    "event-timeline-pagination",
+    "run-detail-back-navigation",
+];
+let timelineHarnessCount = 0;
+
+class TimelineElement {
+    constructor(ownerDocument, tagName) {
+        this.ownerDocument = ownerDocument;
+        this.tagName = tagName.toUpperCase();
+        this.parentNode = null;
+        this.childNodes = [];
+        this.classNames = new Set();
+        this.classList = {
+            add: (...names) => names.forEach((name) => this.classNames.add(name)),
+            contains: (name) => this.classNames.has(name),
+        };
+        this.dataset = {};
+        this.attributes = new Map();
+        this.listeners = new Map();
+        this.ownText = "";
+        this.disabled = false;
+        this.href = "";
+        this.type = "";
+        this.focusCalls = [];
+        this.scrollIntoViewCalls = [];
+    }
+
+    get children() {
+        return this.childNodes;
+    }
+
+    get textContent() {
+        return this.ownText + this.childNodes.map((child) => child.textContent).join("");
+    }
+
+    set textContent(value) {
+        this.replaceChildren();
+        this.ownText = String(value);
+    }
+
+    get tabIndex() {
+        if (this.attributes.has("tabindex")) {
+            return Number(this.attributes.get("tabindex"));
+        }
+        return this.tagName === "BUTTON" || this.tagName === "A" ? 0 : -1;
+    }
+
+    set tabIndex(value) {
+        this.attributes.set("tabindex", String(value));
+    }
+
+    get isConnected() {
+        return this.ownerDocument.body.contains(this);
+    }
+
+    append(...nodes) {
+        for (const node of nodes) {
+            node.parentNode = this;
+            this.childNodes.push(node);
+        }
+    }
+
+    replaceChildren(...nodes) {
+        for (const child of this.childNodes) {
+            child.parentNode = null;
+        }
+        this.childNodes = [];
+        this.ownText = "";
+        this.append(...nodes);
+    }
+
+    setAttribute(name, value) {
+        this.attributes.set(name, String(value));
+    }
+
+    getAttribute(name) {
+        return this.attributes.get(name) ?? null;
+    }
+
+    hasAttribute(name) {
+        return this.attributes.has(name);
+    }
+
+    addEventListener(type, listener) {
+        this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+    }
+
+    click() {
+        if (this.disabled) {
+            return;
+        }
+        for (const listener of this.listeners.get("click") ?? []) {
+            listener({ type: "click", target: this });
+        }
+    }
+
+    focus(options = {}) {
+        const focusable = this.tagName === "BUTTON"
+            ? !this.disabled
+            : this.tagName === "A"
+                ? this.href !== ""
+                : this.attributes.has("tabindex");
+        if (!this.isConnected || !focusable) {
+            return;
+        }
+        this.focusCalls.push({ ...options });
+        this.ownerDocument.focusedElement = this;
+    }
+
+    scrollIntoView(options) {
+        this.scrollIntoViewCalls.push({ ...options });
+    }
+
+    contains(node) {
+        for (let current = node; current !== null && current !== undefined;) {
+            if (current === this) {
+                return true;
+            }
+            current = current.parentNode;
+        }
+        return false;
+    }
+
+    querySelectorAll(selector) {
+        assert.match(selector, /^[a-z]+$/);
+        const matches = [];
+        const visit = (element) => {
+            for (const child of element.childNodes) {
+                if (child.tagName === selector.toUpperCase()) {
+                    matches.push(child);
+                }
+                visit(child);
+            }
+        };
+        visit(this);
+        return matches;
+    }
+}
+
+async function startEventTimelineHarness({ blurOnDisable }) {
+    const document = {
+        focusedElement: null,
+        createElement: (tagName) => new TimelineElement(document, tagName),
+        getElementById: (id) => document.elements.get(id) ?? null,
+        get activeElement() {
+            const focused = this.focusedElement;
+            if (
+                focused === null
+                || !focused.isConnected
+                || (blurOnDisable && focused.disabled)
+            ) {
+                return this.body;
+            }
+            return focused;
+        },
+    };
+    document.body = new TimelineElement(document, "body");
+    document.elements = new Map(
+        TIMELINE_ELEMENT_IDS.map((id) => [id, new TimelineElement(document, "div")]),
+    );
+    const headerLink = new TimelineElement(document, "a");
+    headerLink.href = "/dashboard";
+    document.body.append(headerLink, ...document.elements.values());
+
+    const requests = [];
+    const fakeGlobals = {
+        document,
+        window: { location: { pathname: `/dashboard/runs/${TIMELINE_RUN_ID}/timeline` } },
+        fetch: (url) => new Promise((resolve) => {
+            requests.push({ url: String(url), resolve, settled: false });
+        }),
+    };
+    const originalGlobals = new Map(
+        Object.keys(fakeGlobals).map(
+            (name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)],
+        ),
+    );
+    const restore = () => {
+        for (const [name, descriptor] of originalGlobals) {
+            if (descriptor === undefined) {
+                delete globalThis[name];
+            } else {
+                Object.defineProperty(globalThis, name, descriptor);
+            }
+        }
+    };
+    for (const [name, value] of Object.entries(fakeGlobals)) {
+        Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    }
+    const flush = async () => {
+        for (let index = 0; index < 10; index += 1) {
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+    };
+
+    const source = await readFile(new URL("event-timeline.js", TIMELINE_ASSETS_URL), "utf8");
+    const moduleSource = source.replaceAll(
+        /from "\.\/([^"]+)"/g,
+        (_, file) => `from "${new URL(file, TIMELINE_ASSETS_URL).href}"`,
+    );
+    timelineHarnessCount += 1;
+    try {
+        await import(
+            "data:text/javascript;charset=utf-8,"
+            + encodeURIComponent(`${moduleSource}\n// timeline harness ${timelineHarnessCount}\n`)
+        );
+        await flush();
+    } catch (error) {
+        restore();
+        throw error;
+    }
+
+    const element = (id) => document.getElementById(id);
+    const pagination = element("event-timeline-pagination");
+    return {
+        document,
+        headerLink,
+        restore,
+        status: element("event-timeline-status"),
+        pendingCount: () => requests.filter((request) => !request.settled).length,
+        async respond(offset, status, body) {
+            const url = buildEventTimelineApiPath(TIMELINE_RUN_ID, 50, offset);
+            const request = requests.find(
+                (candidate) => !candidate.settled && candidate.url === url,
+            );
+            assert.ok(request, `Expected a pending request for ${url}`);
+            request.settled = true;
+            request.resolve({
+                ok: status >= 200 && status < 300,
+                status,
+                json: async () => body,
+            });
+            await flush();
+        },
+        async respondPage(offset, itemCount, total) {
+            await this.respond(offset, 200, makePayload({ itemCount, total, offset }));
+        },
+        // Enter on a focused button activates it; on anything else it does nothing here.
+        async pressEnter() {
+            const active = document.activeElement;
+            if (active.tagName === "BUTTON") {
+                active.click();
+            }
+            await flush();
+        },
+        button: (label) => pagination.children.find((button) => button.textContent === label),
+        buttons: () => pagination.children,
+        backLink: () => element("run-detail-back-navigation").children[0],
+        range: () => element("event-timeline-summary").children[2]?.children[1].textContent,
+        cardCount: () => element("event-timeline-list").children.length,
+    };
+}
+
+for (const blurOnDisable of [true, false]) {
+    const focusModel = blurOnDisable ? "blur on disable" : "focus kept on disabled";
+
+    test(`Event Timeline keeps focus on the activated page control across Enter presses (${focusModel})`, async (t) => {
+        // Given
+        const harness = await startEventTimelineHarness({ blurOnDisable });
+        t.after(harness.restore);
+        await harness.respondPage(0, 50, 129);
+        const initialFocus = harness.document.activeElement;
+        const originalNext = harness.button("다음");
+        originalNext.focus();
+        const visited = [];
+        const recordPage = () => {
+            const active = harness.document.activeElement;
+            visited.push({
+                range: harness.range(),
+                cards: harness.cardCount(),
+                focused: active.textContent,
+                focusedDisabled: active.disabled,
+                focusedInPagination: harness.buttons().includes(active),
+                preventScroll: active.focusCalls.at(-1)?.preventScroll,
+            });
+        };
+
+        // When
+        await harness.pressEnter();
+        const pendingAfterEnter = harness.pendingCount();
+        await harness.pressEnter();
+        const pendingAfterRepeatedEnter = harness.pendingCount();
+        await harness.respondPage(50, 50, 129);
+        const restoredNext = harness.document.activeElement;
+        recordPage();
+        await harness.pressEnter();
+        await harness.respondPage(100, 29, 129);
+        recordPage();
+        await harness.pressEnter();
+        await harness.respondPage(50, 50, 129);
+        recordPage();
+        await harness.pressEnter();
+        await harness.respondPage(0, 50, 129);
+        recordPage();
+
+        // Then
+        assert.strictEqual(initialFocus, harness.document.body);
+        assert.equal(pendingAfterEnter, 1);
+        assert.equal(pendingAfterRepeatedEnter, 1);
+        assert.notStrictEqual(restoredNext, originalNext);
+        assert.equal(originalNext.isConnected, false);
+        const page = (range, cards, focused) => ({
+            range,
+            cards,
+            focused,
+            focusedDisabled: false,
+            focusedInPagination: true,
+            preventScroll: true,
+        });
+        assert.deepEqual(visited, [
+            page("51–100 / 129", 50, "다음"),
+            page("101–129 / 129", 29, "이전"),
+            page("51–100 / 129", 50, "이전"),
+            page("1–50 / 129", 50, "다음"),
+        ]);
+        assert.equal(harness.button("이전").disabled, true);
+        assert.equal(harness.status.hasAttribute("tabindex"), false);
+    });
+
+    test(`Event Timeline moves focus to the status only when no page control remains (${focusModel})`, async (t) => {
+        // Given
+        const harness = await startEventTimelineHarness({ blurOnDisable });
+        t.after(harness.restore);
+        await harness.respondPage(0, 50, 129);
+
+        // When: the next page shrank below the requested offset.
+        harness.button("다음").focus();
+        await harness.pressEnter();
+        await harness.respond(50, 200, makePayload({ itemCount: 0, total: 40, offset: 50 }));
+        const afterShrunkPage = {
+            focused: harness.document.activeElement.textContent,
+            nextDisabled: harness.button("다음").disabled,
+            range: harness.range(),
+        };
+        // When: going back finds a single remaining page.
+        await harness.pressEnter();
+        await harness.respondPage(0, 10, 10);
+        const afterSinglePage = {
+            focusedStatus: harness.document.activeElement === harness.status,
+            tabIndex: harness.status.getAttribute("tabindex"),
+            buttonsDisabled: harness.buttons().map((button) => button.disabled),
+            range: harness.range(),
+        };
+
+        // Then
+        assert.deepEqual(afterShrunkPage, { focused: "이전", nextDisabled: true, range: "0–50 / 40" });
+        assert.deepEqual(afterSinglePage, {
+            focusedStatus: true,
+            tabIndex: "-1",
+            buttonsDisabled: [true, true],
+            range: "1–10 / 10",
+        });
+        assert.deepEqual(harness.status.focusCalls.at(-1), { preventScroll: true });
+        assert.deepEqual(
+            harness.status.scrollIntoViewCalls.at(-1),
+            { block: "nearest", inline: "nearest" },
+        );
+    });
+
+    test(`Event Timeline keeps keyboard position on the status after a failed page (${focusModel})`, async (t) => {
+        // Given
+        const harness = await startEventTimelineHarness({ blurOnDisable });
+        t.after(harness.restore);
+        await harness.respondPage(0, 50, 129);
+        harness.button("다음").focus();
+
+        // When
+        await harness.pressEnter();
+        await harness.respond(50, 503, { detail: "unavailable" });
+
+        // Then
+        assert.equal(harness.status.textContent, "Event Timeline을 불러오지 못했습니다.");
+        assert.equal(harness.buttons().length, 0);
+        assert.equal(harness.cardCount(), 0);
+        assert.strictEqual(harness.document.activeElement, harness.status);
+        assert.equal(harness.status.tabIndex, -1);
+    });
+
+    test(`Event Timeline leaves focus alone after the user moves during a late page (${focusModel})`, async (t) => {
+        // Given
+        const harness = await startEventTimelineHarness({ blurOnDisable });
+        t.after(harness.restore);
+        await harness.respondPage(0, 50, 129);
+
+        // When: the keyboard user moves to the back link while the page is still loading.
+        harness.button("다음").focus();
+        await harness.pressEnter();
+        harness.backLink().focus();
+        await harness.respondPage(50, 50, 129);
+        const afterMove = harness.document.activeElement;
+        const rangeAfterMove = harness.range();
+        // When: a pointer activation that never focused the control.
+        harness.document.focusedElement = null;
+        harness.button("다음").click();
+        await harness.respondPage(100, 29, 129);
+        const afterUnfocusedClick = harness.document.activeElement;
+
+        // Then
+        assert.strictEqual(afterMove, harness.backLink());
+        assert.equal(rangeAfterMove, "51–100 / 129");
+        assert.strictEqual(afterUnfocusedClick, harness.document.body);
+        assert.equal(harness.range(), "101–129 / 129");
+        assert.equal(harness.status.hasAttribute("tabindex"), false);
+    });
+}

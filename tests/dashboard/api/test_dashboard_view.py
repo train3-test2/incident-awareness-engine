@@ -171,6 +171,33 @@ def test_dashboard_view_serves_html_shell_without_database_access(
     assert database_connection_attempts == []
 
 
+def test_dashboard_local_svg_icons_are_available_without_external_resources() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    sprite = client.get("/dashboard-assets/dashboard-icons.svg")
+    module = client.get("/dashboard-assets/dashboard-icons.mjs")
+
+    # Then
+    assert sprite.status_code == 200
+    assert sprite.headers["content-type"].startswith("image/svg+xml")
+    assert module.status_code == 200
+    assert "export function createPipelineIcon" in module.text
+    for stage in (
+        "artifact_validation",
+        "normalization",
+        "fusion",
+        "fast_handoff",
+        "hybrid",
+        "persistence",
+    ):
+        assert f'id="{stage}"' in sprite.text
+    assert "<image" not in sprite.text
+    assert 'href="http' not in sprite.text
+    assert 'from "http' not in module.text
+
+
 def test_dashboard_run_status_and_table_are_visible_without_disclosure() -> None:
     # Given
     client = TestClient(create_app())
@@ -202,10 +229,10 @@ def test_dashboard_view_2_uses_real_data_regions_and_defaults_to_replay() -> Non
     region_ids = (
         "system-status-value",
         "pipeline-heading",
-        "insights-heading",
         "throughput-heading",
-        "latency-heading",
         "runs-heading",
+        "insights-heading",
+        "latency-heading",
         "workflow-heading",
         "selected-run-heading",
     )
@@ -386,7 +413,7 @@ def test_dashboard_view_uses_shared_shell_and_responsive_layout() -> None:
     monitor_rule = stylesheet.split(".dashboard-monitor-grid {", maxsplit=1)[1].split(
         "}", maxsplit=1
     )[0]
-    assert "grid-template-columns: minmax(0, 1.85fr) minmax(0, 1fr)" in monitor_rule
+    assert "grid-template-columns: minmax(0, 906fr) minmax(0, 548fr)" in monitor_rule
     assert "minmax(36rem, 0.9fr)" not in stylesheet
 
     runtime_index = html.index('id="runtime-summary-heading"')
@@ -461,10 +488,14 @@ def test_dashboard_script_keeps_overview_runs_and_runtime_state_independent() ->
     assert 'state.queryState === "empty"' in script
     assert "runsStatus.textContent = state.message;" in script
     assert "runtimeSummaryStatus.textContent = state.message;" in script
+    assert 'const topMessage = state.queryState === "success" ? "" : state.message;' in script
+    assert "if (runtimeTopStatus.textContent !== topMessage)" in script
+    assert "runtimeTopStatus.textContent = topMessage;" in script
     assert (
-        'runtimeTopStatus.textContent = state.queryState === "success" ? "" : state.message;'
+        'runtimeTopStatus.classList.toggle("dashboard-visually-hidden", state.queryState === "empty");'
         in script
     )
+    assert '? "최근 Runtime 보고 없음"' in script
     assert "async function loadRunDetailState(runId)" in script
     assert "async function loadFusionEngineState(runId)" in script
     assert 'resolveRunDetailQueryState(loading, { kind: "error" })' in script

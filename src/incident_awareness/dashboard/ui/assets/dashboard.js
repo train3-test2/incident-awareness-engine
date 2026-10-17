@@ -1,3 +1,4 @@
+import { createPipelineIcon } from "./dashboard-icons.mjs";
 import {
     buildPipelineStagePresentation,
     canRefreshSelectedAnalysis,
@@ -60,12 +61,12 @@ const RUNTIME_REQUEST_TIMEOUT_MS = 10000;
 const ANALYSIS_REQUEST_TIMEOUT_MS = 10000;
 const EVENT_TIMELINE_LIMIT = 50;
 const RECENT_RUNS_VISIBLE_COUNT = 5;
-const PIPELINE_STAGE_SYMBOLS = ["⬡", "⇄", "∑", "ϟ", "◇", "▤"];
-const PIPELINE_STATUS_SYMBOLS = { completed: "✓", current: "▶", failed: "×", stale: "!" };
+// Row controls whose keyboard focus survives a re-render; the class names the control kind.
+const SELECTION_ROW_FOCUS_CONTROLS = ["dashboard-run-selector", "dashboard-run-detail-link"];
 const SCORE_CHART_DIMENSIONS = {
     width: 960,
-    height: 280,
-    padding: { top: 50, right: 72, bottom: 27, left: 50 },
+    height: 140,
+    padding: { top: 50, right: 72, bottom: 23, left: 50 },
 };
 
 const dashboardView = document.getElementById("dashboard-view");
@@ -151,6 +152,7 @@ let runtimeRequestInFlight = false;
 const selectedAnalysisAbortControllers = new Set();
 let selectedTimelineRequestVersion = 0;
 let selectedTimelineAbortController = null;
+let restoringSelectionRowFocus = false;
 
 function createStatusBadge(presentation) {
     const badge = document.createElement("span");
@@ -192,10 +194,12 @@ function createSelectionButton(runId, runtimeEntityId = null) {
 }
 
 function replaceSelectionRows(list, rows, table, runtimeItems, runItems) {
-    const focusedElement = list.contains(document.activeElement)
-        && document.activeElement?.classList.contains("dashboard-run-selector")
-        ? document.activeElement
-        : null;
+    const focusedControl = list.contains(document.activeElement)
+        ? SELECTION_ROW_FOCUS_CONTROLS.find(
+            (control) => document.activeElement.classList.contains(control),
+        )
+        : undefined;
+    const focusedElement = focusedControl === undefined ? null : document.activeElement;
     const focusTarget = resolveRunSelectionFocus(
         focusedElement?.dataset.runId ?? null,
         focusedElement?.dataset.entityId ?? null,
@@ -207,15 +211,21 @@ function replaceSelectionRows(list, rows, table, runtimeItems, runItems) {
     if (focusTarget === null) {
         return;
     }
+    // Same control kind and Run/Entity only; a Run that left the list keeps no focus target.
     const replacement = Array.from(
-        list.querySelectorAll(".dashboard-run-selector"),
+        list.querySelectorAll(`.${focusedControl}`),
     ).find(
-        (button) => (
-            button.dataset.runId === focusTarget.runId
-            && (button.dataset.entityId ?? null) === focusTarget.entityId
+        (control) => (
+            control.dataset.runId === focusTarget.runId
+            && (control.dataset.entityId ?? null) === focusTarget.entityId
         ),
     );
-    replacement?.focus({ preventScroll: true });
+    restoringSelectionRowFocus = true;
+    try {
+        replacement?.focus({ preventScroll: true });
+    } finally {
+        restoringSelectionRowFocus = false;
+    }
 }
 
 function createTableCell(value, className = null) {
@@ -266,8 +276,16 @@ function createRunRow(run) {
     }
 
     const detailLink = document.createElement("a");
+    detailLink.classList.add("dashboard-run-detail-link");
+    detailLink.dataset.runId = run.run_id;
     detailLink.href = buildRunDetailViewPath(run.run_id);
     detailLink.textContent = "Run Detail";
+    detailLink.addEventListener("focus", () => {
+        // Focus restored after a re-render stays where the user left the page scroll.
+        if (!restoringSelectionRowFocus) {
+            detailLink.scrollIntoView({ block: "nearest", inline: "nearest" });
+        }
+    });
     const runIdentifier = document.createElement("span");
     const targetHost = document.createElement("small");
     targetHost.textContent = `분석 대상 ${displayValue(run.target_host)}`;
@@ -316,12 +334,13 @@ function createRunTimestamp(value) {
     time.classList.add("dashboard-run-time");
     time.setAttribute("datetime", value);
     time.setAttribute("title", formatRunTimestamp(value));
+    time.setAttribute("aria-label", formatRunTimestamp(value));
     const day = document.createElement("span");
-    day.textContent = date.toLocaleDateString("ko-KR", {
-        year: "numeric", month: "2-digit", day: "2-digit",
-    });
+    day.textContent = [date.getFullYear(), date.getMonth() + 1, date.getDate()]
+        .map((part, index) => index === 0 ? String(part) : String(part).padStart(2, "0"))
+        .join("-");
     const clock = document.createElement("small");
-    clock.textContent = date.toLocaleTimeString("ko-KR", {
+    clock.textContent = date.toLocaleTimeString("en-GB", {
         hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit",
         timeZoneName: "short",
     });
@@ -393,7 +412,7 @@ function renderPipelineStages() {
         item.classList.add("pipeline-stage", `pipeline-stage--${stage.state}`);
         const number = document.createElement("span");
         number.classList.add("pipeline-stage__number");
-        number.textContent = PIPELINE_STATUS_SYMBOLS[stage.state] ?? PIPELINE_STAGE_SYMBOLS[index];
+        number.append(createPipelineIcon(stage.stage, document));
         number.setAttribute("aria-hidden", "true");
         item.setAttribute("aria-label", `${index + 1}. ${stage.stageLabel} · ${stage.stateLabel}`);
         const content = document.createElement("span");
@@ -411,7 +430,12 @@ function renderPipelineStages() {
 
 function renderRuntimeState(state) {
     runtimeSummaryStatus.textContent = state.message;
-    runtimeTopStatus.textContent = state.queryState === "success" ? "" : state.message;
+    // Keep the duplicate empty-state announcement accessible without adding a KPI row.
+    const topMessage = state.queryState === "success" ? "" : state.message;
+    if (runtimeTopStatus.textContent !== topMessage) {
+        runtimeTopStatus.textContent = topMessage;
+    }
+    runtimeTopStatus.classList.toggle("dashboard-visually-hidden", state.queryState === "empty");
     const latest = getLatestRuntimeReport(state.items);
     if (latest === null) {
         latestRuntimeState.textContent = displayValue(null);
@@ -1261,6 +1285,7 @@ if (dashboardView !== null) {
             const nextTab = selectedRunTabs[nextIndex];
             activateSelectedRunPanel(nextTab.name);
             nextTab.button.focus();
+            nextTab.button.scrollIntoView({ block: "nearest", inline: "nearest" });
         });
     }
     activateSelectedRunPanel("replay");

@@ -113,6 +113,54 @@ function descendants(node, tagName) {
     ]);
 }
 
+test("Telemetry redraw preserves keyboard focus on a stored marker, then falls back safely when empty", async () => {
+    // Given
+    const doc = makeDocument();
+    const frame = doc.elements.get("telemetry-throughput-chart");
+    const createElement = doc.createElement;
+    doc.createElement = (name) => {
+        const node = createElement(name);
+        node.scrollWidth = 120;
+        node.focus = () => { doc.activeElement = node; };
+        return node;
+    };
+    const createElementNS = doc.createElementNS;
+    doc.createElementNS = (namespace, name) => {
+        const node = createElementNS(namespace, name);
+        node.getAttribute = (key) => node.attributes.get(key) ?? null;
+        node.focus = () => { doc.activeElement = node; };
+        return node;
+    };
+    frame.contains = (node) => node === frame || descendants(frame, node?.tagName).includes(node);
+    frame.querySelector = () => descendants(frame, "div").find((node) => node.classes.has("dashboard-telemetry-chart__plot"));
+    frame.querySelectorAll = (name) => descendants(frame, name);
+    frame.focus = () => { doc.activeElement = frame; };
+    let failed = false;
+    const controller = createDashboardTelemetryController(doc, {
+        ...fakeTimers(), fetchImpl: async () => failed ? { ok: false, status: 503 }
+            : { ok: true, json: async () => payload() },
+    });
+    await controller.start();
+    const original = descendants(frame, "circle")[0];
+    assert.equal(frame.querySelector().scrollLeft, 120, "Initial narrow plot opens at the latest observation");
+    original.focus();
+    frame.querySelector().scrollLeft = 30;
+
+    // When
+    await controller.poll();
+
+    // Then
+    assert.notStrictEqual(doc.activeElement, original);
+    assert.equal(doc.activeElement.getAttribute("data-timestamp"), original.getAttribute("data-timestamp"));
+    assert.equal(doc.activeElement.getAttribute("data-series"), "input");
+    assert.equal(frame.querySelector().scrollLeft, 30);
+    failed = true;
+    await controller.poll();
+    assert.strictEqual(doc.activeElement, frame);
+    assert.match(frame.textContent, /조회 실패/);
+    controller.stop();
+});
+
 test("New numeric observations and timestamps do not reannounce unchanged live status", async () => {
     // Given
     const doc = makeDocument();
@@ -207,6 +255,43 @@ test("Telemetry UI no_samples and stale are distinct from measured zero or worke
     assert.equal(descendants(doc.elements.get("telemetry-throughput-chart"), "figure").length, 0);
     assert.match(doc.elements.get("telemetry-throughput-status").textContent, /0건으로 계산하지/);
     assert.match(doc.elements.get("telemetry-throughput-status").textContent, /최근 관측 여부/);
+    controller.stop();
+});
+
+test("Past observations in the five-minute window never replace a null recent-60s summary", async () => {
+    // Given
+    const doc = makeDocument();
+    const response = payload();
+    response.range_start = "2026-10-15T05:18:20.000Z";
+    response.points[0].bucket_start = "2026-10-15T05:21:17.000Z";
+    response.points[0].bucket_end = "2026-10-15T05:21:18.000Z";
+    response.last_observed_at = "2026-10-15T05:21:17.642Z";
+    response.freshness.status = "stale";
+    Object.assign(response.recent_60s_summary, {
+        observed_bucket_count: 0, missing_bucket_count: 60,
+        input_accepted_count: null, processing_completed_count: null,
+        processing_failed_count: null, processing_latency_sample_count: null,
+        processing_latency_mean_ms: null,
+    });
+    const controller = createDashboardTelemetryController(doc, {
+        ...fakeTimers(), fetchImpl: async () => ({ ok: true, json: async () => response }),
+    });
+
+    // When
+    await controller.start();
+
+    // Then
+    assert.equal(doc.elements.get("telemetry-throughput-summary").textContent, "입력 미관측 / 처리 미관측");
+    assert.equal(doc.elements.get("telemetry-latency-summary").textContent, "미관측");
+    for (const kind of ["throughput", "latency"]) {
+        assert.match(doc.elements.get(`telemetry-${kind}-chart`).textContent, /최근 60초 미관측.*과거 실측/);
+        assert.equal(doc.elements.get(`telemetry-${kind}-note`).textContent, "실측 · 관측 지연");
+    }
+    response.points = [];
+    response.observation_quality.status = "no_samples";
+    await controller.poll();
+    assert.doesNotMatch(doc.elements.get("telemetry-throughput-chart").textContent, /입력 수락 2건|과거 실측/);
+    assert.match(doc.elements.get("telemetry-throughput-chart").textContent, /실제 관측 데이터 없음/);
     controller.stop();
 });
 

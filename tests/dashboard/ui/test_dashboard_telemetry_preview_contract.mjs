@@ -185,3 +185,21 @@ test("Preview is opt-in local-only; the production entry points never import syn
     assert.match(entry, /createDashboardTelemetryController\(document, \{ fetchImpl: source.fetchImpl \}\)/);
     assert.doesNotMatch(entry, /(?:window|globalThis)\.fetch\s*=/);
 });
+
+test("Synthetic single and historical examples age out of the same moving 300-second window", () => {
+    // Given / When
+    const single = buildTelemetryChartModel(buildPreviewPayload(0, "single"));
+    const historical = buildTelemetryChartModel(buildPreviewPayload(0, "historical"));
+    const expired = buildTelemetryChartModel(buildPreviewPayload(300, "single"));
+    // Then
+    assert.equal(single.seconds.filter((second) => second.observed).length, 1);
+    assert.equal(single.recent60s.inputAcceptedCount, 7);
+    assert.equal(single.recent60s.processingCompletedCount, 7);
+    assert.ok(Math.abs(single.recent60s.processingLatencyMeanMs - 0.354226857) < 0.000000001);
+    assert.equal(historical.seconds.filter((second) => second.observed).length, 1);
+    assert.equal(historical.recent60s.inputAcceptedCount, null);
+    assert.equal(historical.freshnessStatus, "stale");
+    assert.equal(expired.seconds.some((second) => second.observed), false);
+    assert.equal(expired.recent60s.processingLatencyMeanMs, null);
+    assert.equal(expired.qualityStatus, "no_samples");
+});

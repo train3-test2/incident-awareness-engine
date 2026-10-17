@@ -38,9 +38,31 @@ function formatLatency(value) {
 }
 
 function replaceWithNotice(doc, frame, notice) {
+    const restoreFocus = doc.activeElement && frame.contains?.(doc.activeElement);
     const label = doc.createElement("span");
     label.textContent = notice;
     frame.replaceChildren(label);
+    if (restoreFocus) frame.focus?.({ preventScroll: true });
+}
+
+function replaceObservedChart(doc, frame, model, kind) {
+    const active = doc.activeElement;
+    const restoreFocus = active && frame.contains?.(active);
+    const previousPlot = frame.querySelector?.(".dashboard-telemetry-chart__plot");
+    const timestamp = active?.getAttribute?.("data-timestamp");
+    const series = active?.getAttribute?.("data-series");
+    const dimensions = Number.isFinite(frame.clientWidth) && frame.clientWidth > 0
+        ? { width: Math.max(300, frame.clientWidth - 2) } : null;
+    frame.replaceChildren(createTelemetryChart(model, kind, doc, dimensions));
+    const plot = frame.querySelector?.(".dashboard-telemetry-chart__plot");
+    if (plot) plot.scrollLeft = previousPlot ? previousPlot.scrollLeft : plot.scrollWidth;
+    if (restoreFocus) {
+        const marker = timestamp && [...frame.querySelectorAll("circle")].find((circle) => (
+            circle.getAttribute("data-timestamp") === timestamp
+            && circle.getAttribute("data-series") === series
+        ));
+        (marker || plot || frame).focus?.({ preventScroll: true });
+    }
 }
 
 function updateStatusText(element, message) {
@@ -77,8 +99,8 @@ function renderTelemetry(doc, nodes, model) {
         replaceWithNotice(doc, nodes.throughputFrame, "실제 관측 데이터 없음");
         replaceWithNotice(doc, nodes.latencyFrame, "실제 처리 지연 데이터 없음");
     } else {
-        nodes.throughputFrame.replaceChildren(createTelemetryChart(model, "throughput", doc));
-        nodes.latencyFrame.replaceChildren(createTelemetryChart(model, "latency", doc));
+        replaceObservedChart(doc, nodes.throughputFrame, model, "throughput");
+        replaceObservedChart(doc, nodes.latencyFrame, model, "latency");
     }
 
     const recent = model.recent60s;

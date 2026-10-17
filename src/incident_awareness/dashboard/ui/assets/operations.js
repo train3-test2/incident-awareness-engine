@@ -13,6 +13,8 @@ const RUNTIME_ENDPOINT = "/operations/runtime";
 const POLL_INTERVAL_MS = 5000;
 // Upper bound for one Runtime request; separate from the delay between polls.
 const RUNTIME_REQUEST_TIMEOUT_MS = 10000;
+// Link kind used to find a completed Run link again after the cards are rebuilt.
+const COMPLETED_RUN_LINK_CLASS = "runtime-card__run-link";
 
 const runtimeStatus = document.getElementById("runtime-status");
 const runtimeList = document.getElementById("runtime-list");
@@ -66,6 +68,9 @@ export function createRuntimeCard(runtime, telemetryAvailable) {
     heading.classList.add("runtime-card__title");
     if (runtime.status === "completed" && runtime.run_id.trim()) {
         const link = document.createElement("a");
+        link.classList.add(COMPLETED_RUN_LINK_CLASS);
+        link.setAttribute("data-run-id", runtime.run_id);
+        link.setAttribute("data-entity-id", runtime.entity_id);
         link.href = buildRunDetailViewPath(runtime.run_id);
         link.textContent = runtime.run_id;
         heading.append(link);
@@ -109,10 +114,27 @@ export function createRuntimeCard(runtime, telemetryAvailable) {
 }
 
 // Keeps the API order; cards are built before the list is replaced so a rendering
-// failure leaves the last successful list untouched.
+// failure leaves the last successful list untouched. A focused completed Run link is
+// focused again only on the rebuilt link of the same Run and Entity.
 function renderRuntimeItems(items, telemetryAvailable) {
     const cards = items.map((runtime) => createRuntimeCard(runtime, telemetryAvailable));
+    const focusedLink = runtimeList.contains(document.activeElement)
+        && document.activeElement.classList.contains(COMPLETED_RUN_LINK_CLASS)
+        ? document.activeElement
+        : null;
     runtimeList.replaceChildren(...cards);
+    if (focusedLink === null) {
+        return;
+    }
+    const replacement = Array.from(
+        runtimeList.querySelectorAll(`.${COMPLETED_RUN_LINK_CLASS}`),
+    ).find(
+        (link) => (
+            link.getAttribute("data-run-id") === focusedLink.getAttribute("data-run-id")
+            && link.getAttribute("data-entity-id") === focusedLink.getAttribute("data-entity-id")
+        ),
+    );
+    replacement?.focus({ preventScroll: true });
 }
 
 function validateRuntimePayload(payload) {

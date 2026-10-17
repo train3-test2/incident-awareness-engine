@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
     NOT_APPLICABLE,
+    PIPELINE_STAGE_ORDER,
     SELECTED_RUNTIME_RECHECK_POLL_THRESHOLDS,
     buildPipelineStagePresentation,
     canRefreshSelectedAnalysis,
@@ -969,6 +970,26 @@ test("Run selection focus is restored only within its original table", () => {
     assert.equal(outsideTable, null);
 });
 
+test("Run row focus is not moved to another Run when the focused Run left the query", () => {
+    // Given
+    const runItems = [{ run_id: "RUN-REMAINING" }];
+    const runtimeItems = [{ run_id: "RUN-REMAINING", entity_id: "WIN-A", status: "running" }];
+
+    // When
+    const missingRun = resolveRunSelectionFocus("RUN-GONE", null, "runs", runtimeItems, runItems);
+    const missingEntity = resolveRunSelectionFocus(
+        "RUN-REMAINING",
+        "WIN-GONE",
+        "runtime",
+        runtimeItems,
+        runItems,
+    );
+
+    // Then
+    assert.equal(missingRun, null);
+    assert.equal(missingEntity, null);
+});
+
 test("Selected analysis handles completed and failed terminal transitions once", () => {
     // Given
     const selectedRunId = "RUN-SELECTED";
@@ -1705,7 +1726,7 @@ test("Dashboard renders dense Runtime and Run tables without exposing Run Type",
     assert.match(stylesheet, /grid-template-columns: repeat\(6, minmax\(0, 1fr\)\)/);
     assert.match(
         stylesheet,
-        /\.dashboard-monitor-grid\s*{[^}]*grid-template-columns: minmax\(0, 1\.85fr\) minmax\(0, 1fr\);/s,
+        /\.dashboard-monitor-grid\s*{[^}]*grid-template-columns: minmax\(0, 906fr\) minmax\(0, 548fr\);/s,
     );
     assert.match(stylesheet, /\.dashboard-event-types li\s*{[^}]*grid-template-columns: minmax\(0, 1fr\) auto;/s);
     assert.match(stylesheet, /\.dashboard-event-types li strong\s*{[^}]*text-align: center;/s);
@@ -1763,6 +1784,14 @@ class FakeElement extends FakeNode {
         this.classList = {
             add: (...names) => names.forEach((name) => this.classNames.add(name)),
             contains: (name) => this.classNames.has(name),
+            toggle: (name, force) => {
+                if (force) {
+                    this.classNames.add(name);
+                } else {
+                    this.classNames.delete(name);
+                }
+                return force;
+            },
         };
         this.dataset = {};
         this.attributes = new Map();
@@ -1839,8 +1868,17 @@ class FakeElement extends FakeNode {
         return event.defaultPrevented;
     }
 
-    focus() {
+    focus(options = {}) {
+        this.focusOptions = { ...options };
         this.ownerDocument.activeElement = this;
+        for (const listener of this.listeners.get("focus") ?? []) {
+            listener({ type: "focus", target: this });
+        }
+    }
+
+    scrollIntoView(options) {
+        this.scrollIntoViewCalls ??= [];
+        this.scrollIntoViewCalls.push({ ...options });
     }
 
     contains(node) {
@@ -1876,6 +1914,7 @@ async function startDashboardHarness() {
         activeElement: null,
         elements: new Map(),
         createElement: () => new FakeElement(document),
+        createElementNS: () => new FakeElement(document),
         getElementById: (id) => document.elements.get(id) ?? null,
     };
     for (const [, id] of source.matchAll(/document\.getElementById\("([^"]+)"\)/g)) {
@@ -2366,29 +2405,34 @@ test("Runtime polling never rewrites an unchanged Run visibility live region", a
     assert.equal(harness.timerCount(RUNTIME_POLL_DELAY_MS), 1);
 });
 
-test("Pipeline icons distinguish reported states while unknown stages never show a completed mark", async (t) => {
+test("Pipeline SVG icons preserve six stage identities independently of reported status badges", async (t) => {
     // Given
     const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
     t.after(harness.restore);
-    const symbols = () => harness.document.getElementById("pipeline-stage-list").children.map(
-        (stage) => stage.children[0].textContent,
+    const icons = () => harness.document.getElementById("pipeline-stage-list").children.map(
+        (stage) => stage.children[0].children[0].children[0].getAttribute("href"),
     );
-    assert.equal(symbols().length, 6);
-    assert.equal(symbols().includes("✓"), false);
+    const expectedIcons = PIPELINE_STAGE_ORDER.map((stage) => `/dashboard-assets/dashboard-icons.svg#${stage}`);
+    assert.deepEqual(icons(), expectedIcons);
+    assert.deepEqual(harness.stageStates(), Array(6).fill("unknown"));
 
     // When / Then
     const running = runtimeReport("RUN-A", "WIN-A", "running", "normalization");
     await harness.poll([running]);
     harness.runtimeButton("RUN-A", "WIN-A").click();
-    assert.equal(symbols()[1], "▶");
-    assert.equal(symbols().includes("✓"), false);
+    assert.equal(harness.stageStates()[1], "current");
+    assert.equal(harness.stageStates().includes("completed"), false);
+    assert.deepEqual(icons(), expectedIcons);
     await harness.poll([{ ...running, is_stale: true }]);
-    assert.equal(symbols()[1], "!");
+    assert.equal(harness.stageStates()[1], "stale");
     await harness.poll([runtimeReport("RUN-A", "WIN-A", "failed", "hybrid")]);
-    assert.equal(symbols()[4], "×");
-    assert.equal(symbols().includes("✓"), false);
+    assert.equal(harness.stageStates()[4], "failed");
+    assert.equal(harness.stageStates().includes("completed"), false);
     await harness.poll([runtimeReport("RUN-A", "WIN-A", "completed", null)]);
-    assert.deepEqual(symbols(), Array(6).fill("✓"));
+    assert.deepEqual(harness.stageStates(), Array(6).fill("completed"));
+    assert.deepEqual(icons(), expectedIcons);
+    assert.equal(new Set(icons()).size, 6);
+    assert.match(harness.text("pipeline-stage-list"), /완료/);
 });
 
 test("Dashboard opens the Replay panel and switches detail tabs without changing the selection", async (t) => {
@@ -2436,10 +2480,143 @@ test("Dashboard opens the Replay panel and switches detail tabs without changing
     assert.equal(endHandled, true);
     assert.equal(workflowFocused, true);
     assert.equal(homeHandled, true);
+    for (const name of ["evidence", "workflow", "summary"]) {
+        assert.deepEqual(harness.document.getElementById(`dashboard-tab-${name}`).scrollIntoViewCalls, [
+            { block: "nearest", inline: "nearest" },
+        ]);
+    }
     assert.equal(harness.document.getElementById("dashboard-tab-summary").getAttribute("aria-selected"), "true");
     assert.equal(harness.document.activeElement, harness.document.getElementById("dashboard-tab-summary"));
     assert.equal(harness.document.getElementById("dashboard-panel-summary").hidden, false);
     assert.equal(harness.text("selected-run-id"), selectedRun);
+});
+
+test("Recent Runs reveals the focused detail link without selecting or refetching a Run", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    const row = harness.document.getElementById("runs-list").children[0];
+    const link = row.children[6].children[0];
+    const selected = harness.text("selected-run-id");
+    const reads = harness.requestCount("/runs?limit=20");
+
+    // When
+    link.focus();
+
+    // Then
+    assert.strictEqual(harness.document.activeElement, link);
+    assert.equal(link.href, buildRunDetailViewPath("RUN-A"));
+    assert.deepEqual(link.scrollIntoViewCalls, [{ block: "nearest", inline: "nearest" }]);
+    assert.equal(harness.text("selected-run-id"), selected);
+    assert.equal(harness.requestCount("/runs?limit=20"), reads);
+});
+
+function recentRunRow(harness, runId) {
+    return harness.document.getElementById("runs-list").children.find(
+        (row) => row.querySelectorAll(".dashboard-run-selector")[0].dataset.runId === runId,
+    );
+}
+
+function recentRunDetailLink(harness, runId) {
+    return recentRunRow(harness, runId).children[6].children[0];
+}
+
+test("Runtime polling restores Run Detail link focus to the same Run without scrolling", async (t) => {
+    // Given
+    const runs = Array.from({ length: 8 }, (_, index) => runListItem(`RUN-${index}`, "WIN-A"));
+    const harness = await startDashboardWithRuntime([], runs);
+    t.after(harness.restore);
+    await harness.respondAnalysis("RUN-0", storedDetail("RUN-0", "WIN-A"), notFound());
+    const list = harness.document.getElementById("runs-list");
+    const toggle = harness.document.getElementById("dashboard-runs-toggle");
+    toggle.click();
+    const original = recentRunDetailLink(harness, "RUN-6");
+    original.focus();
+    const detailRequests = harness.requestCount(buildRunDetailApiPath("RUN-0"));
+
+    // When
+    await harness.poll([]);
+    const firstRestore = harness.document.activeElement;
+    await harness.poll([]);
+    const secondRestore = harness.document.activeElement;
+
+    // Then
+    assert.notStrictEqual(firstRestore, original);
+    assert.equal(list.contains(original), false);
+    assert.notStrictEqual(secondRestore, firstRestore);
+    assert.strictEqual(secondRestore, recentRunDetailLink(harness, "RUN-6"));
+    for (const restored of [firstRestore, secondRestore]) {
+        assert.equal(restored.href, buildRunDetailViewPath("RUN-6"));
+        assert.equal(restored.textContent, "Run Detail");
+        assert.deepEqual(restored.focusOptions, { preventScroll: true });
+        assert.equal(restored.scrollIntoViewCalls, undefined);
+    }
+    assert.equal(list.contains(secondRestore), true);
+    assert.equal(recentRunRow(harness, "RUN-6").hidden, false);
+    assert.deepEqual(original.scrollIntoViewCalls, [{ block: "nearest", inline: "nearest" }]);
+    assert.equal(toggle.getAttribute("aria-expanded"), "true");
+    assert.equal(harness.text("selected-run-id"), "RUN-0");
+    assert.equal(harness.runButton("RUN-0").getAttribute("aria-pressed"), "true");
+    assert.equal(harness.requestCount(buildRunDetailApiPath("RUN-0")), detailRequests);
+    assert.equal(harness.requestCount(buildRunDetailApiPath("RUN-6")), 0);
+});
+
+test("Runtime polling keeps Run selector focus restoration next to Run Detail links", async (t) => {
+    // Given
+    const runs = ["RUN-A", "RUN-B", "RUN-C"].map((runId) => runListItem(runId, "WIN-A"));
+    const harness = await startDashboardWithRuntime(
+        [runtimeReport("RUN-B", "WIN-A", "running", "fusion")],
+        runs,
+    );
+    t.after(harness.restore);
+    const originalSelector = harness.runButton("RUN-C");
+    originalSelector.focus();
+
+    // When
+    await harness.poll([runtimeReport("RUN-B", "WIN-A", "completed", null)]);
+    const restoredSelector = harness.document.activeElement;
+    const renderedSelector = harness.runButton("RUN-C");
+    recentRunDetailLink(harness, "RUN-B").focus();
+    await harness.poll([runtimeReport("RUN-B", "WIN-A", "completed", null)]);
+    const restoredLink = harness.document.activeElement;
+
+    // Then
+    assert.notStrictEqual(restoredSelector, originalSelector);
+    assert.strictEqual(restoredSelector, renderedSelector);
+    assert.equal(restoredSelector.dataset.entityId, undefined);
+    assert.strictEqual(restoredLink, recentRunDetailLink(harness, "RUN-B"));
+    assert.equal(restoredLink.href, buildRunDetailViewPath("RUN-B"));
+});
+
+test("Runtime polling does not pull focus back to a Run row after the user moved away", async (t) => {
+    // Given
+    const runs = ["RUN-A", "RUN-B", "RUN-C"].map((runId) => runListItem(runId, "WIN-A"));
+    const harness = await startDashboardWithRuntime([], runs);
+    t.after(harness.restore);
+    const decisionTab = harness.document.getElementById("dashboard-tab-decision");
+
+    // When
+    recentRunDetailLink(harness, "RUN-B").focus();
+    await harness.triggerTimers(RUNTIME_POLL_DELAY_MS);
+    decisionTab.focus();
+    await harness.respond(RUNTIME_API_PATH, 200, { items: [] });
+    const afterTabMove = harness.document.activeElement;
+    recentRunDetailLink(harness, "RUN-B").focus();
+    await harness.triggerTimers(RUNTIME_POLL_DELAY_MS);
+    harness.document.activeElement = null;
+    await harness.respond(RUNTIME_API_PATH, 200, { items: [] });
+    const afterBlur = harness.document.activeElement;
+    recentRunDetailLink(harness, "RUN-B").focus();
+    await harness.triggerTimers(RUNTIME_POLL_DELAY_MS);
+    harness.runButton("RUN-C").focus();
+    await harness.respond(RUNTIME_API_PATH, 200, { items: [] });
+    const afterRowMove = harness.document.activeElement;
+
+    // Then
+    assert.strictEqual(afterTabMove, decisionTab);
+    assert.equal(afterBlur, null);
+    assert.strictEqual(afterRowMove, harness.runButton("RUN-C"));
+    assert.notEqual(afterRowMove.textContent, "Run Detail");
 });
 
 test("Dashboard requests the selected Run timeline once and labels fetched Event counts", async (t) => {
@@ -2481,7 +2658,7 @@ test("Dashboard requests the selected Run timeline once and labels fetched Event
         "조회된 Event 2건 / 전체 75건 · Run 범위",
     );
     const html = await readFile(new URL("../../../src/incident_awareness/dashboard/ui/dashboard.html", import.meta.url), "utf8");
-    assert.match(html, /<summary>집계 기준<\/summary>\s*<p>조회된 Event에 포함된 유형만 집계합니다\. Run 단위 조회이며 선택 Runtime Entity로 한정되지 않습니다\./);
+    assert.match(html, /<summary aria-label="연관 Event 집계 기준">집계<\/summary>\s*<p>조회된 Event에 포함된 유형만 집계합니다\. Run 단위 조회이며 선택 Runtime Entity로 한정되지 않습니다\./);
     assert.match(html, /Event 시각과 기술적 판정 시각은 별도 의미입니다/);
     assert.equal(harness.requestCount(timelinePath), 1);
 });
@@ -2652,7 +2829,7 @@ test("Recent Runs uses Runtime status and progress only for the exact Run and En
     assert.doesNotMatch(failedQueryStatus, /최근 갱신/);
 });
 
-test("Dashboard hides only the successful duplicate Runtime status", async (t) => {
+test("Dashboard keeps empty Runtime explicit in the KPI without a duplicate status row", async (t) => {
     // Given
     const harness = await startDashboardHarness();
     t.after(harness.restore);
@@ -2667,6 +2844,14 @@ test("Dashboard hides only the successful duplicate Runtime status", async (t) =
         top: harness.text("runtime-top-status"),
         summary: harness.text("runtime-summary-status"),
     };
+    const emptyKpi = harness.text("system-status-value");
+    const emptyStages = harness.stageStates();
+    const topStatus = harness.document.getElementById("runtime-top-status");
+    const emptyAccessible = !topStatus.hidden
+        && topStatus.classList.contains("dashboard-visually-hidden");
+    const writes = topStatus.textContentWrites;
+    await harness.poll([]);
+    assert.equal(topStatus.textContentWrites, writes);
     await harness.poll([runtimeReport("RUN-A", "WIN-A", "completed", null)]);
     const success = {
         top: harness.text("runtime-top-status"),
@@ -2687,6 +2872,9 @@ test("Dashboard hides only the successful duplicate Runtime status", async (t) =
         top: "표시할 Runtime 정보가 없습니다.",
         summary: "표시할 Runtime 정보가 없습니다.",
     });
+    assert.equal(emptyKpi, "최근 Runtime 보고 없음");
+    assert.equal(emptyAccessible, true);
+    assert.deepEqual(emptyStages, Array(6).fill("unknown"));
     assert.deepEqual(success, {
         top: "",
         summary: "Runtime 1건을 불러왔습니다.",
@@ -2695,6 +2883,32 @@ test("Dashboard hides only the successful duplicate Runtime status", async (t) =
         top: "Runtime 정보를 불러오지 못했습니다.",
         summary: "Runtime 정보를 불러오지 못했습니다.",
     });
+    assert.equal(topStatus.classList.contains("dashboard-visually-hidden"), false);
+});
+
+test("Compact Run timestamps retain local seconds, timezone and the original instant", async (t) => {
+    // Given
+    const run = { ...runListItem("RUN-20261008-920", "R1-TGTA"), start_time: "2026-10-08T18:49:53.429Z" };
+    const harness = await startDashboardWithRuntime([], [run]);
+    t.after(harness.restore);
+
+    // When
+    const cells = harness.document.getElementById("runs-list").children[0].children;
+    const time = cells[0].children[0];
+    const instant = new Date(run.start_time);
+
+    // Then
+    assert.equal(time.getAttribute("datetime"), run.start_time);
+    assert.equal(time.getAttribute("title"), formatRunTimestamp(run.start_time));
+    assert.equal(time.getAttribute("aria-label"), formatRunTimestamp(run.start_time));
+    assert.equal(time.children[0].textContent, [instant.getFullYear(), instant.getMonth() + 1, instant.getDate()]
+        .map((part, index) => index === 0 ? String(part) : String(part).padStart(2, "0")).join("-"));
+    assert.equal(time.children[1].textContent, instant.toLocaleTimeString("en-GB", {
+        hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short",
+    }));
+    assert.match(time.children[1].textContent, /:53/);
+    assert.match(cells[1].textContent, /RUN-20261008-920/);
+    assert.match(cells[1].textContent, /분석 대상 R1-TGTA/);
 });
 
 test("Dashboard separates primary decision results from threshold settings", async (t) => {
