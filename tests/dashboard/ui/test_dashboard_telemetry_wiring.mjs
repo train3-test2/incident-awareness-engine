@@ -173,6 +173,54 @@ test("Processing observation is optional in the shared Controller and reuses exi
     ]) assert.ok(html.includes(definition));
 });
 
+test("Unsupported Insights expose metric-specific scope outside closed help without claiming measurements", async () => {
+    // Given
+    const html = await readFile(htmlPath, "utf8");
+    const metrics = [
+        ["bottleneck", "병목 단계", "미계측", "단계별 소요시간 미수집"],
+        ["sla", "SLA 경고 여부", "기준 미설정", "경고/위반 규칙이 정의되지 않아 평가하지 않습니다"],
+        ["queue", "큐 적체 위험", "미계측", "미계측은 대기 0건이나 위험 없음이라는 뜻이 아닙니다"],
+    ];
+
+    // When / Then
+    for (const [metric, title, label, reason] of metrics) {
+        const state = locateElement(html, `insight-${metric}-state`);
+        const scope = locateElement(html, `insight-${metric}-scope`);
+        const group = state.ancestors.find((element) => element.markup.includes("dashboard-insight-cell"));
+        assert.match(group.markup, /role="group"/);
+        assert.ok(group.markup.includes(`aria-labelledby="insight-${metric}-heading"`));
+        assert.ok(group.markup.includes(`aria-describedby="insight-${metric}-scope"`));
+        assert.ok(html.includes(`<h3 id="insight-${metric}-heading">${title}</h3>`));
+        assert.ok(html.includes(`<strong id="insight-${metric}-state">${label}</strong>`));
+        assert.match(scope.markup, /dashboard-visually-hidden/);
+        assert.equal(scope.ancestors.some((element) => element.tag === "details"), false);
+        for (const element of [state, scope, ...state.ancestors]) {
+            assert.doesNotMatch(element.markup, /\s(?:hidden|inert)(?:\s|>|=)|aria-hidden="true"|aria-live=|role="status"/);
+        }
+        assert.equal((html.match(new RegExp(`id="insight-${metric}-scope"`, "g")) ?? []).length, 1);
+        assert.ok(html.includes(reason));
+    }
+    assertInsightScope(html);
+});
+
+test("Insight help explains source limits and distinguishes missing contracts from Telemetry query errors", async () => {
+    // Given
+    const html = await readFile(htmlPath, "utf8");
+    const help = html.match(/<summary>인사이트 계측 안내<\/summary>([\s\S]*?)<\/details>/)[1];
+
+    // When / Then
+    for (const explanation of [
+        "동일 Execution 내 비교가 불가능합니다", "기준 미설정은 정상 판정이 아닙니다",
+        "표시 기준이며 SLA가 아닙니다", "24h 상태도 Pipeline SLA로 전용하지 않습니다",
+        "archive 발행 재시도 기록은 현재 큐 대기량이 아닙니다", "안전/위험 판정을 제공하지 않습니다",
+        "보고된 Execution Attempt · 최근 5분, 요약 최근 60초", "선택 Run 전용 지표나 시스템 전체 계측이 아닙니다",
+        "조회 실패는 해당 관측 카드에", "미계측/기준 미설정과 구분합니다",
+    ]) assert.ok(help.includes(explanation), explanation);
+    assert.match(help, /<strong>병목 단계:<\/strong>/);
+    assert.match(help, /<strong>SLA 경고 여부:<\/strong>/);
+    assert.match(help, /<strong>큐 적체 위험:<\/strong>/);
+});
+
 test("Time guidance positions one wrapper while paragraphs remain in document flow", async () => {
     // Given
     const [html, style] = await Promise.all([readFile(htmlPath, "utf8"), readFile(cssPath, "utf8")]);

@@ -749,6 +749,49 @@ test("An observed zero stays measured in the live message and summary", async ()
     controller.stop();
 });
 
+test("Telemetry observations, partial data, stale state and API failures never infer unsupported Insight metrics", async () => {
+    // Given
+    const doc = makeDocument({ insight: true });
+    const unsupported = [
+        ["insight-bottleneck-state", "미계측"],
+        ["insight-sla-state", "기준 미설정"],
+        ["insight-queue-state", "미계측"],
+    ];
+    for (const [id, label] of unsupported) {
+        const node = new FakeNode("strong");
+        node.textContent = label;
+        doc.elements.set(id, node);
+    }
+    let response = payload();
+    let failed = false;
+    let requests = 0;
+    const controller = createDashboardTelemetryController(doc, {
+        ...fakeTimers(), fetchImpl: async () => {
+            requests += 1;
+            return failed ? { ok: false, status: 503 } : { ok: true, json: async () => response };
+        },
+    });
+
+    // When
+    await controller.start();
+    response.observation_quality.status = "partial";
+    response.freshness.status = "stale";
+    response.recent_60s_summary.input_accepted_count = 100;
+    response.points[0].input_accepted_count = 100;
+    await controller.poll();
+    failed = true;
+    await controller.poll();
+
+    // Then
+    assert.equal(requests, 3, "Three explicit polls must not create per-Insight requests");
+    assert.equal(doc.elements.get("processing-observation-state").textContent, "조회 실패");
+    for (const [id, label] of unsupported) {
+        assert.equal(doc.elements.get(id).textContent, label);
+        assert.equal(doc.elements.get(id).textContentWrites, 1, "Unsupported metrics must never be derived from counts or freshness");
+    }
+    controller.stop();
+});
+
 test("Telemetry restart after pagehide starts a new request while the old fetch is pending", async () => {
     // Given
     const doc = makeDocument();

@@ -659,6 +659,32 @@ def test_production_dashboard_does_not_serve_local_preview(path: str) -> None:
     assert "시연용 샘플 데이터" not in response.text
 
 
+@pytest.mark.parametrize(
+    ("metric", "reason"),
+    [
+        ("bottleneck", "단계별 소요시간 미수집"),
+        ("sla", "정상 또는 위반 없음이라는 뜻이 아닙니다"),
+        ("queue", "미계측은 대기 0건이나 위험 없음이라는 뜻이 아닙니다"),
+    ],
+)
+def test_unavailable_insight_scope_is_served_without_database_or_measurement_requests(
+    database_connection_attempts: list[str], metric: str, reason: str
+) -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    response = client.get("/dashboard")
+
+    # Then
+    assert response.status_code == 200
+    assert f'aria-labelledby="insight-{metric}-heading"' in response.text
+    assert f'aria-describedby="insight-{metric}-scope"' in response.text
+    assert response.text.count(f'id="insight-{metric}-scope"') == 1
+    assert reason in response.text
+    assert database_connection_attempts == []
+
+
 def test_dashboard_view_does_not_shadow_overview_and_runs_apis(
     database_connection_attempts: list[str],
 ) -> None:

@@ -236,15 +236,19 @@
                         </div>
                     </div>
                     <div class="dashboard-insight-grid">
-                        <div class="dashboard-insight-cell">
+                        <div class="dashboard-insight-cell" role="group" aria-labelledby="insight-bottleneck-heading"
+                             aria-describedby="insight-bottleneck-scope">
                             <span class="dashboard-insight-icon" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#bottleneck"></use></svg></span>
-                            <h3>병목 단계</h3>
+                            <h3 id="insight-bottleneck-heading">병목 단계</h3>
                             <strong id="insight-bottleneck-state">미계측</strong>
+                            <span id="insight-bottleneck-scope" class="dashboard-visually-hidden">단계별 소요시간 미수집. 동일 Execution의 단계별 시작·종료 및 실패·미실행 기록이 없어 병목을 비교하지 않습니다.</span>
                         </div>
-                        <div class="dashboard-insight-cell">
+                        <div class="dashboard-insight-cell" role="group" aria-labelledby="insight-sla-heading"
+                             aria-describedby="insight-sla-scope">
                             <span class="dashboard-insight-icon" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#signal"></use></svg></span>
-                            <h3>SLA 경고 여부</h3>
+                            <h3 id="insight-sla-heading">SLA 경고 여부</h3>
                             <strong id="insight-sla-state">기준 미설정</strong>
+                            <span id="insight-sla-scope" class="dashboard-visually-hidden">Pipeline SLA 적용 대상·시작/종료 경계·임계값·경고/위반 규칙이 정의되지 않아 평가하지 않습니다. 정상 또는 위반 없음이라는 뜻이 아닙니다.</span>
                         </div>
                         <div class="dashboard-insight-cell dashboard-processing-observation" role="group"
                              aria-labelledby="processing-observation-heading"
@@ -255,10 +259,12 @@
                             <time id="processing-observation-time">관측 시각 조회 중</time>
                             <span id="processing-observation-details" class="dashboard-visually-hidden">Telemetry 관측 정보를 조회하고 있습니다.</span>
                         </div>
-                        <div class="dashboard-insight-cell">
+                        <div class="dashboard-insight-cell" role="group" aria-labelledby="insight-queue-heading"
+                             aria-describedby="insight-queue-scope">
                             <span class="dashboard-insight-icon" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#alert"></use></svg></span>
-                            <h3>큐 적체 위험</h3>
+                            <h3 id="insight-queue-heading">큐 적체 위험</h3>
                             <strong id="insight-queue-state">미계측</strong>
+                            <span id="insight-queue-scope" class="dashboard-visually-hidden">SQS 큐 깊이·최장 대기시간·재시도/DLQ 메시지의 관측값과 관측 시각을 수집하지 않습니다. 미계측은 대기 0건이나 위험 없음이라는 뜻이 아닙니다.</span>
                         </div>
                     </div>
                     <details class="dashboard-help">
@@ -270,6 +276,19 @@
                             current_stage는 병목 근거가 아니고 입력·처리 건수 차이는 SQS 큐 깊이가 아닙니다.
                             Normalization + Evidence 지연을 E2E SLA로 사용하지 않습니다.
                             실행 완료만으로 모든 시스템이 정상이라고 판단하지 않습니다.</p>
+                        <p><strong>병목 단계:</strong> Runtime API는 Run·Entity별 최신 실행 상태만 제공합니다.
+                            이전 단계의 시작/종료 이력과 소요시간이 없어 동일 Execution 내 비교가 불가능합니다.
+                            진행 중인 단계의 경과시간만으로 가장 느린 단계를 선정하지 않습니다.</p>
+                        <p><strong>SLA 경고 여부:</strong> 적용 대상·측정 시작/종료·임계값·경고/위반 규칙이 미정입니다.
+                            기준 미설정은 정상 판정이 아닙니다. Telemetry의 최근성 15초와 Runtime의 최근 보고 5분은
+                            표시 기준이며 SLA가 아닙니다. Human Workflow의 24h 상태도 Pipeline SLA로 전용하지 않습니다.</p>
+                        <p><strong>큐 적체 위험:</strong> 실제 SQS 깊이·최장 대기시간·재시도/DLQ 관측값과 관측 시각이 없습니다.
+                            Run/Event 건수, 처리 잔여 건수, archive 발행 재시도 기록은 현재 큐 대기량이 아닙니다.
+                            위험 임계값도 정의되지 않아 안전/위험 판정을 제공하지 않습니다.</p>
+                        <p><strong>조회 범위와 오류:</strong> 최근 처리 관측만 기존 Telemetry 응답
+                            (보고된 Execution Attempt · 최근 5분, 요약 최근 60초)을 재사용합니다.
+                            선택 Run 전용 지표나 시스템 전체 계측이 아닙니다. 이 API의 조회 실패는 해당 관측 카드에
+                            표시하며, 아직 계측 계약이 없는 세 지표의 미계측/기준 미설정과 구분합니다.</p>
                     </details>
                 </section>
 
