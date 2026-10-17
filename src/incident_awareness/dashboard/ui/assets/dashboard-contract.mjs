@@ -212,6 +212,89 @@ export function resolveRunListQueryState(previousState, result) {
     throw new RangeError(`Unknown Run List query result kind: ${result.kind}`);
 }
 
+// Run search covers only the Runs already fetched by GET /runs?limit=20; it never queries
+// the server and never reorders or replaces the fetched list.
+export const RUN_SEARCH_FIELDS = Object.freeze(["run_id", "target_host", "scenario_id"]);
+const RUN_SEARCH_NO_MATCH_MESSAGE = "현재 조회된 Run에서 일치하는 결과가 없습니다.";
+
+function normalizeRunSearchQuery(query) {
+    if (typeof query !== "string") {
+        throw new TypeError("Run search query must be a string");
+    }
+    return query.trim().toLowerCase();
+}
+
+// Plain case-insensitive substring match; pattern characters in the query are literal.
+function runMatchesSearch(run, normalizedQuery) {
+    return RUN_SEARCH_FIELDS.some(
+        (field) => (
+            typeof run?.[field] === "string"
+            && run[field].toLowerCase().includes(normalizedQuery)
+        ),
+    );
+}
+
+export function filterRunsBySearch(runItems, query) {
+    if (!Array.isArray(runItems)) {
+        throw new TypeError("Run items must be an array");
+    }
+    const normalizedQuery = normalizeRunSearchQuery(query);
+    return runItems.filter(
+        (run) => normalizedQuery === "" || runMatchesSearch(run, normalizedQuery),
+    );
+}
+
+// A search shows every match regardless of the collapsed view and leaves `expanded`
+// untouched, so clearing the query returns to the list the user had chosen.
+export function resolveRunListVisibility(
+    runItems,
+    query,
+    expanded,
+    collapsedCount,
+    selectedRunId,
+) {
+    if (!Array.isArray(runItems)) {
+        throw new TypeError("Run items must be an array");
+    }
+    if (typeof expanded !== "boolean") {
+        throw new TypeError("Run list expansion must be a boolean");
+    }
+    if (!Number.isInteger(collapsedCount) || collapsedCount < 0) {
+        throw new RangeError("Collapsed Run count must be a non-negative integer");
+    }
+    const normalizedQuery = normalizeRunSearchQuery(query);
+    const searchActive = normalizedQuery !== "";
+    const visible = runItems.map((run, index) => (
+        searchActive
+            ? runMatchesSearch(run, normalizedQuery)
+            : expanded || index < collapsedCount
+    ));
+    const selectedIndex = runItems.findIndex((run) => run?.run_id === selectedRunId);
+    return {
+        searchActive,
+        visible,
+        visibleCount: visible.filter(Boolean).length,
+        totalCount: runItems.length,
+        toggleHidden: searchActive || runItems.length <= collapsedCount,
+        selectedHidden: selectedIndex >= 0 && !visible[selectedIndex],
+    };
+}
+
+export function getRunListVisibilityMessage(visibility, selectedRunId) {
+    if (visibility.totalCount === 0) {
+        return "";
+    }
+    if (!visibility.searchActive) {
+        return `${visibility.totalCount}개 중 ${visibility.visibleCount}개 표시`
+            + (visibility.selectedHidden ? ` · 선택 유지: ${selectedRunId} (접힌 목록)` : "");
+    }
+    const result = visibility.visibleCount === 0
+        ? RUN_SEARCH_NO_MATCH_MESSAGE
+        : `검색 결과 ${visibility.visibleCount}건 / 조회된 Run ${visibility.totalCount}건`;
+    return result
+        + (visibility.selectedHidden ? ` · 선택 유지: ${selectedRunId} (검색 결과 밖)` : "");
+}
+
 export function resolveRuntimeSummaryQueryState(previousState, result) {
     if (
         previousState !== null

@@ -8,6 +8,7 @@ import {
     formatRunTimestamp,
     getDecisionVersionConsistency,
     getLatestRuntimeReport,
+    getRunListVisibilityMessage,
     getSelectedAnalysisScope,
     getSelectedAnalysisSource,
     getSelectedAnalysisState,
@@ -19,6 +20,7 @@ import {
     recordSelectedRuntimeRecheck,
     resolveInitialRunSelection,
     resolveOverviewQueryState,
+    resolveRunListVisibility,
     resolveRunSelectionFocus,
     resolveRunListQueryState,
     resolveRuntimeSummaryQueryState,
@@ -99,6 +101,7 @@ const runsStatus = document.getElementById("runs-status");
 const runsList = document.getElementById("runs-list");
 const runsToggle = document.getElementById("dashboard-runs-toggle");
 const runsVisibilityStatus = document.getElementById("runs-visibility-status");
+const runSearchInput = document.getElementById("dashboard-run-search");
 const decisionTimelineList = document.getElementById("decision-timeline-list");
 const decisionTimelineStatus = document.getElementById("decision-timeline-status");
 const eventTypeSummary = document.getElementById("event-type-summary");
@@ -138,6 +141,8 @@ let runListState = resolveRunListQueryState(null, { kind: "loading" });
 let runtimeState = resolveRuntimeSummaryQueryState(null, { kind: "loading" });
 let selectedRunId = null;
 let runsExpanded = false;
+// Search text for the fetched Runs; it only changes which rows are shown, never runListState.
+let runSearchQuery = "";
 let selectedRuntimeEntityId = null;
 let selectedRuntimeTracking = createSelectedRuntimeTracking(null);
 let selectedAnalysisQueryStates = null;
@@ -500,32 +505,31 @@ function renderRunListState(state) {
     nextRunButton.disabled = selectedIndex <= 0;
 }
 
+// Rows are rendered from runListState.items in order, so row index and item index match.
 function updateRunVisibility() {
     const rows = Array.from(runsList.children);
-    const visibleCount = runsExpanded
-        ? rows.length
-        : Math.min(RECENT_RUNS_VISIBLE_COUNT, rows.length);
+    const visibility = resolveRunListVisibility(
+        runListState.items,
+        runSearchQuery,
+        runsExpanded,
+        RECENT_RUNS_VISIBLE_COUNT,
+        selectedRunId,
+    );
     const focusedRowWillHide = rows.some((row, index) => (
-        index >= visibleCount && row.contains(document.activeElement)
+        !visibility.visible[index] && row.contains(document.activeElement)
     ));
     if (focusedRowWillHide) {
-        runsToggle.focus({ preventScroll: true });
+        (visibility.searchActive ? runSearchInput : runsToggle).focus({ preventScroll: true });
     }
     for (const [index, row] of rows.entries()) {
-        row.hidden = index >= visibleCount;
+        row.hidden = !visibility.visible[index];
     }
-    runsToggle.hidden = rows.length <= RECENT_RUNS_VISIBLE_COUNT;
+    runsToggle.hidden = visibility.toggleHidden;
     runsToggle.setAttribute("aria-expanded", String(runsExpanded));
     runsToggle.textContent = runsExpanded
         ? "최근 5개만 보기"
         : `전체 ${rows.length}개 Run 펼치기`;
-    const selectedHidden = !runsExpanded && runListState.items.some((run, index) => (
-        index >= RECENT_RUNS_VISIBLE_COUNT && run.run_id === selectedRunId
-    ));
-    const visibilityMessage = rows.length === 0
-        ? ""
-        : `${rows.length}개 중 ${visibleCount}개 표시`
-            + (selectedHidden ? ` · 선택 유지: ${selectedRunId} (접힌 목록)` : "");
+    const visibilityMessage = getRunListVisibilityMessage(visibility, selectedRunId);
     if (runsVisibilityStatus.textContent !== visibilityMessage) {
         runsVisibilityStatus.textContent = visibilityMessage;
     }
@@ -1295,6 +1299,12 @@ if (dashboardView !== null) {
     selectedRunRefreshButton.addEventListener("click", refreshSelectedRunAnalysis);
     runsToggle.addEventListener("click", () => {
         runsExpanded = !runsExpanded;
+        updateRunVisibility();
+    });
+    // Filtering only shows or hides rendered rows: no request, re-render, or selection change.
+    runSearchQuery = runSearchInput.value;
+    runSearchInput.addEventListener("input", () => {
+        runSearchQuery = runSearchInput.value;
         updateRunVisibility();
     });
     previousRunButton.addEventListener("click", () => selectAdjacentRun(1));

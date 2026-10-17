@@ -20,9 +20,13 @@
                 <a href="/dashboard/evaluation">평가 View</a>
                 <a href="/operations">시스템 운영</a>
             </nav>
-            <div class="dashboard-header-search">
+            <div class="dashboard-header-search" role="search">
                 <svg class="dashboard-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#search"></use></svg>
-                <input type="search" aria-label="사건 검색 기능 연동 전" placeholder="사건 검색 · 연동 전" disabled>
+                <input id="dashboard-run-search" type="search" aria-label="조회된 Run 검색"
+                       aria-describedby="dashboard-run-search-scope" aria-controls="runs-list"
+                       placeholder="조회된 Run 검색" title="최근 조회된 최대 20건 Run에서 Run ID·분석 대상·Scenario 검색"
+                       autocomplete="off" spellcheck="false">
+                <span id="dashboard-run-search-scope" class="dashboard-visually-hidden">최근 조회된 최대 20건의 Run에서 Run ID, 분석 대상, Scenario를 찾습니다. 서버 전체를 검색하지 않으며 결과는 최근 Run 목록에 표시됩니다.</span>
             </div>
             <span class="dashboard-header-user" aria-hidden="true"><svg class="dashboard-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#user"></use></svg></span>
         </div>
@@ -203,7 +207,9 @@
                         <details class="dashboard-runs-context">
                             <summary>조회 범위</summary>
                             <p>관측 시작 시각 최근순 최대 20건 · 기본 5건 표시.
-                                Runtime 상태·진행은 Run·Entity 범위가 일치할 때만 표시합니다.</p>
+                                Runtime 상태·진행은 Run·Entity 범위가 일치할 때만 표시합니다.
+                                상단 검색은 이 조회 결과의 Run ID·분석 대상·Scenario만 찾으며 서버 전체를 검색하지 않습니다.
+                                이전/다음 Run은 검색과 관계없이 조회된 순서로 이동합니다.</p>
                         </details>
                     </div>
                 </section>
@@ -333,8 +339,11 @@
                 </div>
                 <div class="dashboard-detail-actions">
                     <div class="dashboard-detail-navigation" aria-label="Run 목록 내 이동">
-                        <button id="dashboard-prev-run" type="button" aria-label="조회된 Run 목록에서 이전 Run" disabled>이전 Run</button>
-                        <button id="dashboard-next-run" type="button" aria-label="조회된 Run 목록에서 다음 Run" disabled>다음 Run</button>
+                        <button id="dashboard-prev-run" type="button" aria-label="조회된 Run 목록에서 이전 Run"
+                                aria-describedby="dashboard-run-navigation-note" title="검색어와 관계없이 조회된 전체 Run 순서로 이동" disabled>이전 Run</button>
+                        <button id="dashboard-next-run" type="button" aria-label="조회된 Run 목록에서 다음 Run"
+                                aria-describedby="dashboard-run-navigation-note" title="검색어와 관계없이 조회된 전체 Run 순서로 이동" disabled>다음 Run</button>
+                        <span id="dashboard-run-navigation-note" class="dashboard-visually-hidden">검색어와 관계없이 조회된 전체 Run 목록 순서로 이동합니다.</span>
                     </div>
                 </div>
             </div>

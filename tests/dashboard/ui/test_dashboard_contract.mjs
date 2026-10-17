@@ -7,15 +7,18 @@ import test from "node:test";
 import {
     NOT_APPLICABLE,
     PIPELINE_STAGE_ORDER,
+    RUN_SEARCH_FIELDS,
     SELECTED_RUNTIME_RECHECK_POLL_THRESHOLDS,
     buildPipelineStagePresentation,
     canRefreshSelectedAnalysis,
     createSelectedRuntimeTracking,
+    filterRunsBySearch,
     findSelectedRuntime,
     formatRunTimestamp,
     getDecisionVersionConsistency,
     getLatestRuntimeReport,
     getOverviewQueryMessage,
+    getRunListVisibilityMessage,
     getRunTypeLabel,
     getSelectedAnalysisScope,
     getSelectedAnalysisSource,
@@ -28,6 +31,7 @@ import {
     recordSelectedRuntimeRecheck,
     resolveInitialRunSelection,
     resolveOverviewQueryState,
+    resolveRunListVisibility,
     resolveRunSelectionFocus,
     resolveRunListQueryState,
     resolveRuntimeSummaryQueryState,
@@ -990,6 +994,184 @@ test("Run row focus is not moved to another Run when the focused Run left the qu
     assert.equal(missingEntity, null);
 });
 
+function searchRun(runId, targetHost, scenarioId) {
+    return {
+        run_id: runId,
+        scenario_id: scenarioId,
+        run_type: "attack",
+        target_host: targetHost,
+        start_time: "2026-10-08T00:00:00Z",
+        end_time: null,
+    };
+}
+
+const SEARCH_RUNS = [
+    searchRun("RUN-20261008-920", "R1-TGTA", "R1"),
+    searchRun("RUN-20261008-919", "WIN-DC-01", "S0"),
+    searchRun("RUN-20261005-913", "R1-TGTB", "R2"),
+    searchRun("RUN-20261005-908", "WIN-DC-02", "S0-BASELINE"),
+];
+
+const searchIds = (runs) => runs.map((run) => run.run_id);
+
+test("Run search matches an exact Run ID and a partial Run ID in server order", () => {
+    // When
+    const exact = filterRunsBySearch(SEARCH_RUNS, "RUN-20261008-919");
+    const partial = filterRunsBySearch(SEARCH_RUNS, "20261005");
+    const digits = filterRunsBySearch(SEARCH_RUNS, "9");
+
+    // Then
+    assert.deepEqual(RUN_SEARCH_FIELDS, ["run_id", "target_host", "scenario_id"]);
+    assert.deepEqual(searchIds(exact), ["RUN-20261008-919"]);
+    assert.deepEqual(searchIds(partial), ["RUN-20261005-913", "RUN-20261005-908"]);
+    assert.deepEqual(
+        searchIds(digits),
+        ["RUN-20261008-920", "RUN-20261008-919", "RUN-20261005-913", "RUN-20261005-908"],
+    );
+});
+
+test("Run search matches target host and Scenario ID substrings", () => {
+    // When
+    const host = filterRunsBySearch(SEARCH_RUNS, "TGTB");
+    const hostFamily = filterRunsBySearch(SEARCH_RUNS, "WIN-DC");
+    const scenario = filterRunsBySearch(SEARCH_RUNS, "S0");
+    const scenarioPartial = filterRunsBySearch(SEARCH_RUNS, "BASELINE");
+
+    // Then
+    assert.deepEqual(searchIds(host), ["RUN-20261005-913"]);
+    assert.deepEqual(searchIds(hostFamily), ["RUN-20261008-919", "RUN-20261005-908"]);
+    assert.deepEqual(searchIds(scenario), ["RUN-20261008-919", "RUN-20261005-908"]);
+    assert.deepEqual(searchIds(scenarioPartial), ["RUN-20261005-908"]);
+});
+
+test("Run search ignores letter case and surrounding whitespace", () => {
+    // When
+    const lowerRunId = filterRunsBySearch(SEARCH_RUNS, "run-20261008-919");
+    const mixedHost = filterRunsBySearch(SEARCH_RUNS, "r1-TgTa");
+    const padded = filterRunsBySearch(SEARCH_RUNS, "  \t913 \n");
+    const paddedScenario = filterRunsBySearch(SEARCH_RUNS, "  s0-baseline  ");
+
+    // Then
+    assert.deepEqual(searchIds(lowerRunId), ["RUN-20261008-919"]);
+    assert.deepEqual(searchIds(mixedHost), ["RUN-20261008-920"]);
+    assert.deepEqual(searchIds(padded), ["RUN-20261005-913"]);
+    assert.deepEqual(searchIds(paddedScenario), ["RUN-20261005-908"]);
+});
+
+test("Run search returns no rows for a miss and every row for an empty query", () => {
+    // When
+    const miss = filterRunsBySearch(SEARCH_RUNS, "RUN-20991231");
+    const empty = filterRunsBySearch(SEARCH_RUNS, "");
+    const blank = filterRunsBySearch(SEARCH_RUNS, "   ");
+    const middleSpace = filterRunsBySearch(SEARCH_RUNS, "RUN 2026");
+
+    // Then
+    assert.deepEqual(miss, []);
+    assert.deepEqual(searchIds(empty), searchIds(SEARCH_RUNS));
+    assert.deepEqual(searchIds(blank), searchIds(SEARCH_RUNS));
+    assert.deepEqual(middleSpace, []);
+});
+
+test("Run search treats pattern characters literally and skips missing fields", () => {
+    // Given
+    const runs = [
+        searchRun("RUN-A.B", "HOST-1", "S0"),
+        searchRun("RUN-AXB", "HOST-2", "S0"),
+        { run_id: "RUN-NO-HOST", target_host: null, scenario_id: null },
+    ];
+
+    // When / Then
+    assert.deepEqual(searchIds(filterRunsBySearch(runs, "A.B")), ["RUN-A.B"]);
+    assert.deepEqual(filterRunsBySearch(runs, ".*"), []);
+    assert.deepEqual(filterRunsBySearch(runs, "[A]"), []);
+    assert.deepEqual(searchIds(filterRunsBySearch(runs, "no-host")), ["RUN-NO-HOST"]);
+    assert.deepEqual(filterRunsBySearch(runs, "null"), []);
+    assert.throws(() => filterRunsBySearch(runs, null), TypeError);
+    assert.throws(() => filterRunsBySearch(null, "RUN"), TypeError);
+});
+
+test("Run search covers all twenty fetched Runs without changing the fetched list", () => {
+    // Given
+    const fetched = Object.freeze(Array.from({ length: 20 }, (_, index) => Object.freeze(
+        searchRun(`RUN-${String(index).padStart(2, "0")}`, `HOST-${index}`, "S0"),
+    )));
+    const snapshot = JSON.stringify(fetched);
+
+    // When
+    const last = filterRunsBySearch(fetched, "run-19");
+    const hiddenByDefault = filterRunsBySearch(fetched, "HOST-1");
+    const all = filterRunsBySearch(fetched, "");
+
+    // Then
+    assert.deepEqual(searchIds(last), ["RUN-19"]);
+    assert.deepEqual(
+        searchIds(hiddenByDefault),
+        ["RUN-01", "RUN-10", "RUN-11", "RUN-12", "RUN-13", "RUN-14", "RUN-15", "RUN-16", "RUN-17", "RUN-18", "RUN-19"],
+    );
+    assert.equal(all.length, 20);
+    assert.notStrictEqual(all, fetched);
+    assert.strictEqual(last[0], fetched[19]);
+    assert.equal(JSON.stringify(fetched), snapshot);
+});
+
+test("Run list visibility shows every match while searching and keeps the expansion choice", () => {
+    // Given
+    const runs = Array.from({ length: 10 }, (_, index) => searchRun(`RUN-${index}`, "R1-TGTA", "R1"));
+
+    // When
+    const collapsed = resolveRunListVisibility(runs, "", false, 5, "RUN-7");
+    const expanded = resolveRunListVisibility(runs, "", true, 5, "RUN-7");
+    const searching = resolveRunListVisibility(runs, " run-7 ", false, 5, "RUN-2");
+    const searchingWhileExpanded = resolveRunListVisibility(runs, "tgta", true, 5, "RUN-2");
+    const noMatch = resolveRunListVisibility(runs, "zz", false, 5, "RUN-2");
+    const empty = resolveRunListVisibility([], "RUN", false, 5, null);
+
+    // Then
+    assert.deepEqual(collapsed.visible, [true, true, true, true, true, false, false, false, false, false]);
+    assert.deepEqual(
+        { searchActive: collapsed.searchActive, toggleHidden: collapsed.toggleHidden, selectedHidden: collapsed.selectedHidden },
+        { searchActive: false, toggleHidden: false, selectedHidden: true },
+    );
+    assert.equal(expanded.visible.every(Boolean), true);
+    assert.equal(expanded.selectedHidden, false);
+    assert.deepEqual(searching.visible, runs.map((run) => run.run_id === "RUN-7"));
+    assert.deepEqual(
+        { searchActive: searching.searchActive, toggleHidden: searching.toggleHidden, visibleCount: searching.visibleCount, selectedHidden: searching.selectedHidden },
+        { searchActive: true, toggleHidden: true, visibleCount: 1, selectedHidden: true },
+    );
+    assert.equal(searchingWhileExpanded.visibleCount, 10);
+    assert.equal(noMatch.visibleCount, 0);
+    assert.deepEqual({ total: empty.totalCount, visible: empty.visibleCount }, { total: 0, visible: 0 });
+});
+
+test("Run list visibility messages separate matches, misses, and the unchanged default", () => {
+    // Given
+    const runs = Array.from({ length: 10 }, (_, index) => searchRun(`RUN-${index}`, "R1-TGTA", "R1"));
+    const message = (query, expanded, selectedRunId) => getRunListVisibilityMessage(
+        resolveRunListVisibility(runs, query, expanded, 5, selectedRunId),
+        selectedRunId,
+    );
+
+    // When / Then
+    assert.equal(message("", false, "RUN-0"), "10개 중 5개 표시");
+    assert.equal(message("", false, "RUN-7"), "10개 중 5개 표시 · 선택 유지: RUN-7 (접힌 목록)");
+    assert.equal(message("", true, "RUN-7"), "10개 중 10개 표시");
+    assert.equal(message("RUN-7", false, "RUN-7"), "검색 결과 1건 / 조회된 Run 10건");
+    assert.equal(
+        message("RUN-7", false, "RUN-2"),
+        "검색 결과 1건 / 조회된 Run 10건 · 선택 유지: RUN-2 (검색 결과 밖)",
+    );
+    assert.equal(
+        message("RUN-99", false, "RUN-2"),
+        "현재 조회된 Run에서 일치하는 결과가 없습니다. · 선택 유지: RUN-2 (검색 결과 밖)",
+    );
+    assert.equal(message("RUN-99", false, null), "현재 조회된 Run에서 일치하는 결과가 없습니다.");
+    assert.equal(
+        getRunListVisibilityMessage(resolveRunListVisibility([], "RUN", false, 5, null), null),
+        "",
+    );
+});
+
 test("Selected analysis handles completed and failed terminal transitions once", () => {
     // Given
     const selectedRunId = "RUN-SELECTED";
@@ -1799,6 +1981,7 @@ class FakeElement extends FakeNode {
         this.hidden = false;
         this.href = "";
         this.type = "";
+        this.value = "";
         this.ownText = "";
         this.textContentWrites = 0;
     }
@@ -2088,6 +2271,15 @@ async function startDashboardHarness() {
             (timer) => timer.delay === delay,
         ).length,
         requestCount: (url) => requests.filter((request) => request.url === url).length,
+        totalRequests: () => requests.length,
+        // Types into the header Run search the way a browser reports it: value, then "input".
+        typeSearch(value) {
+            const input = document.getElementById("dashboard-run-search");
+            input.value = value;
+            for (const listener of input.listeners.get("input") ?? []) {
+                listener({ type: "input", target: input });
+            }
+        },
         pendingCount: (url) => requests.filter(
             (request) => !request.settled && request.url === url,
         ).length,
@@ -2617,6 +2809,245 @@ test("Runtime polling does not pull focus back to a Run row after the user moved
     assert.equal(afterBlur, null);
     assert.strictEqual(afterRowMove, harness.runButton("RUN-C"));
     assert.notEqual(afterRowMove.textContent, "Run Detail");
+});
+
+function visibleRunIds(harness) {
+    return harness.document.getElementById("runs-list").children
+        .filter((row) => !row.hidden)
+        .map((row) => row.querySelectorAll(".dashboard-run-selector")[0].dataset.runId);
+}
+
+function tenSearchRuns() {
+    return Array.from(
+        { length: 10 },
+        (_, index) => runListItem(`RUN-${index}`, index < 5 ? "WIN-A" : "WIN-B"),
+    );
+}
+
+test("Run search filters fetched rows in place without selecting, fetching, or rerendering", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], tenSearchRuns());
+    t.after(harness.restore);
+    await harness.respondAnalysis("RUN-0", storedDetail("RUN-0", "WIN-A"), notFound());
+    const list = harness.document.getElementById("runs-list");
+    const toggle = harness.document.getElementById("dashboard-runs-toggle");
+    const rowsBefore = [...list.children];
+    const requestsBefore = harness.totalRequests();
+
+    // When
+    harness.typeSearch("run-7");
+    const exact = { ids: visibleRunIds(harness), toggleHidden: toggle.hidden, status: harness.text("runs-visibility-status") };
+    harness.typeSearch("WIN-b");
+    const hiddenRows = visibleRunIds(harness);
+    harness.typeSearch("   ");
+    const cleared = { ids: visibleRunIds(harness), toggleHidden: toggle.hidden, status: harness.text("runs-visibility-status") };
+
+    // Then
+    assert.deepEqual(exact, {
+        ids: ["RUN-7"],
+        toggleHidden: true,
+        status: "검색 결과 1건 / 조회된 Run 10건 · 선택 유지: RUN-0 (검색 결과 밖)",
+    });
+    assert.deepEqual(hiddenRows, ["RUN-5", "RUN-6", "RUN-7", "RUN-8", "RUN-9"]);
+    assert.deepEqual(cleared, {
+        ids: ["RUN-0", "RUN-1", "RUN-2", "RUN-3", "RUN-4"],
+        toggleHidden: false,
+        status: "10개 중 5개 표시",
+    });
+    assert.deepEqual([...list.children], rowsBefore);
+    assert.equal(harness.totalRequests(), requestsBefore);
+    assert.equal(harness.text("selected-run-id"), "RUN-0");
+    assert.equal(harness.runButton("RUN-0").getAttribute("aria-pressed"), "true");
+});
+
+test("Run search keeps the selected Run, opens filtered Runs, and moves in full-list order", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], tenSearchRuns());
+    t.after(harness.restore);
+    await harness.respondAnalysis("RUN-0", storedDetail("RUN-0", "WIN-A"), notFound());
+    harness.document.getElementById("dashboard-runs-toggle").click();
+    harness.runButton("RUN-7").click();
+    await harness.respondAnalysis("RUN-7", storedDetail("RUN-7", "WIN-B"), notFound());
+    const detailLink = harness.document.getElementById("selected-run-detail-link");
+    const requestsBefore = harness.totalRequests();
+
+    // When: the selected Run falls outside the search result.
+    harness.typeSearch("RUN-2");
+    const outside = {
+        selected: harness.text("selected-run-id"),
+        pressed: harness.runButton("RUN-7").getAttribute("aria-pressed"),
+        detailHref: detailLink.href,
+        detailHidden: detailLink.hidden,
+        status: harness.text("runs-visibility-status"),
+        requests: harness.totalRequests() - requestsBefore,
+    };
+    // When: previous/next follow the fetched list, not the filtered rows.
+    harness.document.getElementById("dashboard-prev-run").click();
+    await harness.flush();
+    const afterPrevious = { selected: harness.text("selected-run-id"), ids: visibleRunIds(harness) };
+    harness.document.getElementById("dashboard-next-run").click();
+    await harness.flush();
+    const afterNext = harness.text("selected-run-id");
+    // When: a Run shown by the filter is opened.
+    harness.runButton("RUN-2").click();
+    await harness.flush();
+
+    // Then
+    assert.deepEqual(outside, {
+        selected: "RUN-7",
+        pressed: "true",
+        detailHref: buildRunDetailViewPath("RUN-7"),
+        detailHidden: false,
+        status: "검색 결과 1건 / 조회된 Run 10건 · 선택 유지: RUN-7 (검색 결과 밖)",
+        requests: 0,
+    });
+    assert.deepEqual(afterPrevious, { selected: "RUN-8", ids: ["RUN-2"] });
+    assert.equal(afterNext, "RUN-7");
+    assert.equal(harness.text("selected-run-id"), "RUN-2");
+    assert.equal(harness.runButton("RUN-2").getAttribute("aria-pressed"), "true");
+    assert.equal(harness.requestCount(buildRunDetailApiPath("RUN-2")), 1);
+    assert.deepEqual(visibleRunIds(harness), ["RUN-2"]);
+    assert.equal(harness.text("runs-visibility-status"), "검색 결과 1건 / 조회된 Run 10건");
+});
+
+test("Clearing the Run search restores the collapsed or expanded list chosen before", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], tenSearchRuns());
+    t.after(harness.restore);
+    const toggle = harness.document.getElementById("dashboard-runs-toggle");
+
+    // When: collapsed before searching.
+    harness.typeSearch("run");
+    const searchingCollapsed = { ids: visibleRunIds(harness).length, toggleHidden: toggle.hidden };
+    harness.typeSearch("");
+    const restoredCollapsed = {
+        ids: visibleRunIds(harness).length,
+        toggleHidden: toggle.hidden,
+        expanded: toggle.getAttribute("aria-expanded"),
+        label: toggle.textContent,
+    };
+    // When: expanded before searching.
+    toggle.click();
+    harness.typeSearch("RUN-3");
+    const searchingExpanded = {
+        ids: visibleRunIds(harness),
+        toggleHidden: toggle.hidden,
+        expanded: toggle.getAttribute("aria-expanded"),
+    };
+    harness.typeSearch("");
+    const restoredExpanded = {
+        ids: visibleRunIds(harness).length,
+        toggleHidden: toggle.hidden,
+        expanded: toggle.getAttribute("aria-expanded"),
+        label: toggle.textContent,
+    };
+
+    // Then
+    assert.deepEqual(searchingCollapsed, { ids: 10, toggleHidden: true });
+    assert.deepEqual(restoredCollapsed, {
+        ids: 5,
+        toggleHidden: false,
+        expanded: "false",
+        label: "전체 10개 Run 펼치기",
+    });
+    assert.deepEqual(searchingExpanded, { ids: ["RUN-3"], toggleHidden: true, expanded: "true" });
+    assert.deepEqual(restoredExpanded, {
+        ids: 10,
+        toggleHidden: false,
+        expanded: "true",
+        label: "최근 5개만 보기",
+    });
+});
+
+test("Runtime polling during a Run search keeps the input, filter, selection, and link focus", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], tenSearchRuns());
+    t.after(harness.restore);
+    await harness.respondAnalysis("RUN-0", storedDetail("RUN-0", "WIN-A"), notFound());
+    const input = harness.document.getElementById("dashboard-run-search");
+    const status = harness.document.getElementById("runs-visibility-status");
+    input.focus();
+    harness.typeSearch("RUN-6");
+    input.selectionStart = 3;
+    input.selectionEnd = 3;
+    let valueWrites = 0;
+    let value = input.value;
+    Object.defineProperty(input, "value", {
+        get: () => value,
+        set: (next) => {
+            valueWrites += 1;
+            value = next;
+        },
+    });
+    const statusWrites = status.textContentWrites;
+    const running = runtimeReport("RUN-6", "WIN-B", "running", "fusion");
+
+    // When
+    await harness.poll([running]);
+    await harness.poll([running]);
+    const afterPolls = {
+        focused: harness.document.activeElement === input,
+        value: input.value,
+        caret: [input.selectionStart, input.selectionEnd],
+        valueWrites,
+        ids: visibleRunIds(harness),
+        statusWrites: status.textContentWrites - statusWrites,
+        selected: harness.text("selected-run-id"),
+        scrolled: input.scrollIntoViewCalls,
+        runtimeStatusUpdated: harness.runButton("RUN-6").parentNode.parentNode.parentNode
+            .children[2].textContent.startsWith(RUNNING_LABEL),
+    };
+    const link = recentRunDetailLink(harness, "RUN-6");
+    link.focus();
+    await harness.poll([running]);
+    const restoredLink = harness.document.activeElement;
+
+    // Then
+    assert.deepEqual(afterPolls, {
+        focused: true,
+        value: "RUN-6",
+        caret: [3, 3],
+        valueWrites: 0,
+        ids: ["RUN-6"],
+        statusWrites: 0,
+        selected: "RUN-0",
+        scrolled: undefined,
+        runtimeStatusUpdated: true,
+    });
+    assert.notStrictEqual(restoredLink, link);
+    assert.strictEqual(restoredLink, recentRunDetailLink(harness, "RUN-6"));
+    assert.equal(recentRunRow(harness, "RUN-6").hidden, false);
+    assert.deepEqual(restoredLink.focusOptions, { preventScroll: true });
+    assert.deepEqual(visibleRunIds(harness), ["RUN-6"]);
+});
+
+test("Run search distinguishes no matching fetched Run from a failed Run list query", async (t) => {
+    // Given / When: each harness owns the page globals, so the two pages run one after another.
+    const fetched = await startDashboardWithRuntime([], tenSearchRuns());
+    t.after(fetched.restore);
+    fetched.typeSearch("RUN-99");
+    const noMatch = {
+        status: fetched.text("runs-visibility-status"),
+        queryStatusHidden: fetched.document.getElementById("runs-status").hidden,
+        ids: visibleRunIds(fetched),
+    };
+    fetched.restore();
+    const failed = await startDashboardHarness();
+    t.after(failed.restore);
+    await failed.respond("/overview", 200, { total_runs: 10, recent_runs: [] });
+    await failed.respond("/runs?limit=20", 503, { detail: "unavailable" });
+    await failed.respond(RUNTIME_API_PATH, 200, { items: [] });
+    failed.typeSearch("RUN-99");
+
+    // Then
+    assert.deepEqual(noMatch, {
+        status: "현재 조회된 Run에서 일치하는 결과가 없습니다. · 선택 유지: RUN-0 (검색 결과 밖)",
+        queryStatusHidden: true,
+        ids: [],
+    });
+    assert.equal(failed.text("runs-visibility-status"), "");
+    assert.equal(failed.document.getElementById("runs-status").hidden, false);
+    assert.match(failed.text("runs-status"), /Run 목록을 불러오지 못했습니다/);
 });
 
 test("Dashboard requests the selected Run timeline once and labels fetched Event counts", async (t) => {

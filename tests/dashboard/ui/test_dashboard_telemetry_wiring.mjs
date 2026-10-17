@@ -279,5 +279,31 @@ test("Navigation alignment polish is scoped to Dashboard and preserves compact m
     assert.match(desktop, /\.dashboard-app-header \.app-navigation\s*\{\s*margin-left: 0\.1875rem/);
     assert.match(mobile, /\.dashboard-app-header \.app-header__inner\s*\{\s*gap: var\(--shell-space-2\)/);
     assert.match(html, /aria-current="page"/);
-    assert.match(html, /사건 검색 · 연동 전/);
+    assert.match(html, /<input id="dashboard-run-search" type="search" aria-label="조회된 Run 검색"/);
+    assert.match(html, /placeholder="조회된 Run 검색"/);
+    assert.doesNotMatch(html, /사건 검색 · 연동 전/);
+});
+
+test("Header Run search is enabled, scoped to fetched Runs, and wraps only below the desktop row", async () => {
+    // Given
+    const [html, style] = await Promise.all([readFile(htmlPath, "utf8"), readFile(cssPath, "utf8")]);
+
+    // When
+    const input = html.match(/<input id="dashboard-run-search"[^>]*>/s)?.[0] ?? "";
+    const search = style.split(".dashboard-header-search {")[1].split("}")[0];
+    const tablet = style.split("@media (max-width: 70rem) {")[1].split("@media")[0];
+
+    // Then
+    assert.doesNotMatch(input, /\bdisabled\b/);
+    assert.match(input, /aria-describedby="dashboard-run-search-scope"/);
+    assert.match(input, /aria-controls="runs-list"/);
+    assert.match(input, /autocomplete="off"/);
+    assert.match(html, /<div class="dashboard-header-search" role="search">/);
+    assert.match(html, /id="dashboard-run-search-scope" class="dashboard-visually-hidden">최근 조회된 최대 20건의 Run/);
+    assert.match(html, /id="dashboard-run-navigation-note" class="dashboard-visually-hidden">검색어와 관계없이/);
+    assert.equal((html.match(/aria-describedby="dashboard-run-navigation-note"/g) ?? []).length, 2);
+    assert.match(search, /flex: 0 1 20rem/);
+    assert.doesNotMatch(tablet, /\.dashboard-header-search\s*\{\s*display: none/);
+    assert.match(tablet, /\.dashboard-app-header \.app-header__inner\s*\{\s*flex-wrap: wrap;/);
+    assert.match(style, /\.dashboard-header-search input:focus-visible\s*\{/);
 });
