@@ -4,9 +4,9 @@
     Start this sidecar before Invoke-R1PilotRun.  It polls the live Sysmon
     channel through the same WinRM trust boundary, writes immutable raw JSONL
     segments, invokes the canonical Python normalizer/chunk publisher, and can
-    immediately deliver the spool to Role3's PostgreSQL ledger.  The sidecar
-    closes only after the runner's A04 candidate-boundary control exists and a
-    source watermark covers it.
+    immediately deliver the spool to Role3's PostgreSQL ledger. No approved
+    Sysmon source-completeness proof exists, so this sidecar does not publish a
+    source watermark or run_closed.
 #>
 [CmdletBinding()]
 param(
@@ -77,37 +77,32 @@ $state = [ordered]@{
     last_record_id = 0
     segment_no = 0
     chunk_sequence = 0
-    watermark_sequence = 0
     message_ordinal = 0
-    last_watermark_at = ""
 }
 if (Test-Path -LiteralPath $statePath) {
     $loaded = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $loadedNames = @($loaded.PSObject.Properties.Name)
+    if ((($loadedNames -contains "watermark_sequence") -and
+            [int64]$loaded.watermark_sequence -gt 0) -or
+        (($loadedNames -contains "last_watermark_at") -and
+            -not [string]::IsNullOrWhiteSpace([string]$loaded.last_watermark_at))) {
+        throw "existing producer state contains an unverified source watermark; automatic finality is disabled"
+    }
     foreach ($name in @($state.Keys)) {
-        if ($name -eq "last_watermark_at") {
-            if ($null -ne $loaded.$name) { $state[$name] = [string]$loaded.$name }
-        } else {
-            $state[$name] = [int64]$loaded.$name
-        }
+        $state[$name] = [int64]$loaded.$name
     }
 }
 
-# Check for existing accepted close and exit if already completed
-$existingClose = Get-ChildItem (Join-Path $runSpool "outbox") -Filter "*-run_closed.json" -ErrorAction SilentlyContinue |
-    Sort-Object Name | Select-Object -Last 1
+# Refuse to resume artifacts produced by the former TimeCreated-derived
+# finality path. They remain immutable, but are not accepted as proof.
+$existingWatermark = Get-ChildItem (Join-Path $runSpool "outbox") `
+    -Filter "*-source_watermark.json" -ErrorAction SilentlyContinue | Select-Object -First 1
+$existingClose = Get-ChildItem (Join-Path $runSpool "outbox") `
+    -Filter "*-run_closed.json" -ErrorAction SilentlyContinue | Select-Object -First 1
 $existingExport = Join-Path (Join-Path $runSpool "exports") (Join-Path $RunId "accepted-run-closed.json")
-if ($null -ne $existingClose) {
-    if (-not $NoConsume) {
-        Invoke-Wiring @("consume", "--spool-root", $runSpool,
-            "--required-partition-contract", $RequiredPartitionContract,
-            "--target-host", $TargetHost)
-        if (-not (Test-Path -LiteralPath $existingExport)) {
-            Invoke-Wiring @("export-close", "--spool-root", $runSpool,
-                "--accepted-run-closed", $existingClose.FullName,
-                "--required-partition-contract", $RequiredPartitionContract)
-        }
-    }
-    return
+if ($null -ne $existingWatermark -or $null -ne $existingClose -or
+    (Test-Path -LiteralPath $existingExport)) {
+    throw "existing unverified finality artifact cannot be resumed by the Sysmon chunk producer"
 }
 
 # Clean up orphan raw/capture pairs before recovery
@@ -140,16 +135,11 @@ foreach ($messageFile in @(Get-ChildItem (Join-Path $runSpool "outbox") -Filter 
     $ordinal = [int64]($messageFile.Name.Split("-")[0])
     if ($ordinal -gt $state.message_ordinal) { $state.message_ordinal = $ordinal }
     $message = Get-Content -LiteralPath $messageFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($message.message_type -cne "event_chunk") {
+        throw "unverified finality control message exists in the chunk producer outbox"
+    }
     if ($message.message_type -ceq "event_chunk" -and [int64]$message.chunk_sequence -gt $state.chunk_sequence) {
         $state.chunk_sequence = [int64]$message.chunk_sequence
-    }
-    if ($message.message_type -ceq "source_watermark") {
-        if ([int64]$message.watermark_sequence -gt $state.watermark_sequence) {
-            $state.watermark_sequence = [int64]$message.watermark_sequence
-        }
-        if (-not [string]::IsNullOrWhiteSpace([string]$message.watermark_at)) {
-            $state.last_watermark_at = [string]$message.watermark_at
-        }
     }
 }
 while ($state.chunk_sequence -lt $state.segment_no) {
@@ -219,30 +209,9 @@ try {
             $state.last_record_id = [long]$slice[-1].RecordId
         }
 
-        $snapshotComplete = [bool]$answer.snapshot_consistent -and `
-            ([long]$state.last_record_id -ge [long]$answer.target_high_water_record_id)
-        if ($snapshotComplete -and $state.chunk_sequence -gt 0 -and `
-            -not [string]::IsNullOrWhiteSpace([string]$answer.source_upper_utc)) {
-            $sourceCursorTime = [DateTime]::Parse([string]$answer.source_upper_utc).ToUniversalTime()
-            $frontier = $sourceCursorTime.AddMilliseconds(-$AllowedLatenessMs)
-            $canAdvance = $true
-            if ($state.Contains("last_watermark_at") -and -not [string]::IsNullOrWhiteSpace([string]$state.last_watermark_at)) {
-                $prev = [DateTime]::Parse([string]$state.last_watermark_at).ToUniversalTime()
-                if ($frontier -lt $prev) { $canAdvance = $false }
-            }
-            if ($canAdvance) {
-                $state.watermark_sequence++
-                $state.message_ordinal++
-                $state.last_watermark_at = $frontier.ToString("o")
-                Invoke-Wiring @("publish-watermark", "--spool-root", $runSpool,
-                    "--required-partition-contract", $RequiredPartitionContract,
-                    "--target-host", $TargetHost, "--run-id", $RunId,
-                    "--watermark-sequence", [string]$state.watermark_sequence,
-                    "--covered-through-chunk-sequence", [string]$state.chunk_sequence,
-                    "--watermark-at", $frontier.ToString("o"),
-                    "--allowed-lateness-ms", [string]$AllowedLatenessMs,
-                    "--message-ordinal", [string]$state.message_ordinal)
-            }
+        if ([bool]$answer.snapshot_consistent -and
+            [long]$state.last_record_id -lt [long]$answer.target_high_water_record_id) {
+            throw "bounded Sysmon target events were not durably persisted"
         }
 
         $stateTemp = $statePath + "." + [Guid]::NewGuid().ToString("N") + ".next"
@@ -254,71 +223,6 @@ try {
                 "--target-host", $TargetHost)
         }
 
-        $boundaryPath = Join-Path $runControlDir "candidate-boundary-completed.json"
-        if ((Test-Path -LiteralPath $boundaryPath) -and $state.watermark_sequence -gt 0 -and `
-            -not [string]::IsNullOrWhiteSpace([string]$answer.source_upper_utc)) {
-            $boundary = Get-Content -LiteralPath $boundaryPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($boundary.run_id -cne $RunId -or $boundary.target_host -cne $TargetHost) {
-                throw "candidate boundary control is bound to another run or host"
-            }
-            $boundaryUtc = [DateTime]::Parse([string]$boundary.candidate_boundary_at).ToUniversalTime()
-
-            # Finality requires a stable bounded query, durable target events,
-            # and a source cursor whose lateness-adjusted frontier covers A04.
-            $cursorUtc = [DateTime]::Parse([string]$answer.source_upper_utc).ToUniversalTime()
-            $previousWatermarkUtc = $null
-            if (-not [string]::IsNullOrWhiteSpace([string]$state.last_watermark_at)) {
-                $previousWatermarkUtc = [DateTime]::Parse([string]$state.last_watermark_at).ToUniversalTime()
-            }
-            $decision = Get-R1FinalWatermarkDecision `
-                -SnapshotConsistent ([bool]$answer.snapshot_consistent) `
-                -PersistedTargetRecordId ([long]$state.last_record_id) `
-                -TargetHighWaterRecordId ([long]$answer.target_high_water_record_id) `
-                -SourceCursorUtc $cursorUtc `
-                -CandidateBoundaryUtc $boundaryUtc `
-                -AllowedLatenessMs $AllowedLatenessMs `
-                -PreviousWatermarkUtc $previousWatermarkUtc
-            if ($decision.ready) {
-                $finalWatermarkTime = [DateTime]$decision.watermark_at
-
-                $state.watermark_sequence++
-                $state.message_ordinal++
-                $state.last_watermark_at = $finalWatermarkTime.ToString("o")
-                Invoke-Wiring @("publish-watermark", "--spool-root", $runSpool,
-                    "--required-partition-contract", $RequiredPartitionContract,
-                    "--target-host", $TargetHost, "--run-id", $RunId,
-                    "--watermark-sequence", [string]$state.watermark_sequence,
-                    "--covered-through-chunk-sequence", [string]$state.chunk_sequence,
-                    "--watermark-at", $finalWatermarkTime.ToString("o"),
-                    "--allowed-lateness-ms", [string]$AllowedLatenessMs,
-                    "--message-ordinal", [string]$state.message_ordinal)
-
-                if (-not $NoConsume) {
-                    Invoke-Wiring @("consume", "--spool-root", $runSpool,
-                        "--required-partition-contract", $RequiredPartitionContract,
-                        "--target-host", $TargetHost)
-                }
-
-                $watermarkPath = Get-ChildItem (Join-Path $runSpool "outbox") -Filter "*-source_watermark.json" |
-                    Sort-Object Name | Select-Object -Last 1
-                $state.message_ordinal++
-                Invoke-Wiring @("publish-close", "--spool-root", $runSpool,
-                    "--final-watermark", $watermarkPath.FullName,
-                    "--candidate-boundary-at", [string]$boundary.candidate_boundary_at,
-                    "--message-ordinal", [string]$state.message_ordinal)
-                if (-not $NoConsume) {
-                    Invoke-Wiring @("consume", "--spool-root", $runSpool,
-                        "--required-partition-contract", $RequiredPartitionContract,
-                        "--target-host", $TargetHost)
-                    $closePath = Get-ChildItem (Join-Path $runSpool "outbox") -Filter "*-run_closed.json" |
-                        Sort-Object Name | Select-Object -Last 1
-                    Invoke-Wiring @("export-close", "--spool-root", $runSpool,
-                        "--accepted-run-closed", $closePath.FullName,
-                        "--required-partition-contract", $RequiredPartitionContract)
-                }
-                break
-            }
-        }
         Start-Sleep -Seconds $PollIntervalSec
     }
 } finally {

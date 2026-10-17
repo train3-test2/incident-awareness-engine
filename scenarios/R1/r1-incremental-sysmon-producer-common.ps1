@@ -1,5 +1,5 @@
 <#
-    Shared, testable finality helpers for the R1 Sysmon sidecar.
+    Shared, testable bounded-query helper for the R1 Sysmon sidecar.
 
     This file is intentionally ASCII-only for Windows PowerShell 5.1.
 #>
@@ -57,7 +57,6 @@ $R1_INCREMENTAL_SYSMON_QUERY = {
         return [ordered]@{
             target_queried_at_utc = [DateTime]::UtcNow.ToString("o")
             source_upper_record_id = 0
-            source_upper_utc = $null
             target_high_water_record_id = $LastRecordId
             snapshot_consistent = $true
             records = @()
@@ -93,45 +92,8 @@ $R1_INCREMENTAL_SYSMON_QUERY = {
     [ordered]@{
         target_queried_at_utc = [DateTime]::UtcNow.ToString("o")
         source_upper_record_id = $upperRecordId
-        source_upper_utc = $upper.TimeCreated.ToUniversalTime().ToString("o")
         target_high_water_record_id = $targetHighWaterRecordId
         snapshot_consistent = $snapshotConsistent
         records = @($converted)
     }
-}
-
-function Get-R1FinalWatermarkDecision {
-    param(
-        [Parameter(Mandatory = $true)][bool]$SnapshotConsistent,
-        [Parameter(Mandatory = $true)][long]$PersistedTargetRecordId,
-        [Parameter(Mandatory = $true)][long]$TargetHighWaterRecordId,
-        [Parameter(Mandatory = $true)][DateTime]$SourceCursorUtc,
-        [Parameter(Mandatory = $true)][DateTime]$CandidateBoundaryUtc,
-        [Parameter(Mandatory = $true)][int]$AllowedLatenessMs,
-        [AllowNull()][Nullable[DateTime]]$PreviousWatermarkUtc
-    )
-
-    if (-not $SnapshotConsistent) {
-        return [pscustomobject]@{ ready = $false; reason = "snapshot_inconsistent"; watermark_at = $null }
-    }
-    if ($PersistedTargetRecordId -lt $TargetHighWaterRecordId) {
-        return [pscustomobject]@{ ready = $false; reason = "target_events_not_persisted"; watermark_at = $null }
-    }
-
-    $frontier = $SourceCursorUtc.ToUniversalTime().AddMilliseconds(-$AllowedLatenessMs)
-    if ($null -ne $PreviousWatermarkUtc) {
-        $previousUtc = ([DateTime]$PreviousWatermarkUtc).ToUniversalTime()
-        if ($frontier -lt $previousUtc) {
-            return [pscustomobject]@{ ready = $false; reason = "watermark_regression"; watermark_at = $null }
-        }
-    }
-    if ($frontier -lt $CandidateBoundaryUtc.ToUniversalTime()) {
-        return [pscustomobject]@{
-            ready = $false
-            reason = "allowed_lateness_not_satisfied"
-            watermark_at = $null
-        }
-    }
-
-    [pscustomobject]@{ ready = $true; reason = "ready"; watermark_at = $frontier }
 }
