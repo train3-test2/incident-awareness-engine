@@ -266,11 +266,13 @@ export function createDashboardTelemetryController(doc, {
                 if (running && generation === requestGeneration) {
                     renderTelemetry(doc, nodes, model);
                     renderProcessingObservation(observationNodes, model);
+                    return true;
                 }
             } catch {
                 if (running && generation === requestGeneration) {
                     renderUnavailable(doc, nodes, "error");
                     renderProcessingObservation(observationNodes, null, "error");
+                    return false;
                 }
             } finally {
                 clearTimeoutImpl(timeout);

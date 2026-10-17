@@ -393,7 +393,8 @@ def test_dashboard_script_fetches_independent_apis_and_polls_only_runtime() -> N
     assert 'document.getElementById("runtime-summary-status")' in script
     assert 'document.getElementById("runtime-summary-list")' in script
     assert "setInterval(" not in script
-    assert script.count("setTimeout(") == 4
+    # Four existing timeouts plus bounded manual Overview/Run reads; no new poll loop.
+    assert script.count("setTimeout(") == 5
     assert "setTimeout(() => controller.abort(), RUNTIME_REQUEST_TIMEOUT_MS)" in script
     assert "runtimePollTimeoutId = setTimeout(" in script
     assert "void pollRuntimeSummary();" in script
@@ -403,9 +404,29 @@ def test_dashboard_script_fetches_independent_apis_and_polls_only_runtime() -> N
         "if (dashboardView !== null)",
         maxsplit=1,
     )[0]
-    assert poll_source.index("await updateRuntimeSummary();") < poll_source.index(
-        "scheduleRuntimePoll();"
-    )
+    assert "if (runtimePending !== null) return runtimePending;" in poll_source
+    assert poll_source.index(
+        "runtimePending = updateRuntimeSummary().finally("
+    ) < poll_source.index("scheduleRuntimePoll();")
+
+
+def test_main_refresh_is_a_named_keyboard_button_with_nonvisual_status() -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    html = client.get("/dashboard").text
+    script = client.get("/dashboard-assets/dashboard.js").text
+
+    # Then
+    assert '<button id="dashboard-refresh"' in html
+    assert 'aria-label="운영 View 데이터 새로고침"' in html
+    assert 'aria-describedby="dashboard-refresh-status"' in html
+    assert 'id="dashboard-refresh-status" class="dashboard-visually-hidden" role="status"' in html
+    assert 'dashboardRefreshButton.addEventListener("click", async () =>' in script
+    assert "if (manualRefreshPending) return;" in script
+    assert "loadOverview(), loadRuns(), pollRuntimeSummary(), telemetryController.poll()" in script
+    assert "if (version !== manualRefreshVersion) return;" in script
 
 
 def test_dashboard_view_uses_shared_shell_and_responsive_layout() -> None:
@@ -509,8 +530,10 @@ def test_dashboard_script_keeps_overview_runs_and_runtime_state_independent() ->
     script = client.get("/dashboard-assets/dashboard.js").text
 
     # Then
-    assert "async function loadOverview()" in script
-    assert "async function loadRuns()" in script
+    assert "function loadOverview()" in script
+    assert "function loadRuns()" in script
+    assert "if (overviewPending !== null) return overviewPending;" in script
+    assert "if (runsPending !== null) return runsPending;" in script
     assert "async function pollRuntimeSummary()" in script
     assert "async function selectRun(runId, runtimeEntityId = null)" in script
     assert "renderOverviewState(overviewState);" in script
@@ -552,7 +575,7 @@ def test_dashboard_runtime_summary_preserves_order_and_operations_state_meaning(
     assert "buildPipelineStagePresentation(" in script
     assert "현재 실행 중" not in script
     assert "setInterval(" not in script
-    assert script.count("setTimeout(") == 4
+    assert script.count("setTimeout(") == 5
     assert "setTimeout(() => controller.abort(), RUNTIME_REQUEST_TIMEOUT_MS)" in script
     assert "void pollRuntimeSummary();" in script
     assert "clearTimeout(timeoutId);" in script

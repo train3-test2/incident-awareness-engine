@@ -353,6 +353,31 @@ html:has(> .dashboard-body) {
     color: var(--shell-color-primary);
 }
 
+.dashboard-manual-refresh {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    margin-block: -0.125rem;
+    padding: 0;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    border-radius: 0.25rem;
+    cursor: pointer;
+}
+
+.dashboard-manual-refresh[aria-disabled="true"] {
+    opacity: 0.5;
+    cursor: progress;
+}
+
+.dashboard-manual-refresh:focus-visible {
+    outline: 2px solid var(--shell-color-primary);
+    outline-offset: 3px;
+}
+
 .dashboard-kpi-grid {
     display: grid;
     grid-template-columns: minmax(0, 1.55fr) minmax(0, 1.1fr) minmax(0, 1.05fr) minmax(0, 1.05fr);
@@ -1191,8 +1216,11 @@ html:has(> .dashboard-body) {
 }
 
 .dashboard-detail-navigation button:disabled {
-    color: var(--shell-color-muted);
-    cursor: default;
+    color: #748094;
+    background: #f1f4f8;
+    border-color: #dce2eb;
+    border-style: dashed;
+    cursor: not-allowed;
 }
 
 .dashboard-detail-tabs {
@@ -1839,6 +1867,22 @@ html:has(> .dashboard-body) {
     stroke: currentcolor;
     stroke-width: 2;
     stroke-linecap: round;
+}
+
+/* Presentation only: dense one-second samples keep their exact coordinates and gaps. */
+.dashboard-telemetry-chart--compact .dashboard-telemetry-chart__segment {
+    stroke-width: 1.5;
+}
+
+.dashboard-telemetry-chart--compact .dashboard-telemetry-chart__x-label,
+.dashboard-telemetry-chart--compact .dashboard-telemetry-chart__y-label {
+    font-weight: 500;
+}
+
+.dashboard-throughput-section .dashboard-metric-summary strong {
+    font-size: 1rem;
+    line-height: 1.5;
+    font-weight: 700;
 }
 
 .dashboard-chart-range {

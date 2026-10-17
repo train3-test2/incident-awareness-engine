@@ -282,7 +282,8 @@ export function createTelemetryChart(model, kind, doc = document, dimensions = n
             circle.setAttribute("cy", String(mark.y));
             circle.setAttribute("r", String(mark.isolated
                 ? series.kind === "input" ? 8 : 4.5
-                : series.kind === "input" ? 3.5 : 2.5));
+                : presentation.compact ? (series.kind === "input" ? 1.75 : 1.5)
+                    : series.kind === "input" ? 3.5 : 2.5));
             const accessibleValue = `${series.label} · ${formatBucketTime(mark.timestamp)} · ${mark.tooltip}`;
             circle.setAttribute("aria-label", accessibleValue);
             circle.setAttribute("role", "img");

@@ -2249,7 +2249,7 @@ async function startDashboardHarness({ extraElementIds = [] } = {}) {
     // The actual Telemetry controller is covered by its dedicated tests.
     const isolatedSource = source.replace(
         'import { createDashboardTelemetryController } from "./dashboard-telemetry-controller.mjs";',
-        "const createDashboardTelemetryController = () => ({ start() {}, stop() {} });",
+        "const createDashboardTelemetryController = () => ({ start() {}, stop() {}, async poll() { return true; } });",
     );
     assert.notEqual(isolatedSource, source, "Expected Dashboard Telemetry import");
     const moduleSource = isolatedSource.replaceAll(
@@ -2430,6 +2430,118 @@ async function startDashboardWithRuntime(runtimeItems, runs, options = {}) {
     await harness.respond(RUNTIME_API_PATH, 200, { items: runtimeItems });
     return harness;
 }
+
+test("Main refresh joins startup reads and ignores repeated activation without moving focus", async (t) => {
+    // Given: the first three API reads are still pending.
+    const harness = await startDashboardHarness();
+    t.after(harness.restore);
+    const button = harness.document.getElementById("dashboard-refresh");
+    button.focus();
+    // When
+    button.click();
+    button.click();
+    await harness.flush();
+    // Then: startup reads are shared, not duplicated.
+    for (const path of ["/overview", "/runs?limit=20", RUNTIME_API_PATH]) {
+        assert.equal(harness.requestCount(path), 1);
+    }
+    assert.equal(button.getAttribute("aria-disabled"), "true");
+    await harness.respond("/overview", 200, { total_runs: 0, recent_runs: [] });
+    await harness.respond("/runs?limit=20", 200, { runs: [] });
+    await harness.respond(RUNTIME_API_PATH, 200, { items: [] });
+    await harness.flush();
+    assert.equal(button.getAttribute("aria-busy"), "false");
+    assert.match(harness.text("dashboard-refresh-status"), /화면 재조회 완료/);
+    assert.equal(harness.document.activeElement, button);
+    assert.equal(harness.timerCount(5000), 1);
+});
+
+test("Main refresh rereads fetched scope while retaining query, type, selection and closed Evidence", async (t) => {
+    // Given
+    const runs = [runListItem("RUN-A", "WIN-A"), runListItem("RUN-B", "WIN-B")];
+    const harness = await startDashboardWithRuntime([], runs);
+    t.after(harness.restore);
+    await harness.respondAnalysis("RUN-A", notFound(), notFound());
+    harness.typeSearch("RUN-A");
+    const type = harness.document.getElementById("dashboard-run-type");
+    type.value = "attack";
+    type.listeners.get("change")[0]();
+    const button = harness.document.getElementById("dashboard-refresh");
+    // When: repeat activation and the scheduled poll must join the same Runtime read.
+    button.click();
+    button.click();
+    await harness.triggerTimers(5000);
+    await harness.respond("/overview", 200, { total_runs: 2, recent_runs: runs });
+    await harness.respond("/runs?limit=20", 200, { runs });
+    await harness.respond(RUNTIME_API_PATH, 200, { items: [] });
+    await harness.respondAnalysis("RUN-A", notFound(), notFound());
+    await harness.respond(buildEventTimelineApiPath("RUN-A", 50, 0), 200, { items: [], total: 0, limit: 50, offset: 0 });
+    await harness.flush();
+    // Then
+    assert.equal(harness.requestCount(RUNTIME_API_PATH), 2);
+    assert.equal(harness.requestCount("/runs?limit=20"), 2);
+    assert.equal(harness.text("selected-run-id"), "RUN-A");
+    assert.equal(harness.document.getElementById("dashboard-run-search").value, "RUN-A");
+    assert.equal(type.value, "attack");
+    assert.equal(harness.requestCount(evidencePath("RUN-A")), 0);
+    assert.equal(button.getAttribute("aria-busy"), "false");
+});
+
+test("Main refresh reports API failure, releases its guard and can retry without a reload", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], []);
+    t.after(harness.restore);
+    const button = harness.document.getElementById("dashboard-refresh");
+    // When
+    button.click();
+    await harness.respond("/overview", 503, {});
+    await harness.respond("/runs?limit=20", 503, {});
+    await harness.respond(RUNTIME_API_PATH, 503, {});
+    await harness.flush();
+    // Then
+    assert.match(harness.text("dashboard-refresh-status"), /일부 조회 실패/);
+    assert.equal(button.getAttribute("aria-disabled"), "false");
+    // When / Then: explicit recovery.
+    button.click();
+    await harness.respond("/overview", 200, { total_runs: 0, recent_runs: [] });
+    await harness.respond("/runs?limit=20", 200, { runs: [] });
+    await harness.respond(RUNTIME_API_PATH, 200, { items: [] });
+    await harness.flush();
+    assert.match(harness.text("dashboard-refresh-status"), /화면 재조회 완료/);
+    assert.equal(harness.requestCount("/overview"), 3);
+});
+
+test("Pipeline copy names the missing completion proof and stale last report, not live execution", () => {
+    // Given
+    const stale = runtimeReport("RUN-A", "WIN-A", "running", "normalization");
+    stale.is_stale = true;
+    // When
+    const missing = buildPipelineStagePresentation(null, true);
+    const stages = buildPipelineStagePresentation(stale, true);
+    // Then
+    assert.ok(missing.every(stage => stage.stateLabel === "완료 보고 없음"));
+    assert.equal(stages.find(stage => stage.stage === "normalization").stateLabel, "마지막 보고 · 오래됨");
+});
+
+test("Main refresh does not start secondary reads after pagehide", async (t) => {
+    // Given
+    const runs = [runListItem("RUN-A", "WIN-A")];
+    const harness = await startDashboardWithRuntime([], runs);
+    t.after(harness.restore);
+    await harness.respondAnalysis("RUN-A", notFound(), notFound());
+    const detailPath = buildRunDetailApiPath("RUN-A");
+    const before = harness.requestCount(detailPath);
+    // When
+    harness.document.getElementById("dashboard-refresh").click();
+    await harness.dispatchWindowEvent("pagehide");
+    await harness.respond("/overview", 200, { total_runs: 1, recent_runs: runs });
+    await harness.respond("/runs?limit=20", 200, { runs });
+    await harness.respond(RUNTIME_API_PATH, 200, { items: [] });
+    await harness.flush();
+    // Then
+    assert.equal(harness.requestCount(detailPath), before);
+    assert.equal(harness.document.getElementById("dashboard-refresh").getAttribute("aria-busy"), "false");
+});
 
 // The real dashboard.js wired to the real Evidence tab controller.
 const EVIDENCE_ELEMENT_IDS = ["status", "archive", "region", "list"].map((key) => `evidence-${key}`);
@@ -2619,7 +2731,7 @@ test("Pipeline context keeps the same element across status, Entity, query-error
     assert.match(context.textContent, /RUN-A · WIN-B · 최근 5건 조회 범위 밖/);
     assert.equal(context.hidden, false);
     assert.equal(harness.stageStates().length, 6);
-    assert.equal(harness.text("pipeline-status-note"), "단계 완료 미확인");
+    assert.equal(harness.text("pipeline-status-note"), "완료 보고 부족");
 });
 
 test("Recent Runs defaults to five rows and explicitly expands all twenty without refetching", async (t) => {

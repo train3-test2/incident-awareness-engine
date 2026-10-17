@@ -42,10 +42,10 @@ const PIPELINE_RUNTIME_STAGES = new Set(PIPELINE_STAGE_ORDER);
 
 const PIPELINE_STAGE_STATE_LABELS = new Map([
     ["completed", "완료"],
-    ["current", "현재 단계 (마지막 보고)"],
-    ["stale", "오래된 현재 단계 보고"],
+    ["current", "마지막 보고 단계"],
+    ["stale", "마지막 보고 · 오래됨"],
     ["failed", "실패"],
-    ["unknown", "완료 여부 확인 불가"],
+    ["unknown", "완료 보고 없음"],
 ]);
 // Successful Runtime polls after the selected Running report left the query range.
 export const SELECTED_RUNTIME_RECHECK_POLL_THRESHOLDS = Object.freeze([1, 3, 7, 15, 31]);

@@ -317,3 +317,26 @@ test("An adjacent null latency bucket breaks the line without hiding observed ze
     assert.equal(view.series[0].marks[0].value, 0);
     assert.equal(view.series[0].marks[0].y, view.series[0].marks[0].zeroY);
 });
+
+test("Compact dense markers shrink without altering samples, coordinates or isolated keyboard targets", () => {
+    // Given
+    const response = makeResponse();
+    response.points = [shiftedPoint(14), shiftedPoint(15), shiftedPoint(18)];
+    const model = buildTelemetryChartModel(response);
+    const expected = buildTelemetryChartPresentation(model, "throughput", { width: 540 });
+    // When
+    const chart = createTelemetryChart(model, "throughput", fakeDocument, { width: 540 });
+    const marks = descendants(chart, "circle");
+    // Then
+    assert.equal(marks.length, expected.markCount);
+    for (const [index, mark] of marks.entries()) {
+        const sample = expected.series.flatMap(series => series.marks)[index];
+        assert.equal(Number(mark.attributes.get("cx")), sample.x);
+        assert.equal(Number(mark.attributes.get("cy")), sample.y);
+        assert.equal(mark.attributes.get("data-timestamp"), sample.timestamp);
+        assert.match(mark.textContent, /건\/초/);
+        assert.equal(mark.attributes.get("tabindex"), sample.isolated ? "0" : undefined);
+        assert.ok(Number(mark.attributes.get("r")) >= (sample.isolated ? 4.5 : 1.5));
+    }
+    assert.equal(expected.series[0].segments.length, 1);
+});

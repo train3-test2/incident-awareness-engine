@@ -82,6 +82,8 @@ const overviewStatus = document.getElementById("overview-status");
 const latestRuntimeState = document.getElementById("latest-runtime-state");
 const latestRuntimeUpdated = document.getElementById("latest-runtime-updated");
 const dashboardHeaderUpdated = document.getElementById("dashboard-header-updated");
+const dashboardRefreshButton = document.getElementById("dashboard-refresh");
+const dashboardRefreshStatus = document.getElementById("dashboard-refresh-status");
 const systemStatusValue = document.getElementById("system-status-value");
 const activeRuntimeRun = document.getElementById("active-runtime-run");
 const runtimeTopStatus = document.getElementById("runtime-top-status");
@@ -163,6 +165,9 @@ let runtimeInitialQuerySettled = false;
 let runtimePollTimeoutId = null;
 let runtimePollingActive = false;
 let runtimeRequestInFlight = false;
+let runtimePending = null;
+let overviewPending = null;
+let runsPending = null;
 const selectedAnalysisAbortControllers = new Set();
 let selectedTimelineRequestVersion = 0;
 let selectedTimelineAbortController = null;
@@ -426,7 +431,7 @@ function renderPipelineStages() {
     );
     pipelineStageContext.textContent = getPipelineStageContext(runtime);
     document.getElementById("pipeline-status-note").textContent = stages.some((stage) => stage.state === "unknown")
-        ? "단계 완료 미확인" : "최근 저장 Runtime 기준";
+        ? "완료 보고 부족" : "최근 저장 Runtime 기준";
 
     const items = stages.map((stage, index) => {
         const item = document.createElement("li");
@@ -441,7 +446,12 @@ function renderPipelineStages() {
         const label = document.createElement("strong");
         label.textContent = stage.stageLabel;
         const state = document.createElement("span");
-        state.textContent = stage.state === "unknown" ? "미확인" : stage.stateLabel;
+        state.textContent = stage.stateLabel;
+        state.title = stage.state === "unknown"
+            ? "이 단계의 완료를 확인할 저장 Runtime 보고가 없습니다. 미실행이나 실패를 뜻하지 않습니다."
+            : stage.state === "stale"
+                ? "오래된 Runtime 보고의 마지막 단계입니다. 실시간 진행 상태를 뜻하지 않습니다."
+                : stage.stateLabel;
         content.append(label, state);
         item.append(number, content);
         return item;
@@ -519,6 +529,10 @@ function renderRunListState(state) {
     const selectedIndex = state.items.findIndex((run) => run.run_id === selectedRunId);
     previousRunButton.disabled = selectedIndex < 0 || selectedIndex >= state.items.length - 1;
     nextRunButton.disabled = selectedIndex <= 0;
+    previousRunButton.title = previousRunButton.disabled ? "조회된 목록에서 더 이전 Run이 없습니다."
+        : "검색어와 관계없이 조회된 전체 Run 순서로 이전 Run 이동";
+    nextRunButton.title = nextRunButton.disabled ? "조회된 목록에서 더 다음 Run이 없습니다."
+        : "검색어와 관계없이 조회된 전체 Run 순서로 다음 Run 이동";
 }
 
 // Rows are rendered from runListState.items in order, so row index and item index match.
@@ -885,16 +899,19 @@ function renderSelectedAnalysis(detailState, fusionState) {
 }
 
 async function fetchJson(endpoint, failureMessage) {
-    const response = await fetch(endpoint, {
-        headers: {
-            Accept: "application/json",
-        },
-        cache: "no-store",
-    });
-    if (!response.ok) {
-        throw new Error(failureMessage);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), ANALYSIS_REQUEST_TIMEOUT_MS);
+    try {
+        const response = await fetch(endpoint, {
+            headers: { Accept: "application/json" },
+            cache: "no-store",
+            signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(failureMessage);
+        return await response.json();
+    } finally {
+        clearTimeout(timeout);
     }
-    return response.json();
 }
 
 function cancelSelectedAnalysisRequests() {
@@ -1006,7 +1023,7 @@ function refreshSelectedEventSummary() {
     selectedTimelineAbortController?.abort();
     selectedTimelineAbortController = null;
     renderEventTypeSummary(resolveEventTimelineQueryState(null, { kind: "loading" }));
-    void loadSelectedEventSummary(selectedRunId, version);
+    return loadSelectedEventSummary(selectedRunId, version);
 }
 
 async function loadSelectedRunAnalysis(runId, loadingMessage) {
@@ -1121,12 +1138,11 @@ function refreshSelectedRunAnalysis() {
     if (!canRefreshSelectedAnalysis(selectedRunId, selectedAnalysisPendingVersion !== null)) {
         return;
     }
-    void loadSelectedRunAnalysis(
+    const analysis = loadSelectedRunAnalysis(
         selectedRunId,
         "선택한 Run의 저장 분석 결과를 다시 조회하는 중입니다.",
     );
-    refreshSelectedEventSummary();
-    void evidenceController.refresh();
+    return Promise.all([analysis, refreshSelectedEventSummary(), evidenceController.refresh()]);
 }
 
 function selectDefaultRunIfReady() {
@@ -1154,7 +1170,13 @@ function selectAdjacentRun(direction) {
     }
 }
 
-async function loadOverview() {
+function loadOverview() {
+    if (overviewPending !== null) return overviewPending;
+    overviewPending = updateOverview().finally(() => { overviewPending = null; });
+    return overviewPending;
+}
+
+async function updateOverview() {
     renderOverviewState(overviewState);
     try {
         const payload = await fetchJson(OVERVIEW_ENDPOINT, "Overview API request failed");
@@ -1168,7 +1190,13 @@ async function loadOverview() {
     renderOverviewState(overviewState);
 }
 
-async function loadRuns() {
+function loadRuns() {
+    if (runsPending !== null) return runsPending;
+    runsPending = updateRuns().finally(() => { runsPending = null; });
+    return runsPending;
+}
+
+async function updateRuns() {
     renderRunListState(runListState);
     try {
         const payload = await fetchJson(RUNS_ENDPOINT, "Run List API request failed");
@@ -1290,20 +1318,53 @@ async function updateRuntimeSummary() {
 }
 
 async function pollRuntimeSummary() {
-    if (!runtimePollingActive || runtimeRequestInFlight) {
-        return;
-    }
+    if (!runtimePollingActive) return Promise.resolve();
+    if (runtimePending !== null) return runtimePending;
     runtimeRequestInFlight = true;
-    try {
-        await updateRuntimeSummary();
-    } finally {
+    runtimePending = updateRuntimeSummary().finally(() => {
         runtimeRequestInFlight = false;
+        runtimePending = null;
         scheduleRuntimePoll();
-    }
+    });
+    return runtimePending;
 }
 
 if (dashboardView !== null) {
     const telemetryController = createDashboardTelemetryController(document);
+    let manualRefreshPending = false;
+    let manualRefreshVersion = 0;
+    dashboardRefreshButton.addEventListener("click", async () => {
+        if (manualRefreshPending) return;
+        manualRefreshPending = true;
+        const version = ++manualRefreshVersion;
+        dashboardRefreshButton.setAttribute("aria-disabled", "true");
+        dashboardRefreshButton.setAttribute("aria-busy", "true");
+        dashboardRefreshStatus.textContent = "운영 View 데이터를 다시 조회하고 있습니다.";
+        try {
+            const [, , , telemetryOk] = await Promise.all([
+                loadOverview(), loadRuns(), pollRuntimeSummary(), telemetryController.poll(),
+            ]);
+            if (version !== manualRefreshVersion) return;
+            // Reuse selection/version guards; never select another Run or open a closed tab.
+            await Promise.all([refreshSelectedRunAnalysis(), stageTimingController.refresh()]);
+            if (version !== manualRefreshVersion) return;
+            const failed = [overviewState, runListState, runtimeState].some((state) => state.queryState === "error")
+                || telemetryOk === false;
+            dashboardRefreshStatus.textContent = failed
+                ? "일부 조회 실패 · 각 영역의 조회 상태를 확인하고 다시 시도하세요."
+                : "화면 재조회 완료 · 상세 조회 상태는 각 영역에서 확인하세요.";
+        } catch {
+            if (version === manualRefreshVersion) {
+                dashboardRefreshStatus.textContent = "화면 재조회 실패 · 각 영역의 조회 상태를 확인하고 다시 시도하세요.";
+            }
+        } finally {
+            if (version === manualRefreshVersion) {
+                manualRefreshPending = false;
+                dashboardRefreshButton.setAttribute("aria-disabled", "false");
+                dashboardRefreshButton.setAttribute("aria-busy", "false");
+            }
+        }
+    });
     for (const [index, tab] of selectedRunTabs.entries()) {
         tab.button.addEventListener("click", () => activateSelectedRunPanel(tab.name));
         tab.button.addEventListener("keydown", (event) => {
@@ -1368,6 +1429,10 @@ if (dashboardView !== null) {
     void telemetryController.start();
 
     window.addEventListener("pagehide", () => {
+        manualRefreshVersion += 1;
+        manualRefreshPending = false;
+        dashboardRefreshButton.setAttribute("aria-disabled", "false");
+        dashboardRefreshButton.setAttribute("aria-busy", "false");
         stopRuntimePolling();
         telemetryController.stop();
         stageTimingController.stop();

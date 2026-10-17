@@ -11,6 +11,31 @@ const elementIds = [
     "telemetry-latency-status", "telemetry-latency-note",
 ];
 
+test("Manual Telemetry poll reports success or failure and shares a pending request", async () => {
+    // Given
+    const doc = makeDocument();
+    const timers = fakeTimers();
+    let resolve;
+    let calls = 0;
+    const controller = createDashboardTelemetryController(doc, {
+        ...timers, fetchImpl: () => { calls += 1; return new Promise(done => { resolve = done; }); },
+    });
+    // When
+    const startup = controller.start();
+    const joined = controller.poll();
+    resolve({ ok: true, json: async () => payload() });
+    // Then
+    assert.equal(startup, joined);
+    assert.equal(await joined, true);
+    assert.equal(calls, 1);
+    // When / Then
+    const retry = controller.poll();
+    resolve({ ok: false, status: 503 });
+    assert.equal(await retry, false);
+    assert.equal(doc.elements.get("telemetry-throughput-summary").textContent, "조회 실패");
+    controller.stop();
+});
+
 class FakeNode {
     constructor(tagName) {
         this.tagName = tagName;

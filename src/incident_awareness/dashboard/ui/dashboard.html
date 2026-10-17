@@ -40,7 +40,7 @@
                 <p class="page-description">실시간 운영 및 사건 분석 화면</p>
             </div>
             <div class="dashboard-header-meta">
-                <span class="dashboard-data-note"><svg class="dashboard-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#refresh"></use></svg>자동 갱신 · 5초</span>
+                <span class="dashboard-data-note"><button id="dashboard-refresh" class="dashboard-manual-refresh" type="button" aria-label="운영 View 데이터 새로고침" aria-describedby="dashboard-refresh-status" title="화면의 조회 데이터를 수동으로 새로고침"><svg class="dashboard-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#refresh"></use></svg></button>자동 갱신 · 5초</span>
                 <span id="dashboard-header-updated">마지막 저장 보고 확인 중</span>
                 <details class="dashboard-time-note">
                     <summary>표시 기준 및 상태 안내</summary>
@@ -55,6 +55,7 @@
                     </div>
                 </details>
             </div>
+            <p id="dashboard-refresh-status" class="dashboard-visually-hidden" role="status" aria-live="polite" aria-atomic="true">수동 새로고침으로 화면의 조회 데이터를 다시 읽습니다. 기존 5초 자동 갱신도 유지됩니다.</p>
         </header>
 
         <section class="section-card dashboard-section dashboard-command" aria-labelledby="command-heading">
@@ -110,7 +111,7 @@
                     <div class="section-header dashboard-section-header">
                         <div>
                             <h2 id="pipeline-heading" class="section-heading">파이프라인 상태 <span class="dashboard-heading-english">Pipeline Status</span></h2>
-                            <p id="pipeline-status-note" class="section-description">단계 완료 미확인</p>
+                            <p id="pipeline-status-note" class="section-description">완료 보고 부족</p>
                         </div>
                         <a class="dashboard-header-link" href="/operations">운영 기록 보기</a>
                     </div>
