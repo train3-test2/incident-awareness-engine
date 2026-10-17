@@ -265,6 +265,30 @@ def test_dashboard_view_2_uses_real_data_regions_and_defaults_to_replay() -> Non
     assert "판단 입력하기" not in html
 
 
+def test_processing_observation_shell_exposes_true_scope_without_database_access(
+    database_connection_attempts: list[str],
+) -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    html = client.get("/dashboard").text
+
+    # Then
+    assert '<h3 id="processing-observation-heading">최근 처리 관측</h3>' in html
+    assert '<strong id="processing-observation-state">조회 중</strong>' in html
+    assert '<time id="processing-observation-time">관측 시각 조회 중</time>' in html
+    assert 'aria-describedby="processing-observation-details telemetry-throughput-status"' in html
+    assert '<strong id="insight-bottleneck-state">미계측</strong>' in html
+    assert '<strong id="insight-sla-state">기준 미설정</strong>' in html
+    assert '<strong id="insight-queue-state">미계측</strong>' in html
+    assert "최신 이벤트 수신" not in html
+    assert "Event 최초 수신 시각이나 시스템 가동 여부가 아닙니다" in html
+    assert "SQS 큐 깊이가 아닙니다" in html
+    assert "E2E SLA로 사용하지 않습니다" in html
+    assert database_connection_attempts == []
+
+
 def test_operations_view_includes_dashboard_navigation() -> None:
     # Given
     client = TestClient(create_app())

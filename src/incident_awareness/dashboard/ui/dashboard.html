@@ -239,27 +239,36 @@
                         <div class="dashboard-insight-cell">
                             <span class="dashboard-insight-icon" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#bottleneck"></use></svg></span>
                             <h3>병목 단계</h3>
-                            <strong>계측 미연결</strong>
+                            <strong id="insight-bottleneck-state">미계측</strong>
                         </div>
                         <div class="dashboard-insight-cell">
                             <span class="dashboard-insight-icon" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#signal"></use></svg></span>
                             <h3>SLA 경고 여부</h3>
-                            <strong>계측 미연결</strong>
+                            <strong id="insight-sla-state">기준 미설정</strong>
                         </div>
-                        <div class="dashboard-insight-cell">
+                        <div class="dashboard-insight-cell dashboard-processing-observation" role="group"
+                             aria-labelledby="processing-observation-heading"
+                             aria-describedby="processing-observation-details telemetry-throughput-status">
                             <span class="dashboard-insight-icon" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#clock"></use></svg></span>
-                            <h3>최신 이벤트 수신</h3>
-                            <strong>계측 미연결</strong>
+                            <h3 id="processing-observation-heading">최근 처리 관측</h3>
+                            <strong id="processing-observation-state">조회 중</strong>
+                            <time id="processing-observation-time">관측 시각 조회 중</time>
+                            <span id="processing-observation-details" class="dashboard-visually-hidden">Telemetry 관측 정보를 조회하고 있습니다.</span>
                         </div>
                         <div class="dashboard-insight-cell">
                             <span class="dashboard-insight-icon" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#alert"></use></svg></span>
                             <h3>큐 적체 위험</h3>
-                            <strong>계측 미연결</strong>
+                            <strong id="insight-queue-state">미계측</strong>
                         </div>
                     </div>
                     <details class="dashboard-help">
                         <summary>인사이트 계측 안내</summary>
-                        <p>단계별 지연 통계, SLA 임계치, 이벤트 수신 시각, 큐 적체량은 아직 연결되지 않았습니다.
+                        <p>최근 처리 관측은 같은 Telemetry 응답의 last_observed_at과 최근성 상태입니다.
+                            Event 최초 수신 시각이나 시스템 가동 여부가 아닙니다. 시각은 UTC로 표시합니다.
+                            최근 60초 미관측은 실측 0과 다르며, 부분 관측과 오래된 관측을 구분합니다.</p>
+                        <p>병목 단계·큐 적체량은 계측 미연결이며 SLA 기준도 미설정입니다.
+                            current_stage는 병목 근거가 아니고 입력·처리 건수 차이는 SQS 큐 깊이가 아닙니다.
+                            Normalization + Evidence 지연을 E2E SLA로 사용하지 않습니다.
                             실행 완료만으로 모든 시스템이 정상이라고 판단하지 않습니다.</p>
                     </details>
                 </section>

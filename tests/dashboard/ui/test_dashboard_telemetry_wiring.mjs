@@ -78,7 +78,16 @@ test("Telemetry live regions remain accessible when observation details are clos
     assert.doesNotMatch(hiddenRule, /display:\s*none|visibility:\s*hidden|content-visibility:\s*hidden/);
 });
 
-test("The four KPI regions share a panel with dividers and insights state missing instrumentation explicitly", async () => {
+function assertInsightScope(html) {
+    assert.equal((html.match(/class="dashboard-insight-cell(?: dashboard-processing-observation)?"/g) ?? []).length, 4);
+    assert.match(html, /<strong id="insight-bottleneck-state">미계측<\/strong>/);
+    assert.match(html, /<strong id="insight-sla-state">기준 미설정<\/strong>/);
+    assert.match(html, /<strong id="insight-queue-state">미계측<\/strong>/);
+    assert.match(html, /<h3 id="processing-observation-heading">최근 처리 관측<\/h3>/);
+    assert.doesNotMatch(html, /최신 이벤트 수신/);
+}
+
+test("The four KPI regions share a panel and unsupported Insight metrics stay unmeasured", async () => {
     // Given
     const [html, style] = await Promise.all([readFile(htmlPath, "utf8"), readFile(cssPath, "utf8")]);
 
@@ -93,7 +102,7 @@ test("The four KPI regions share a panel with dividers and insights state missin
     assert.match(gridRule, /gap: 0;/);
     assert.match(kpiRule, /border-left: 1px solid/);
     assert.match(kpiRule, /box-shadow: none/);
-    assert.equal((html.match(/<strong>계측 미연결<\/strong>/g) ?? []).length, 4);
+    assertInsightScope(html);
 });
 
 test("Concise cards expose Pipeline scope while keeping technical definitions in native disclosures", async () => {
@@ -128,7 +137,40 @@ test("Concise cards expose Pipeline scope while keeping technical definitions in
         assert.ok(beforeDefinition.lastIndexOf("<details") > beforeDefinition.lastIndexOf("</details>"));
     }
     assert.match(html, /자동 갱신 · 5초/);
-    assert.equal((html.match(/<strong>계측 미연결<\/strong>/g) ?? []).length, 4);
+    assertInsightScope(html);
+});
+
+test("Processing observation is optional in the shared Controller and reuses existing Telemetry announcements", async () => {
+    // Given
+    const [html, source] = await Promise.all([
+        readFile(htmlPath, "utf8"),
+        readFile(new URL("src/incident_awareness/dashboard/ui/assets/dashboard-telemetry-controller.mjs", root), "utf8"),
+    ]);
+
+    // When
+    const state = locateElement(html, "processing-observation-state");
+    const time = locateElement(html, "processing-observation-time");
+    const details = locateElement(html, "processing-observation-details");
+    const group = state.ancestors.find((element) => element.markup.includes("dashboard-processing-observation"));
+    const required = source.split("const REQUIRED_IDS = Object.freeze({")[1].split("});")[0];
+
+    // Then
+    assert.match(group.markup, /role="group"/);
+    assert.match(group.markup, /aria-labelledby="processing-observation-heading"/);
+    assert.match(group.markup, /aria-describedby="processing-observation-details telemetry-throughput-status"/);
+    for (const element of [state, time, details, ...state.ancestors]) {
+        assert.doesNotMatch(element.markup, /aria-live=|role="status"/);
+    }
+    assert.match(details.markup, /dashboard-visually-hidden/);
+    assert.equal(time.ancestors.some((element) => element.tag === "details"), false);
+    assert.doesNotMatch(required, /processing-observation/);
+    assert.equal((source.match(/fetchImpl\(TELEMETRY_ENDPOINT/g) ?? []).length, 1);
+    assert.match(source, /renderProcessingObservation\(observationNodes, model\)/);
+    assert.match(source, /renderProcessingObservation\(observationNodes, null, "error"\)/);
+    for (const definition of [
+        "Event 최초 수신 시각이나 시스템 가동 여부가 아닙니다", "시각은 UTC로 표시합니다",
+        "current_stage는 병목 근거가 아니고", "SQS 큐 깊이가 아닙니다", "E2E SLA로 사용하지 않습니다",
+    ]) assert.ok(html.includes(definition));
 });
 
 test("Time guidance positions one wrapper while paragraphs remain in document flow", async () => {

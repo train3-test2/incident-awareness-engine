@@ -723,7 +723,7 @@ html:has(> .dashboard-body) {
     grid-template-areas: "icon title" "icon state" "description description";
     align-content: start;
     align-items: start;
-    gap: 0.25rem 0.5rem;
+    gap: 0 0.5rem;
     min-width: 0;
     padding: 0.125rem 0.5rem;
     background: transparent;
@@ -772,6 +772,30 @@ html:has(> .dashboard-body) {
     margin-top: 0;
     font-size: 0.75rem;
     line-height: 1.4;
+}
+
+.dashboard-processing-observation time {
+    grid-area: description;
+    color: var(--shell-color-muted);
+    font-size: 0.75rem;
+    line-height: 1rem;
+    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
+}
+
+.dashboard-processing-observation [data-observation-tone="observed"] {
+    color: var(--shell-color-primary-strong);
+    background: var(--shell-color-primary-soft);
+}
+
+.dashboard-processing-observation [data-observation-tone="warning"] {
+    color: var(--shell-color-warning);
+    background: var(--shell-color-warning-soft);
+}
+
+.dashboard-processing-observation [data-observation-tone="error"] {
+    color: var(--shell-color-danger);
+    background: var(--shell-color-danger-soft);
 }
 
 .dashboard-measurement-note,
