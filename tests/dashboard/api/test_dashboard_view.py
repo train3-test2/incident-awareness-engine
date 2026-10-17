@@ -279,7 +279,11 @@ def test_processing_observation_shell_exposes_true_scope_without_database_access
     assert '<strong id="processing-observation-state">조회 중</strong>' in html
     assert '<time id="processing-observation-time">관측 시각 조회 중</time>' in html
     assert 'aria-describedby="processing-observation-details telemetry-throughput-status"' in html
-    assert '<strong id="insight-bottleneck-state">미계측</strong>' in html
+    assert (
+        '<strong id="insight-bottleneck-state" role="status" aria-live="polite" '
+        'aria-atomic="true">비교 대상 없음</strong>' in html
+    )
+    assert 'id="insight-bottleneck-refresh"' in html
     assert '<strong id="insight-sla-state">기준 미설정</strong>' in html
     assert '<strong id="insight-queue-state">미계측</strong>' in html
     assert "최신 이벤트 수신" not in html
@@ -662,7 +666,7 @@ def test_production_dashboard_does_not_serve_local_preview(path: str) -> None:
 @pytest.mark.parametrize(
     ("metric", "reason"),
     [
-        ("bottleneck", "단계별 소요시간 미수집"),
+        ("bottleneck", "전체 실행의 확정 병목이 아닙니다"),
         ("sla", "정상 또는 위반 없음이라는 뜻이 아닙니다"),
         ("queue", "미계측은 대기 0건이나 위험 없음이라는 뜻이 아닙니다"),
     ],

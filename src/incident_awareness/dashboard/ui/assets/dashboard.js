@@ -38,6 +38,8 @@ import {
 } from "./fusion-engine-contract.mjs";
 import { createDashboardReplayChart } from "./dashboard-replay-chart.mjs";
 import { createDashboardTelemetryController } from "./dashboard-telemetry-controller.mjs";
+import { createDashboardStageTimingController } from "./dashboard-stage-timing-controller.mjs";
+import { resolveStageTimingTarget } from "./dashboard-stage-timing-contract.mjs";
 import {
     buildEventTimelineApiPath,
     resolveEventTimelineQueryState,
@@ -72,6 +74,7 @@ const SCORE_CHART_DIMENSIONS = {
 };
 
 const dashboardView = document.getElementById("dashboard-view");
+const stageTimingController = createDashboardStageTimingController(document);
 const totalRunsValue = document.getElementById("total-runs-value");
 const overviewStatus = document.getElementById("overview-status");
 const latestRuntimeState = document.getElementById("latest-runtime-state");
@@ -407,6 +410,13 @@ function getPipelineStageContext(runtime) {
 }
 
 function renderPipelineStages() {
+    void stageTimingController.select(resolveStageTimingTarget({
+        runId: selectedRunId,
+        entityId: selectedRuntimeEntityId,
+        items: runtimeState.items,
+        queryFailed: selectedRuntimeTracking.queryFailed || runtimeState.queryState === "error",
+        outsideQuery: selectedRuntimeTracking.outsideQuery,
+    }));
     const runtime = getSelectedRuntime();
     const stages = buildPipelineStagePresentation(
         runtime,
@@ -1353,11 +1363,13 @@ if (dashboardView !== null) {
     window.addEventListener("pagehide", () => {
         stopRuntimePolling();
         telemetryController.stop();
+        stageTimingController.stop();
     });
     window.addEventListener("pageshow", (event) => {
         if (event.persisted) {
             startRuntimePolling();
             void telemetryController.start();
+            void stageTimingController.start();
         }
     });
 }

@@ -34,6 +34,8 @@ jobs:
       - run: uv run pytest
       - run: >-
           node --test
+          tests/dashboard/ui/test_dashboard_stage_timing_contract.mjs
+          tests/dashboard/ui/test_dashboard_stage_timing_controller.mjs
           tests/dashboard/ui/test_dashboard_contract.mjs
           tests/dashboard/ui/test_dashboard_telemetry_contract.mjs
           tests/dashboard/ui/test_dashboard_telemetry_chart.mjs

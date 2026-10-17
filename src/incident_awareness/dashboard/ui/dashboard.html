@@ -239,9 +239,10 @@
                         <div class="dashboard-insight-cell" role="group" aria-labelledby="insight-bottleneck-heading"
                              aria-describedby="insight-bottleneck-scope">
                             <span class="dashboard-insight-icon" aria-hidden="true"><svg class="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#bottleneck"></use></svg></span>
-                            <h3 id="insight-bottleneck-heading">병목 단계</h3>
-                            <strong id="insight-bottleneck-state">미계측</strong>
-                            <span id="insight-bottleneck-scope" class="dashboard-visually-hidden">단계별 소요시간 미수집. 동일 Execution의 단계별 시작·종료 및 실패·미실행 기록이 없어 병목을 비교하지 않습니다.</span>
+                            <h3 id="insight-bottleneck-heading">최장 소요 단계</h3>
+                            <strong id="insight-bottleneck-state" role="status" aria-live="polite" aria-atomic="true">비교 대상 없음</strong>
+                            <span id="insight-bottleneck-caption">Runtime Execution을 선택하세요.</span>
+                            <span id="insight-bottleneck-scope" class="dashboard-visually-hidden">동일 Execution의 관측된 종료 invocation만 비교합니다. 전체 실행의 확정 병목이 아닙니다. 상세 기록과 재조회는 인사이트 계측 안내에 있습니다.</span>
                         </div>
                         <div class="dashboard-insight-cell" role="group" aria-labelledby="insight-sla-heading"
                              aria-describedby="insight-sla-scope">
@@ -272,13 +273,22 @@
                         <p>최근 처리 관측은 같은 Telemetry 응답의 last_observed_at과 최근성 상태입니다.
                             Event 최초 수신 시각이나 시스템 가동 여부가 아닙니다. 시각은 UTC로 표시합니다.
                             최근 60초 미관측은 실측 0과 다르며, 부분 관측과 오래된 관측을 구분합니다.</p>
-                        <p>병목 단계·큐 적체량은 계측 미연결이며 SLA 기준도 미설정입니다.
+                        <p>최장 소요 단계는 선택한 Runtime Execution의 저장된 계측만 비교합니다. 큐 적체량은 계측 미연결이며 SLA 기준도 미설정입니다.
                             current_stage는 병목 근거가 아니고 입력·처리 건수 차이는 SQS 큐 깊이가 아닙니다.
                             Normalization + Evidence 지연을 E2E SLA로 사용하지 않습니다.
                             실행 완료만으로 모든 시스템이 정상이라고 판단하지 않습니다.</p>
-                        <p><strong>병목 단계:</strong> Runtime API는 Run·Entity별 최신 실행 상태만 제공합니다.
-                            이전 단계의 시작/종료 이력과 소요시간이 없어 동일 Execution 내 비교가 불가능합니다.
-                            진행 중인 단계의 경과시간만으로 가장 느린 단계를 선정하지 않습니다.</p>
+                        <p><strong>최장 소요 단계:</strong> Stage Timing API의 동일 Execution 내 관측된 종료 invocation만 비교합니다.
+                            재시도는 별도 invocation으로 비교하며 합산하지 않습니다. 동률은 모두 표시합니다.
+                            실행 경로와 필수 단계 완전성·전체 종료는 v1에서 확인할 수 없어 부분 비교로 표시합니다.
+                            First Cycle은 6개 operation, Standalone은 독립 fast_handoff 없이 5개 operation입니다.
+                            기록 수만으로 실행 유형을 추정하지 않으며, 미관측은 미실행이나 0ns가 아닙니다.
+                            실패 operation도 종료까지의 소요시간이며 진행 중 duration을 만들지 않습니다.</p>
+                        <div class="dashboard-stage-timing-detail" role="group" aria-label="선택 Execution 단계별 계측 상세"
+                             aria-describedby="insight-bottleneck-scope">
+                            <p id="insight-bottleneck-detail">Runtime Execution을 선택하세요.</p>
+                            <button id="insight-bottleneck-refresh" class="shell-button shell-button--secondary" type="button" disabled>단계 계측 다시 조회</button>
+                            <ol id="insight-bottleneck-records" aria-label="종료된 단계 invocation 기록"></ol>
+                        </div>
                         <p><strong>SLA 경고 여부:</strong> 적용 대상·측정 시작/종료·임계값·경고/위반 규칙이 미정입니다.
                             기준 미설정은 정상 판정이 아닙니다. Telemetry의 최근성 15초와 Runtime의 최근 보고 5분은
                             표시 기준이며 SLA가 아닙니다. Human Workflow의 24h 상태도 Pipeline SLA로 전용하지 않습니다.</p>
@@ -288,7 +298,7 @@
                         <p><strong>조회 범위와 오류:</strong> 최근 처리 관측만 기존 Telemetry 응답
                             (보고된 Execution Attempt · 최근 5분, 요약 최근 60초)을 재사용합니다.
                             선택 Run 전용 지표나 시스템 전체 계측이 아닙니다. 이 API의 조회 실패는 해당 관측 카드에
-                            표시하며, 아직 계측 계약이 없는 세 지표의 미계측/기준 미설정과 구분합니다.</p>
+                            표시하며, Stage Timing 조회 실패와 SLA·큐의 미계측/기준 미설정과 구분합니다.</p>
                     </details>
                 </section>
 

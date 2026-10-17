@@ -80,7 +80,7 @@ test("Telemetry live regions remain accessible when observation details are clos
 
 function assertInsightScope(html) {
     assert.equal((html.match(/class="dashboard-insight-cell(?: dashboard-processing-observation)?"/g) ?? []).length, 4);
-    assert.match(html, /<strong id="insight-bottleneck-state">미계측<\/strong>/);
+    assert.match(html, /<strong id="insight-bottleneck-state"[^>]*>비교 대상 없음<\/strong>/);
     assert.match(html, /<strong id="insight-sla-state">기준 미설정<\/strong>/);
     assert.match(html, /<strong id="insight-queue-state">미계측<\/strong>/);
     assert.match(html, /<h3 id="processing-observation-heading">최근 처리 관측<\/h3>/);
@@ -173,11 +173,11 @@ test("Processing observation is optional in the shared Controller and reuses exi
     ]) assert.ok(html.includes(definition));
 });
 
-test("Unsupported Insights expose metric-specific scope outside closed help without claiming measurements", async () => {
+test("Insights expose metric-specific scope outside closed help without claiming unsupported measurements", async () => {
     // Given
     const html = await readFile(htmlPath, "utf8");
     const metrics = [
-        ["bottleneck", "병목 단계", "미계측", "단계별 소요시간 미수집"],
+        ["bottleneck", "최장 소요 단계", "비교 대상 없음", "전체 실행의 확정 병목이 아닙니다"],
         ["sla", "SLA 경고 여부", "기준 미설정", "경고/위반 규칙이 정의되지 않아 평가하지 않습니다"],
         ["queue", "큐 적체 위험", "미계측", "미계측은 대기 0건이나 위험 없음이라는 뜻이 아닙니다"],
     ];
@@ -191,12 +191,14 @@ test("Unsupported Insights expose metric-specific scope outside closed help with
         assert.ok(group.markup.includes(`aria-labelledby="insight-${metric}-heading"`));
         assert.ok(group.markup.includes(`aria-describedby="insight-${metric}-scope"`));
         assert.ok(html.includes(`<h3 id="insight-${metric}-heading">${title}</h3>`));
-        assert.ok(html.includes(`<strong id="insight-${metric}-state">${label}</strong>`));
+        assert.match(html, new RegExp(`<strong id="insight-${metric}-state"[^>]*>${label}</strong>`));
         assert.match(scope.markup, /dashboard-visually-hidden/);
         assert.equal(scope.ancestors.some((element) => element.tag === "details"), false);
         for (const element of [state, scope, ...state.ancestors]) {
-            assert.doesNotMatch(element.markup, /\s(?:hidden|inert)(?:\s|>|=)|aria-hidden="true"|aria-live=|role="status"/);
+            assert.doesNotMatch(element.markup, /\s(?:hidden|inert)(?:\s|>|=)|aria-hidden="true"/);
+            if (metric !== "bottleneck") assert.doesNotMatch(element.markup, /aria-live=|role="status"/);
         }
+        if (metric === "bottleneck") assert.match(state.markup, /role="status" aria-live="polite"/);
         assert.equal((html.match(new RegExp(`id="insight-${metric}-scope"`, "g")) ?? []).length, 1);
         assert.ok(html.includes(reason));
     }
@@ -210,13 +212,13 @@ test("Insight help explains source limits and distinguishes missing contracts fr
 
     // When / Then
     for (const explanation of [
-        "동일 Execution 내 비교가 불가능합니다", "기준 미설정은 정상 판정이 아닙니다",
+        "동일 Execution 내 관측된 종료 invocation만 비교합니다", "기준 미설정은 정상 판정이 아닙니다",
         "표시 기준이며 SLA가 아닙니다", "24h 상태도 Pipeline SLA로 전용하지 않습니다",
         "archive 발행 재시도 기록은 현재 큐 대기량이 아닙니다", "안전/위험 판정을 제공하지 않습니다",
         "보고된 Execution Attempt · 최근 5분, 요약 최근 60초", "선택 Run 전용 지표나 시스템 전체 계측이 아닙니다",
         "조회 실패는 해당 관측 카드에", "미계측/기준 미설정과 구분합니다",
     ]) assert.ok(help.includes(explanation), explanation);
-    assert.match(help, /<strong>병목 단계:<\/strong>/);
+    assert.match(help, /<strong>최장 소요 단계:<\/strong>/);
     assert.match(help, /<strong>SLA 경고 여부:<\/strong>/);
     assert.match(help, /<strong>큐 적체 위험:<\/strong>/);
 });

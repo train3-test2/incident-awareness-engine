@@ -54,6 +54,10 @@ import {
     buildRunDetailApiPath,
     buildRunDetailViewPath,
 } from "../../../src/incident_awareness/dashboard/ui/assets/run-detail-contract.mjs";
+import {
+    buildStageTimingModel,
+} from "../../../src/incident_awareness/dashboard/ui/assets/dashboard-stage-timing-contract.mjs";
+import { timingPayload } from "./stage-timing-fixture.mjs";
 
 test("Run Type presentation maps the persisted vocabulary with a safe fallback", () => {
     // Given
@@ -2091,7 +2095,9 @@ class FakeElement extends FakeNode {
     }
 }
 
-async function startDashboardHarness() {
+// extraElementIds adds DOM owned by imported modules (e.g. the Stage Timing card), which the
+// dashboard.js id scan below cannot see; without them those modules stay inert.
+async function startDashboardHarness({ extraElementIds = [] } = {}) {
     const source = await readFile(new URL("dashboard.js", DASHBOARD_ASSETS_URL), "utf8");
     const document = {
         activeElement: null,
@@ -2101,6 +2107,9 @@ async function startDashboardHarness() {
         getElementById: (id) => document.elements.get(id) ?? null,
     };
     for (const [, id] of source.matchAll(/document\.getElementById\("([^"]+)"\)/g)) {
+        document.elements.set(id, new FakeElement(document));
+    }
+    for (const id of extraElementIds) {
         document.elements.set(id, new FakeElement(document));
     }
 
@@ -2271,6 +2280,7 @@ async function startDashboardHarness() {
             (timer) => timer.delay === delay,
         ).length,
         requestCount: (url) => requests.filter((request) => request.url === url).length,
+        requestsFor: (url) => requests.filter((request) => request.url === url),
         totalRequests: () => requests.length,
         // Types into the header Run search the way a browser reports it: value, then "input".
         typeSearch(value) {
@@ -2412,13 +2422,115 @@ function otherRunningReports() {
     );
 }
 
-async function startDashboardWithRuntime(runtimeItems, runs) {
-    const harness = await startDashboardHarness();
+async function startDashboardWithRuntime(runtimeItems, runs, options = {}) {
+    const harness = await startDashboardHarness(options);
     await harness.respond("/overview", 200, { total_runs: runs.length, recent_runs: runs });
     await harness.respond("/runs?limit=20", 200, { runs });
     await harness.respond(RUNTIME_API_PATH, 200, { items: runtimeItems });
     return harness;
 }
+
+// The real dashboard.js wired to the real Stage Timing controller through Runtime polling.
+const STAGE_TIMING_ELEMENT_IDS = ["state", "caption", "scope", "records", "refresh", "detail"]
+    .map((key) => `insight-bottleneck-${key}`);
+const stageTimingPath = (executionId) => (
+    `/operations/stage-timings?execution_id=${encodeURIComponent(executionId)}`
+);
+const stageTarget = (runId, entityId) => ({
+    runId, entityId, executionId: `${runId}-${entityId}`, status: "completed", currentStage: null,
+});
+
+test("Runtime polling re-reads Stage Timing only on the selected Execution's reported transitions", async (t) => {
+    // Given: the default selection is the running Runtime Execution.
+    const running = runtimeReport("RUN-A", "WIN-A", "running", "normalization");
+    const harness = await startDashboardWithRuntime([running], [runListItem("RUN-A", "WIN-A")], {
+        extraElementIds: STAGE_TIMING_ELEMENT_IDS,
+    });
+    t.after(harness.restore);
+    const target = stageTarget("RUN-A", "WIN-A");
+    const path = stageTimingPath(target.executionId);
+    const state = harness.document.getElementById("insight-bottleneck-state");
+    const payload = timingPayload({ scope: target, selectedStages: ["artifact_validation", "normalization"], active: "fusion" });
+    await harness.respond(path, 200, payload);
+    const firstLabel = state.textContent;
+    const writes = state.textContentWrites;
+
+    // When: three heartbeats change only updated_at.
+    for (const second of ["05", "10", "15"]) {
+        await harness.poll([{ ...running, updated_at: `2026-10-09T00:01:${second}Z` }]);
+    }
+    const afterHeartbeats = { requests: harness.requestCount(path), writes: state.textContentWrites - writes };
+    // When: the reported stage advances, then the Execution completes and stays completed.
+    await harness.poll([{ ...running, current_stage: "fusion" }]);
+    const afterStageChange = harness.requestCount(path);
+    await harness.respond(path, 200, payload);
+    const completed = runtimeReport("RUN-A", "WIN-A", "completed", null);
+    await harness.poll([completed]);
+    await harness.respond(path, 200, timingPayload({ scope: target }));
+    await harness.poll([completed]);
+    await harness.poll([completed]);
+
+    // Then
+    assert.equal(firstLabel, buildStageTimingModel(payload, { ...target, status: "running", currentStage: "normalization" }).label);
+    assert.deepEqual(afterHeartbeats, { requests: 1, writes: 0 });
+    assert.equal(afterStageChange, 2);
+    assert.equal(harness.requestCount(path), 3);
+    assert.equal(state.textContent, buildStageTimingModel(timingPayload({ scope: target }), target).label);
+    assert.match(harness.document.getElementById("insight-bottleneck-caption").textContent, /부분 비교 · Execution RUN-A-WIN-A/);
+    assert.equal(harness.timerCount(RUNTIME_POLL_DELAY_MS), 1);
+});
+
+test("Stage Timing follows Run, Entity and Run-only selection without mixing or reusing responses", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime(
+        [
+            runtimeReport("RUN-A", "WIN-A", "completed", null),
+            runtimeReport("RUN-A", "WIN-B", "completed", null),
+            runtimeReport("RUN-B", "WIN-C", "completed", null),
+        ],
+        [runListItem("RUN-A", "WIN-A"), runListItem("RUN-B", "WIN-C"), runListItem("RUN-C", "WIN-D")],
+        { extraElementIds: STAGE_TIMING_ELEMENT_IDS },
+    );
+    t.after(harness.restore);
+    const state = harness.document.getElementById("insight-bottleneck-state");
+    const scope = harness.document.getElementById("insight-bottleneck-scope");
+    const caption = harness.document.getElementById("insight-bottleneck-caption");
+    const records = harness.document.getElementById("insight-bottleneck-records");
+    const winA = stageTarget("RUN-A", "WIN-A");
+    const winB = stageTarget("RUN-A", "WIN-B");
+
+    // When: select WIN-A, then switch to WIN-B of the same Run before WIN-A answers.
+    harness.runtimeButton("RUN-A", "WIN-A").click();
+    await harness.flush();
+    const [pendingWinA] = harness.requestsFor(stageTimingPath(winA.executionId)).filter((request) => !request.settled);
+    harness.runtimeButton("RUN-A", "WIN-B").click();
+    await harness.flush();
+    await harness.respond(stageTimingPath(winB.executionId), 200, timingPayload({ scope: winB }));
+    const afterEntityChange = { label: state.textContent, scope: scope.textContent, rows: records.children.length };
+    // When: a Run-only selection, a Run without Runtime, then a Runtime query failure.
+    harness.runButton("RUN-B").click();
+    await harness.flush();
+    const runOnlyWithRuntime = { label: state.textContent, caption: caption.textContent, rows: records.children.length };
+    harness.runButton("RUN-C").click();
+    await harness.flush();
+    const runOnlyWithoutRuntime = caption.textContent;
+    harness.runtimeButton("RUN-B", "WIN-C").click();
+    await harness.flush();
+    await harness.pollFailure();
+    const afterRuntimeFailure = { label: state.textContent, caption: caption.textContent };
+
+    // Then
+    assert.equal(pendingWinA.options.signal.aborted, true);
+    assert.equal(afterEntityChange.label, buildStageTimingModel(timingPayload({ scope: winB }), winB).label);
+    assert.match(afterEntityChange.scope, /Entity WIN-B · Execution RUN-A-WIN-B/);
+    assert.doesNotMatch(afterEntityChange.scope, /WIN-A/);
+    assert.equal(afterEntityChange.rows, 6);
+    assert.deepEqual(runOnlyWithRuntime, { label: "비교 대상 없음", caption: "Runtime 선택 필요", rows: 0 });
+    assert.equal(runOnlyWithoutRuntime, "Runtime 보고 없음");
+    assert.deepEqual(afterRuntimeFailure, { label: "비교 대상 없음", caption: "Runtime 조회 실패" });
+    assert.equal(harness.requestCount(stageTimingPath("RUN-C-WIN-D")), 0);
+    assert.equal(harness.requestCount(stageTimingPath(winA.executionId)), 1);
+});
 
 test("Pipeline context keeps the same element across status, Entity, query-error and range changes", async (t) => {
     // Given

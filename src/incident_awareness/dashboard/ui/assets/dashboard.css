@@ -783,6 +783,53 @@ html:has(> .dashboard-body) {
     font-variant-numeric: tabular-nums;
 }
 
+#insight-bottleneck-state {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#insight-bottleneck-state[data-timing-tone="observed"] {
+    color: var(--shell-color-primary-strong);
+    background: var(--shell-color-primary-soft);
+}
+
+#insight-bottleneck-state[data-timing-tone="error"] {
+    color: var(--shell-color-danger);
+    background: var(--shell-color-danger-soft);
+}
+
+/* The caption shares the title row so the fixed-height Insight card keeps its two lines. */
+.dashboard-insight-cell:has(> #insight-bottleneck-caption) {
+    grid-template-columns: 2rem auto minmax(0, 1fr);
+    grid-template-areas: "icon title caption" "icon state state";
+}
+
+#insight-bottleneck-caption {
+    grid-area: caption;
+    align-self: center;
+    min-width: 0;
+    font-size: 0.75rem;
+    line-height: 1rem;
+    color: var(--shell-color-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dashboard-stage-timing-detail {
+    overflow-wrap: anywhere;
+}
+
+.dashboard-stage-timing-detail ol {
+    padding-left: 1.25rem;
+    margin: 0.5rem 0;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    font-variant-numeric: tabular-nums;
+}
+
 .dashboard-processing-observation [data-observation-tone="observed"] {
     color: var(--shell-color-primary-strong);
     background: var(--shell-color-primary-soft);
@@ -2260,6 +2307,19 @@ html:has(> .dashboard-body) {
     .dashboard-analysis-summary,
     .dashboard-analysis-settings__list {
         grid-template-columns: 1fr;
+    }
+
+    /* Too narrow to share the title row; the phone layout has no fixed card height,
+       so the state uses the full width and wraps instead of hiding the measured value. */
+    .dashboard-insight-cell:has(> #insight-bottleneck-caption) {
+        grid-template-columns: 2rem minmax(0, 1fr);
+        grid-template-areas: "icon title" "state state" "caption caption";
+    }
+
+    #insight-bottleneck-state {
+        white-space: normal;
+        overflow-wrap: anywhere;
+        border-radius: 0.5rem;
     }
 
     .dashboard-kpi {
