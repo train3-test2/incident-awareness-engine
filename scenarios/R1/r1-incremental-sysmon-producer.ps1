@@ -40,6 +40,7 @@ New-Item -ItemType Directory -Path $rawRoot -Force | Out-Null
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $env:PYTHONPATH = Join-Path $projectRoot "src"
+. (Join-Path $PSScriptRoot "r1-incremental-sysmon-producer-common.ps1")
 
 function Write-AtomicText([string]$Path, [string]$Text) {
     $temp = $Path + "." + [Guid]::NewGuid().ToString("N") + ".tmp"
@@ -184,37 +185,8 @@ try {
             throw "runner was aborted during polling (found $abortedControlPath)"
         }
 
-        $answer = Invoke-Command -Session $session -ScriptBlock {
-            param($LastRecordId, $ContextStart)
-            $records = @(Get-WinEvent -FilterHashtable @{
-                LogName = "Microsoft-Windows-Sysmon/Operational"
-                Id = @(1, 3)
-                StartTime = [DateTime]::Parse($ContextStart)
-            } -ErrorAction Stop | Where-Object { $_.RecordId -gt $LastRecordId } | Sort-Object RecordId)
-            $converted = foreach ($event in $records) {
-                $xml = [xml]$event.ToXml()
-                $eventData = [ordered]@{}
-                foreach ($item in $xml.Event.EventData.Data) { $eventData[$item.Name] = $item."#text" }
-                [ordered]@{
-                    RecordId = [long]$event.RecordId
-                    EventId = [int]$event.Id
-                    Computer = [string]$event.MachineName
-                    TimeCreated = $event.TimeCreated.ToUniversalTime().ToString("o")
-                    Provider = [string]$event.ProviderName
-                    EventData = $eventData
-                }
-            }
-            $latestInLog = Get-WinEvent -LogName "Microsoft-Windows-Sysmon/Operational" -MaxEvents 1 -ErrorAction SilentlyContinue
-            $cursorRecordId = if ($null -ne $latestInLog) { [long]$latestInLog.RecordId } else { 0 }
-            $cursorUtc = if ($null -ne $latestInLog) { $latestInLog.TimeCreated.ToUniversalTime().ToString("o") } else { $null }
-
-            [ordered]@{
-                target_queried_at_utc = [DateTime]::UtcNow.ToString("o")
-                channel_cursor_record_id = $cursorRecordId
-                channel_cursor_utc = $cursorUtc
-                records = @($converted)
-            }
-        } -ArgumentList @([long]$state.last_record_id, $ContextStartUtc)
+        $answer = Invoke-Command -Session $session -ScriptBlock $R1_INCREMENTAL_SYSMON_QUERY `
+            -ArgumentList @([long]$state.last_record_id, $ContextStartUtc)
 
         $controllerReceivedAtUtc = [DateTime]::UtcNow.ToString("o")
         $records = @($answer.records)
@@ -247,8 +219,11 @@ try {
             $state.last_record_id = [long]$slice[-1].RecordId
         }
 
-        if ($state.chunk_sequence -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$answer.channel_cursor_utc)) {
-            $sourceCursorTime = [DateTime]::Parse([string]$answer.channel_cursor_utc).ToUniversalTime()
+        $snapshotComplete = [bool]$answer.snapshot_consistent -and `
+            ([long]$state.last_record_id -ge [long]$answer.target_high_water_record_id)
+        if ($snapshotComplete -and $state.chunk_sequence -gt 0 -and `
+            -not [string]::IsNullOrWhiteSpace([string]$answer.source_upper_utc)) {
+            $sourceCursorTime = [DateTime]::Parse([string]$answer.source_upper_utc).ToUniversalTime()
             $frontier = $sourceCursorTime.AddMilliseconds(-$AllowedLatenessMs)
             $canAdvance = $true
             if ($state.Contains("last_watermark_at") -and -not [string]::IsNullOrWhiteSpace([string]$state.last_watermark_at)) {
@@ -280,26 +255,31 @@ try {
         }
 
         $boundaryPath = Join-Path $runControlDir "candidate-boundary-completed.json"
-        if ((Test-Path -LiteralPath $boundaryPath) -and $state.watermark_sequence -gt 0) {
+        if ((Test-Path -LiteralPath $boundaryPath) -and $state.watermark_sequence -gt 0 -and `
+            -not [string]::IsNullOrWhiteSpace([string]$answer.source_upper_utc)) {
             $boundary = Get-Content -LiteralPath $boundaryPath -Raw -Encoding UTF8 | ConvertFrom-Json
             if ($boundary.run_id -cne $RunId -or $boundary.target_host -cne $TargetHost) {
                 throw "candidate boundary control is bound to another run or host"
             }
             $boundaryUtc = [DateTime]::Parse([string]$boundary.candidate_boundary_at).ToUniversalTime()
 
-            # Verified source cursor / final-drain completeness check:
-            $cursorUtc = if (-not [string]::IsNullOrWhiteSpace([string]$answer.channel_cursor_utc)) {
-                [DateTime]::Parse([string]$answer.channel_cursor_utc).ToUniversalTime()
-            } else { [DateTime]::MinValue }
-            $cursorRecordId = [long]$answer.channel_cursor_record_id
-
-            $isDrained = ($cursorUtc -ge $boundaryUtc) -and ($state.last_record_id -ge $cursorRecordId -or $records.Count -eq 0)
-            if ($isDrained) {
-                $finalWatermarkTicks = [Math]::Max($boundaryUtc.Ticks, $cursorUtc.AddMilliseconds(-$AllowedLatenessMs).Ticks)
-                $finalWatermarkTime = [DateTime]::new($finalWatermarkTicks, [DateTimeKind]::Utc)
-                if ($finalWatermarkTime -lt $boundaryUtc) {
-                    $finalWatermarkTime = $boundaryUtc
-                }
+            # Finality requires a stable bounded query, durable target events,
+            # and a source cursor whose lateness-adjusted frontier covers A04.
+            $cursorUtc = [DateTime]::Parse([string]$answer.source_upper_utc).ToUniversalTime()
+            $previousWatermarkUtc = $null
+            if (-not [string]::IsNullOrWhiteSpace([string]$state.last_watermark_at)) {
+                $previousWatermarkUtc = [DateTime]::Parse([string]$state.last_watermark_at).ToUniversalTime()
+            }
+            $decision = Get-R1FinalWatermarkDecision `
+                -SnapshotConsistent ([bool]$answer.snapshot_consistent) `
+                -PersistedTargetRecordId ([long]$state.last_record_id) `
+                -TargetHighWaterRecordId ([long]$answer.target_high_water_record_id) `
+                -SourceCursorUtc $cursorUtc `
+                -CandidateBoundaryUtc $boundaryUtc `
+                -AllowedLatenessMs $AllowedLatenessMs `
+                -PreviousWatermarkUtc $previousWatermarkUtc
+            if ($decision.ready) {
+                $finalWatermarkTime = [DateTime]$decision.watermark_at
 
                 $state.watermark_sequence++
                 $state.message_ordinal++
