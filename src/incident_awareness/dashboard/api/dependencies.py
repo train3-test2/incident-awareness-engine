@@ -11,6 +11,12 @@ from incident_awareness.dashboard.evaluation_read_model import (
     evaluation_snapshot_path_from_environment,
 )
 from incident_awareness.dashboard.fusion_engine_read_model import DashboardFusionEngineReader
+from incident_awareness.dashboard.stage_timing_read_model import (
+    DashboardStageTimingReader,
+    StageTimingQuery,
+    StageTimingReadError,
+    stage_timing_database_error,
+)
 from incident_awareness.dashboard.telemetry_read_model import (
     DashboardTelemetryReader,
     TelemetryQuery,
@@ -21,6 +27,9 @@ from incident_awareness.storage.config import DatabaseConfig
 from incident_awareness.storage.repositories.event_repository import EventRepository
 from incident_awareness.storage.repositories.pipeline_runtime_repository import (
     PipelineRuntimeStatusRepository,
+)
+from incident_awareness.storage.repositories.pipeline_stage_timing_repository import (
+    PipelineStageTimingRepository,
 )
 from incident_awareness.storage.repositories.pipeline_telemetry_repository import (
     PipelineTelemetryRepository,
@@ -41,6 +50,32 @@ def get_database_connection() -> Iterator[Connection[tuple[object, ...]]]:
     connection = psycopg.connect(DatabaseConfig.from_environment().url)
     try:
         yield connection
+    finally:
+        connection.close()
+
+
+def get_stage_timing_query(query: Annotated[StageTimingQuery, Query()]) -> StageTimingQuery:
+    return query
+
+
+def get_dashboard_stage_timing_reader(
+    _query: Annotated[StageTimingQuery, Depends(get_stage_timing_query)],
+) -> Iterator[DashboardStageTimingReader]:
+    try:
+        url = DatabaseConfig.from_environment().url
+    except (RuntimeError, ValueError) as error:
+        raise StageTimingReadError(500, "Stage timing read failed") from error
+    try:
+        connection = psycopg.connect(
+            url,
+            autocommit=False,
+            connect_timeout=2,
+            options="-c statement_timeout=5000 -c default_transaction_read_only=on -c timezone=UTC",
+        )
+    except psycopg.Error as error:
+        raise stage_timing_database_error(error) from error
+    try:
+        yield DashboardStageTimingReader(PipelineStageTimingRepository(connection))
     finally:
         connection.close()
 

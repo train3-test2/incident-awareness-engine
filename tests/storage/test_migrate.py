@@ -26,6 +26,7 @@ MIGRATION_IDS = (
     "010_r1_stream_event_delivery_ledger",
     "011_pipeline_telemetry_timeseries",
     "012_pipeline_telemetry_input_identity",
+    "013_pipeline_stage_timings",
 )
 
 
@@ -121,7 +122,8 @@ class _ContextConnection(_Connection):
 def test_baselines_complete_input_identity_ddl_without_repeating_alter() -> None:
     # Given
     connection = _Connection(
-        applied_migrations=set(MIGRATION_IDS[:-1]), input_identity_artifacts=(True,) * 6
+        applied_migrations=set(MIGRATION_IDS) - {"012_pipeline_telemetry_input_identity"},
+        input_identity_artifacts=(True,) * 6,
     )
 
     # When
@@ -141,7 +143,8 @@ def test_partial_input_identity_schema_is_not_recorded_as_applied(missing: int) 
     # Given
     artifacts = tuple(index != missing for index in range(6))
     connection = _Connection(
-        applied_migrations=set(MIGRATION_IDS[:-1]), input_identity_artifacts=artifacts
+        applied_migrations=set(MIGRATION_IDS) - {"012_pipeline_telemetry_input_identity"},
+        input_identity_artifacts=artifacts,
     )
 
     # When / Then
@@ -400,13 +403,13 @@ def test_baselines_complete_docker_initdb_schema_without_reapplying_migrations()
 
 def test_applies_telemetry_after_all_existing_migrations() -> None:
     # Given
-    connection = _Connection(applied_migrations=set(MIGRATION_IDS[:-2]))
+    connection = _Connection(applied_migrations=set(MIGRATION_IDS[:10]))
 
     # When
     applied = apply_migrations(connection)
 
     # Then
-    assert applied == ("011_pipeline_telemetry_timeseries", "012_pipeline_telemetry_input_identity")
+    assert applied == MIGRATION_IDS[10:]
     assert any(
         "CREATE TABLE pipeline_telemetry_executions" in query for query, _ in connection.queries
     )
@@ -419,7 +422,7 @@ def test_applies_telemetry_after_all_existing_migrations() -> None:
 def test_baselines_both_telemetry_tables_without_repeating_ddl() -> None:
     # Given
     connection = _Connection(
-        applied_migrations=set(MIGRATION_IDS[:-2]),
+        applied_migrations=set(MIGRATION_IDS[:10]),
         existing_tables={"pipeline_telemetry_executions", "pipeline_telemetry_buckets"},
     )
 
@@ -427,7 +430,7 @@ def test_baselines_both_telemetry_tables_without_repeating_ddl() -> None:
     applied = apply_migrations(connection)
 
     # Then
-    assert applied == ("011_pipeline_telemetry_timeseries", "012_pipeline_telemetry_input_identity")
+    assert applied == MIGRATION_IDS[10:]
     assert not any(
         "CREATE TABLE pipeline_telemetry_executions" in query for query, _ in connection.queries
     )
@@ -437,7 +440,7 @@ def test_baselines_both_telemetry_tables_without_repeating_ddl() -> None:
 @pytest.mark.parametrize("table", ["pipeline_telemetry_executions", "pipeline_telemetry_buckets"])
 def test_rejects_partial_telemetry_schema(table: str) -> None:
     # Given
-    connection = _Connection(applied_migrations=set(MIGRATION_IDS[:-2]), existing_tables={table})
+    connection = _Connection(applied_migrations=set(MIGRATION_IDS[:10]), existing_tables={table})
 
     # When
     with pytest.raises(RuntimeError, match="partial 011_pipeline_telemetry_timeseries schema"):

@@ -58,6 +58,7 @@ from incident_awareness.pipeline.stage_timing import (
     observe_stage_timing,
     start_stage_timing,
 )
+from incident_awareness.pipeline.stage_timing_storage import stage_timing_storage_context
 from incident_awareness.pipeline.timeseries_observer import (
     PipelineTelemetryObserver,
     telemetry_observer_context,
@@ -563,6 +564,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     with (
         PostgresPipelineRuntimeObserver() as runtime_observer,
         telemetry_observer_context() as telemetry_observer,
+        stage_timing_storage_context() as stage_timing_collector,
     ):
         execution: StandaloneExecution | None = None
         try:
@@ -578,6 +580,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     fusion_config_path=namespace.fusion_config,
                     runtime_observer=runtime_observer,
                     telemetry_observer=telemetry_observer,
+                    stage_timing_collector=stage_timing_collector,
                 )
         except Exception:
             if execution is not None:

@@ -8,10 +8,12 @@ from incident_awareness.dashboard.api.dependencies import (
     get_dashboard_decision_reader,
     get_dashboard_evaluation_reader,
     get_dashboard_fusion_engine_reader,
+    get_dashboard_stage_timing_reader,
     get_dashboard_telemetry_reader,
     get_event_repository,
     get_pipeline_runtime_repository,
     get_run_repository,
+    get_stage_timing_query,
     get_telemetry_query,
 )
 from incident_awareness.dashboard.api.models import (
@@ -33,6 +35,11 @@ from incident_awareness.dashboard.api.service import get_fusion_engine_detail, g
 from incident_awareness.dashboard.decision_read_model import DashboardDecisionReader
 from incident_awareness.dashboard.evaluation_read_model import DashboardEvaluationReader
 from incident_awareness.dashboard.fusion_engine_read_model import DashboardFusionEngineReader
+from incident_awareness.dashboard.stage_timing_read_model import (
+    DashboardStageTimingReader,
+    StageTimingQuery,
+    StageTimingReadResponse,
+)
 from incident_awareness.dashboard.telemetry_read_model import (
     DashboardTelemetryReader,
     PipelineTelemetryResponse,
@@ -45,6 +52,16 @@ from incident_awareness.storage.repositories.pipeline_runtime_repository import 
 from incident_awareness.storage.repositories.run_repository import RunRepository
 
 router = APIRouter()
+
+
+@router.get("/operations/stage-timings", response_model=StageTimingReadResponse)
+def get_stage_timings(
+    query: Annotated[StageTimingQuery, Depends(get_stage_timing_query)],
+    reader: Annotated[DashboardStageTimingReader, Depends(get_dashboard_stage_timing_reader)],
+) -> StageTimingReadResponse:
+    return reader.read(query.execution_id)
+
+
 _OVERVIEW_RECENT_RUN_LIMIT = 5
 # Dashboard Runtime telemetry freshness window for displaying whether a persisted running
 # snapshot has received recent telemetry. It is not a process-liveness, heartbeat,

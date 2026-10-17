@@ -38,6 +38,7 @@ from incident_awareness.pipeline.runtime_telemetry import (
     PostgresPipelineRuntimeObserver,
     utc_now_milliseconds,
 )
+from incident_awareness.pipeline.stage_timing_storage import stage_timing_storage_context
 from incident_awareness.pipeline.standalone import StandaloneExecution, run_standalone_sysmon_jsonl
 from incident_awareness.pipeline.telemetry_input import s3_telemetry_input_context
 from incident_awareness.pipeline.timeseries_observer import telemetry_observer_context
@@ -259,7 +260,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         ) -> StandaloneExecution:
             # Attempt metrics end at stage return, independently of Receipt/publication.
             # The existing transaction owner still finalizes Runtime and SQS afterwards.
-            with telemetry_observer_context() as telemetry_observer:
+            with (
+                telemetry_observer_context() as telemetry_observer,
+                stage_timing_storage_context() as stage_timing_collector,
+            ):
                 return run_standalone_sysmon_jsonl(
                     sysmon_jsonl_path=sysmon_jsonl_path,
                     output_root=output_root,
@@ -267,6 +271,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     r1_production_config=r1_production_config,
                     runtime_observer=runtime_observer,
                     telemetry_observer=telemetry_observer,
+                    stage_timing_collector=stage_timing_collector,
                 )
 
         return run_worker(

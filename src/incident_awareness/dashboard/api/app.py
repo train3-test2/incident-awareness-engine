@@ -7,6 +7,7 @@ from incident_awareness.dashboard.evaluation_read_model import (
     EvaluationSnapshotUnavailableError,
     StoredEvaluationSnapshotInvalidError,
 )
+from incident_awareness.dashboard.stage_timing_read_model import StageTimingReadError
 from incident_awareness.dashboard.telemetry_read_model import (
     StoredTelemetryInvalidError,
     TelemetryReadDefectError,
@@ -62,6 +63,12 @@ async def _handle_stored_evaluation_snapshot_invalid_error(
 def create_app() -> FastAPI:
     """Create the Dashboard Read API and Operations View without opening external resources."""
     application = FastAPI(title="Incident Awareness Dashboard API")
+
+    @application.exception_handler(StageTimingReadError)
+    async def handle_stage_timing_read_error(
+        _request: Request, error: StageTimingReadError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
 
     @application.exception_handler(PipelineTelemetryInputConflictError)
     async def handle_telemetry_input_conflict(
