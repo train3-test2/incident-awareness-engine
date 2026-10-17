@@ -2824,6 +2824,136 @@ function tenSearchRuns() {
     );
 }
 
+function setRunType(harness, value) {
+    const filter = harness.document.getElementById("dashboard-run-type");
+    filter.value = value;
+    for (const listener of filter.listeners.get("change") ?? []) {
+        listener({ type: "change", target: filter });
+    }
+}
+
+test("Run type filter uses persisted run_type and combines with the unchanged search", () => {
+    // Given
+    const runs = Object.freeze([
+        Object.freeze({ ...searchRun("RUN-A", "WIN-1", "normal"), run_type: "attack" }),
+        Object.freeze({ ...searchRun("RUN-B", "WIN-1", "attack"), run_type: "normal" }),
+        Object.freeze({ ...searchRun("RUN-C", "WIN-2", "attack"), run_type: "attack" }),
+        Object.freeze({ ...searchRun("RUN-D", "WIN-1", "attack"), run_type: "unknown" }),
+    ]);
+    const snapshot = JSON.stringify(runs);
+
+    // When
+    const attack = resolveRunListVisibility(runs, "", false, 5, "RUN-B", "attack");
+    const combined = resolveRunListVisibility(runs, " win-1 ", true, 5, "RUN-C", "normal");
+    const cleared = resolveRunListVisibility(runs, "", false, 5, null);
+
+    // Then
+    assert.deepEqual(attack.visible, [true, false, true, false]);
+    assert.deepEqual(combined.visible, [false, true, false, false]);
+    assert.equal(attack.toggleHidden, true);
+    assert.equal(attack.selectedHidden, true);
+    assert.match(getRunListVisibilityMessage(attack, "RUN-B"), /필터 결과 2건.*조회된 Run 4건.*유형 attack.*최대 20건.*선택 유지/);
+    assert.equal(cleared.visibleCount, 4);
+    assert.equal(JSON.stringify(runs), snapshot);
+    assert.throws(() => resolveRunListVisibility(runs, "", false, 5, null, "att"), RangeError);
+});
+
+test("Run filter reset preserves selection, original rows, request count and expansion", async (t) => {
+    // Given
+    const runs = tenSearchRuns().map((run, index) => ({ ...run, run_type: index % 2 ? "attack" : "normal" }));
+    const harness = await startDashboardWithRuntime([], runs);
+    t.after(harness.restore);
+    await harness.respondAnalysis("RUN-0", storedDetail("RUN-0", "WIN-A"), notFound());
+    const rows = [...harness.document.getElementById("runs-list").children];
+    const requests = harness.totalRequests();
+    const filter = harness.document.getElementById("dashboard-run-type");
+    const reset = harness.document.getElementById("dashboard-run-filter-reset");
+
+    // When
+    filter.focus();
+    setRunType(harness, "attack");
+    assert.deepEqual(visibleRunIds(harness), ["RUN-1", "RUN-3", "RUN-5", "RUN-7", "RUN-9"]);
+    harness.typeSearch("win-b");
+    assert.deepEqual(visibleRunIds(harness), ["RUN-5", "RUN-7", "RUN-9"]);
+    assert.equal(harness.document.activeElement, filter);
+    assert.equal(harness.text("selected-run-id"), "RUN-0");
+    harness.typeSearch("RUN-2");
+    assert.deepEqual(visibleRunIds(harness), []);
+    assert.match(harness.text("runs-visibility-status"), /일치하는 결과가 없습니다.*유형 attack/);
+    reset.focus();
+    reset.click();
+
+    // Then
+    assert.deepEqual(visibleRunIds(harness), runs.slice(0, 5).map((run) => run.run_id));
+    assert.equal(harness.document.getElementById("dashboard-run-search").value, "");
+    assert.equal(filter.value, "all");
+    assert.equal(harness.document.activeElement, reset);
+    assert.equal(harness.text("selected-run-id"), "RUN-0");
+    assert.deepEqual([...harness.document.getElementById("runs-list").children], rows);
+    assert.equal(harness.totalRequests(), requests);
+    harness.document.getElementById("dashboard-runs-toggle").click();
+    setRunType(harness, "normal");
+    harness.typeSearch("RUN-9");
+    reset.click();
+    assert.equal(visibleRunIds(harness).length, 10);
+    assert.equal(harness.document.getElementById("dashboard-runs-toggle").getAttribute("aria-expanded"), "true");
+});
+
+test("Run type and combined search survive Runtime polling without focus or live status changes", async (t) => {
+    // Given
+    const runs = tenSearchRuns().map((run, index) => ({ ...run, run_type: index % 2 ? "attack" : "normal" }));
+    const harness = await startDashboardWithRuntime([], runs);
+    t.after(harness.restore);
+    await harness.respondAnalysis("RUN-0", storedDetail("RUN-0", "WIN-A"), notFound());
+    setRunType(harness, "attack");
+    harness.typeSearch("WIN-B");
+    const filter = harness.document.getElementById("dashboard-run-type");
+    filter.focus();
+    const writes = harness.document.getElementById("runs-visibility-status").textContentWrites;
+
+    // When
+    await harness.triggerTimers(RUNTIME_POLL_DELAY_MS);
+    await harness.respond(RUNTIME_API_PATH, 200, { items: [] });
+
+    // Then
+    assert.equal(filter.value, "attack");
+    assert.strictEqual(harness.document.activeElement, filter);
+    assert.deepEqual(visibleRunIds(harness), ["RUN-5", "RUN-7", "RUN-9"]);
+    assert.equal(harness.text("selected-run-id"), "RUN-0");
+    assert.equal(harness.document.getElementById("runs-visibility-status").textContentWrites, writes);
+});
+
+test("Run search moves focus and scroll only on explicit Enter or result button", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], tenSearchRuns());
+    t.after(harness.restore);
+    await harness.respondAnalysis("RUN-0", storedDetail("RUN-0", "WIN-A"), notFound());
+    const input = harness.document.getElementById("dashboard-run-search");
+    const results = harness.document.getElementById("dashboard-run-search-results");
+    input.focus();
+
+    // When
+    harness.typeSearch("RUN-7");
+
+    // Then
+    assert.equal(harness.document.activeElement, input);
+    assert.equal(harness.runButton("RUN-7").scrollIntoViewCalls, undefined);
+    for (const listener of input.listeners.get("keydown")) {
+        listener({ key: "Enter", isComposing: true, preventDefault() { assert.fail("IME Enter was intercepted"); } });
+    }
+    assert.equal(harness.document.activeElement, input);
+    assert.equal(input.keyDown("ArrowDown"), false);
+    assert.equal(input.keyDown("Enter"), true);
+    assert.equal(harness.document.activeElement, harness.runButton("RUN-7"));
+    assert.deepEqual(harness.runButton("RUN-7").focusOptions, { preventScroll: true });
+    assert.deepEqual(harness.runButton("RUN-7").scrollIntoViewCalls, [{ block: "center", inline: "nearest" }]);
+    assert.equal(harness.text("selected-run-id"), "RUN-0");
+    harness.typeSearch("no-result");
+    results.click();
+    assert.equal(harness.document.activeElement, harness.document.getElementById("runs-visibility-status"));
+    assert.equal(harness.text("selected-run-id"), "RUN-0");
+});
+
 test("Run search filters fetched rows in place without selecting, fetching, or rerendering", async (t) => {
     // Given
     const harness = await startDashboardWithRuntime([], tenSearchRuns());

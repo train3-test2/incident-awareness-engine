@@ -102,6 +102,9 @@ const runsList = document.getElementById("runs-list");
 const runsToggle = document.getElementById("dashboard-runs-toggle");
 const runsVisibilityStatus = document.getElementById("runs-visibility-status");
 const runSearchInput = document.getElementById("dashboard-run-search");
+const runTypeFilter = document.getElementById("dashboard-run-type");
+const runFilterReset = document.getElementById("dashboard-run-filter-reset");
+const runSearchResults = document.getElementById("dashboard-run-search-results");
 const decisionTimelineList = document.getElementById("decision-timeline-list");
 const decisionTimelineStatus = document.getElementById("decision-timeline-status");
 const eventTypeSummary = document.getElementById("event-type-summary");
@@ -143,6 +146,7 @@ let selectedRunId = null;
 let runsExpanded = false;
 // Search text for the fetched Runs; it only changes which rows are shown, never runListState.
 let runSearchQuery = "";
+let runType = "all";
 let selectedRuntimeEntityId = null;
 let selectedRuntimeTracking = createSelectedRuntimeTracking(null);
 let selectedAnalysisQueryStates = null;
@@ -514,12 +518,13 @@ function updateRunVisibility() {
         runsExpanded,
         RECENT_RUNS_VISIBLE_COUNT,
         selectedRunId,
+        runType,
     );
     const focusedRowWillHide = rows.some((row, index) => (
         !visibility.visible[index] && row.contains(document.activeElement)
     ));
     if (focusedRowWillHide) {
-        (visibility.searchActive ? runSearchInput : runsToggle).focus({ preventScroll: true });
+        (visibility.filterActive ? runSearchInput : runsToggle).focus({ preventScroll: true });
     }
     for (const [index, row] of rows.entries()) {
         row.hidden = !visibility.visible[index];
@@ -533,6 +538,18 @@ function updateRunVisibility() {
     if (runsVisibilityStatus.textContent !== visibilityMessage) {
         runsVisibilityStatus.textContent = visibilityMessage;
     }
+}
+
+// Only an explicit request moves the viewport; filtering and polling never call this.
+function moveToRunSearchResults() {
+    const row = Array.from(runsList.children).find((item) => !item.hidden);
+    const target = row?.querySelectorAll(".dashboard-run-selector")[0]
+        ?? (runListState.queryState === "success" ? runsVisibilityStatus : runsStatus);
+    if (target === runsStatus) {
+        target.tabIndex = -1;
+    }
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: "center", inline: "nearest" });
 }
 
 function renderSelectionRows() {
@@ -1305,6 +1322,25 @@ if (dashboardView !== null) {
     runSearchQuery = runSearchInput.value;
     runSearchInput.addEventListener("input", () => {
         runSearchQuery = runSearchInput.value;
+        updateRunVisibility();
+    });
+    runSearchInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.isComposing) {
+            event.preventDefault();
+            moveToRunSearchResults();
+        }
+    });
+    runSearchResults.addEventListener("click", moveToRunSearchResults);
+    runType = runTypeFilter.value || "all";
+    runTypeFilter.addEventListener("change", () => {
+        runType = runTypeFilter.value;
+        updateRunVisibility();
+    });
+    runFilterReset.addEventListener("click", () => {
+        runSearchInput.value = "";
+        runSearchQuery = "";
+        runTypeFilter.value = "all";
+        runType = "all";
         updateRunVisibility();
     });
     previousRunButton.addEventListener("click", () => selectAdjacentRun(1));

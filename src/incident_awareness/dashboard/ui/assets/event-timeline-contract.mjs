@@ -118,7 +118,24 @@ export function getEventTimelinePagination(payload) {
         previousOffset: Math.max(0, validPayload.offset - validPayload.limit),
         nextOffset: validPayload.offset + itemCount,
         displayStart: itemCount === 0 ? 0 : validPayload.offset + 1,
-        displayEnd: validPayload.offset + itemCount,
+        displayEnd: itemCount === 0 ? 0 : validPayload.offset + itemCount,
+    };
+}
+
+// Local filtering of one fetched page only; totals/offsets still describe the API page.
+export function filterEventTimelinePage(items, eventType = "all") {
+    if (!Array.isArray(items) || typeof eventType !== "string" || eventType === "") {
+        throw new TypeError("Event page items and type filter are invalid");
+    }
+    return items.filter((event) => eventType === "all" || event.event_type === eventType);
+}
+
+export function getEventTimelinePagePosition(payload) {
+    const pagination = getEventTimelinePagination(payload);
+    return {
+        ...pagination,
+        currentPage: payload.items.length === 0 ? 0 : Math.floor(payload.offset / payload.limit) + 1,
+        totalPages: Math.ceil(payload.total / payload.limit),
     };
 }
 

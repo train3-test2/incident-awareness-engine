@@ -105,6 +105,43 @@
     color: var(--shell-color-primary);
 }
 
+.event-timeline-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--shell-space-2);
+    margin-bottom: var(--shell-space-3);
+}
+
+.event-timeline-controls label {
+    color: var(--shell-color-muted);
+    font-size: 0.875rem;
+    font-weight: 650;
+}
+
+.event-timeline-controls select {
+    min-width: 0;
+    max-width: 100%;
+}
+
+.event-timeline-controls select:focus-visible {
+    outline: 0.1875rem solid var(--shell-color-primary);
+    outline-offset: 0.125rem;
+}
+
+.event-timeline-filter-status {
+    margin: var(--shell-space-2) 0 var(--shell-space-3);
+    color: var(--shell-color-muted);
+    font-size: 0.875rem;
+}
+
+.event-timeline-timestamp {
+    display: block;
+    color: var(--shell-color-muted);
+    font-size: 0.8125rem;
+    overflow-wrap: anywhere;
+}
+
 .detail-back-navigation {
     display: flex;
     flex-wrap: wrap;
@@ -134,10 +171,13 @@
     margin-top: var(--shell-space-4);
 }
 
-#event-timeline-pagination button {
+#event-timeline-pagination button,
+.event-timeline-controls button,
+.event-timeline-controls select {
     padding: 0.5rem 0.75rem;
     color: var(--shell-color-primary);
     font-weight: 650;
+    font-family: inherit;
     background-color: var(--shell-color-surface);
     border: 1px solid var(--shell-color-border-strong);
     border-radius: var(--shell-radius-small);
@@ -149,7 +189,9 @@
     background-color: var(--shell-color-primary-soft);
 }
 
-#event-timeline-pagination button:disabled {
+#event-timeline-pagination button:disabled,
+.event-timeline-controls button:disabled,
+.event-timeline-controls select:disabled {
     color: var(--shell-color-muted);
     cursor: default;
     opacity: 0.65;

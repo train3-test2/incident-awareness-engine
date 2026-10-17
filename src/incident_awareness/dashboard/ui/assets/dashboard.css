@@ -116,7 +116,7 @@ html:has(> .dashboard-body) {
 
 .dashboard-header-search input {
     width: 100%;
-    padding: 0.3125rem 0.75rem 0.3125rem 2.25rem;
+    padding: 0.3125rem 5.75rem 0.3125rem 2.25rem;
     color: #dce8f7;
     font: inherit;
     font-size: 0.8125rem;
@@ -133,6 +133,26 @@ html:has(> .dashboard-body) {
 }
 
 .dashboard-header-search input:focus-visible {
+    outline: 0.1875rem solid var(--shell-color-surface);
+    outline-offset: 0.125rem;
+}
+
+.dashboard-header-search button {
+    position: absolute;
+    top: 50%;
+    right: 0.375rem;
+    padding: 0.125rem 0.375rem;
+    color: #dce8f7;
+    font: inherit;
+    font-size: 0.75rem;
+    background: transparent;
+    border: 1px solid rgb(255 255 255 / 0.25);
+    border-radius: 0.375rem;
+    transform: translateY(-50%);
+    cursor: pointer;
+}
+
+.dashboard-header-search button:focus-visible {
     outline: 0.1875rem solid var(--shell-color-surface);
     outline-offset: 0.125rem;
 }
@@ -1888,7 +1908,9 @@ html:has(> .dashboard-body) {
     margin: 0.375rem 0 0;
 }
 
-#dashboard-runs-toggle {
+#dashboard-runs-toggle,
+.dashboard-run-controls select,
+.dashboard-run-controls button {
     padding: 0 0.375rem;
     color: var(--shell-color-primary);
     font: inherit;
@@ -1899,6 +1921,21 @@ html:has(> .dashboard-body) {
     background: var(--shell-color-surface);
     border: 1px solid var(--shell-color-border);
     border-radius: 0.375rem;
+}
+
+.dashboard-run-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.375rem;
+    color: var(--shell-color-muted);
+    font-size: 0.8125rem;
+}
+
+.dashboard-run-controls select:focus-visible {
+    outline: 0.1875rem solid var(--shell-color-primary);
+    outline-offset: 0.125rem;
 }
 
 .dashboard-latency-section .dashboard-metric-summary {
@@ -2051,6 +2088,10 @@ html:has(> .dashboard-body) {
 }
 
 @media (max-width: 48rem) {
+    .dashboard-run-controls {
+        justify-content: flex-start;
+    }
+
     .dashboard-page-header,
     .dashboard-section-header {
         display: grid;

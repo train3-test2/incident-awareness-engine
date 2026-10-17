@@ -252,6 +252,7 @@ export function resolveRunListVisibility(
     expanded,
     collapsedCount,
     selectedRunId,
+    runType = "all",
 ) {
     if (!Array.isArray(runItems)) {
         throw new TypeError("Run items must be an array");
@@ -262,20 +263,27 @@ export function resolveRunListVisibility(
     if (!Number.isInteger(collapsedCount) || collapsedCount < 0) {
         throw new RangeError("Collapsed Run count must be a non-negative integer");
     }
+    if (!["all", "attack", "normal"].includes(runType)) {
+        throw new RangeError("Run type filter must be all, attack, or normal");
+    }
     const normalizedQuery = normalizeRunSearchQuery(query);
     const searchActive = normalizedQuery !== "";
+    const filterActive = searchActive || runType !== "all";
     const visible = runItems.map((run, index) => (
-        searchActive
-            ? runMatchesSearch(run, normalizedQuery)
+        filterActive
+            ? (normalizedQuery === "" || runMatchesSearch(run, normalizedQuery))
+                && (runType === "all" || run?.run_type === runType)
             : expanded || index < collapsedCount
     ));
     const selectedIndex = runItems.findIndex((run) => run?.run_id === selectedRunId);
     return {
         searchActive,
+        filterActive,
+        runType,
         visible,
         visibleCount: visible.filter(Boolean).length,
         totalCount: runItems.length,
-        toggleHidden: searchActive || runItems.length <= collapsedCount,
+        toggleHidden: filterActive || runItems.length <= collapsedCount,
         selectedHidden: selectedIndex >= 0 && !visible[selectedIndex],
     };
 }
@@ -283,6 +291,13 @@ export function resolveRunListVisibility(
 export function getRunListVisibilityMessage(visibility, selectedRunId) {
     if (visibility.totalCount === 0) {
         return "";
+    }
+    if (visibility.runType !== "all") {
+        const result = visibility.visibleCount === 0
+            ? RUN_SEARCH_NO_MATCH_MESSAGE
+            : `필터 결과 ${visibility.visibleCount}건 / 조회된 Run ${visibility.totalCount}건`;
+        return `${result} · 유형 ${visibility.runType} · 조회된 최대 20건 범위`
+            + (visibility.selectedHidden ? ` · 선택 유지: ${selectedRunId} (필터 결과 밖)` : "");
     }
     if (!visibility.searchActive) {
         return `${visibility.totalCount}개 중 ${visibility.visibleCount}개 표시`

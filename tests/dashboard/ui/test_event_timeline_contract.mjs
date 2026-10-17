@@ -8,7 +8,9 @@ import {
     buildEventTimelineApiPath,
     buildEventTimelineViewPath,
     extractTimelineRunIdFromPathname,
+    filterEventTimelinePage,
     getEventTimelinePagination,
+    getEventTimelinePagePosition,
     resolveEventTimelineQueryState,
 } from "../../../src/incident_awareness/dashboard/ui/assets/event-timeline-contract.mjs";
 
@@ -29,6 +31,33 @@ function makePayload({ itemCount = 2, total = itemCount, limit = 50, offset = 0 
         offset,
     };
 }
+
+test("Event type filter covers only a supplied page and never mutates its order or totals", () => {
+    // Given
+    const page = makePayload({ itemCount: 3, total: 129, offset: 50 });
+    page.items[1].event_type = "network_connection";
+    Object.freeze(page.items);
+    const snapshot = JSON.stringify(page);
+
+    // When
+    const matches = filterEventTimelinePage(page.items, "network_connection");
+    const position = getEventTimelinePagePosition(page);
+
+    // Then
+    assert.deepEqual(matches, [page.items[1]]);
+    assert.strictEqual(matches[0], page.items[1]);
+    assert.equal(filterEventTimelinePage(page.items, "all").length, 3);
+    assert.deepEqual(filterEventTimelinePage(page.items, "not-in-page"), []);
+    assert.deepEqual(filterEventTimelinePage([], "all"), []);
+    assert.equal(position.currentPage, 2);
+    assert.equal(position.totalPages, 3);
+    assert.equal(position.displayStart, 51);
+    assert.equal(position.displayEnd, 53);
+    assert.equal(JSON.stringify(page), snapshot);
+    assert.equal(getEventTimelinePagePosition(makePayload({ itemCount: 0 })).currentPage, 0);
+    assert.throws(() => filterEventTimelinePage(null), TypeError);
+    assert.throws(() => filterEventTimelinePage(page.items, ""), TypeError);
+});
 
 test("Event Timeline view and API paths encode identifiers and query parameters", () => {
     // Given
@@ -303,6 +332,9 @@ const TIMELINE_ELEMENT_IDS = [
     "event-timeline-list",
     "event-timeline-pagination",
     "run-detail-back-navigation",
+    "event-timeline-type",
+    "event-timeline-filter-reset",
+    "event-timeline-filter-status",
 ];
 let timelineHarnessCount = 0;
 
@@ -398,7 +430,7 @@ class TimelineElement {
     }
 
     focus(options = {}) {
-        const focusable = this.tagName === "BUTTON"
+        const focusable = this.tagName === "BUTTON" || this.tagName === "SELECT"
             ? !this.disabled
             : this.tagName === "A"
                 ? this.href !== ""
@@ -459,7 +491,11 @@ async function startEventTimelineHarness({ blurOnDisable }) {
     };
     document.body = new TimelineElement(document, "body");
     document.elements = new Map(
-        TIMELINE_ELEMENT_IDS.map((id) => [id, new TimelineElement(document, "div")]),
+        TIMELINE_ELEMENT_IDS.map((id) => [id, new TimelineElement(
+            document,
+            id === "event-timeline-type" ? "select"
+                : id === "event-timeline-filter-reset" ? "button" : "div",
+        )]),
     );
     const headerLink = new TimelineElement(document, "a");
     headerLink.href = "/dashboard";
@@ -646,7 +682,7 @@ for (const blurOnDisable of [true, false]) {
         };
 
         // Then
-        assert.deepEqual(afterShrunkPage, { focused: "이전", nextDisabled: true, range: "0–50 / 40" });
+        assert.deepEqual(afterShrunkPage, { focused: "이전", nextDisabled: true, range: "0–0 / 40" });
         assert.deepEqual(afterSinglePage, {
             focusedStatus: true,
             tabIndex: "-1",
@@ -706,3 +742,84 @@ for (const blurOnDisable of [true, false]) {
         assert.equal(harness.status.hasAttribute("tabindex"), false);
     });
 }
+
+test("Event page filter hides cards in place and persists on the next API page without extra requests", async (t) => {
+    // Given
+    const harness = await startEventTimelineHarness({ blurOnDisable: true });
+    t.after(harness.restore);
+    const first = makePayload({ itemCount: 50, total: 129 });
+    first.items[4].event_type = "network_connection";
+    await harness.respond(0, 200, first);
+    const element = (id) => harness.document.getElementById(id);
+    const filter = element("event-timeline-type");
+    const cards = [...element("event-timeline-list").children];
+
+    // When
+    filter.focus();
+    filter.value = "network_connection";
+    for (const listener of filter.listeners.get("change")) listener({ target: filter });
+
+    // Then
+    assert.equal(element("event-timeline-list").children.filter((card) => !card.hidden).length, 1);
+    assert.deepEqual([...element("event-timeline-list").children], cards);
+    assert.equal(harness.pendingCount(), 0);
+    assert.strictEqual(harness.document.activeElement, filter);
+    assert.match(element("event-timeline-filter-status").textContent, /현재 페이지 50건 중 1건/);
+    assert.equal(harness.range(), "1–50 / 129");
+
+    // When: filter does not change offset/limit or prevent moving to an unmatched page.
+    harness.button("다음").focus();
+    await harness.pressEnter();
+    assert.equal(filter.disabled, true);
+    await harness.respondPage(50, 50, 129);
+
+    // Then
+    assert.equal(filter.value, "network_connection");
+    assert.equal(element("event-timeline-list").children.filter((card) => !card.hidden).length, 0);
+    assert.match(element("event-timeline-filter-status").textContent, /현재 페이지에서.*없습니다.*0 \/ 50/);
+    assert.equal(harness.range(), "51–100 / 129");
+    assert.equal(harness.document.activeElement, harness.button("다음"));
+    assert.equal(filter.disabled, false);
+    assert.ok(filter.children.some((option) => option.value === "network_connection"));
+    const reset = element("event-timeline-filter-reset");
+    reset.focus();
+    reset.click();
+    assert.equal(filter.value, "all");
+    assert.equal(element("event-timeline-list").children.filter((card) => !card.hidden).length, 50);
+    assert.equal(harness.document.activeElement, reset);
+    assert.equal(harness.pendingCount(), 0);
+});
+
+test("Event filtering distinguishes empty page, failed query and a local zero result", async (t) => {
+    // Given
+    const harness = await startEventTimelineHarness({ blurOnDisable: true });
+    t.after(harness.restore);
+
+    // When
+    await harness.respondPage(0, 0, 0);
+    const filterStatus = harness.document.getElementById("event-timeline-filter-status");
+
+    // Then
+    assert.equal(harness.status.textContent, "이 Run에 저장된 Event가 없습니다.");
+    assert.equal(filterStatus.textContent, "현재 페이지에 표시할 Event가 없습니다.");
+    assert.equal(harness.range(), "0–0 / 0");
+});
+
+test("Event query failure keeps page filters disabled and does not announce a local no-match", async (t) => {
+    // Given
+    const harness = await startEventTimelineHarness({ blurOnDisable: true });
+    t.after(harness.restore);
+    const element = (id) => harness.document.getElementById(id);
+    assert.equal(element("event-timeline-list").getAttribute("aria-busy"), "true");
+
+    // When
+    await harness.respond(0, 503, { detail: "unavailable" });
+
+    // Then
+    assert.equal(element("event-timeline-type").disabled, true);
+    assert.equal(element("event-timeline-filter-reset").disabled, true);
+    assert.equal(element("event-timeline-list").getAttribute("aria-busy"), "false");
+    assert.match(element("event-timeline-filter-status").textContent, /조회하지 못해/);
+    assert.doesNotMatch(element("event-timeline-filter-status").textContent, /0건|유형.*없습니다/);
+    assert.equal(harness.cardCount(), 0);
+});

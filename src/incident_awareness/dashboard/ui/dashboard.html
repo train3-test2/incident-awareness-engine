@@ -26,7 +26,9 @@
                        aria-describedby="dashboard-run-search-scope" aria-controls="runs-list"
                        placeholder="조회된 Run 검색" title="최근 조회된 최대 20건 Run에서 Run ID·분석 대상·Scenario 검색"
                        autocomplete="off" spellcheck="false">
-                <span id="dashboard-run-search-scope" class="dashboard-visually-hidden">최근 조회된 최대 20건의 Run에서 Run ID, 분석 대상, Scenario를 찾습니다. 서버 전체를 검색하지 않으며 결과는 최근 Run 목록에 표시됩니다.</span>
+                <button id="dashboard-run-search-results" type="button" aria-controls="runs-list"
+                        aria-label="조회된 Run 검색 결과로 이동">결과 이동 ↵</button>
+                <span id="dashboard-run-search-scope" class="dashboard-visually-hidden">최근 조회된 최대 20건의 Run에서 Run ID, 분석 대상, Scenario를 찾습니다. 서버 전체를 검색하지 않으며 결과는 최근 Run 목록에 표시됩니다. Enter 또는 결과 이동 버튼으로 결과에 이동합니다.</span>
             </div>
             <span class="dashboard-header-user" aria-hidden="true"><svg class="dashboard-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><use href="/dashboard-assets/dashboard-icons.svg#user"></use></svg></span>
         </div>
@@ -180,8 +182,19 @@
                         <div>
                             <h2 id="runs-heading" class="section-heading">최근 Run 목록 (Recent Runs)</h2>
                         </div>
-                        <button id="dashboard-runs-toggle" type="button" aria-expanded="false"
-                                aria-controls="runs-list" hidden>전체 Run 펼치기</button>
+                        <div class="dashboard-run-controls">
+                            <label for="dashboard-run-type">유형</label>
+                            <select id="dashboard-run-type" aria-label="조회된 최대 20건 Run 유형 필터"
+                                    aria-controls="runs-list" aria-describedby="dashboard-run-filter-scope">
+                                <option value="all">전체 유형</option>
+                                <option value="attack">attack</option>
+                                <option value="normal">normal</option>
+                            </select>
+                            <button id="dashboard-run-filter-reset" type="button"
+                                    aria-label="Run 검색 및 유형 필터 초기화">초기화</button>
+                            <button id="dashboard-runs-toggle" type="button" aria-expanded="false"
+                                    aria-controls="runs-list" hidden>전체 Run 펼치기</button>
+                        </div>
                     </div>
                     <div id="runs-status" class="status-message dashboard-status" role="status" aria-live="polite">
                         Run 목록을 불러오는 중입니다.
@@ -203,12 +216,13 @@
                         </table>
                     </div>
                     <div class="dashboard-runs-footer">
-                        <span id="runs-visibility-status" role="status" aria-live="polite"></span>
+                        <span id="runs-visibility-status" role="status" aria-live="polite" tabindex="-1"></span>
                         <details class="dashboard-runs-context">
                             <summary>조회 범위</summary>
-                            <p>관측 시작 시각 최근순 최대 20건 · 기본 5건 표시.
+                            <p id="dashboard-run-filter-scope">관측 시작 시각 최근순 최대 20건 · 기본 5건 표시.
                                 Runtime 상태·진행은 Run·Entity 범위가 일치할 때만 표시합니다.
                                 상단 검색은 이 조회 결과의 Run ID·분석 대상·Scenario만 찾으며 서버 전체를 검색하지 않습니다.
+                                유형 필터는 실제 run_type으로 검색어와 함께 적용하며 초기화하면 이전 펼침 상태로 돌아갑니다.
                                 이전/다음 Run은 검색과 관계없이 조회된 순서로 이동합니다.</p>
                         </details>
                     </div>

@@ -48,6 +48,17 @@
                 <div class="section-header">
                     <h2 id="event-timeline-list-heading" class="section-heading">Events</h2>
                 </div>
+                <div class="event-timeline-controls">
+                    <label for="event-timeline-type">Event 유형 (현재 페이지)</label>
+                    <select id="event-timeline-type" aria-controls="event-timeline-list"
+                            aria-describedby="event-timeline-filter-scope" disabled>
+                        <option value="all">전체 유형</option>
+                    </select>
+                    <button id="event-timeline-filter-reset" type="button"
+                            aria-label="현재 Event 페이지 유형 필터 초기화" disabled>유형 초기화</button>
+                </div>
+                <p id="event-timeline-filter-scope" class="detail-placeholder">현재 받은 페이지의 Event만 필터링합니다. 전체 Run의 Event를 검색하지 않으며 이전/다음은 API 페이지 단위로 이동합니다.</p>
+                <p id="event-timeline-filter-status" class="event-timeline-filter-status" role="status" aria-live="polite"></p>
                 <div id="event-timeline-list" class="event-timeline-list"></div>
                 <nav
                     id="event-timeline-pagination"
