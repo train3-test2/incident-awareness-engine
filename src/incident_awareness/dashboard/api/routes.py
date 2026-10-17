@@ -7,10 +7,12 @@ from incident_awareness.common.models.pipeline_runtime import PipelineRuntimeSta
 from incident_awareness.dashboard.api.dependencies import (
     get_dashboard_decision_reader,
     get_dashboard_evaluation_reader,
+    get_dashboard_evidence_reader,
     get_dashboard_fusion_engine_reader,
     get_dashboard_stage_timing_reader,
     get_dashboard_telemetry_reader,
     get_event_repository,
+    get_evidence_request,
     get_pipeline_runtime_repository,
     get_run_repository,
     get_stage_timing_query,
@@ -34,6 +36,11 @@ from incident_awareness.dashboard.api.models import (
 from incident_awareness.dashboard.api.service import get_fusion_engine_detail, get_run_detail
 from incident_awareness.dashboard.decision_read_model import DashboardDecisionReader
 from incident_awareness.dashboard.evaluation_read_model import DashboardEvaluationReader
+from incident_awareness.dashboard.evidence_read_model import (
+    DashboardEvidenceReader,
+    EvidenceListQuery,
+    RunEvidenceResponse,
+)
 from incident_awareness.dashboard.fusion_engine_read_model import DashboardFusionEngineReader
 from incident_awareness.dashboard.stage_timing_read_model import (
     DashboardStageTimingReader,
@@ -224,6 +231,15 @@ def get_event_timeline(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get("/runs/{run_id}/evidences", response_model=RunEvidenceResponse)
+def get_run_evidences(
+    request: Annotated[tuple[str, EvidenceListQuery], Depends(get_evidence_request)],
+    reader: Annotated[DashboardEvidenceReader, Depends(get_dashboard_evidence_reader)],
+) -> RunEvidenceResponse:
+    run_id, query = request
+    return reader.read(run_id, query)
 
 
 @router.get("/runs/{run_id}/events/{event_id:path}", response_model=EventDetailResponse)

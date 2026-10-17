@@ -2,13 +2,19 @@ from collections.abc import Iterator
 from typing import Annotated
 
 import psycopg
-from fastapi import Depends, Query
+from fastapi import Depends, Path, Query
 from psycopg import Connection
 
 from incident_awareness.dashboard.decision_read_model import DashboardDecisionReader
 from incident_awareness.dashboard.evaluation_read_model import (
     DashboardEvaluationReader,
     evaluation_snapshot_path_from_environment,
+)
+from incident_awareness.dashboard.evidence_read_model import (
+    DashboardEvidenceReader,
+    EvidenceListQuery,
+    EvidenceReadError,
+    evidence_database_error,
 )
 from incident_awareness.dashboard.fusion_engine_read_model import DashboardFusionEngineReader
 from incident_awareness.dashboard.stage_timing_read_model import (
@@ -33,6 +39,9 @@ from incident_awareness.storage.repositories.pipeline_stage_timing_repository im
 )
 from incident_awareness.storage.repositories.pipeline_telemetry_repository import (
     PipelineTelemetryRepository,
+)
+from incident_awareness.storage.repositories.r1_archive_publication_repository import (
+    R1ArchivePublicationRepository,
 )
 from incident_awareness.storage.repositories.result_repository import (
     DecisionRepository,
@@ -76,6 +85,43 @@ def get_dashboard_stage_timing_reader(
         raise stage_timing_database_error(error) from error
     try:
         yield DashboardStageTimingReader(PipelineStageTimingRepository(connection))
+    finally:
+        connection.close()
+
+
+# Run IDs are path segments here; reject padding instead of trimming a different Run.
+_EVIDENCE_RUN_ID_PATTERN = r"^\S(?:.*\S)?$"
+
+
+def get_evidence_request(
+    run_id: Annotated[str, Path(min_length=1, max_length=512, pattern=_EVIDENCE_RUN_ID_PATTERN)],
+    query: Annotated[EvidenceListQuery, Query()],
+) -> tuple[str, EvidenceListQuery]:
+    return run_id, query
+
+
+def get_dashboard_evidence_reader(
+    _request: Annotated[tuple[str, EvidenceListQuery], Depends(get_evidence_request)],
+) -> Iterator[DashboardEvidenceReader]:
+    """Read-only, bounded connection opened only after the request is valid."""
+    try:
+        url = DatabaseConfig.from_environment().url
+    except (RuntimeError, ValueError) as error:
+        raise EvidenceReadError(500, "Evidence read failed") from error
+    try:
+        connection = psycopg.connect(
+            url,
+            autocommit=False,
+            connect_timeout=2,
+            options="-c statement_timeout=5000 -c default_transaction_read_only=on -c timezone=UTC",
+        )
+    except psycopg.Error as error:
+        raise evidence_database_error(error) from error
+    try:
+        yield DashboardEvidenceReader(
+            R1ArchivePublicationRepository(connection),
+            EventRepository(connection),
+        )
     finally:
         connection.close()
 

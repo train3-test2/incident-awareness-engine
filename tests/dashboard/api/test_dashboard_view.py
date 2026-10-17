@@ -259,7 +259,11 @@ def test_dashboard_view_2_uses_real_data_regions_and_defaults_to_replay() -> Non
     assert 'id="event-type-summary"' in html
     assert "계측 미연결" in html
     assert "미계측" in html
-    assert "Evidence 목록 연동 전" in html
+    assert "Evidence 목록 연동 전" not in html
+    assert 'id="evidence-status" class="status-message dashboard-status" role="status"' in html
+    assert 'id="evidence-list"' in html
+    assert "게시 완료된 R1 Evidence 아카이브만 표시" in html
+    assert "Fusion 입력 아님" in html
     assert "Human Workflow 연동 전" in html
     assert "정상 운영 중" not in html
     assert "판단 입력하기" not in html

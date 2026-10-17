@@ -7,6 +7,7 @@ from incident_awareness.dashboard.evaluation_read_model import (
     EvaluationSnapshotUnavailableError,
     StoredEvaluationSnapshotInvalidError,
 )
+from incident_awareness.dashboard.evidence_read_model import EvidenceReadError
 from incident_awareness.dashboard.stage_timing_read_model import StageTimingReadError
 from incident_awareness.dashboard.telemetry_read_model import (
     StoredTelemetryInvalidError,
@@ -67,6 +68,12 @@ def create_app() -> FastAPI:
     @application.exception_handler(StageTimingReadError)
     async def handle_stage_timing_read_error(
         _request: Request, error: StageTimingReadError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
+
+    @application.exception_handler(EvidenceReadError)
+    async def handle_evidence_read_error(
+        _request: Request, error: EvidenceReadError
     ) -> JSONResponse:
         return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
 

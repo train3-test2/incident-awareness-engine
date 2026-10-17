@@ -458,9 +458,30 @@
             </div>
             <div id="dashboard-panel-evidence" class="dashboard-detail-panel" role="tabpanel"
                  aria-labelledby="dashboard-tab-evidence" tabindex="0" hidden>
-                <div class="dashboard-detail-unavailable">
-                    <h3>Evidence 목록 연동 전</h3>
-                    <p>현재 Dashboard Read API에 Evidence 전용 목록이 없습니다. 다른 출처의 Event를 증거로 간주하지 않습니다.</p>
+                <div class="dashboard-evidence-header">
+                    <h3>저장된 Evidence</h3>
+                    <p id="evidence-scope">게시 완료된 R1 Evidence 아카이브만 표시 · 오프라인 전체 구간 · Fusion 입력 아님 · 시각은 Event 시각(t_e/t_h 아님)</p>
+                    <p id="evidence-archive" class="dashboard-evidence-archive" hidden></p>
+                </div>
+                <div id="evidence-status" class="status-message dashboard-status" role="status" aria-live="polite">Run을 선택하면 저장된 Evidence 아카이브를 조회합니다.</div>
+                <div id="evidence-region" class="dashboard-table-wrapper dashboard-evidence-region" role="region"
+                     aria-labelledby="evidence-table-caption" aria-describedby="evidence-scope" tabindex="0" hidden>
+                    <table class="dashboard-table dashboard-evidence-table">
+                        <caption id="evidence-table-caption" class="dashboard-visually-hidden">선택한 Run의 검증된 Evidence 목록</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Evidence ID</th>
+                                <th scope="col">유형</th>
+                                <th scope="col">Event 시각 (UTC)</th>
+                                <th scope="col">Entity</th>
+                                <th scope="col">출처 계층</th>
+                                <th scope="col">Feature Channel</th>
+                                <th scope="col">연결 Event</th>
+                                <th scope="col">Extractor</th>
+                            </tr>
+                        </thead>
+                        <tbody id="evidence-list"></tbody>
+                    </table>
                 </div>
             </div>
             <div id="dashboard-panel-decision" class="dashboard-detail-panel" role="tabpanel"

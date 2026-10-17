@@ -1421,6 +1421,92 @@ html:has(> .dashboard-body) {
     font-size: 0.875rem;
 }
 
+.dashboard-evidence-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.125rem 0.75rem;
+}
+
+.dashboard-evidence-header h3 {
+    margin: 0;
+    font-size: 0.875rem;
+}
+
+.dashboard-evidence-header p,
+.dashboard-evidence-archive {
+    margin: 0;
+    color: var(--shell-color-muted);
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
+}
+
+/* Bounded to the Replay panel's footprint: a long list scrolls inside instead of growing the page. */
+.dashboard-evidence-region {
+    max-height: 5.25rem;
+    overflow: auto;
+}
+
+.dashboard-evidence-region:focus-visible {
+    outline: 0.1875rem solid var(--shell-color-primary);
+    outline-offset: 0.125rem;
+}
+
+.dashboard-evidence-table {
+    min-width: 62rem;
+}
+
+.dashboard-evidence-table th,
+.dashboard-evidence-table td {
+    white-space: nowrap;
+}
+
+.dashboard-evidence-table th {
+    position: sticky;
+    top: 0;
+    background-color: var(--shell-color-surface-subtle);
+}
+
+/* Visual truncation only: the full ID stays in the text for assistive technology and copying. */
+.dashboard-evidence-table code,
+.dashboard-evidence-events a,
+.dashboard-evidence-events span,
+.dashboard-evidence-table td small {
+    display: inline-block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
+}
+
+.dashboard-evidence-table code {
+    max-width: 8.5rem;
+    font-size: 0.75rem;
+}
+
+.dashboard-evidence-table td small {
+    max-width: 6rem;
+    margin-left: 0.25rem;
+    color: var(--shell-color-muted);
+    font-size: 0.6875rem;
+}
+
+.dashboard-evidence-events {
+    display: flex;
+    gap: 0 0.5rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.dashboard-evidence-events a,
+.dashboard-evidence-events span {
+    max-width: 5.5rem;
+}
+
+.dashboard-evidence-unstored {
+    color: var(--shell-color-muted);
+}
+
 .dashboard-decision-summary {
     min-width: 0;
     padding: var(--shell-space-3);

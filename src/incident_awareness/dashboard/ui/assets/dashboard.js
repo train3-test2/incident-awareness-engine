@@ -39,6 +39,7 @@ import {
 import { createDashboardReplayChart } from "./dashboard-replay-chart.mjs";
 import { createDashboardTelemetryController } from "./dashboard-telemetry-controller.mjs";
 import { createDashboardStageTimingController } from "./dashboard-stage-timing-controller.mjs";
+import { createDashboardEvidenceController } from "./dashboard-evidence-controller.mjs";
 import { resolveStageTimingTarget } from "./dashboard-stage-timing-contract.mjs";
 import {
     buildEventTimelineApiPath,
@@ -75,6 +76,7 @@ const SCORE_CHART_DIMENSIONS = {
 
 const dashboardView = document.getElementById("dashboard-view");
 const stageTimingController = createDashboardStageTimingController(document);
+const evidenceController = createDashboardEvidenceController(document);
 const totalRunsValue = document.getElementById("total-runs-value");
 const overviewStatus = document.getElementById("overview-status");
 const latestRuntimeState = document.getElementById("latest-runtime-state");
@@ -574,6 +576,8 @@ function activateSelectedRunPanel(name) {
         tab.button.tabIndex = active ? 0 : -1;
         tab.panel.hidden = !active;
     }
+    // Evidence is read only while its tab is shown; focus stays on the tab button.
+    void evidenceController.setActive(name === "evidence");
 }
 
 function createAnalysisField(label, value, emphasis = "primary") {
@@ -1074,6 +1078,8 @@ async function selectRun(runId, runtimeEntityId = null) {
     renderEventTypeSummary(resolveEventTimelineQueryState(null, { kind: "loading" }));
     selectedRunId = runId;
     selectedRuntimeEntityId = runtimeEntityId;
+    // Run-scoped: a different Entity of the same Run does not re-read Evidence.
+    void evidenceController.select(runId);
     selectedRuntimeTracking = createSelectedRuntimeTracking(
         findSelectedRuntime(runtimeState.items, runId, runtimeEntityId),
     );
@@ -1120,6 +1126,7 @@ function refreshSelectedRunAnalysis() {
         "선택한 Run의 저장 분석 결과를 다시 조회하는 중입니다.",
     );
     refreshSelectedEventSummary();
+    void evidenceController.refresh();
 }
 
 function selectDefaultRunIfReady() {
@@ -1364,12 +1371,14 @@ if (dashboardView !== null) {
         stopRuntimePolling();
         telemetryController.stop();
         stageTimingController.stop();
+        evidenceController.stop();
     });
     window.addEventListener("pageshow", (event) => {
         if (event.persisted) {
             startRuntimePolling();
             void telemetryController.start();
             void stageTimingController.start();
+            void evidenceController.start();
         }
     });
 }

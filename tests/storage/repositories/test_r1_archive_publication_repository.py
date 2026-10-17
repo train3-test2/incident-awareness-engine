@@ -113,3 +113,84 @@ def test_updates_retryable_state_with_failure_details() -> None:
     query, params = connection.queries[0]
     assert "attempt_count = attempt_count + 1" in query
     assert params == ("retryable", "OSError", "temporary", "RUN-20261010-001")
+
+
+def _evidence_read_row(
+    status: str | None = "published",
+    *,
+    payload: bool = True,
+) -> tuple[object, ...]:
+    if status is None:
+        return ("RUN-20261010-001", None, None, None, None, None, None, None)
+    return (
+        "RUN-20261010-001",
+        status,
+        "a" * 64,
+        "b" * 64,
+        9,
+        8,
+        b"evidence\n" if payload else None,
+        b"summary\n" if payload else None,
+    )
+
+
+def test_evidence_read_selects_payload_only_for_bounded_published_archive() -> None:
+    # Given
+    connection = _Connection([_evidence_read_row()])
+    repository = R1ArchivePublicationRepository(connection)
+
+    # When
+    read = repository.read_evidence_archive(
+        "RUN-20261010-001", max_evidence_bytes=100, max_summary_bytes=50
+    )
+
+    # Then
+    query, params = connection.queries[0]
+    assert params == (100, 50, 100, 50, "RUN-20261010-001")
+    assert "archive.status = 'published'" in query
+    for internal in ("bucket", "object_prefix", "last_error", "attempt_count"):
+        assert internal not in query
+    assert read is not None
+    assert (read.status, read.evidence_size, read.summary_size) == ("published", 9, 8)
+    assert (read.evidence_content, read.summary_content) == (b"evidence\n", b"summary\n")
+
+
+def test_evidence_read_distinguishes_missing_run_from_missing_archive() -> None:
+    # Given
+    repository = R1ArchivePublicationRepository(_Connection([None, _evidence_read_row(None)]))
+
+    # When
+    missing_run = repository.read_evidence_archive(
+        "RUN-X", max_evidence_bytes=1, max_summary_bytes=1
+    )
+    no_archive = repository.read_evidence_archive(
+        "RUN-20261010-001", max_evidence_bytes=1, max_summary_bytes=1
+    )
+
+    # Then
+    assert missing_run is None
+    assert no_archive is not None
+    assert no_archive.status is None
+    assert no_archive.evidence_content is None
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        ("RUN-20261010-001", None, "a" * 64, None, None, None, None, None),
+        (*_evidence_read_row("pending")[:6], b"evidence\n", b"summary\n"),
+        (*_evidence_read_row()[:6], b"evidence\n", None),
+        (*_evidence_read_row()[:6], "not-bytes", b"summary\n"),
+        _evidence_read_row()[:7],
+        ("RUN-20261010-001", "unknown", *_evidence_read_row()[2:]),
+    ],
+)
+def test_evidence_read_rejects_inconsistent_rows(row: tuple[object, ...]) -> None:
+    # Given
+    repository = R1ArchivePublicationRepository(_Connection([row]))
+
+    # When / Then
+    with pytest.raises(TypeError):
+        repository.read_evidence_archive(
+            "RUN-20261010-001", max_evidence_bytes=1, max_summary_bytes=1
+        )

@@ -58,6 +58,7 @@ import {
     buildStageTimingModel,
 } from "../../../src/incident_awareness/dashboard/ui/assets/dashboard-stage-timing-contract.mjs";
 import { timingPayload } from "./stage-timing-fixture.mjs";
+import { evidenceItem, evidencePayload } from "./evidence-fixture.mjs";
 
 test("Run Type presentation maps the persisted vocabulary with a safe fallback", () => {
     // Given
@@ -2429,6 +2430,64 @@ async function startDashboardWithRuntime(runtimeItems, runs, options = {}) {
     await harness.respond(RUNTIME_API_PATH, 200, { items: runtimeItems });
     return harness;
 }
+
+// The real dashboard.js wired to the real Evidence tab controller.
+const EVIDENCE_ELEMENT_IDS = ["status", "archive", "region", "list"].map((key) => `evidence-${key}`);
+const evidencePath = (runId) => `/runs/${encodeURIComponent(runId)}/evidences?limit=100`;
+
+test("Evidence tab reads the selected Run lazily, once per Run, and never on Runtime polls", async (t) => {
+    // Given
+    const runtime = [
+        runtimeReport("RUN-A", "WIN-A", "completed", null),
+        runtimeReport("RUN-A", "WIN-C", "completed", null),
+    ];
+    const harness = await startDashboardWithRuntime(
+        runtime,
+        [runListItem("RUN-A", "WIN-A"), runListItem("RUN-B", "WIN-B")],
+        { extraElementIds: EVIDENCE_ELEMENT_IDS },
+    );
+    t.after(harness.restore);
+    const list = harness.document.getElementById("evidence-list");
+    const status = harness.document.getElementById("evidence-status");
+    const tab = harness.document.getElementById("dashboard-tab-evidence");
+    const beforeTab = harness.requestCount(evidencePath("RUN-A"));
+
+    // When: the tab opens for the default Run.
+    tab.focus();
+    tab.click();
+    await harness.flush();
+    await harness.respond(evidencePath("RUN-A"), 200, evidencePayload({
+        runId: "RUN-A", items: [evidenceItem({ entity_id: "WIN-A" })],
+    }));
+    const shown = { rows: list.children.length, status: status.textContent, focused: harness.document.activeElement === tab };
+    // When: Runtime polls, another Entity of the same Run, and a tab round trip.
+    for (let index = 0; index < 3; index += 1) await harness.poll(runtime);
+    harness.runtimeButton("RUN-A", "WIN-C").click();
+    await harness.flush();
+    harness.document.getElementById("dashboard-tab-replay").click();
+    tab.click();
+    await harness.flush();
+    const readsForRunA = harness.requestCount(evidencePath("RUN-A"));
+    // When: another Run is selected while the tab is open.
+    harness.runButton("RUN-B").click();
+    await harness.flush();
+    const clearedOnRunChange = list.children.length;
+    await harness.respond(evidencePath("RUN-B"), 200, evidencePayload({ runId: "RUN-B", availability: "no_archive" }));
+    await harness.respondAnalysis("RUN-B", notFound(), notFound());
+    harness.document.getElementById("selected-run-refresh").click();
+    await harness.flush();
+
+    // Then
+    assert.equal(beforeTab, 0);
+    assert.equal(shown.rows, 1);
+    assert.match(shown.status, /^Evidence 조회 완료 · 검증된 1건/);
+    assert.equal(shown.focused, true);
+    assert.equal(readsForRunA, 1);
+    assert.equal(clearedOnRunChange, 0);
+    assert.equal(status.textContent, "선택한 Run의 Evidence 아카이브를 조회하는 중입니다.");
+    assert.equal(harness.requestCount(evidencePath("RUN-B")), 2);
+    assert.equal(harness.timerCount(RUNTIME_POLL_DELAY_MS), 1);
+});
 
 // The real dashboard.js wired to the real Stage Timing controller through Runtime polling.
 const STAGE_TIMING_ELEMENT_IDS = ["state", "caption", "scope", "records", "refresh", "detail"]
