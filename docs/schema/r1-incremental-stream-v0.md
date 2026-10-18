@@ -464,3 +464,14 @@ transport recovery를 소유한다. Role4는 candidate-generation seal의 schema
 identity를 소유한다. Role2는 유효한 Event chunk를 소비해 selector 상태를 누적할 수 있으나,
 이 문서만으로 Evidence를 최종 확정하지 않는다. Evidence 확정에는 Role3 telemetry close와
 Role4 candidate-generation seal의 결속 검증이 모두 필요하다.
+
+## 15. Sysmon RecordId-bounded post-observation finality
+
+WMI live producer가 사용하는 Sysmon source의 final watermark는 timeout, Event 최댓값, 빈 조회 또는
+`candidate_boundary_completed`만으로 발급하지 않는다. observation 뒤 all-channel RecordId 상한을
+고정하고 live raw/chunk와 동일 상한의 canonical export를 전량 대조하는 별도 계약을 통과해야 한다.
+
+발급 조건과 보장 범위는
+[R1 Sysmon RecordId-bounded finality v0.1](r1-sysmon-record-bounded-finality-v0.md)에 정의한다.
+해당 경로는 collector가 수락한 snapshot의 전달 완결성만 닫으며 provider queue drain, A04 이전
+early close 또는 causal/TTSD 적격성을 보장하지 않는다.
