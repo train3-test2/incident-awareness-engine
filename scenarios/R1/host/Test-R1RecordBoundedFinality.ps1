@@ -48,8 +48,9 @@ function Get-EventIdentityLines {
 $now = [DateTime]::UtcNow
 $start = $now.AddMinutes(-1 * $LookbackMinutes)
 $stamp = $now.ToString("yyyyMMddTHHmmssZ")
-$resultDir = Join-Path $OutputRoot ("result-" + $stamp)
-New-Item -ItemType Directory -Path $resultDir -Force | Out-Null
+$runToken = [Guid]::NewGuid().ToString("N")
+$resultDir = Join-Path $OutputRoot ("result-{0}-{1}" -f $stamp, $runToken)
+New-Item -ItemType Directory -Path $resultDir | Out-Null
 
 $upperEvent = Get-WinEvent -LogName $Channel -MaxEvents 1 -ErrorAction Stop
 $upperRecordId = [long]$upperEvent.RecordId

@@ -145,8 +145,10 @@ watermark or close. These are not VM collector validation and issue no official
 Run/Pair ID. A source-specific completeness/flush proof contract and a real Windows
 Target-A에서 RecordId-bounded query와 동일 XPath EVTX export의 exact-set 동등성은 실제 VM
 diagnostic smoke로 확인했다. 결과는 bounded snapshot 전제만 검증했으며 finality를 발급하지 않았다.
-후속 final watermark와 `run_closed`는
 [`r1-sysmon-record-bounded-finality-v0.md`](../schema/r1-sysmon-record-bounded-finality-v0.md)의
-freeze ack, canonical Run 봉인, chunk post-commit ack 및 reconciliation gate를 모두 통과한 경우에만
-발급한다. provider queue drain, A04 이전 early close와 `reference_time + 600초` 안의 causal
-확정은 여전히 보장하지 않는다.
+freeze ack, canonical Run 봉인, chunk post-commit ack 및 reconciliation gate는 accepted snapshot의
+collector 전달 완결성만 검증한다. 이 결과의 `observation_boundary_at`은 event-time watermark가
+아니며 final `source_watermark`, `run_closed`, accepted-close, seal 또는 proof를 발급하지 않는다.
+실제 stream finality에는 별도의 source quiescence/final-drain 증명 또는 versioned RecordId
+position-frontier 계약이 필요하다. provider queue drain, A04 이전 early close와
+`reference_time + 600초` 안의 causal 확정은 여전히 보장하지 않는다.

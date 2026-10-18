@@ -465,13 +465,18 @@ identity를 소유한다. Role2는 유효한 Event chunk를 소비해 selector �
 이 문서만으로 Evidence를 최종 확정하지 않는다. Evidence 확정에는 Role3 telemetry close와
 Role4 candidate-generation seal의 결속 검증이 모두 필요하다.
 
-## 15. Sysmon RecordId-bounded post-observation finality
+## 15. Sysmon RecordId-bounded snapshot delivery verification
 
-WMI live producer가 사용하는 Sysmon source의 final watermark는 timeout, Event 최댓값, 빈 조회 또는
-`candidate_boundary_completed`만으로 발급하지 않는다. observation 뒤 all-channel RecordId 상한을
-고정하고 live raw/chunk와 동일 상한의 canonical export를 전량 대조하는 별도 계약을 통과해야 한다.
+WMI live producer가 사용하는 Sysmon source의 final watermark는 timeout, Event 최댓값, 빈 조회,
+`candidate_boundary_completed` 또는 RecordId-bounded snapshot exact-set 일치만으로 발급하지
+않는다.
 
-발급 조건과 보장 범위는
-[R1 Sysmon RecordId-bounded finality v0.1](r1-sysmon-record-bounded-finality-v0.md)에 정의한다.
-해당 경로는 collector가 수락한 snapshot의 전달 완결성만 닫으며 provider queue drain, A04 이전
-early close 또는 causal/TTSD 적격성을 보장하지 않는다.
+[R1 Sysmon RecordId-bounded snapshot delivery verification v0.1](r1-sysmon-record-bounded-finality-v0.md)은
+accepted canonical snapshot 안에서 collector가 전달한 raw/chunk와 canonical export의 일치만
+검증한다. provider queue drain이나 snapshot 밖 raw-source completeness를 보장하지 않으므로
+`observation_boundary_at`을 이 계약의 `source_watermark.watermark_at`으로 사용할 수 없다.
+
+실제 `source_watermark`와 `run_closed`를 발급하려면 source quiescence/final-drain 증명 또는
+event-time frontier와 구분되는 versioned RecordId position-frontier 계약이 추가로 필요하다.
+그 전까지 current Sysmon producer는 watermark, close, accepted-close, seal과 proof를 발급하지
+않으며 기존 `r1-incremental-stream/v0.1`의 event-time completeness 의미를 완화하지 않는다.

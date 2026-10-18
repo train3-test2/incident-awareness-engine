@@ -1,6 +1,6 @@
-# R1 Sysmon RecordId-bounded finality v0.1
+# R1 Sysmon RecordId-bounded snapshot delivery verification v0.1
 
-> 상태: development collector-finality contract
+> 상태: development collector-snapshot verification contract
 >
 > 적용 범위: `wmi_management/V01/v1`의 post-observation incremental stream
 >
@@ -15,11 +15,11 @@ Windows Sysmon API는 provider 내부 queue가 비었음을 증명하는 drain A
 이 계약은 observation 종료 후 한 번 고정한 all-channel `EventRecordID` 상한을 collector의
 immutable freeze boundary로 사용한다. live producer가 그 상한까지 EID 1/3을 chunk로 durable
 publish하고, Role4의 canonical export가 같은 폐구간을 사용하며, finalizer가 두 입력의 Event 집합과
-전달 증적을 전량 대조한 경우에만 기존 `r1-incremental-stream/v0.1`의 final
-`source_watermark`와 `run_closed`를 발급할 수 있다.
+전달 증적을 전량 대조해 **수락한 canonical snapshot에 대한 collector 전달 완결성**만 검증한다.
 
-이 finality는 **수락한 canonical snapshot에 대한 collector 전달 완결성**만 뜻한다. snapshot
-밖의 원본 telemetry 완전성이나 Sysmon provider queue drain을 뜻하지 않는다.
+이 검증은 snapshot 밖의 원본 telemetry 완전성이나 Sysmon provider queue drain을 뜻하지 않는다.
+따라서 `observation_boundary_at`을 기존 `source_watermark.watermark_at`으로 매핑하지 않는다.
+이 v0.1 계약만으로는 `source_watermark`, `run_closed`, accepted-close, seal 또는 proof를 발급하지 않는다.
 
 ## 2. 적용 순서와 소유권
 
@@ -31,14 +31,13 @@ live producer: all-channel upper RecordId 고정 및 해당 bound까지 chunk pu
 Role4 runner: 동일 RecordId bound로 canonical EVTX/JSONL export 및 manifest 봉인
   -> run-finalized.json
 finalizer: live raw/chunk/ack와 canonical raw/manifest exact-set 대조
-  -> r1_finality_reconciliation.json
-Role3 ingress: final watermark -> run_closed -> ledger commit -> post-commit ack
-Role4: accepted-close export를 사용해 candidate seal/proof 생성
-Role2: close/proof를 독립 검증한 뒤에만 incremental Evidence 확정
+  -> r1_finality_reconciliation.json(status=verified_snapshot_delivery)
+Role3 ingress: 이 artifact로 source_watermark/run_closed를 발급하지 않음
+Role4/Role2: accepted-close, seal, proof 또는 incremental Evidence 확정에 사용하지 않음
 ```
 
 - Role3는 stream partition, chunk 연속성, post-commit ack, final watermark와 `run_closed`의
-  의미를 소유한다.
+  의미를 소유한다. 이 snapshot artifact는 Role3의 event-time frontier를 대신하지 않는다.
 - Role4는 observation/candidate boundary, canonical export와 candidate seal/proof를 소유한다.
 - Role2는 accepted stream 입력과 Role4 proof의 소비·Evidence availability를 소유한다.
 - 어느 역할도 다른 역할의 artifact를 timeout, Event 최댓값 또는 파일 존재만으로 보완 추론하지
@@ -105,10 +104,10 @@ canonical EVTX export XPath는 시간 추정식이 아니라 freeze ack의 동�
 | live/canonical count와 identity digest | 서로 정확히 같음 |
 | `covered_through_chunk_sequence` | 1부터 해당 sequence까지 빈 번호가 없음 |
 | `post_commit_ack_count` | covered chunk 수와 같음 |
-| `watermark_at` | `observation_boundary_at`; Event 최댓값이나 reconciliation 시각이 아님 |
-| `allowed_lateness_ms` | freeze ack에 보존한 producer 설정값과 정확히 같음 |
+| `observation_boundary_at` | freeze request의 observation 경계와 정확히 같음; event-time watermark가 아님 |
+| `allowed_lateness_ms` | freeze ack에 보존한 producer 설정값과 정확히 같지만 watermark 발급 권한은 아님 |
 | `reconciled_at` | 모든 대조를 완료한 provenance 시각 |
-| `status` | 모든 gate가 통과한 경우에만 `verified` |
+| `status` | 모든 gate가 통과한 경우에만 `verified_snapshot_delivery` |
 
 ## 4. Event identity와 exact-set 대조
 
@@ -132,38 +131,44 @@ host_id, source_channel, RecordId, EventId, raw XML SHA-256
 누락·추가 Event, digest 불일치, 중복 identity, sequence gap, ack 누락, 파싱 실패는 모두
 fail-closed다.
 
-## 5. Watermark와 close 발급 조건
+## 5. Stream finality 발급 금지
 
-`status=verified`인 reconciliation artifact를 같은 프로세스에서 검증한 뒤에만 다음 값을 발급한다.
+`status=verified_snapshot_delivery`는 RecordId 폐구간 안의 live raw/chunk와 canonical
+snapshot이 exact-set으로 일치하고 covered chunk의 post-commit ack가 모두 존재한다는 뜻이다.
+이는 source event-time frontier가 아니다.
 
-- final `source_watermark.watermark_at = observation_boundary_at`
-- `allowed_lateness_ms = freeze ack의 producer 설정값`
-- `covered_through_chunk_sequence = freeze ack의 값`
-- `run_closed.final_watermarks = 위 watermark 하나`
+`observation_boundary_at`을 기존 `source_watermark.watermark_at`으로 매핑하지 않는다.
+이 v0.1 계약만으로는 `source_watermark`, `run_closed`, accepted-close, seal 또는 proof를 발급하지 않는다.
+`allowed_lateness_ms`와 `covered_through_chunk_sequence`도 snapshot provenance로만 보존하며
+event-time completeness를 보완 추론하는 데 사용하지 않는다.
 
-final watermark는 A04 `candidate_boundary_at` 이상이어야 한다. Role3 ledger commit 전에 transport
-ack를 쓰지 않는다. accepted-close export에는 reconciliation artifact의 SHA-256을 함께 보존하여
-Role4와 Role2가 어떤 collector proof에 의존했는지 다시 검증할 수 있어야 한다.
+기존 `r1-incremental-stream/v0.1` finality를 발급하려면 다음 중 하나를 별도 versioned 계약으로
+승인해야 한다.
 
-검증 전 artifact, `diagnostic_only=true` smoke 결과 또는 `status!=verified` 결과로는 watermark,
-`run_closed`, seal, proof를 발급하지 않는다.
+- Sysmon source quiescence 또는 provider final-drain을 검증하는 근거
+- event-time watermark와 혼동되지 않는 RecordId position frontier 및 전용 close
+- late Event에 대한 correction/retraction을 포함한 candidate-scoped partial close
+
+그 전에는 producer와 finalizer가 stream finality 발급을 fail-closed로 거부한다.
 
 ## 6. Bound 이후 Event
 
-freeze ack 이후 더 큰 RecordId가 나타날 수 있다. 그 Event는 이미 봉인한 Run에 조용히 추가하지
-않고 진단/dead-letter로 분리한다. 기존 Run을 수정하거나 watermark를 전진시키려면 새 contract
-version과 correction/retraction 계약이 필요하다.
+freeze ack 이후 더 큰 RecordId가 나타날 수 있다. 특히 그 Event의 timestamp가
+`observation_boundary_at` 이하일 수도 있으므로 bounded snapshot을 event-time frontier로 해석하면
+안 된다. 해당 Event는 이미 봉인한 snapshot에 조용히 추가하지 않고 진단/dead-letter로 분리한다.
+기존 snapshot을 수정하거나 stream finality를 도입하려면 새 contract version과
+source-quiescence 또는 correction/retraction 계약이 필요하다.
 
 ## 7. 시간 의미와 소비 제한
 
 ```text
-candidate_boundary_at <= observation_boundary_at <= freeze ack/finalize/reconcile/close 시각
+candidate_boundary_at <= observation_boundary_at <= freeze ack/finalize/reconcile 시각
 ```
 
-현재 WMI V01은 A04가 약 T+720, observation boundary가 T+780이므로 이 close는 post-observation
-whole-run finality다. Attack `reference_time + 600초` 안의 causal 조기 확정, TTSD 또는 online
-성능을 증명하지 않는다. `reconciled_at`, `verified_seal_at` 또는 close 발급 시각을 Evidence
-`available_at`으로 자동 복사하지 않는다.
+현재 WMI V01은 A04가 약 T+720, observation boundary가 T+780이다. 이 계약은 그 뒤의
+snapshot delivery verification만 정의하며 whole-run stream finality나 close를 만들지 않는다.
+Attack `reference_time + 600초` 안의 causal 조기 확정, TTSD 또는 online 성능을 증명하지 않는다.
+`reconciled_at`을 Evidence `available_at`으로 자동 복사하지 않는다.
 
 ## 8. 실제 VM 선행 검증
 
