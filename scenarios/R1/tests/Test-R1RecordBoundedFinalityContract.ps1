@@ -49,6 +49,29 @@ Assert-True "diagnostic output directory is unique and never force-reused" (
     $scriptText -match '\[Guid\]::NewGuid\(\)' -and
     $scriptText -match 'result-\{0\}-\{1\}' -and
     $scriptText -notmatch 'New-Item -ItemType Directory -Path \$resultDir -Force')
+Assert-True "empty views are rejected instead of matching" (
+    $scriptText -match 'AllowEmptyCollection' -and
+    $scriptText -match '\$firstLines\.Count -eq 0' -and
+    $scriptText -match '"empty_view"')
+Assert-True "the bound records are read again after the export" (
+    $scriptText.IndexOf('wevtutil epl') -ge 0 -and
+    $scriptText.IndexOf('$upperAnchorAfter = ') -ge 0 -and
+    $scriptText.IndexOf('$lowerAnchorAfter = ') -ge 0 -and
+    $scriptText.IndexOf('wevtutil epl') -lt $scriptText.IndexOf('$upperAnchorAfter = ') -and
+    $scriptText.IndexOf('wevtutil epl') -lt $scriptText.IndexOf('$lowerAnchorAfter = '))
+Assert-True "a cleared, rolled-over or stale channel fails closed" (
+    $scriptText -match 'GetLogInformation' -and
+    $scriptText -match '"channel_generation_changed"' -and
+    $scriptText -match '"bound_not_retained"' -and
+    $scriptText -match '"lower_anchor_not_in_views"')
+Assert-True "every Event is bound to the expected host and source channel" (
+    $scriptText -match '\[Parameter\(Mandatory = \$true\)\]\[string\]\$ExpectedHost' -and
+    $scriptText -match 'MachineName -ceq \$ExpectedHost' -and
+    $scriptText -match 'LogName -ceq \$Channel' -and
+    $scriptText -match 'host_id = \$ExpectedHost' -and
+    $scriptText -match '"host_or_channel_mismatch"')
+Assert-True "identity lines follow host, channel, RecordId, EventId and raw XML digest" (
+    $scriptText -match '"\{0\}`t\{1\}`t\{2\}`t\{3\}`t\{4\}" -f \[string\]\$_\.MachineName, \[string\]\$_\.LogName')
 Assert-True "contract requires chunk continuity and post-commit ack" (
     $contractText -match 'covered_through_chunk_sequence' -and
     $contractText -match 'post-commit ack')

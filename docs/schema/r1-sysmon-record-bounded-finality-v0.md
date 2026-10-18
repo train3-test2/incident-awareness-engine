@@ -192,3 +192,14 @@ EVTX를 export했다.
 completeness를 입증하지 않는다. 재현 도구는
 `scenarios/R1/host/Test-R1RecordBoundedFinality.ps1`에 보존한다.
 
+위 값은 도구에 아래 검사를 넣기 전(smoke 결과 `contract_version` `v0.1`)에 얻은 것이다. 당시 identity
+줄은 `RecordId, EventId, raw XML SHA-256`만 담았으므로 현재 도구의 digest와 비교할 수 없다.
+
+- 세 view 중 하나라도 비면 `empty_view`로 실패한다.
+- `-ExpectedHost`가 필수이며 모든 Event의 host와 channel이 일치해야 한다. identity 줄은 §4의
+  `host_id, source_channel, RecordId, EventId, raw XML SHA-256`을 쓴다.
+- upper bound를 잡을 때 기록한 양 끝 record의 raw XML digest와 channel 상태(oldest record number,
+  생성 시각)를 export 뒤에 다시 읽어 비교한다. clear·rollover·stale channel은 실패한다.
+
+현재 도구(smoke 결과 `contract_version` `v0.2`)로 Target-A에서 다시 실행한 결과는 아직 없다.
+
