@@ -57,6 +57,7 @@ _MIGRATION_BASELINE_TABLES = {
     "011_pipeline_telemetry_timeseries": frozenset(
         {"pipeline_telemetry_executions", "pipeline_telemetry_buckets"}
     ),
+    "013_r1_stream_position_close_ledger": frozenset({"r1_stream_position_closes"}),
 }
 _MIGRATIONS_DIRECTORY = Path(__file__).resolve().parents[3] / "infra" / "postgres" / "migrations"
 
