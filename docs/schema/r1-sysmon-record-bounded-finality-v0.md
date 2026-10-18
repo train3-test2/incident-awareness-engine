@@ -156,8 +156,9 @@ event-time completeness를 보완 추론하는 데 사용하지 않는다.
 freeze ack 이후 더 큰 RecordId가 나타날 수 있다. 특히 그 Event의 timestamp가
 `observation_boundary_at` 이하일 수도 있으므로 bounded snapshot을 event-time frontier로 해석하면
 안 된다. 해당 Event는 이미 봉인한 snapshot에 조용히 추가하지 않고 진단/dead-letter로 분리한다.
-기존 snapshot을 수정하거나 stream finality를 도입하려면 새 contract version과
-source-quiescence 또는 correction/retraction 계약이 필요하다.
+기존 snapshot을 수정하거나 stream finality를 도입하려면 새 contract version과 §5의 세 근거
+(source quiescence/final-drain, RecordId position frontier 및 전용 close, correction/retraction을
+포함한 candidate-scoped partial close) 중 하나가 필요하다.
 
 ## 7. 시간 의미와 소비 제한
 

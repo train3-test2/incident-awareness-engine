@@ -151,6 +151,8 @@ diagnostic smoke로 확인했다. 결과는 bounded snapshot 전제만 검증했
 freeze ack, canonical Run 봉인, chunk post-commit ack 및 reconciliation gate는 accepted snapshot의
 collector 전달 완결성만 검증한다. 이 결과의 `observation_boundary_at`은 event-time watermark가
 아니며 final `source_watermark`, `run_closed`, accepted-close, seal 또는 proof를 발급하지 않는다.
-실제 stream finality에는 별도의 source quiescence/final-drain 증명 또는 versioned RecordId
-position-frontier 계약이 필요하다. provider queue drain, A04 이전 early close와
+실제 stream finality에는 Sysmon source quiescence/provider final-drain 근거, event-time
+watermark와 혼동되지 않는 RecordId position frontier 및 전용 close, late Event에 대한
+correction/retraction을 포함한 candidate-scoped partial close 중 하나를 별도 versioned 계약으로
+승인해야 한다. provider queue drain, A04 이전 early close와
 `reference_time + 600초` 안의 causal 확정은 여전히 보장하지 않는다.

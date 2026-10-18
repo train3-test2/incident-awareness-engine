@@ -476,7 +476,12 @@ accepted canonical snapshot 안에서 collector가 전달한 raw/chunk와 canoni
 검증한다. provider queue drain이나 snapshot 밖 raw-source completeness를 보장하지 않으므로
 `observation_boundary_at`을 이 계약의 `source_watermark.watermark_at`으로 사용할 수 없다.
 
-실제 `source_watermark`와 `run_closed`를 발급하려면 source quiescence/final-drain 증명 또는
-event-time frontier와 구분되는 versioned RecordId position-frontier 계약이 추가로 필요하다.
+실제 `source_watermark`와 `run_closed`를 발급하려면 다음 중 하나를 별도 versioned 계약으로
+승인해야 한다.
+
+- Sysmon source quiescence 또는 provider final-drain을 검증하는 근거
+- event-time watermark와 혼동되지 않는 RecordId position frontier 및 전용 close
+- late Event에 대한 correction/retraction을 포함한 candidate-scoped partial close
+
 그 전까지 current Sysmon producer는 watermark, close, accepted-close, seal과 proof를 발급하지
 않으며 기존 `r1-incremental-stream/v0.1`의 event-time completeness 의미를 완화하지 않는다.
