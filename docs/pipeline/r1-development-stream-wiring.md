@@ -143,6 +143,8 @@ and host binding. `Test-R1IncrementalSysmonProducer.ps1` separately verifies tha
 the live Sysmon sidecar preserves bounded chunk collection while issuing no inferred
 watermark or close. These are not VM collector validation and issue no official
 Run/Pair ID. A source-specific completeness/flush proof contract and a real Windows
+Target-A/WinRM validation are still required before this producer can emit finality.
+
 Target-A에서 RecordId-bounded query와 동일 XPath EVTX export의 exact-set 동등성은 실제 VM
 diagnostic smoke로 확인했다. 결과는 bounded snapshot 전제만 검증했으며 finality를 발급하지 않았다.
 [`r1-sysmon-record-bounded-finality-v0.md`](../schema/r1-sysmon-record-bounded-finality-v0.md)의

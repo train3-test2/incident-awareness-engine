@@ -24,7 +24,7 @@ $parseErrors = $null
 [void][System.Management.Automation.Language.Parser]::ParseFile(
     $scriptPath, [ref]$tokens, [ref]$parseErrors)
 $scriptText = Get-Content -LiteralPath $scriptPath -Raw
-$contractText = Get-Content -LiteralPath $contractPath -Raw
+$contractText = Get-Content -LiteralPath $contractPath -Raw -Encoding UTF8
 
 Assert-True "smoke script parses in Windows PowerShell" ($parseErrors.Count -eq 0)
 Assert-True "all-channel cursor is captured before target queries" (
@@ -55,10 +55,15 @@ Assert-True "contract requires chunk continuity and post-commit ack" (
 Assert-True "contract explicitly excludes provider drain and early close claims" (
     $contractText -match 'provider queue drain' -and
     $contractText -match 'A04.*early close')
+# The two contract sentences below are Korean. They are matched through \uXXXX
+# regex escapes so that this file stays ASCII-only for Windows PowerShell 5.1:
+#   "`observation_boundary_at` is not mapped to the existing `source_watermark.watermark_at`."
+#   "This v0.1 contract alone issues no `source_watermark`, `run_closed`,
+#    accepted-close, seal or proof."
 Assert-True "snapshot verification cannot become an event-time watermark" (
-    $contractText.Contains('`observation_boundary_at`을 기존 `source_watermark.watermark_at`으로 매핑하지 않는다.'))
+    $contractText -cmatch '`observation_boundary_at`\uC744 \uAE30\uC874 `source_watermark\.watermark_at`\uC73C\uB85C \uB9E4\uD551\uD558\uC9C0 \uC54A\uB294\uB2E4\.')
 Assert-True "snapshot verification cannot issue stream finality" (
-    $contractText.Contains('이 v0.1 계약만으로는 `source_watermark`, `run_closed`, accepted-close, seal 또는 proof를 발급하지 않는다.'))
+    $contractText -cmatch '\uC774 v0\.1 \uACC4\uC57D\uB9CC\uC73C\uB85C\uB294 `source_watermark`, `run_closed`, accepted-close, seal \uB610\uB294 proof\uB97C \uBC1C\uAE09\uD558\uC9C0 \uC54A\uB294\uB2E4\.')
 
 if ($script:Failures -eq 0) {
     Write-Host "ALL $($script:Total) CHECKS PASSED" -ForegroundColor Green
