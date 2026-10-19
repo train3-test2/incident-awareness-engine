@@ -233,20 +233,318 @@ Assert-True "freeze: the default converter writes the channel the Python finaliz
     [string]$defaultRecord.Channel -ceq $CHANNEL -and [long]$defaultRecord.RecordId -eq 1005 -and
     [string]$defaultRecord.EventData.Image -ceq "C:\Windows\System32\cmd.exe")
 
- # --- 2. the producer script ------------------------------------------------------------
+ # --- 2. the producer's Controller side, executed -----------------------------------------
+ # The production functions of r1-incremental-sysmon-producer-common.ps1 run here
+ # against a temporary spool. Only Target-A (Invoke-Command), the Python wiring
+ # and the Python freeze tool are fakes; their stdout is emulated too, so that a
+ # function that leaked it into its return value would show.
+
+function Invoke-Wiring([string[]]$Arguments) {
+    $script:ProducerCalls.Add("wiring:" + $Arguments[0])
+    if ($script:WiringFails -ceq $Arguments[0]) { throw ("synthetic wiring failure in " + $Arguments[0]) }
+    Write-Output ("python stdout of " + $Arguments[0])
+}
+function Invoke-FreezeTool([string[]]$Arguments) {
+    $script:ProducerCalls.Add("freeze:" + $Arguments[0])
+    $script:FreezeToolArguments.Add([string[]]@($Arguments))
+    if ($script:FreezeToolFails) { throw "synthetic freeze tool failure" }
+    Write-Output ("python stdout of " + $Arguments[0])
+}
+function Invoke-Command {
+    param($Session, $ScriptBlock, $ArgumentList)
+    $script:ProducerCalls.Add("target:freeze_snapshot")
+    $script:FreezeInvokeArguments = @($ArgumentList)
+    return $script:FakeSnapshot
+}
+
+function New-LiveRecord([long]$RecordId, [int]$EventId) {
+    return [ordered]@{
+        RecordId = $RecordId; EventId = $EventId; Computer = $HOST_A; Channel = $CHANNEL
+        TimeCreated = "2030-01-01T00:00:02.0000000Z"; Provider = "Microsoft-Windows-Sysmon"
+        EventData = [ordered]@{ Image = "C:\Windows\System32\cmd.exe" }
+    }
+}
+
+function New-FakeFreezeSnapshot([string[]]$BoundKeys, [object[]]$Remaining = @(), [string[]]$Failures = @(), $Count = $null) {
+    if ($null -eq $Count) { $Count = @($BoundKeys).Count }
+    # The shape a WinRM answer arrives in: a hashtable with list members.
+    return @{
+        target_queried_at_utc = "2030-01-01T00:13:01.0000000Z"; source_lower_record_id = [long]1001
+        source_upper_record_id = [long]1006; lower_anchor_raw_xml_sha256 = ("1" * 64)
+        upper_anchor_raw_xml_sha256 = ("2" * 64); oldest_record_number = [long]900
+        log_creation_time_utc = $CREATED; target_event_count = $Count; target_identity_sha256 = ("a" * 64)
+        bound_keys = [System.Collections.ArrayList]@($BoundKeys); failures = [System.Collections.ArrayList]@($Failures)
+        records = [System.Collections.ArrayList]@($Remaining)
+    }
+}
+
+function New-ProducerFixture {
+    param([object[]]$PrePublished = @(), [string]$RequestHost = $HOST_A, [switch]$NoRequest)
+    $root = New-TempRoot
+    $script:runSpool = Join-Path $root ("spool\" + $RUN_ID)
+    $script:rawRoot = Join-Path $script:runSpool "raw-segments"
+    New-Item -ItemType Directory -Path $script:rawRoot -Force | Out-Null
+    $script:statePath = Join-Path $script:runSpool "producer-state.json"
+    $control = Join-Path $root ("control\" + $RUN_ID)
+    New-Item -ItemType Directory -Path $control -Force | Out-Null
+    $script:RunId = $RUN_ID
+    $script:TargetHost = $HOST_A
+    $script:ContextStartUtc = $CONTEXT_START
+    $script:ChunkMaxEvents = 200
+    $script:AllowedLatenessMs = 2000
+    $script:RequiredPartitionContract = Join-Path $root "contract.json"
+    $script:freezeRequestPath = Join-Path $control $R1_FREEZE_REQUEST_FILE
+    $script:freezeGenerationPath = Join-Path $control $R1_FREEZE_GENERATION_FILE
+    $script:freezeAckPath = Join-Path $control $R1_FREEZE_ACK_FILE
+    $script:freezeFailurePath = Join-Path $control $R1_FREEZE_FAILURE_FILE
+    $script:producerBindingPath = Join-Path $control $R1_PRODUCER_BINDING_FILE
+    $script:state = [ordered]@{ last_record_id = 0; segment_no = 0; chunk_sequence = 0; message_ordinal = 0 }
+    $script:ProducerCalls = New-Object System.Collections.Generic.List[string]
+    $script:FreezeToolArguments = New-Object System.Collections.Generic.List[object]
+    $script:FreezeInvokeArguments = $null
+    $script:WiringFails = ""
+    $script:FreezeToolFails = $false
+    $t = [datetime]::new(2030, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+    $fixtureRequest = New-R1FreezeRequest -RunId $RUN_ID -TargetHost $RequestHost -Channel $CHANNEL `
+        -CandidateBoundaryAt $t.AddSeconds(720) -ObservationBoundaryAt $t.AddSeconds(780) -RequestedAt $t.AddSeconds(781)
+    if (-not $NoRequest) { Write-R1PositionJson -Path $script:freezeRequestPath -Value $fixtureRequest | Out-Null }
+    if (@($PrePublished).Count -gt 0) {
+        Publish-Records -Records $PrePublished -TargetQueriedAtUtc "2030-01-01T00:01:00.0000000Z" `
+            -ControllerReceivedAtUtc "2030-01-01T00:01:00.0000000Z" | Out-Null
+    }
+    $script:ProducerCalls.Clear()
+    return [ordered]@{ root = $root; control = $control; request = $fixtureRequest }
+}
+
+function Invoke-FreezeCase {
+    <# Invoke-PositionFreeze, as the producer's loop does: a failure leaves its artifact. #>
+    try {
+        return [ordered]@{ upper = @(Invoke-PositionFreeze "fake-session"); error = $null; code = $null }
+    } catch {
+        $message = [string]$_.Exception.Message
+        return [ordered]@{ upper = $null; error = $message; code = (Write-PositionFreezeFailure $message) }
+    }
+}
+
+function Get-FreezeToolArguments([string]$Command) {
+    return @($script:FreezeToolArguments | Where-Object { $_[0] -ceq $Command } | Select-Object -First 1)
+}
+
+function Get-ArgumentValue([string[]]$Arguments, [string]$Name) {
+    if ($null -eq $Arguments) { return $null }
+    $index = [array]::IndexOf($Arguments, $Name)
+    if ($index -lt 0) { return $null }
+    return $Arguments[$index + 1]
+}
+
+Assert-True "producer: the sidecar and the runner name the same artifacts, schemas and reason codes" (
+    $R1_SIDECAR_FAILURE_SCHEMA -ceq $R1_FREEZE_FAILURE_SCHEMA -and
+    $R1_SIDECAR_BINDING_SCHEMA -ceq $R1_PRODUCER_BINDING_SCHEMA -and
+    ($R1_SIDECAR_FAILURE_CODES -join ",") -ceq ($R1_FREEZE_FAILURE_CODES -join ",") -and
+    $R1_SIDECAR_CHANNEL -ceq $CHANNEL)
+
+# Several published keys, all of them the bound records.
+$fixture = New-ProducerFixture -PrePublished @((New-LiveRecord 1001 1), (New-LiveRecord 1002 1))
+$publishedBefore = @(Get-PublishedLiveKeys)
+$script:FakeSnapshot = New-FakeFreezeSnapshot @("1001:1", "1002:1", "1004:3", "1005:1") `
+    @((New-LiveRecord 1004 3), (New-LiveRecord 1005 1))
+$case = Invoke-FreezeCase
+$ackArguments = [string[]](Get-FreezeToolArguments "write-freeze-ack")
+$liveAfter = @(Get-PublishedLiveKeys)
+Assert-True "producer: published keys come back as a flat array of RecordId:EventId strings" (
+    $publishedBefore.Count -eq 2 -and $publishedBefore[0] -is [string] -and
+    ($publishedBefore -join ",") -ceq "1001:1,1002:1" -and
+    ($liveAfter -join ",") -ceq "1001:1,1002:1,1004:3,1005:1" -and
+    ($liveAfter -join ",") -notmatch 'System\.')
+Assert-True "producer: the freeze asks Target-A with the first published record as the lower bound" (
+    $null -eq $case.error -and [long]$script:FreezeInvokeArguments[2] -eq 1001 -and
+    [long]$script:FreezeInvokeArguments[0] -eq 1002 -and [string]$script:FreezeInvokeArguments[3] -ceq $HOST_A)
+Assert-True "producer: the only output of the freeze is the upper RecordId, not the Python stdout" (
+    @($case.upper).Count -eq 1 -and [long]@($case.upper)[0] -eq 1006 -and [long]$script:state.last_record_id -eq 1006)
+Assert-True "producer: publish, delivery, comparison, generation and ack run in that order" (
+    ($script:ProducerCalls -join ",") -ceq
+        "target:freeze_snapshot,wiring:publish-segment,wiring:consume,freeze:write-generation-observation,freeze:write-freeze-ack")
+Assert-True "producer: the ack names the bound, its Event count and the covered chunks, with no array text" (
+    (Get-ArgumentValue $ackArguments "--lower") -ceq "1001" -and (Get-ArgumentValue $ackArguments "--upper") -ceq "1006" -and
+    (Get-ArgumentValue $ackArguments "--target-event-count") -ceq "4" -and
+    (Get-ArgumentValue $ackArguments "--covered-through-chunk-sequence") -ceq "2" -and
+    (Get-ArgumentValue $ackArguments "--allowed-lateness-ms") -ceq "2000" -and
+    (Get-ArgumentValue $ackArguments "--run-id") -ceq $RUN_ID -and
+    (@($script:FreezeToolArguments | ForEach-Object { $_ -join " " }) -join " ") -notmatch 'System\.' -and
+    -not (Test-Path -LiteralPath $script:freezeFailurePath))
+
+# Nothing published before the freeze.
+$fixture = New-ProducerFixture
+$script:FakeSnapshot = New-FakeFreezeSnapshot @("1001:1", "1004:3") @((New-LiveRecord 1001 1), (New-LiveRecord 1004 3))
+$empty = @(Get-PublishedLiveKeys)
+$case = Invoke-FreezeCase
+$ackArguments = [string[]](Get-FreezeToolArguments "write-freeze-ack")
+Assert-True "producer: with nothing published before, the lower bound is unknown and every bound record is published" (
+    $empty.Count -eq 0 -and $null -eq $case.error -and [long]$script:FreezeInvokeArguments[2] -eq 0 -and
+    (Get-ArgumentValue $ackArguments "--target-event-count") -ceq "2" -and
+    (Get-ArgumentValue $ackArguments "--covered-through-chunk-sequence") -ceq "1")
+
+function Get-FailureRecord { return (Get-Content -LiteralPath $script:freezeFailurePath -Raw -Encoding UTF8 | ConvertFrom-Json) }
+
+# A bound record the live polls skipped.
+$fixture = New-ProducerFixture -PrePublished @((New-LiveRecord 1001 1), (New-LiveRecord 1004 3))
+$script:FakeSnapshot = New-FakeFreezeSnapshot @("1001:1", "1002:1", "1004:3")
+$case = Invoke-FreezeCase
+$failure = Get-FailureRecord
+$failureText = Get-Content -LiteralPath $script:freezeFailurePath -Raw
+Assert-True "producer: a bound record missing from the live records fails closed before the freeze tool" (
+    $case.error -clike "``[live_bound_mismatch``]*" -and $case.code -ceq "live_bound_mismatch" -and
+    @($script:ProducerCalls | Where-Object { $_ -like "freeze:*" }).Count -eq 0)
+Assert-True "producer: the failure artifact binds the Run, host, request bytes and partition and holds only a code" (
+    $failure.schema -ceq $R1_FREEZE_FAILURE_SCHEMA -and $failure.run_id -ceq $RUN_ID -and $failure.host_id -ceq $HOST_A -and
+    $failure.request_id -ceq ($RUN_ID + "-freeze-0001") -and
+    $failure.request_sha256 -ceq (Get-R1FileSha256 -Path $script:freezeRequestPath) -and
+    $failure.partition.source_channel -ceq $CHANNEL -and $failure.reason_code -ceq "live_bound_mismatch" -and
+    @($failure.snapshot_failures).Count -eq 0 -and $failure.failed_at -cmatch $R1_UTC_MS_PATTERN -and
+    (@($failure.PSObject.Properties.Name) -join ",") -ceq
+        "schema,contract_version,run_id,host_id,request_id,request_sha256,partition,failed_at,reason_code,snapshot_failures" -and
+    $failureText -notmatch 'published live records|Exception|\\\\|password|postgres')
+Assert-Throws "producer: the runner stops on this failure with its reason code" {
+    Test-R1FreezeFailure -Request $fixture.request -RequestSha256 (Get-R1FileSha256 -Path $script:freezeRequestPath) `
+        -Failure (Get-FailureRecord)
+} "*collection freeze failure: live_bound_mismatch"
+Assert-Throws "producer: a failure artifact is written once; another failure does not replace it" {
+    Write-PositionFreezeFailure "[freeze_tool_failed] another failure"
+} "*immutable path conflict*"
+Assert-True "  ... and the first failure is kept" ((Get-FailureRecord).reason_code -ceq "live_bound_mismatch")
+
+# Duplicate and malformed keys.
+$fixture = New-ProducerFixture
+$segment = Join-Path $script:rawRoot "sysmon-00000001.jsonl"
+foreach ($bad in @(
+        @{ name = "a RecordId published twice"; lines = @('{"RecordId":1001,"EventId":1}', '{"RecordId":1001,"EventId":1}') },
+        @{ name = "a RecordId that is a string"; lines = @('{"RecordId":"1001","EventId":1}') },
+        @{ name = "an Event ID other than 1 or 3"; lines = @('{"RecordId":1001,"EventId":11}') },
+        @{ name = "a record without an Event ID"; lines = @('{"RecordId":1001}') },
+        @{ name = "a line that is not JSON"; lines = @('{"RecordId":') })) {
+    [System.IO.File]::WriteAllText($segment, (($bad.lines -join "`n") + "`n"))
+    $script:state.segment_no = 1
+    Assert-Throws ("producer: " + $bad.name + " is an invalid live key") { @(Get-PublishedLiveKeys) } "``[live_key_invalid``]*"
+}
+$script:state.segment_no = 2
+[System.IO.File]::WriteAllText($segment, ('{"RecordId":1001,"EventId":1}' + "`n"))
+Assert-Throws "producer: a published segment that is gone is reported as such" { @(Get-PublishedLiveKeys) } "``[live_segment_missing``]*"
+foreach ($bad in @(
+        @{ name = "a bound key without its Event ID"; keys = @("1001-1"); count = 1 },
+        @{ name = "a bound key of another Event ID"; keys = @("1001:11"); count = 1 },
+        @{ name = "a bound key repeated"; keys = @("1001:1", "1001:1"); count = 2 },
+        @{ name = "bound keys out of order"; keys = @("1004:3", "1001:1"); count = 2 },
+        @{ name = "a bound Event count that is not the number of keys"; keys = @("1001:1"); count = 2 })) {
+    $fixture = New-ProducerFixture
+    $script:FakeSnapshot = New-FakeFreezeSnapshot $bad.keys @() @() $bad.count
+    $case = Invoke-FreezeCase
+    Assert-True ("producer: " + $bad.name + " fails closed before anything is published") (
+        $case.code -ceq "bound_key_invalid" -and @($script:ProducerCalls | Where-Object { $_ -like "wiring:*" }).Count -eq 0)
+}
+
+# Target-A's snapshot refused the bound.
+$fixture = New-ProducerFixture -PrePublished @((New-LiveRecord 1001 1))
+$script:FakeSnapshot = New-FakeFreezeSnapshot @("1001:1") @() @("view_mismatch", "host_or_channel_mismatch")
+$case = Invoke-FreezeCase
+Assert-True "producer: a refused snapshot publishes nothing and names Target-A's own failure codes" (
+    $case.code -ceq "freeze_snapshot_rejected" -and
+    (@((Get-FailureRecord).snapshot_failures) -join ",") -ceq "view_mismatch,host_or_channel_mismatch" -and
+    ($script:ProducerCalls -join ",") -ceq "target:freeze_snapshot")
+Assert-Throws "  ... and the runner reports them" {
+    Test-R1FreezeFailure -Request $fixture.request -RequestSha256 (Get-R1FileSha256 -Path $script:freezeRequestPath) `
+        -Failure (Get-FailureRecord)
+} "*freeze_snapshot_rejected (view_mismatch, host_or_channel_mismatch)"
+
+# Delivery and the freeze tool.
+$fixture = New-ProducerFixture -PrePublished @((New-LiveRecord 1001 1))
+$script:FakeSnapshot = New-FakeFreezeSnapshot @("1001:1", "1004:3") @((New-LiveRecord 1004 3))
+$script:WiringFails = "consume"
+$case = Invoke-FreezeCase
+Assert-True "producer: a delivery to Role3 that fails stops the freeze before the freeze tool" (
+    $case.code -ceq "delivery_failed" -and @($script:ProducerCalls | Where-Object { $_ -like "freeze:*" }).Count -eq 0)
+$fixture = New-ProducerFixture -PrePublished @((New-LiveRecord 1001 1))
+$script:FakeSnapshot = New-FakeFreezeSnapshot @("1001:1")
+$script:FreezeToolFails = $true
+$case = Invoke-FreezeCase
+Assert-True "producer: a freeze tool that refuses is a failure with its own code" (
+    $case.code -ceq "freeze_tool_failed" -and (Get-FailureRecord).reason_code -ceq "freeze_tool_failed")
+
+# The request.
+$fixture = New-ProducerFixture -PrePublished @((New-LiveRecord 1001 1)) -RequestHost "TARGET-B"
+$script:FakeSnapshot = New-FakeFreezeSnapshot @("1001:1")
+$case = Invoke-FreezeCase
+Assert-True "producer: a request of another host is refused before Target-A is asked" (
+    $case.code -ceq "request_binding_mismatch" -and $script:ProducerCalls.Count -eq 0)
+$fixture = New-ProducerFixture -NoRequest
+[System.IO.File]::WriteAllText($script:freezeRequestPath, "{not json")
+$case = Invoke-FreezeCase
+Assert-True "producer: an unreadable request is its own failure, with no request binding" (
+    $case.code -ceq "request_unreadable" -and $script:ProducerCalls.Count -eq 0 -and
+    -not [string]::IsNullOrEmpty((Get-FailureRecord).request_sha256))
+
+# Stable reason codes.
+foreach ($message in @("boom", "[not_a_code] boom", "[live_bound_mismatch boom")) {
+    $fixture = New-ProducerFixture
+    Assert-True ("producer: the message '" + $message + "' is reported as unexpected_error") (
+        (Write-PositionFreezeFailure $message) -ceq "unexpected_error" -and (Get-FailureRecord).reason_code -ceq "unexpected_error")
+}
+
+# The binding the runner checks before its first action.
+$fixture = New-ProducerFixture
+$contract = [ordered]@{ schema = "r1-required-partitions"; contract_version = "v0.1"; target_host = $HOST_A
+    required_partitions = @([ordered]@{ source = "sysmon"; source_channel = $CHANNEL }) }
+[System.IO.File]::WriteAllText($script:RequiredPartitionContract, ($contract | ConvertTo-Json -Depth 4))
+Write-PositionProducerBinding
+$bindingBytes = [System.IO.File]::ReadAllBytes($script:producerBindingPath)
+Write-PositionProducerBinding
+$binding = Get-Content -LiteralPath $script:producerBindingPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$bindingPaths = Get-R1PositionPaths -ControlDir $fixture.control
+Assert-True "producer: the binding names the Run, host, partition and the contract by digest, the same on a restart" (
+    $binding.schema -ceq $R1_PRODUCER_BINDING_SCHEMA -and $binding.run_id -ceq $RUN_ID -and $binding.host_id -ceq $HOST_A -and
+    $binding.partition.source_channel -ceq $CHANNEL -and
+    $binding.required_partition_contract.sha256 -ceq (Get-R1FileSha256 -Path $script:RequiredPartitionContract) -and
+    [Convert]::ToBase64String($bindingBytes) -ceq [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:producerBindingPath)))
+Assert-R1PositionPreflight -Paths $bindingPaths -RunId $RUN_ID -TargetHost $HOST_A -Channel $CHANNEL -Scenario $null
+Assert-True "preflight: the runner accepts the binding of its own producer" $true
+Assert-Throws "preflight: a runner on another host refuses the binding" {
+    Assert-R1PositionPreflight -Paths $bindingPaths -RunId $RUN_ID -TargetHost "TARGET-B" -Channel $CHANNEL -Scenario $null
+} "*collects another Run, host or partition*"
+Assert-Throws "preflight: a runner of another Run refuses the binding" {
+    Assert-R1PositionPreflight -Paths $bindingPaths -RunId "RUN-20300101-902" -TargetHost $HOST_A -Channel $CHANNEL -Scenario $null
+} "*collects another Run, host or partition*"
+Assert-Throws "preflight: a scenario that states another host is refused" {
+    Assert-R1PositionPreflight -Paths $bindingPaths -RunId $RUN_ID -TargetHost $HOST_A -Channel $CHANNEL `
+        -Scenario ([pscustomobject]@{ run_metadata = [pscustomobject]@{ target_host = "TARGET-B" } })
+} "*scenario states the target host TARGET-B*"
+$contract.target_host = "TARGET-B"
+[System.IO.File]::WriteAllText($script:RequiredPartitionContract, ($contract | ConvertTo-Json -Depth 4))
+Assert-Throws "preflight: a contract changed after the producer started is refused" {
+    Assert-R1PositionPreflight -Paths $bindingPaths -RunId $RUN_ID -TargetHost $HOST_A -Channel $CHANNEL -Scenario $null
+} "*not the one the producer was started with*"
+$fixture = New-ProducerFixture
+[System.IO.File]::WriteAllText($script:RequiredPartitionContract, ($contract | ConvertTo-Json -Depth 4))
+Assert-Throws "producer: a contract of another host is refused at start" { Write-PositionProducerBinding } "*not a v0.1 contract of this TargetHost*"
+$contract.target_host = $HOST_A
+$contract.required_partitions = @(
+    [ordered]@{ source = "sysmon"; source_channel = $CHANNEL },
+    [ordered]@{ source = "security"; source_channel = "Security" })
+[System.IO.File]::WriteAllText($script:RequiredPartitionContract, ($contract | ConvertTo-Json -Depth 4))
+Assert-Throws "producer: a contract with another partition is refused at start" { Write-PositionProducerBinding } "*exactly the Sysmon partition*"
+$noBinding = Get-R1PositionPaths -ControlDir (New-TempRoot)
+Assert-Throws "preflight: a run without a producer binding does not start" {
+    Assert-R1PositionPreflight -Paths $noBinding -RunId $RUN_ID -TargetHost $HOST_A -Channel $CHANNEL -Scenario $null
+} "*no producer binding*"
+
+Remove-Item -LiteralPath function:Invoke-Command, function:Invoke-Wiring, function:Invoke-FreezeTool
+
+ # --- 2b. the producer script ----------------------------------------------------------------
 
 $producerPath = Join-Path $PSScriptRoot "..\r1-incremental-sysmon-producer.ps1"
 $producerText = Get-Content -LiteralPath $producerPath -Raw
-$freezeBody = $producerText.Substring($producerText.IndexOf("function Invoke-PositionFreeze"))
-$freezeBody = $freezeBody.Substring(0, $freezeBody.IndexOf("`$runControlDir = "))
-Assert-True "producer: the ack is written only after delivery to Role3 and the comparison with the bound" (
-    $freezeBody.IndexOf('Invoke-Wiring @("consume"') -gt 0 -and
-    $freezeBody.IndexOf('Invoke-Wiring @("consume"') -lt $freezeBody.IndexOf('the published live records are not exactly') -and
-    $freezeBody.IndexOf('the published live records are not exactly') -lt $freezeBody.IndexOf('"write-generation-observation"') -and
-    $freezeBody.IndexOf('"write-generation-observation"') -lt $freezeBody.IndexOf('"write-freeze-ack"'))
+$producerCommonText = Get-Content -LiteralPath (Join-Path $PSScriptRoot "..\r1-incremental-sysmon-producer-common.ps1") -Raw
 Assert-True "producer: the freeze publishes no watermark, no close and no stream control message" (
-    $producerText -notmatch '"publish-watermark"' -and $producerText -notmatch '"publish-close"' -and
-    $producerText -notmatch 'issue-position-close' -and $freezeBody -notmatch 'watermark')
+    ($producerText + $producerCommonText) -notmatch '"publish-watermark"|"publish-close"|issue-position-close|"watermark_at"' -and
+    $producerText -match 'Invoke-PositionFreeze \$session' -and $producerText -match 'Write-PositionFreezeFailure')
 
 $producerRoot = New-TempRoot
 $secure = ConvertTo-SecureString "not-used" -AsPlainText -Force
@@ -262,6 +560,11 @@ Assert-Throws "producer: position finality without consuming is refused before a
 } "*NoConsume cannot be used*"
 $producerControl = Join-Path (Join-Path $producerRoot "control") $RUN_ID
 New-Item -ItemType Directory -Path $producerControl -Force | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $producerControl $R1_FREEZE_FAILURE_FILE), "{}")
+Assert-Throws "producer: a failed freeze is not resumed and no session is opened" {
+    & $producerPath @producerArguments
+} "*failed collection freeze cannot be resumed*"
+Remove-Item -LiteralPath (Join-Path $producerControl $R1_FREEZE_FAILURE_FILE) -Force
 [System.IO.File]::WriteAllText((Join-Path $producerControl $R1_FREEZE_GENERATION_FILE), "{}")
 Assert-Throws "producer: an interrupted freeze is not resumed and no session is opened" {
     & $producerPath @producerArguments
@@ -364,15 +667,19 @@ foreach ($case in @(
 
 $waitRoot = New-TempRoot
 $waitPaths = Get-R1PositionPaths -ControlDir $waitRoot
+Write-R1PositionJson -Path $waitPaths.request -Value $request | Out-Null
+$requestSha256 = Get-R1FileSha256 -Path $waitPaths.request
 $script:WaitNow = $t0.AddSeconds(781)
 $waitClock = { $script:WaitNow }
 $plainSleeper = { param($Seconds) $script:WaitNow = $script:WaitNow.AddSeconds($Seconds) }
-Assert-Throws "wait: no ack within the timeout fails the run" {
-    Wait-R1FreezeAck -Paths $waitPaths -Request $request -TimeoutSec 30 -NowProvider $waitClock -Sleeper $plainSleeper
+Assert-Throws "wait: no ack and no failure within the timeout fails the run" {
+    Wait-R1FreezeAck -Paths $waitPaths -Request $request -RequestSha256 $requestSha256 -TimeoutSec 30 `
+        -NowProvider $waitClock -Sleeper $plainSleeper
 } "*no collection freeze ack within 30 s*"
 [System.IO.File]::WriteAllText($waitPaths.ack, ((New-AckJson) | ConvertTo-Json -Depth 8))
 Assert-Throws "wait: an ack without its generation fails the run" {
-    Wait-R1FreezeAck -Paths $waitPaths -Request $request -TimeoutSec 30 -NowProvider $waitClock -Sleeper $plainSleeper
+    Wait-R1FreezeAck -Paths $waitPaths -Request $request -RequestSha256 $requestSha256 -TimeoutSec 30 `
+        -NowProvider $waitClock -Sleeper $plainSleeper
 } "*without its freeze generation*"
 Remove-Item -LiteralPath $waitPaths.ack -Force
 $script:WaitNow = $t0.AddSeconds(781)
@@ -386,9 +693,144 @@ $producingSleeper = {
         [System.IO.File]::WriteAllText($waitPaths.ack, ((New-AckJson) | ConvertTo-Json -Depth 8))
     }
 }
-$waited = Wait-R1FreezeAck -Paths $waitPaths -Request $request -TimeoutSec 60 -NowProvider $waitClock -Sleeper $producingSleeper
+$waited = Wait-R1FreezeAck -Paths $waitPaths -Request $request -RequestSha256 $requestSha256 -TimeoutSec 60 `
+    -NowProvider $waitClock -Sleeper $producingSleeper
 Assert-True "wait: the run goes on once the producer's ack and generation arrive" (
     $waited.upper -eq 1006 -and $script:Sleeps -eq 3)
+
+function New-FailureJson {
+    param([hashtable]$Set = @{}, [hashtable]$Partition = @{})
+    $failurePartition = [ordered]@{ run_id = $RUN_ID; host_id = $HOST_A; source = "sysmon"; source_channel = $CHANNEL }
+    foreach ($key in $Partition.Keys) { $failurePartition[$key] = $Partition[$key] }
+    $failure = [ordered]@{
+        schema = $R1_FREEZE_FAILURE_SCHEMA; contract_version = "v0.1"; run_id = $RUN_ID; host_id = $HOST_A
+        request_id = ($RUN_ID + "-freeze-0001"); request_sha256 = $requestSha256; partition = $failurePartition
+        failed_at = "2030-01-01T00:13:04.000Z"; reason_code = "live_bound_mismatch"; snapshot_failures = @()
+    }
+    foreach ($key in $Set.Keys) { $failure[$key] = $Set[$key] }
+    return ($failure | ConvertTo-Json -Depth 6)
+}
+
+function New-WaitDirectory {
+    $paths = Get-R1PositionPaths -ControlDir (New-TempRoot)
+    Write-R1PositionJson -Path $paths.request -Value $request | Out-Null
+    return $paths
+}
+
+# A failure that appears while the run waits ends the wait at once.
+$failPaths = New-WaitDirectory
+$script:WaitNow = $t0.AddSeconds(781)
+$script:Sleeps = 0
+$failingSleeper = {
+    param($Seconds)
+    $script:WaitNow = $script:WaitNow.AddSeconds($Seconds)
+    $script:Sleeps++
+    if ($script:Sleeps -eq 2) { [System.IO.File]::WriteAllText($failPaths.freeze_failure, (New-FailureJson)) }
+}
+Assert-Throws "wait: the producer's failure ends the wait with its reason code" {
+    Wait-R1FreezeAck -Paths $failPaths -Request $request -RequestSha256 $requestSha256 -TimeoutSec 900 `
+        -NowProvider $waitClock -Sleeper $failingSleeper
+} "*collection freeze failure: live_bound_mismatch"
+Assert-True "  ... after two polls, not after the 900 s timeout" ($script:Sleeps -eq 2)
+
+foreach ($case in @(
+        @{ name = "of another Run"; set = @{ run_id = "RUN-20300101-902" } },
+        @{ name = "of another host"; set = @{ host_id = "TARGET-B" } },
+        @{ name = "of another request"; set = @{ request_id = ($RUN_ID + "-freeze-0002") } },
+        @{ name = "of an earlier request of this Run"; set = @{ request_sha256 = ("e" * 64) } },
+        @{ name = "of another partition"; partition = @{ source_channel = "Security" } },
+        @{ name = "of another schema"; set = @{ schema = "r1-sysmon-collection-freeze-ack" } })) {
+    $otherPaths = New-WaitDirectory
+    $set = @{}; if ($case.ContainsKey("set")) { $set = $case.set }
+    $partitionSet = @{}; if ($case.ContainsKey("partition")) { $partitionSet = $case.partition }
+    [System.IO.File]::WriteAllText($otherPaths.freeze_failure, (New-FailureJson -Set $set -Partition $partitionSet))
+    Assert-Throws ("wait: a failure " + $case.name + " is not consumed and the run stops") {
+        Wait-R1FreezeAck -Paths $otherPaths -Request $request -RequestSha256 $requestSha256 -TimeoutSec 900 `
+            -NowProvider $waitClock -Sleeper $plainSleeper
+    } "*a collection freeze failure of another Run, request, host or partition*"
+}
+$unknownPaths = New-WaitDirectory
+[System.IO.File]::WriteAllText($unknownPaths.freeze_failure, (New-FailureJson -Set @{ reason_code = "made_up" }))
+Assert-Throws "wait: a failure with an unknown reason code still stops the run" {
+    Wait-R1FreezeAck -Paths $unknownPaths -Request $request -RequestSha256 $requestSha256 -TimeoutSec 900 `
+        -NowProvider $waitClock -Sleeper $plainSleeper
+} "*unknown reason code 'made_up'*"
+$bothPaths = New-WaitDirectory
+[System.IO.File]::WriteAllText($bothPaths.freeze_generation, ((New-GenerationJson) | ConvertTo-Json -Depth 8))
+[System.IO.File]::WriteAllText($bothPaths.ack, ((New-AckJson) | ConvertTo-Json -Depth 8))
+[System.IO.File]::WriteAllText($bothPaths.freeze_failure, (New-FailureJson))
+Assert-Throws "wait: an ack next to a failure fails the run" {
+    Wait-R1FreezeAck -Paths $bothPaths -Request $request -RequestSha256 $requestSha256 -TimeoutSec 900 `
+        -NowProvider $waitClock -Sleeper $plainSleeper
+} "*both a collection freeze ack and a collection freeze failure*"
+$stalePaths = Get-R1PositionPaths -ControlDir (New-TempRoot)
+[System.IO.File]::WriteAllText($stalePaths.freeze_failure, (New-FailureJson))
+Assert-Throws "wait: a failure left from an earlier attempt keeps the run from starting" {
+    Assert-R1PositionControlFree -Paths $stalePaths
+} "*position-finality artifact of this run already exists*"
+
+ # --- 3b. the candidate boundary attestation -----------------------------------------------
+
+$runEndResult = [ordered]@{
+    completed_utc = "2030-01-01T00:12:00.000Z"
+    ended         = @(
+        @{ process_id = 4100; image = "cmd.exe"; outcome = "stopped" },
+        @{ process_id = 4200; image = "powershell.exe"; outcome = "already_exited" })
+}
+$lineageRecords = @(
+    [ordered]@{ role = "final_tool"; process_guid = "{00000000-0000-0000-0000-000000004200}"
+        image = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" },
+    [ordered]@{ role = "intermediate"; process_guid = "{00000000-0000-0000-0000-000000004100}"
+        image = "C:\Windows\System32\cmd.exe" },
+    [ordered]@{ role = "root"; process_guid = "{00000000-0000-0000-0000-000000000900}"
+        image = "C:\Windows\System32\wbem\WmiPrvSE.exe" })
+$boundaryAction = [pscustomobject]@{ action_id = "A04"; offset_sec = 720; step = "run_end"; action_type = "run_end"
+    description = "synthetic" }
+$attestationArguments = @{
+    BoundaryAction = $boundaryAction; CompletedUtc = "2030-01-01T00:12:00.000Z"
+    RequestCandidateBoundaryAt = $request.candidate_boundary_at; RunEnd = $runEndResult
+    IntermediatePid = 4100; FinalPid = 4200; LineageRecords = $lineageRecords
+}
+$attestation = New-R1BoundaryAttestation @attestationArguments
+Assert-True "attestation: it holds exactly the fields of R1CandidateBoundaryAttestation" (
+    (@($attestation.Keys) -join ",") -ceq "action_id,step,action_type,completed_at,no_actions_after_boundary,owned_processes" -and
+    (@($attestation.owned_processes[0].Keys) -join ",") -ceq "role,image,process_guid,terminal_state")
+Assert-True "attestation: the final scenario action, the run_end completion and both Run-owned processes" (
+    $attestation.action_id -ceq "A04" -and $attestation.completed_at -ceq "2030-01-01T00:12:00.000Z" -and
+    $attestation.no_actions_after_boundary -eq $true -and
+    $attestation.owned_processes[0].role -ceq "intermediate" -and $attestation.owned_processes[0].image -ceq "cmd.exe" -and
+    $attestation.owned_processes[0].process_guid -ceq "{00000000-0000-0000-0000-000000004100}" -and
+    $attestation.owned_processes[0].terminal_state -ceq "stopped" -and
+    $attestation.owned_processes[1].role -ceq "final_tool" -and $attestation.owned_processes[1].image -ceq "powershell.exe" -and
+    $attestation.owned_processes[1].terminal_state -ceq "already_exited")
+foreach ($case in @(
+        @{ name = "a completion that is not the freeze request boundary"; set = @{ CompletedUtc = "2030-01-01T00:12:01.000Z" }
+           like = "*not the candidate boundary of the freeze request*" },
+        @{ name = "a final action that is not run_end"; set = @{ BoundaryAction = [pscustomobject]@{
+                action_id = "A03"; step = "connect"; action_type = "network_connection" } }; like = "*not the run_end boundary*" },
+        @{ name = "a run_end result without the final tool"; set = @{ FinalPid = 4300 }; like = "*does not account once for the final_tool*" },
+        @{ name = "an owned process that is still running"; set = @{ RunEnd = [ordered]@{ ended = @(
+                @{ process_id = 4100; outcome = "stopped" }, @{ process_id = 4200; outcome = "running" }) } }
+           like = "*not an accepted terminal state*" },
+        @{ name = "a lineage without the intermediate"; set = @{ LineageRecords = @($lineageRecords[0]) }
+           like = "*no single intermediate with a ProcessGuid*" })) {
+    $arguments = $attestationArguments.Clone()
+    foreach ($key in $case.set.Keys) { $arguments[$key] = $case.set[$key] }
+    Assert-Throws ("attestation: " + $case.name + " is not attested") { New-R1BoundaryAttestation @arguments } $case.like
+}
+$attestationPath = Join-Path (New-TempRoot) "candidate-boundary-attestation.json"
+Write-R1PositionJsonOnce -Path $attestationPath -Value $attestation | Out-Null
+$attestationBytes = [System.IO.File]::ReadAllBytes($attestationPath)
+Write-R1PositionJsonOnce -Path $attestationPath -Value $attestation | Out-Null
+Assert-True "attestation: writing the same attestation again keeps the bytes" (
+    [Convert]::ToBase64String($attestationBytes) -ceq [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($attestationPath)))
+$otherAttestation = New-R1BoundaryAttestation @attestationArguments
+$otherAttestation.owned_processes[0].terminal_state = "exited_by_itself"
+Assert-Throws "attestation: another attestation at the same path fails closed" {
+    Write-R1PositionJsonOnce -Path $attestationPath -Value $otherAttestation
+} "*immutable control artifact conflict*"
+Assert-True "  ... and the first attestation is kept" (
+    [Convert]::ToBase64String($attestationBytes) -ceq [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($attestationPath)))
 
  # --- 4. the RecordId-bounded export and the snapshot ------------------------------------
 

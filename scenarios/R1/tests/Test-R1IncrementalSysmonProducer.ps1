@@ -118,10 +118,20 @@ $stableTargets = {
 }
 $stable = & $R1_INCREMENTAL_SYSMON_QUERY 30 "2030-01-01T00:00:00Z" `
     $stableCursor $stableTargets $identityConverter
+# The common file also holds the Controller side of the position freeze. Neither
+# bounded query uses lateness or a watermark, nothing in the file writes a
+# watermark time or a close, and the one use of AllowedLatenessMs is the
+# provenance value the freeze ack carries.
+$commonCode = (($commonText -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
 Assert-True "a consistent bounded snapshot still does not authorize watermark or close" (
     [bool]$stable.snapshot_consistent -and $stable.records.Count -eq 1 -and
     [long]$stable.target_high_water_record_id -eq 40 -and
-    $commonText -notmatch 'watermark_at|AllowedLateness')
+    $R1_INCREMENTAL_SYSMON_QUERY.ToString() -notmatch 'watermark|AllowedLateness' -and
+    $R1_POSITION_FREEZE_SNAPSHOT.ToString() -notmatch 'watermark|AllowedLateness' -and
+    $commonText -notmatch 'watermark_at' -and
+    $commonText -notmatch '"publish-watermark"|"publish-close"|run_closed' -and
+    [regex]::Matches($commonCode, 'AllowedLateness').Count -eq 1 -and
+    $commonCode -match '"--allowed-lateness-ms", \[string\]\$AllowedLatenessMs')
 
 # A restart does not consume or export finality emitted by the removed inferred
 # path. The immutable state file is left untouched for operator inspection.

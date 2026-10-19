@@ -17,7 +17,11 @@
     collection-freeze-ack.json through
     incident_awareness.pipeline.r1_record_bounded_freeze. Later polls publish only
     records above the bound (post-bound chunks), and the sidecar stops once the
-    runner writes run-finalized.json. Neither file is a source watermark or
+    runner writes run-finalized.json. At start it writes
+    collection-producer-binding.json (Run, host, partition, contract) for the
+    runner's check before any action, and a freeze that fails leaves
+    collection-freeze-failed.json with a stable reason code so the runner stops
+    waiting at once. Neither file is a source watermark or
     run_closed, and neither claims Sysmon provider queue drain or completeness
     outside the bound.
 #>
@@ -59,17 +63,6 @@ $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $env:PYTHONPATH = Join-Path $projectRoot "src"
 . (Join-Path $PSScriptRoot "r1-incremental-sysmon-producer-common.ps1")
 
-function Write-AtomicText([string]$Path, [string]$Text) {
-    $temp = $Path + "." + [Guid]::NewGuid().ToString("N") + ".tmp"
-    [IO.File]::WriteAllText($temp, $Text, $utf8)
-    if (Test-Path -LiteralPath $Path) {
-        if ([IO.File]::ReadAllText($Path) -cne $Text) { throw "immutable path conflict: $Path" }
-        Remove-Item -LiteralPath $temp -Force
-        return
-    }
-    [IO.File]::Move($temp, $Path)
-}
-
 function Invoke-Wiring([string[]]$Arguments) {
     Push-Location $projectRoot
     try {
@@ -90,112 +83,6 @@ function Invoke-FreezeTool([string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "r1_record_bounded_freeze failed with exit code $LASTEXITCODE" }
 }
 
-function Save-ProducerState {
-    $stateTemp = $statePath + "." + [Guid]::NewGuid().ToString("N") + ".next"
-    [IO.File]::WriteAllText($stateTemp, (($state | ConvertTo-Json -Compress) + "`n"), $utf8)
-    Move-Item -LiteralPath $stateTemp -Destination $statePath -Force
-}
-
-# Write the records of one answer as raw segments, one chunk per segment.
-function Publish-Records([object[]]$Records, [string]$TargetQueriedAtUtc, [string]$ControllerReceivedAtUtc) {
-    for ($offset = 0; $offset -lt $Records.Count; $offset += $ChunkMaxEvents) {
-        $end = [Math]::Min($offset + $ChunkMaxEvents - 1, $Records.Count - 1)
-        $slice = @($Records[$offset..$end])
-        $state.segment_no++
-        $state.chunk_sequence++
-        $state.message_ordinal++
-        $rawPath = Join-Path $rawRoot ("sysmon-{0:D8}.jsonl" -f $state.segment_no)
-        $metaPath = $rawPath + ".capture.json"
-        $lines = @($slice | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 8 })
-        if (-not (Test-Path -LiteralPath $metaPath)) {
-            Write-AtomicText $metaPath (([ordered]@{
-                target_queried_at_utc = $TargetQueriedAtUtc
-                controller_received_at_utc = $ControllerReceivedAtUtc
-                observed_at_utc = $ControllerReceivedAtUtc
-            } | ConvertTo-Json -Compress) + "`n")
-        }
-        Write-AtomicText $rawPath (($lines -join "`n") + "`n")
-        $capture = Get-Content -LiteralPath $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        Invoke-Wiring @("publish-segment", "--spool-root", $runSpool,
-            "--required-partition-contract", $RequiredPartitionContract,
-            "--target-host", $TargetHost, "--run-id", $RunId,
-            "--raw-jsonl", $rawPath, "--raw-log-id", ("R1-INCREMENTAL-" + $RunId + "-SYSMON"),
-            "--segment-no", [string]$state.segment_no,
-            "--chunk-sequence", [string]$state.chunk_sequence,
-            "--message-ordinal", [string]$state.message_ordinal,
-            "--observed-at", [string]$capture.observed_at_utc)
-        $state.last_record_id = [long]$slice[-1].RecordId
-    }
-}
-
-# "RecordId:EventId" of every published raw record, in segment order.
-function Get-PublishedLiveKeys {
-    $keys = New-Object System.Collections.Generic.List[string]
-    $previous = [long]0
-    for ($segment = 1; $segment -le [int64]$state.segment_no; $segment++) {
-        $rawPath = Join-Path $rawRoot ("sysmon-{0:D8}.jsonl" -f $segment)
-        if (-not (Test-Path -LiteralPath $rawPath)) { throw "published raw segment is missing: $rawPath" }
-        foreach ($line in @(Get-Content -LiteralPath $rawPath -Encoding UTF8)) {
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
-            $record = $line | ConvertFrom-Json
-            $recordId = [long]$record.RecordId
-            if ($recordId -le $previous) { throw "published raw records are not in ascending RecordId order" }
-            $previous = $recordId
-            $keys.Add(("{0}:{1}" -f $recordId, [int]$record.EventId))
-        }
-    }
-    return , $keys.ToArray()
-}
-
-# The producer side of one collection freeze. Nothing is written to the control
-# directory unless every bound record is published, delivered and acked.
-function Invoke-PositionFreeze($Session) {
-    $published = @(Get-PublishedLiveKeys)
-    $expectedLower = [long]0
-    if ($published.Count -gt 0) { $expectedLower = [long]($published[0].Split(":")[0]) }
-    $snapshot = Invoke-Command -Session $Session -ScriptBlock $R1_POSITION_FREEZE_SNAPSHOT `
-        -ArgumentList @([long]$state.last_record_id, $ContextStartUtc, $expectedLower, $TargetHost)
-    $observedAt = [DateTime]::UtcNow
-    $failures = @($snapshot.failures)
-    if ($failures.Count -gt 0) { throw ("position freeze snapshot failed: " + ($failures -join ", ")) }
-
-    $lower = [long]$snapshot.source_lower_record_id
-    $upper = [long]$snapshot.source_upper_record_id
-    Publish-Records -Records @($snapshot.records) -TargetQueriedAtUtc ([string]$snapshot.target_queried_at_utc) `
-        -ControllerReceivedAtUtc $observedAt.ToString("o")
-    $state.last_record_id = $upper
-    Save-ProducerState
-    Invoke-Wiring @("consume", "--spool-root", $runSpool,
-        "--required-partition-contract", $RequiredPartitionContract,
-        "--target-host", $TargetHost)
-
-    if ([int64]$state.segment_no -ne [int64]$state.chunk_sequence) {
-        throw "raw segment and chunk sequence numbers differ; the freeze ack cannot name its covered chunks"
-    }
-    $live = @(Get-PublishedLiveKeys)
-    if (($live -join ",") -cne (@($snapshot.bound_keys) -join ",")) {
-        throw "the published live records are not exactly the EID 1/3 records of the RecordId bound"
-    }
-
-    $common = @("--request", $freezeRequestPath, "--run-id", $RunId, "--target-host", $TargetHost,
-        "--required-partition-contract", $RequiredPartitionContract,
-        "--lower", [string]$lower, "--upper", [string]$upper)
-    Invoke-FreezeTool (@("write-generation-observation") + $common + @(
-        "--output", $freezeGenerationPath, "--phase", "freeze_ack",
-        "--lower-anchor-raw-xml-sha256", [string]$snapshot.lower_anchor_raw_xml_sha256,
-        "--upper-anchor-raw-xml-sha256", [string]$snapshot.upper_anchor_raw_xml_sha256,
-        "--oldest-record-number", [string]$snapshot.oldest_record_number,
-        "--log-creation-time-utc", [string]$snapshot.log_creation_time_utc,
-        "--observed-at", $observedAt.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")))
-    Invoke-FreezeTool (@("write-freeze-ack") + $common + @(
-        "--output", $freezeAckPath, "--run-spool-root", $runSpool,
-        "--target-event-count", [string]$snapshot.target_event_count,
-        "--target-identity-sha256", [string]$snapshot.target_identity_sha256,
-        "--covered-through-chunk-sequence", [string]$state.chunk_sequence,
-        "--allowed-lateness-ms", [string]$AllowedLatenessMs))
-    return $upper
-}
-
 $runControlDir = Join-Path $ControlRoot $RunId
 $failedControlPath = Join-Path $runControlDir "run-failed.json"
 $abortedControlPath = Join-Path $runControlDir "run-aborted.json"
@@ -203,6 +90,8 @@ $freezeRequestPath = Join-Path $runControlDir "collection-freeze-requested.json"
 $freezeAckPath = Join-Path $runControlDir "collection-freeze-ack.json"
 $freezeGenerationPath = Join-Path $runControlDir "collection-freeze-generation.json"
 $runFinalizedPath = Join-Path $runControlDir "run-finalized.json"
+$freezeFailurePath = Join-Path $runControlDir "collection-freeze-failed.json"
+$producerBindingPath = Join-Path $runControlDir "collection-producer-binding.json"
 if (Test-Path -LiteralPath $failedControlPath) {
     throw "runner failed before completion (found $failedControlPath)"
 }
@@ -308,11 +197,17 @@ if ($PositionFinality) {
         $existingAck = Get-Content -LiteralPath $freezeAckPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $frozenUpper = [long]$existingAck.source_upper_record_id
         if ([long]$state.last_record_id -lt $frozenUpper) { $state.last_record_id = $frozenUpper }
+    } elseif (Test-Path -LiteralPath $freezeFailurePath) {
+        throw "a failed collection freeze cannot be resumed (found $freezeFailurePath)"
     } elseif (Test-Path -LiteralPath $freezeGenerationPath) {
         throw "an interrupted collection freeze cannot be resumed (found $freezeGenerationPath without its ack)"
     } elseif (Test-Path -LiteralPath $runFinalizedPath) {
         throw "run-finalized exists without a collection freeze ack of this sidecar"
     }
+    # The runner checks this before its first action: the same Run, host,
+    # partition and required-partition contract as this sidecar.
+    New-Item -ItemType Directory -Path $runControlDir -Force | Out-Null
+    Write-PositionProducerBinding
 }
 
 $sessionOptions = New-PSSessionOption
@@ -337,7 +232,19 @@ try {
                     throw "run-finalized was written before the collection freeze ack of this sidecar"
                 }
                 if (Test-Path -LiteralPath $freezeRequestPath) {
-                    $frozenUpper = Invoke-PositionFreeze $session
+                    try {
+                        $frozenUpper = Invoke-PositionFreeze $session
+                    } catch {
+                        # The runner stops waiting as soon as this file appears.
+                        $freezeError = $_
+                        try {
+                            $reasonCode = Write-PositionFreezeFailure ([string]$freezeError.Exception.Message)
+                            Write-Host ("collection freeze failed: " + $reasonCode)
+                        } catch {
+                            Write-Host ("writing the collection freeze failure failed: " + $_.Exception.Message)
+                        }
+                        throw $freezeError
+                    }
                     Write-Host ("collection freeze ack written; the RecordId bound ends at " + $frozenUpper)
                     Start-Sleep -Seconds $PollIntervalSec
                     continue

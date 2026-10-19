@@ -157,32 +157,21 @@ def verify_r1_record_bounded_snapshot(sources: R1SnapshotSources) -> R1VerifiedS
             "canonical JSONL event count does not match run-finalized"
         )
 
-    segments = _read_covered_segments(sources.run_spool_root, ack.covered_through_chunk_sequence)
-    if _raw_segment_inventory_sha256(sources.run_spool_root, segments) != (
-        ack.raw_segment_inventory_sha256
-    ):
-        raise R1RecordBoundedSnapshotError(
-            "live raw segment inventory does not match the freeze ack"
-        )
-    live = _live_identities(segments, partition, lower, upper)
-    if len(live) != ack.target_event_count:
-        raise R1RecordBoundedSnapshotError("live raw event count does not match the freeze ack")
-    if set(live) != set(canonical):
+    # The same live-side gates the producer applies before it writes the freeze ack.
+    delivery = verify_r1_live_snapshot_delivery(
+        sources.run_spool_root,
+        partition=partition,
+        lower=lower,
+        upper=upper,
+        covered_through=ack.covered_through_chunk_sequence,
+        expected_inventory_sha256=ack.raw_segment_inventory_sha256,
+        expected_event_count=ack.target_event_count,
+    )
+    if delivery.identities != frozenset(canonical):
         raise R1RecordBoundedSnapshotError(
             "live raw and canonical snapshots do not contain the same Event identities"
         )
-
-    covered, chunk_identities, post_bound = _verify_chunks(
-        sources.run_spool_root,
-        partition=partition,
-        covered_through=ack.covered_through_chunk_sequence,
-        segments=segments,
-        upper=upper,
-    )
-    if chunk_identities != set(live):
-        raise R1RecordBoundedSnapshotError(
-            "covered chunks do not contain exactly the live raw Event identities"
-        )
+    covered, post_bound = delivery.covered_chunks, delivery.post_bound_chunk_sequences
 
     ordered_lines = tuple(identity.line() for identity in sorted(canonical, key=_identity_order))
     return R1VerifiedSnapshotDelivery(
@@ -531,6 +520,7 @@ class R1LiveSnapshotDelivery:
     raw_segment_inventory_sha256: str
     covered_chunks: tuple[R1CoveredChunk, ...]
     post_bound_chunk_sequences: tuple[int, ...]
+    identities: frozenset[_Identity]
 
 
 def verify_r1_live_snapshot_delivery(
@@ -540,12 +530,15 @@ def verify_r1_live_snapshot_delivery(
     lower: int,
     upper: int,
     covered_through: int,
+    expected_inventory_sha256: str | None = None,
+    expected_event_count: int | None = None,
 ) -> R1LiveSnapshotDelivery:
-    """Apply the finalizer's live-side gates before a producer writes its freeze ack.
+    """Apply the live-side gates of the snapshot contract.
 
     The covered raw segments must hold only bound Events of this partition, and every
     covered chunk must exist without a gap, carry exactly those Events and have a
-    post-commit Role3 ack bound to its bytes.
+    post-commit Role3 ack bound to its bytes.  The producer calls this before it writes
+    the freeze ack; the finalizer calls it with the ack's inventory and count.
     """
 
     if isinstance(lower, bool) or isinstance(upper, bool) or not 1 <= lower <= upper:
@@ -553,7 +546,14 @@ def verify_r1_live_snapshot_delivery(
     if isinstance(covered_through, bool) or covered_through < 1:
         raise R1RecordBoundedSnapshotError("at least one covered chunk is required")
     segments = _read_covered_segments(run_spool_root, covered_through)
+    inventory_sha256 = _raw_segment_inventory_sha256(run_spool_root, segments)
+    if expected_inventory_sha256 is not None and inventory_sha256 != expected_inventory_sha256:
+        raise R1RecordBoundedSnapshotError(
+            "live raw segment inventory does not match the freeze ack"
+        )
     live = _live_identities(segments, partition, lower, upper)
+    if expected_event_count is not None and len(live) != expected_event_count:
+        raise R1RecordBoundedSnapshotError("live raw event count does not match the freeze ack")
     covered, chunk_identities, post_bound = _verify_chunks(
         run_spool_root,
         partition=partition,
@@ -567,9 +567,10 @@ def verify_r1_live_snapshot_delivery(
         )
     return R1LiveSnapshotDelivery(
         event_count=len(live),
-        raw_segment_inventory_sha256=_raw_segment_inventory_sha256(run_spool_root, segments),
+        raw_segment_inventory_sha256=inventory_sha256,
         covered_chunks=covered,
         post_bound_chunk_sequences=post_bound,
+        identities=frozenset(live),
     )
 
 
