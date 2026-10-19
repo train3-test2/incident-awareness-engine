@@ -3510,7 +3510,16 @@ function Invoke-R1PilotRun {
         if (-not [string]::IsNullOrWhiteSpace($IncrementalStreamControlRoot)) {
             $controlDir = Join-Path $IncrementalStreamControlRoot $RunId
             New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
-            if ($PositionFinality) { Assert-R1PositionControlFree -Paths (Get-R1PositionPaths -ControlDir $controlDir) }
+            if ($PositionFinality) {
+                # Before any action: no artifact of this run yet, and a producer
+                # for the same Run, host, partition and contract.
+                $stage = "position_preflight"
+                $preflightPaths = Get-R1PositionPaths -ControlDir $controlDir
+                Assert-R1PositionControlFree -Paths $preflightPaths
+                Assert-R1PositionPreflight -Paths $preflightPaths -RunId $RunId -TargetHost $targetHost `
+                    -Channel $SYSMON_LOG -Scenario $scenario
+                $stage = "pre_run_check"
+            }
             $startControl = [ordered]@{
                 schema = "r1-incremental-run-control"
                 contract_version = "v0.1"
@@ -3803,6 +3812,7 @@ function Invoke-R1PilotRun {
             Write-Step ("collection freeze requested; waiting for the producer's ack (" +
                 $PositionFreezeAckTimeoutSec + " s at most)")
             $frozen = Wait-R1FreezeAck -Paths $positionPaths -Request $freezeRequest `
+                -RequestSha256 (Get-R1FileSha256 -Path $positionPaths.request) `
                 -TimeoutSec $PositionFreezeAckTimeoutSec -NowProvider $NowProvider -Sleeper $Sleeper
             Write-Ok ("collection freeze acked: RecordId " + $frozen.lower + ".." + $frozen.upper + ", " +
                 $frozen.target_event_count + " EID 1/3 Event(s)")
@@ -4102,6 +4112,17 @@ function Invoke-R1PilotRun {
         $runFinalizedPath = $null
         if ($PositionFinality) {
             $stage = "run_finalized"
+            # The A04 result the seal needs, recorded once the run has succeeded.
+            # The failure path removes it with the other files of this run.
+            if ($null -eq $provenance) { throw "a run with position finality has no collection provenance" }
+            $attestation = New-R1BoundaryAttestation -BoundaryAction (@($inputs.actions)[-1]) `
+                -CompletedUtc ([string]$runEnd.completed_utc) `
+                -RequestCandidateBoundaryAt ([string]$freezeRequest.candidate_boundary_at) -RunEnd $runEnd `
+                -IntermediatePid ([int]$wmiCall.process_id) -FinalPid ([int]$toolStart.final_pid) `
+                -LineageRecords ([object[]]@($provenance.lineage.records))
+            $attestationExisted = Test-Path -LiteralPath $positionPaths.boundary_attestation
+            Write-R1PositionJsonOnce -Path $positionPaths.boundary_attestation -Value $attestation | Out-Null
+            if (-not $attestationExisted) { $publishedCompletionPaths.Add($positionPaths.boundary_attestation) }
             $runFinalizedPath = Write-R1RunFinalized -Paths $positionPaths -Request $freezeRequest -Frozen $frozen `
                 -Snapshot $positionSnapshot -FinalizedAt (& $NowProvider)
             Write-Ok ("run-finalized written: " + $runFinalizedPath)
@@ -4138,6 +4159,7 @@ function Invoke-R1PilotRun {
                 freeze_request    = $positionPaths.request
                 freeze_ack        = $positionPaths.ack
                 run_finalized     = $runFinalizedPath
+                boundary_attestation = $positionPaths.boundary_attestation
                 snapshot_manifest = $positionPaths.manifest
                 lower_record_id   = [long]$frozen.lower
                 upper_record_id   = [long]$frozen.upper

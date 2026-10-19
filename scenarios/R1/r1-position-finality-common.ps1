@@ -8,7 +8,16 @@
 
         collection-freeze-requested.json   after the observation boundary
         canonical-export-generation.json   after the RecordId-bounded export
+        position-finality/candidate-boundary-attestation.json
+                                           the A04 run_end result, as R1CandidateBoundaryAttestation
         run-finalized.json                 after the Run and the snapshot are complete
+
+    It reads two files of the producer in the same directory:
+
+        collection-producer-binding.json   before the first action: the producer's
+                                           Run, host, partition and contract
+        collection-freeze-failed.json      while it waits for the ack: a freeze the
+                                           producer gave up, with a stable reason code
 
     The canonical snapshot itself is a separate export of the closed RecordId
     bound of the producer's freeze ack, under position-finality/ in the same
@@ -34,6 +43,16 @@ $R1_FREEZE_ACK_FILE = "collection-freeze-ack.json"
 $R1_FREEZE_GENERATION_FILE = "collection-freeze-generation.json"
 $R1_EXPORT_GENERATION_FILE = "canonical-export-generation.json"
 $R1_RUN_FINALIZED_FILE = "run-finalized.json"
+$R1_FREEZE_FAILURE_FILE = "collection-freeze-failed.json"
+$R1_PRODUCER_BINDING_FILE = "collection-producer-binding.json"
+$R1_BOUNDARY_ATTESTATION_FILE = "candidate-boundary-attestation.json"
+$R1_FREEZE_FAILURE_SCHEMA = "r1-sysmon-collection-freeze-failure"
+$R1_PRODUCER_BINDING_SCHEMA = "r1-sysmon-collection-producer-binding"
+$R1_FREEZE_FAILURE_CODES = @(
+    "request_unreadable", "request_binding_mismatch", "live_key_invalid", "live_segment_missing",
+    "freeze_snapshot_rejected", "bound_key_invalid", "delivery_failed", "segment_chunk_mismatch",
+    "live_bound_mismatch", "freeze_tool_failed", "unexpected_error")
+$R1_ACCEPTED_TERMINAL_STATES = @("stopped", "exited_by_itself", "already_exited")
 $R1_POSITION_SNAPSHOT_DIR = "position-finality"
 $R1_POSITION_EXPORT_FILE = "r1_sysmon_record_bounded.evtx"
 $R1_POSITION_ACK_POLL_SEC = 5
@@ -57,7 +76,10 @@ function Get-R1PositionPaths {
         freeze_generation = (Join-Path $ControlDir $R1_FREEZE_GENERATION_FILE)
         export_generation = (Join-Path $ControlDir $R1_EXPORT_GENERATION_FILE)
         run_finalized     = (Join-Path $ControlDir $R1_RUN_FINALIZED_FILE)
+        freeze_failure    = (Join-Path $ControlDir $R1_FREEZE_FAILURE_FILE)
+        producer_binding  = (Join-Path $ControlDir $R1_PRODUCER_BINDING_FILE)
         snapshot_dir      = $snapshotDir
+        boundary_attestation = (Join-Path $snapshotDir $R1_BOUNDARY_ATTESTATION_FILE)
         telemetry_dir     = $telemetry
         evtx              = (Join-Path $telemetry "sysmon-0001.evtx")
         jsonl             = (Join-Path $telemetry "sysmon-0001.jsonl")
@@ -69,11 +91,124 @@ function Assert-R1PositionControlFree {
     <# A run starts no freeze while any snapshot artifact of its run_id exists. #>
     param([Parameter(Mandatory = $true)]$Paths)
 
-    foreach ($name in @("request", "ack", "freeze_generation", "export_generation", "run_finalized", "snapshot_dir")) {
+    foreach ($name in @("request", "ack", "freeze_generation", "export_generation", "run_finalized",
+            "freeze_failure", "snapshot_dir")) {
         if (Test-Path -LiteralPath $Paths[$name]) {
             throw ("a position-finality artifact of this run already exists: " + $Paths[$name])
         }
     }
+}
+
+function Get-R1FileSha256 {
+    <# Lowercase SHA-256 of a file named by its literal path. #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Write-R1PositionJsonOnce {
+    <# Write a control artifact once; the same bytes again are accepted, other bytes fail. #>
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)]$Value)
+
+    $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes((($Value | ConvertTo-Json -Depth 8 -Compress) + "`n"))
+    if (Test-Path -LiteralPath $Path) {
+        $existing = [System.IO.File]::ReadAllBytes($Path)
+        if ([Convert]::ToBase64String($existing) -ceq [Convert]::ToBase64String($bytes)) {
+            return $Path
+        }
+        throw ("immutable control artifact conflict: " + $Path)
+    }
+    Write-R1AtomicNewFile -Path $Path -Bytes $bytes
+    return $Path
+}
+
+function Assert-R1PositionPreflight {
+    <#
+        Before the first action: the producer of this Run is running for the
+        same Run, host and Sysmon partition, against a required-partition
+        contract of this host. A missing or different binding fails the run
+        before anything starts on Target-A.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Paths,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][string]$TargetHost,
+        [Parameter(Mandatory = $true)][string]$Channel,
+        [AllowNull()]$Scenario
+    )
+
+    if (-not (Test-Path -LiteralPath $Paths.producer_binding -PathType Leaf)) {
+        throw ("no producer binding at " + $Paths.producer_binding +
+            ": start r1-incremental-sysmon-producer.ps1 -PositionFinality for this Run before the runner")
+    }
+    $binding = Read-R1PositionJson $Paths.producer_binding
+    $expected = New-R1PositionPartition -RunId $RunId -TargetHost $TargetHost -Channel $Channel
+    if ([string](Get-R1Value $binding "schema") -cne $R1_PRODUCER_BINDING_SCHEMA -or
+        [string](Get-R1Value $binding "contract_version") -cne $R1_POSITION_CONTRACT_VERSION) {
+        throw "the producer binding is not an r1-sysmon-collection-producer-binding v0.1"
+    }
+    if ([string](Get-R1Value $binding "run_id") -cne $RunId -or [string](Get-R1Value $binding "host_id") -cne $TargetHost -or
+        -not (Test-R1SamePartition (Get-R1Value $binding "partition") $expected)) {
+        throw ("the producer collects another Run, host or partition than this run (" + $RunId + " on " +
+            $TargetHost + ")")
+    }
+    $contractBinding = Get-R1Value $binding "required_partition_contract"
+    $contractPath = [string](Get-R1Value $contractBinding "path")
+    if ([string]::IsNullOrEmpty($contractPath) -or -not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
+        throw "the producer binding names no readable required-partition contract"
+    }
+    if ((Get-R1FileSha256 -Path $contractPath) -cne [string](Get-R1Value $contractBinding "sha256") -or
+        [string](Get-R1Value $contractBinding "target_host") -cne $TargetHost) {
+        throw "the required-partition contract is not the one the producer was started with"
+    }
+    $contract = Read-R1PositionJson $contractPath
+    $parts = @(Get-R1Value $contract "required_partitions")
+    if ([string](Get-R1Value $contract "schema") -cne "r1-required-partitions" -or
+        [string](Get-R1Value $contract "contract_version") -cne $R1_POSITION_CONTRACT_VERSION -or
+        [string](Get-R1Value $contract "target_host") -cne $TargetHost -or $parts.Count -ne 1 -or
+        [string](Get-R1Value $parts[0] "source") -cne $R1_POSITION_SOURCE -or
+        [string](Get-R1Value $parts[0] "source_channel") -cne $Channel) {
+        throw ("the required-partition contract does not bind exactly the Sysmon partition of " + $TargetHost)
+    }
+    $statedHost = Get-R1Value (Get-R1Value $Scenario "run_metadata") "target_host"
+    if (-not [string]::IsNullOrEmpty([string]$statedHost) -and [string]$statedHost -cne $TargetHost) {
+        throw ("the scenario states the target host " + [string]$statedHost + ", not " + $TargetHost)
+    }
+}
+
+function Test-R1FreezeFailure {
+    <#
+        A collection-freeze-failed.json found while the run waits. Bound to this
+        request it stops the run with the producer's reason code; bound to any
+        other Run, request, host or partition it is not consumed and the run
+        fails closed on the inconsistent control directory. Either way it throws.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Request,
+        [Parameter(Mandatory = $true)][string]$RequestSha256,
+        [Parameter(Mandatory = $true)]$Failure
+    )
+
+    $partition = $Request.partition
+    $bound = (
+        [string](Get-R1Value $Failure "schema") -ceq $R1_FREEZE_FAILURE_SCHEMA -and
+        [string](Get-R1Value $Failure "contract_version") -ceq $R1_POSITION_CONTRACT_VERSION -and
+        [string](Get-R1Value $Failure "run_id") -ceq [string]$partition.run_id -and
+        [string](Get-R1Value $Failure "host_id") -ceq [string]$partition.host_id -and
+        [string](Get-R1Value $Failure "request_id") -ceq [string]$Request.request_id -and
+        [string](Get-R1Value $Failure "request_sha256") -ceq $RequestSha256 -and
+        (Test-R1SamePartition (Get-R1Value $Failure "partition") $partition))
+    if (-not $bound) {
+        throw ("a collection freeze failure of another Run, request, host or partition is in the control " +
+            "directory; it is not this run's failure and the run stops")
+    }
+    $code = [string](Get-R1Value $Failure "reason_code")
+    if ($R1_FREEZE_FAILURE_CODES -cnotcontains $code) {
+        throw ("the producer reported a collection freeze failure with an unknown reason code '" + $code + "'")
+    }
+    $details = @(Get-R1Value $Failure "snapshot_failures" | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+    $suffix = ""
+    if ($details.Count -gt 0) { $suffix = " (" + ($details -join ", ") + ")" }
+    throw ("the producer reported a collection freeze failure: " + $code + $suffix)
 }
 
 function ConvertFrom-R1UtcStamp {
@@ -265,13 +400,16 @@ function Test-R1FreezeAck {
 
 function Wait-R1FreezeAck {
     <#
-        Wait on the injected clock for the producer's ack and freeze generation.
-        No ack within TimeoutSec, or an ack that does not match the request,
-        fails the run.
+        Wait on the injected clock for the producer's ack and freeze generation,
+        and watch for the producer's failure at the same time. A failure ends
+        the wait at once; an ack and a failure together, or an ack that does not
+        match the request, fail the run. TimeoutSec applies only while neither
+        file is there.
     #>
     param(
         [Parameter(Mandatory = $true)]$Paths,
         [Parameter(Mandatory = $true)]$Request,
+        [Parameter(Mandatory = $true)][string]$RequestSha256,
         [Parameter(Mandatory = $true)][int]$TimeoutSec,
         [Parameter(Mandatory = $true)][scriptblock]$NowProvider,
         [Parameter(Mandatory = $true)][scriptblock]$Sleeper
@@ -279,7 +417,17 @@ function Wait-R1FreezeAck {
 
     if ($TimeoutSec -lt 1) { throw "the freeze ack timeout must be at least 1 s" }
     $deadline = (& $NowProvider).ToUniversalTime().AddSeconds($TimeoutSec)
-    while (-not (Test-Path -LiteralPath $Paths.ack)) {
+    while ($true) {
+        $hasAck = Test-Path -LiteralPath $Paths.ack
+        $hasFailure = Test-Path -LiteralPath $Paths.freeze_failure
+        if ($hasAck -and $hasFailure) {
+            throw "the producer left both a collection freeze ack and a collection freeze failure"
+        }
+        if ($hasFailure) {
+            Test-R1FreezeFailure -Request $Request -RequestSha256 $RequestSha256 `
+                -Failure (Read-R1PositionJson $Paths.freeze_failure)
+        }
+        if ($hasAck) { break }
         if (Test-Path -LiteralPath (Join-Path $Paths.control_dir "run-aborted.json")) {
             throw "the run was aborted while it waited for the collection freeze ack"
         }
@@ -292,8 +440,73 @@ function Wait-R1FreezeAck {
     if (-not (Test-Path -LiteralPath $Paths.freeze_generation)) {
         throw "the collection freeze ack exists without its freeze generation observation"
     }
-    return (Test-R1FreezeAck -Request $Request -Ack (Read-R1PositionJson $Paths.ack) `
-        -Generation (Read-R1PositionJson $Paths.freeze_generation))
+    $frozen = Test-R1FreezeAck -Request $Request -Ack (Read-R1PositionJson $Paths.ack) `
+        -Generation (Read-R1PositionJson $Paths.freeze_generation)
+    if (Test-Path -LiteralPath $Paths.freeze_failure) {
+        throw "the producer left both a collection freeze ack and a collection freeze failure"
+    }
+    return $frozen
+}
+
+function New-R1BoundaryAttestation {
+    <#
+        The A04 run_end result of a WMI run as R1CandidateBoundaryAttestation:
+        the final action of the scenario, the completion the run_end step
+        reported (the candidate boundary of the freeze request) and the two
+        Run-owned processes it ended, by the ProcessGuid of the run's lineage.
+        Only what that model holds is written. Built only after the run has
+        succeeded; anything missing or unaccepted throws.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$BoundaryAction,
+        [Parameter(Mandatory = $true)][string]$CompletedUtc,
+        [Parameter(Mandatory = $true)][string]$RequestCandidateBoundaryAt,
+        [Parameter(Mandatory = $true)]$RunEnd,
+        [Parameter(Mandatory = $true)][int]$IntermediatePid,
+        [Parameter(Mandatory = $true)][int]$FinalPid,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$LineageRecords
+    )
+
+    $actionId = [string](Get-R1Value $BoundaryAction "action_id")
+    $step = [string](Get-R1Value $BoundaryAction "step")
+    $actionType = [string](Get-R1Value $BoundaryAction "action_type")
+    if ([string]::IsNullOrEmpty($actionId) -or $step -cne "run_end" -or $actionType -cne "run_end") {
+        throw "the final action of the scenario is not the run_end boundary of a run through WMI"
+    }
+    $completed = Get-UtcStamp (ConvertFrom-R1UtcStamp $CompletedUtc "run_end completed_utc")
+    if ($completed -cne (Get-UtcStamp (ConvertFrom-R1UtcStamp $RequestCandidateBoundaryAt "candidate_boundary_at"))) {
+        throw "the run_end completion is not the candidate boundary of the freeze request"
+    }
+    $ended = @(Get-R1Value $RunEnd "ended" | Where-Object { $null -ne $_ })
+    $owned = New-Object System.Collections.Generic.List[object]
+    foreach ($process in @(@{ role = "intermediate"; pid = $IntermediatePid }, @{ role = "final_tool"; pid = $FinalPid })) {
+        $result = @($ended | Where-Object { [string](Get-R1Value $_ "process_id") -ceq [string]$process.pid })
+        if ($result.Count -ne 1) {
+            throw ("the run_end result does not account once for the " + $process.role + " (process id " + $process.pid + ")")
+        }
+        $state = [string](Get-R1Value $result[0] "outcome")
+        if ($R1_ACCEPTED_TERMINAL_STATES -cnotcontains $state) {
+            throw ("the " + $process.role + " ended with the outcome '" + $state + "', which is not an accepted terminal state")
+        }
+        $record = @($LineageRecords | Where-Object { [string](Get-R1Value $_ "role") -ceq $process.role })
+        if ($record.Count -ne 1 -or [string]::IsNullOrEmpty([string](Get-R1Value $record[0] "process_guid"))) {
+            throw ("the lineage of the run has no single " + $process.role + " with a ProcessGuid")
+        }
+        $owned.Add([ordered]@{
+            role           = $process.role
+            image          = [System.IO.Path]::GetFileName([string](Get-R1Value $record[0] "image"))
+            process_guid   = [string](Get-R1Value $record[0] "process_guid")
+            terminal_state = $state
+        })
+    }
+    return [ordered]@{
+        action_id                 = $actionId
+        step                      = $step
+        action_type               = $actionType
+        completed_at              = $completed
+        no_actions_after_boundary = $true
+        owned_processes           = [object[]]$owned.ToArray()
+    }
 }
 
 # The canonical export of the freeze ack's closed RecordId bound, run on
@@ -505,11 +718,11 @@ function Write-R1PositionSnapshotManifest {
         generated_at = (Get-UtcStamp $GeneratedAt)
         items        = @(
             [ordered]@{
-                raw_log_id = "RAW-001"; path = $evtxPath; sha256 = (Get-Sha256 -Path $Paths.evtx)
+                raw_log_id = "RAW-001"; path = $evtxPath; sha256 = (Get-R1FileSha256 -Path $Paths.evtx)
                 layer = "raw_telemetry"; source = $R1_POSITION_SOURCE },
             [ordered]@{
                 raw_log_id = "RAW-002"; path = (Resolve-Path -LiteralPath $Paths.jsonl).Path
-                sha256 = (Get-Sha256 -Path $Paths.jsonl); layer = "raw_telemetry"; source = $R1_POSITION_SOURCE
+                sha256 = (Get-R1FileSha256 -Path $Paths.jsonl); layer = "raw_telemetry"; source = $R1_POSITION_SOURCE
                 derived_from = $evtxPath })
     }
     $utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -539,7 +752,7 @@ function Complete-R1PositionSnapshot {
     )
 
     Test-R1RecordBoundedExport -Export $Export -Frozen $Frozen
-    if ((Get-Sha256 -Path $Paths.evtx) -cne [string]$Export.evtx_sha256) {
+    if ((Get-R1FileSha256 -Path $Paths.evtx) -cne [string]$Export.evtx_sha256) {
         throw "canonical export drift: the fetched snapshot EVTX is not the file Target-A exported"
     }
     & $Convert $Paths.evtx $Paths.jsonl | Out-Null
@@ -571,9 +784,9 @@ function Complete-R1PositionSnapshot {
     return [ordered]@{
         canonical_event_count     = [long]$count
         canonical_identity_sha256 = [string]$Export.identity_sha256
-        canonical_evtx_sha256     = (Get-Sha256 -Path $Paths.evtx)
-        canonical_jsonl_sha256    = (Get-Sha256 -Path $Paths.jsonl)
-        manifest_sha256           = (Get-Sha256 -Path $Paths.manifest)
+        canonical_evtx_sha256     = (Get-R1FileSha256 -Path $Paths.evtx)
+        canonical_jsonl_sha256    = (Get-R1FileSha256 -Path $Paths.jsonl)
+        manifest_sha256           = (Get-R1FileSha256 -Path $Paths.manifest)
         export_observed_at        = $observed
     }
 }
@@ -596,7 +809,7 @@ function Write-R1RunFinalized {
             @{ path = $Paths.evtx; sha = $Snapshot.canonical_evtx_sha256; name = "EVTX" },
             @{ path = $Paths.jsonl; sha = $Snapshot.canonical_jsonl_sha256; name = "JSONL" },
             @{ path = $Paths.manifest; sha = $Snapshot.manifest_sha256; name = "manifest" })) {
-        if (-not (Test-Path -LiteralPath $pair.path -PathType Leaf) -or (Get-Sha256 -Path $pair.path) -cne [string]$pair.sha) {
+        if (-not (Test-Path -LiteralPath $pair.path -PathType Leaf) -or (Get-R1FileSha256 -Path $pair.path) -cne [string]$pair.sha) {
             throw ("canonical export drift: the snapshot " + $pair.name + " changed after the export")
         }
     }

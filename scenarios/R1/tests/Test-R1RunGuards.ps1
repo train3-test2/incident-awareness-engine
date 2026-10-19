@@ -4870,6 +4870,34 @@ $script:PositionControlDir = $null
 $script:PositionProducerWrites = $true
 $script:PositionAckHost = $TEST_HOST
 $script:PositionExportSet = @{}
+$script:PositionProducerFails = ""
+$script:PositionFailureRequestSha = ""
+
+function Get-PositionFileSha256([string]$Path) {
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLower()
+}
+
+function Write-FakeProducerBinding {
+    <# What the producer writes at its start: its Run, host, partition and contract. #>
+    param([string]$ControlRoot, [string]$RunId, [string]$BindingHost = $TEST_HOST,
+        [string]$ContractHost = $TEST_HOST)
+    $contractPath = Join-Path (Join-Path $ControlRoot "contracts") ($RunId + "-required-partitions.json")
+    New-Item -ItemType Directory -Path (Split-Path $contractPath -Parent) -Force | Out-Null
+    $contract = [ordered]@{ schema = "r1-required-partitions"; contract_version = "v0.1"; target_host = $ContractHost
+        required_partitions = @([ordered]@{ source = "sysmon"; source_channel = $POSITION_CHANNEL }) }
+    [System.IO.File]::WriteAllText($contractPath, ($contract | ConvertTo-Json -Depth 4))
+    $binding = [ordered]@{
+        schema = "r1-sysmon-collection-producer-binding"; contract_version = "v0.1"; run_id = $RunId; host_id = $BindingHost
+        partition = [ordered]@{ run_id = $RunId; host_id = $BindingHost; source = "sysmon"; source_channel = $POSITION_CHANNEL }
+        required_partition_contract = [ordered]@{
+            path = $contractPath; sha256 = (Get-PositionFileSha256 $contractPath); target_host = $BindingHost }
+        context_start_utc = $WMI_BOOT_UTC
+    }
+    $controlDir = Join-Path $ControlRoot $RunId
+    New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $controlDir "collection-producer-binding.json"), ($binding | ConvertTo-Json -Depth 4))
+    return $contractPath
+}
 
 $positionSleeper = {
     param($Seconds)
@@ -4880,6 +4908,23 @@ $positionSleeper = {
         (Test-Path -LiteralPath $ackPath)) { return }
     $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $now = Get-UtcStamp $script:FakeNow
+    if (-not [string]::IsNullOrEmpty($script:PositionProducerFails)) {
+        # The producer gave up: its failure, bound to the request bytes it read.
+        $failurePath = Join-Path $script:PositionControlDir "collection-freeze-failed.json"
+        if (Test-Path -LiteralPath $failurePath) { return }
+        $requestSha = $script:PositionFailureRequestSha
+        if ([string]::IsNullOrEmpty($requestSha)) { $requestSha = Get-PositionFileSha256 $requestPath }
+        $failure = [ordered]@{
+            schema = "r1-sysmon-collection-freeze-failure"; contract_version = "v0.1"
+            run_id = $request.partition.run_id; host_id = $TEST_HOST; request_id = $request.request_id
+            request_sha256 = $requestSha
+            partition = [ordered]@{ run_id = $request.partition.run_id; host_id = $TEST_HOST; source = "sysmon"
+                source_channel = $POSITION_CHANNEL }
+            failed_at = $now; reason_code = $script:PositionProducerFails; snapshot_failures = @("view_mismatch")
+        }
+        [System.IO.File]::WriteAllText($failurePath, ($failure | ConvertTo-Json -Depth 6))
+        return
+    }
     $partition = [ordered]@{ run_id = $request.partition.run_id; host_id = $script:PositionAckHost
         source = "sysmon"; source_channel = $POSITION_CHANNEL }
     $generation = [ordered]@{
@@ -4935,8 +4980,9 @@ function New-PositionFakeTransport {
 }
 
 function Invoke-PositionRun {
-    param([string]$RunId, [string]$DataRoot, [string]$ControlRoot, [int]$TimeoutSec = 900)
+    param([string]$RunId, [string]$DataRoot, [string]$ControlRoot, [int]$TimeoutSec = 900, [switch]$NoBinding)
     $script:PositionControlDir = Join-Path $ControlRoot $RunId
+    if (-not $NoBinding) { Write-FakeProducerBinding -ControlRoot $ControlRoot -RunId $RunId | Out-Null }
     return (Invoke-FakeCollectionRun -RunType "attack" -RunId $RunId -ScenarioPath $wmiScenarioPath -DataRoot $DataRoot `
         -ReadinessRecordPath $readinessPath -Transport (New-PositionFakeTransport) `
         -IncrementalStreamControlRoot $ControlRoot -PositionFinality -PositionFreezeAckTimeoutSec $TimeoutSec `
@@ -4992,6 +5038,24 @@ Assert-True "position: run-finalized binds the snapshot files and follows the ac
     $positionFinalized.manifest_sha256 -ceq (Get-FileSha256 (Join-Path $snapshotDir "manifest.json")) -and
     [string]$positionAck.acked_at -le [string]$positionExportGeneration.observed_at -and
     [string]$positionExportGeneration.observed_at -le [string]$positionFinalized.finalized_at)
+$positionAttestation = Get-Content -LiteralPath (Join-Path $snapshotDir "candidate-boundary-attestation.json") -Raw `
+    -Encoding UTF8 | ConvertFrom-Json
+$positionContext = Get-Content -LiteralPath (Join-Path $positionRoot ("operator_trace\" + $positionRunId +
+    "\r1_wmi_collection_context.json")) -Raw -Encoding UTF8 | ConvertFrom-Json
+$contextGuid = @{}
+foreach ($record in @($positionContext.lineage.records)) { $contextGuid[[string]$record.role] = [string]$record.process_guid }
+Assert-True "position: the A04 run_end result is attested with the lineage of the run and the request boundary" (
+    $positionAttestation.action_id -ceq "A04" -and $positionAttestation.step -ceq "run_end" -and
+    $positionAttestation.completed_at -ceq $positionRequest.candidate_boundary_at -and
+    $positionAttestation.no_actions_after_boundary -eq $true -and
+    (@($positionAttestation.owned_processes | ForEach-Object { $_.role + "=" + $_.terminal_state }) -join ",") -ceq
+        "intermediate=stopped,final_tool=stopped" -and
+    $positionAttestation.owned_processes[0].process_guid -ceq $contextGuid["intermediate"] -and
+    $positionAttestation.owned_processes[1].process_guid -ceq $contextGuid["final_tool"] -and
+    $positionAttestation.owned_processes[0].image -ceq "cmd.exe" -and
+    $positionAttestation.owned_processes[1].image -ceq "powershell.exe" -and
+    (@($positionAttestation.PSObject.Properties.Name) -join ",") -ceq
+        "action_id,step,action_type,completed_at,no_actions_after_boundary,owned_processes")
 $positionManifest = Get-Content -LiteralPath (Join-Path $positionRoot "raw\$positionRunId\manifest.json") -Raw -Encoding UTF8 |
     ConvertFrom-Json
 Assert-True "position: the manifest of the Run lists its own window export and not the snapshot" (
@@ -5035,6 +5099,66 @@ foreach ($case in @(
 }
 $script:PositionExportSet = @{}
 $script:PositionAckHost = $TEST_HOST
+
+ # --- the producer binding before the first action ---------------------------------------
+
+foreach ($case in @(
+        @{ name = "without a producer binding"; id = "RUN-20300101-041"; noBinding = $true; like = "*no producer binding*" },
+        @{ name = "whose producer collects another host"; id = "RUN-20300101-042"; bindingHost = "TARGET-B"
+           like = "*collects another Run, host or partition*" },
+        @{ name = "whose contract binds another host"; id = "RUN-20300101-043"; contractHost = "TARGET-B"
+           like = "*does not bind exactly the Sysmon partition*" },
+        @{ name = "whose contract changed after the producer started"; id = "RUN-20300101-044"; changeContract = $true
+           like = "*not the one the producer was started with*" })) {
+    Reset-Fakes
+    $caseRoot = New-TempRoot
+    $caseControl = New-TempRoot
+    if (-not $case.ContainsKey("noBinding")) {
+        $bindingHost = $TEST_HOST; if ($case.ContainsKey("bindingHost")) { $bindingHost = $case.bindingHost }
+        $contractHost = $TEST_HOST; if ($case.ContainsKey("contractHost")) { $contractHost = $case.contractHost }
+        $contractPath = Write-FakeProducerBinding -ControlRoot $caseControl -RunId $case.id -BindingHost $bindingHost `
+            -ContractHost $contractHost
+        if ($case.ContainsKey("contractHost")) {
+            # The binding names the file as it is; only its host is not the runner's.
+            $bindingPath = Join-Path (Join-Path $caseControl $case.id) "collection-producer-binding.json"
+            $binding = Get-Content -LiteralPath $bindingPath -Raw | ConvertFrom-Json
+            $binding.required_partition_contract.target_host = $TEST_HOST
+            [System.IO.File]::WriteAllText($bindingPath, ($binding | ConvertTo-Json -Depth 4))
+        }
+        if ($case.ContainsKey("changeContract")) { [System.IO.File]::AppendAllText($contractPath, " ") }
+    }
+    Assert-Throws ("position: a run " + $case.name + " is refused") {
+        Invoke-PositionRun -RunId $case.id -DataRoot $caseRoot -ControlRoot $caseControl -NoBinding
+    } $case.like
+    Assert-True ("  ... before its first action, with run-failed at the preflight (" + $case.name + ")") (
+        (Get-CallCount "invoke:prepare") -eq 0 -and (Get-CallCount "invoke:launch_wmi") -eq 0 -and
+        (Read-PositionJson $caseControl $case.id "run-failed.json").stage -ceq "position_preflight" -and
+        -not (Test-Path -LiteralPath (Join-Path $caseControl ($case.id + "\collection-freeze-requested.json"))))
+}
+
+ # --- the producer's failure ends the wait ---------------------------------------------------
+
+Reset-Fakes
+$script:PositionProducerFails = "freeze_snapshot_rejected"
+$failRoot = New-TempRoot
+$failControl = New-TempRoot
+Assert-Throws "position: the producer's failure fails the run at once with its reason code" {
+    Invoke-PositionRun -RunId "RUN-20300101-045" -DataRoot $failRoot -ControlRoot $failControl
+} "*collection freeze failure: freeze_snapshot_rejected (view_mismatch)*"
+Assert-True "  ... after one poll of the ack, before anything is exported, and with run-failed" (
+    @($script:SleepCalls | Where-Object { $_ -eq 5 }).Count -eq 1 -and
+    (Get-CallCount "invoke:export") -eq 0 -and (Get-CallCount "invoke:export_record_bounded") -eq 0 -and
+    (Test-SuccessArtifactsAbsent -Root $failRoot -RunId "RUN-20300101-045") -and
+    (Read-PositionJson $failControl "RUN-20300101-045" "run-failed.json").stage -ceq "collection_freeze")
+Reset-Fakes
+$script:PositionFailureRequestSha = "e" * 64
+$staleRoot = New-TempRoot
+$staleControl = New-TempRoot
+Assert-Throws "position: a failure bound to other request bytes is not consumed as this run's failure" {
+    Invoke-PositionRun -RunId "RUN-20300101-046" -DataRoot $staleRoot -ControlRoot $staleControl
+} "*a collection freeze failure of another Run, request, host or partition*"
+$script:PositionProducerFails = ""
+$script:PositionFailureRequestSha = ""
 
 Reset-Fakes
 Assert-Throws "position: position finality without a control root is refused before any session" {
