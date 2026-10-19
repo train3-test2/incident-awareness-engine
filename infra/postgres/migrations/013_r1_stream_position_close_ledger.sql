@@ -3,7 +3,7 @@
 -- r1_stream_run_closes, and it is not an event-time watermark or run_closed.
 
 CREATE TABLE r1_stream_position_closes (
-    ledger_entry_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    ledger_entry_id BIGINT GENERATED ALWAYS AS IDENTITY,
     run_id TEXT NOT NULL,
     host_id TEXT NOT NULL,
     source TEXT NOT NULL,
@@ -15,17 +15,23 @@ CREATE TABLE r1_stream_position_closes (
     covered_through_chunk_sequence INTEGER NOT NULL,
     covered_chunks_sha256 TEXT NOT NULL,
     accepted_at TIMESTAMPTZ NOT NULL,
-    UNIQUE (run_id, close_id),
-    UNIQUE (run_id),
-    CHECK (btrim(run_id) <> ''),
-    CHECK (btrim(host_id) <> ''),
-    CHECK (btrim(source) <> ''),
-    CHECK (btrim(source_channel) <> ''),
-    CHECK (btrim(close_id) <> ''),
-    CHECK (content_sha256 ~ '^[0-9a-f]{64}$'),
-    CHECK (lower_record_id >= 1 AND upper_record_id >= lower_record_id),
-    CHECK (covered_through_chunk_sequence >= 1),
-    CHECK (covered_chunks_sha256 ~ '^[0-9a-f]{64}$')
+    CONSTRAINT r1_stream_position_closes_pkey PRIMARY KEY (ledger_entry_id),
+    CONSTRAINT r1_stream_position_closes_run_close_unique UNIQUE (run_id, close_id),
+    CONSTRAINT r1_stream_position_closes_run_unique UNIQUE (run_id),
+    CONSTRAINT r1_stream_position_closes_run_id_nonblank CHECK (btrim(run_id) <> ''),
+    CONSTRAINT r1_stream_position_closes_host_id_nonblank CHECK (btrim(host_id) <> ''),
+    CONSTRAINT r1_stream_position_closes_source_nonblank CHECK (btrim(source) <> ''),
+    CONSTRAINT r1_stream_position_closes_source_channel_nonblank
+        CHECK (btrim(source_channel) <> ''),
+    CONSTRAINT r1_stream_position_closes_close_id_nonblank CHECK (btrim(close_id) <> ''),
+    CONSTRAINT r1_stream_position_closes_content_sha256_format
+        CHECK (content_sha256 ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT r1_stream_position_closes_record_id_bounds
+        CHECK (lower_record_id >= 1 AND upper_record_id >= lower_record_id),
+    CONSTRAINT r1_stream_position_closes_covered_sequence_positive
+        CHECK (covered_through_chunk_sequence >= 1),
+    CONSTRAINT r1_stream_position_closes_covered_chunks_sha256_format
+        CHECK (covered_chunks_sha256 ~ '^[0-9a-f]{64}$')
 );
 
 CREATE FUNCTION reject_r1_stream_position_close_change() RETURNS trigger

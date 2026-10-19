@@ -64,12 +64,16 @@ class R1StreamIngress:
         event_content_sha256s = tuple(
             (event.event_id, _canonical_event_sha256(event)) for event in chunk.events
         )
+        event_source_record_ids = tuple(
+            (event.event_id, event.raw_ref.source_record_id) for event in chunk.events
+        )
         admission = self._ledger.inspect_chunk_admission(
             partition=chunk.partition,
             chunk_id=chunk.chunk_id,
             sequence=chunk.chunk_sequence,
             content_sha256=content_sha256,
             event_content_sha256s=event_content_sha256s,
+            event_source_record_ids=event_source_record_ids,
         )
         if admission.is_exact_chunk_replay:
             return _result(False)

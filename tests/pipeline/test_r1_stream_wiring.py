@@ -60,8 +60,18 @@ class _Ledger:
         self.close: R1AcceptedRunCloseReceipt | None = None
 
     def inspect_chunk_admission(
-        self, *, partition, chunk_id, sequence, content_sha256, event_content_sha256s
+        self,
+        *,
+        partition,
+        chunk_id,
+        sequence,
+        content_sha256,
+        event_content_sha256s,
+        event_source_record_ids,
     ):
+        assert tuple(item[0] for item in event_source_record_ids) == tuple(
+            item[0] for item in event_content_sha256s
+        )
         existing = self.chunks.get(sequence)
         if existing is not None:
             if existing != (chunk_id, content_sha256):

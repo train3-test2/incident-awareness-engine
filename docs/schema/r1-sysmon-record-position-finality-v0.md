@@ -197,6 +197,10 @@ close가 결속하는 값은 다음과 같다.
   - 위를 모두 통과하면 `r1_stream_position_closes`에 기록한다.
 - commit에 성공한 뒤에만 ack
   `<spool>/<run_id>/position-finality/acks/record-position-close.json.ack.json`을 쓴다.
+- position close가 commit된 뒤 Role3 chunk admission은 같은 Run advisory lock 아래에서 close의 partition과
+  `upper_record_id`를 다시 읽는다. exact chunk replay는 `duplicate`로 허용하지만, 새 chunk는 모든 Event의
+  `raw_ref.source_record_id`가 canonical decimal이고 `upper_record_id`보다 클 때만 수락한다. bound 안 또는
+  pre-bound RecordId, 누락·비정규 RecordId, 다른 partition은 fail-closed한다.
 - 같은 내용의 재전달은 `duplicate`가 된다. 이때 처음 commit한 `ledger_entry_id`와 `accepted_at`을
   그대로 돌려준다.
 - 다음은 모두 거부한다.
@@ -330,6 +334,9 @@ uv run python -m incident_awareness.pipeline.r1_record_position_finality export-
 
 `consume-position-close`와 `export-position-close`에는 migration을 적용한 Role3 PostgreSQL의
 `INCIDENT_AWARENESS_DATABASE_URL`이 필요하다. 자격증명은 spool·log·export에 쓰지 않는다.
+migration 013을 기록 없이 이미 적용한 DB를 baseline할 때는 테이블 존재만으로 완료 처리하지 않는다.
+필수 컬럼·named primary/unique/check 제약·append-only 함수·활성 trigger가 전부 확인된 경우만 migration
+history에 기록하고, 일부만 존재하면 fail-closed한다.
 
 | 산출물 | 경로 |
 | --- | --- |

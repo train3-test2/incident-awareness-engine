@@ -15,7 +15,8 @@ def test_position_close_ledger_is_a_separate_append_only_table() -> None:
     migration = MIGRATION_PATH.read_text(encoding="utf-8")
 
     assert "CREATE TABLE r1_stream_position_closes" in migration
-    assert "ledger_entry_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY" in migration
+    assert "ledger_entry_id BIGINT GENERATED ALWAYS AS IDENTITY" in migration
+    assert "CONSTRAINT r1_stream_position_closes_pkey PRIMARY KEY (ledger_entry_id)" in migration
     assert "UNIQUE (run_id, close_id)" in migration
     assert "UNIQUE (run_id)" in migration
     assert "accepted_at TIMESTAMPTZ NOT NULL" in migration
