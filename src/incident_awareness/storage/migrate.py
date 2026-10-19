@@ -15,6 +15,7 @@ _FIRST_CYCLE_MIGRATION_ID = "001_first_cycle"
 _MIGRATION_ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
 _MIGRATION_ADVISORY_LOCK_KEY = "incident_awareness_engine:migrations"
 _INPUT_IDENTITY_MIGRATION_ID = "012_pipeline_telemetry_input_identity"
+_POSITION_CLOSE_MIGRATION_ID = "013_r1_stream_position_close_ledger"
 # Table baselines cannot identify an ALTER migration. Require all 012 artifacts;
 # partial columns/constraints/trigger must not be silently recorded as applied.
 _INPUT_IDENTITY_BASELINE_SQL = """
@@ -32,6 +33,72 @@ SELECT
             AND tgname = 'pipeline_telemetry_input_identity_immutable'
             AND tgfoid = to_regprocedure('guard_pipeline_telemetry_input_identity()')
             AND NOT tgisinternal AND tgenabled = 'O')
+"""
+_POSITION_CLOSE_BASELINE_SQL = """
+SELECT
+    to_regclass('r1_stream_position_closes') IS NOT NULL,
+    (SELECT COUNT(*) = 12 AND NOT EXISTS (
+        SELECT 1
+        FROM (VALUES
+            ('ledger_entry_id', 'bigint', 'a'),
+            ('run_id', 'text', ''),
+            ('host_id', 'text', ''),
+            ('source', 'text', ''),
+            ('source_channel', 'text', ''),
+            ('close_id', 'text', ''),
+            ('content_sha256', 'text', ''),
+            ('lower_record_id', 'bigint', ''),
+            ('upper_record_id', 'bigint', ''),
+            ('covered_through_chunk_sequence', 'integer', ''),
+            ('covered_chunks_sha256', 'text', ''),
+            ('accepted_at', 'timestamp with time zone', '')
+        ) AS expected(attname, data_type, identity_kind)
+        LEFT JOIN pg_attribute attribute
+          ON attribute.attrelid = to_regclass('r1_stream_position_closes')
+         AND attribute.attname = expected.attname
+         AND NOT attribute.attisdropped
+        WHERE attribute.attname IS NULL
+           OR NOT attribute.attnotnull
+           OR format_type(attribute.atttypid, attribute.atttypmod) <> expected.data_type
+           OR attribute.attidentity::text <> expected.identity_kind
+    ) FROM pg_attribute
+       WHERE attrelid = to_regclass('r1_stream_position_closes')
+         AND attnum > 0 AND NOT attisdropped),
+    NOT EXISTS (
+        SELECT 1
+        FROM (VALUES
+            ('r1_stream_position_closes_pkey', 'p'),
+            ('r1_stream_position_closes_run_close_unique', 'u'),
+            ('r1_stream_position_closes_run_unique', 'u'),
+            ('r1_stream_position_closes_run_id_nonblank', 'c'),
+            ('r1_stream_position_closes_host_id_nonblank', 'c'),
+            ('r1_stream_position_closes_source_nonblank', 'c'),
+            ('r1_stream_position_closes_source_channel_nonblank', 'c'),
+            ('r1_stream_position_closes_close_id_nonblank', 'c'),
+            ('r1_stream_position_closes_content_sha256_format', 'c'),
+            ('r1_stream_position_closes_record_id_bounds', 'c'),
+            ('r1_stream_position_closes_covered_sequence_positive', 'c'),
+            ('r1_stream_position_closes_covered_chunks_sha256_format', 'c')
+        ) AS expected(conname, contype)
+        LEFT JOIN pg_constraint constraint_row
+          ON constraint_row.conrelid = to_regclass('r1_stream_position_closes')
+         AND constraint_row.conname = expected.conname
+         AND constraint_row.contype::text = expected.contype
+        WHERE constraint_row.oid IS NULL OR NOT constraint_row.convalidated
+    ),
+    to_regprocedure('reject_r1_stream_position_close_change()') IS NOT NULL,
+    EXISTS (
+        SELECT 1 FROM pg_proc
+        WHERE oid = to_regprocedure('reject_r1_stream_position_close_change()')
+          AND prosrc LIKE '%r1_stream_position_closes is append-only%'
+    ),
+    EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = to_regclass('r1_stream_position_closes')
+          AND tgname = 'r1_stream_position_closes_append_only'
+          AND tgfoid = to_regprocedure('reject_r1_stream_position_close_change()')
+          AND NOT tgisinternal AND tgenabled = 'O'
+    )
 """
 _MIGRATION_BASELINE_TABLES = {
     _FIRST_CYCLE_MIGRATION_ID: frozenset(
@@ -114,6 +181,17 @@ def _apply_migration_paths(
             if any(artifacts):
                 if not all(artifacts):
                     raise RuntimeError("partial 012 input identity schema cannot be baselined")
+                _record_migration(connection, migration_id)
+                applied_migration_ids.append(migration_id)
+                continue
+
+        if migration_id == _POSITION_CLOSE_MIGRATION_ID:
+            artifacts = connection.execute(_POSITION_CLOSE_BASELINE_SQL).fetchone()
+            if artifacts is None:
+                raise RuntimeError("PostgreSQL position close baseline query returned no row")
+            if any(artifacts):
+                if not all(artifacts):
+                    raise RuntimeError("partial 013 position close schema cannot be baselined")
                 _record_migration(connection, migration_id)
                 applied_migration_ids.append(migration_id)
                 continue

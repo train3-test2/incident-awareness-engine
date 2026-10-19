@@ -151,6 +151,10 @@ event-time completeness를 보완 추론하는 데 사용하지 않는다.
 
 그 전에는 producer와 finalizer가 stream finality 발급을 fail-closed로 거부한다.
 
+두 번째 근거는 [R1 Sysmon RecordId position finality v0.1](r1-sysmon-record-position-finality-v0.md)에
+development 계약으로 정의했다(리뷰 승인 전). 그 position close는 별도 finality 종류이며 event-time
+`source_watermark`나 `run_closed`가 아니다. 이 문서의 v0.1 artifact 의미와 위 금지는 바꾸지 않는다.
+
 ## 6. Bound 이후 Event
 
 freeze ack 이후 더 큰 RecordId가 나타날 수 있다. 특히 그 Event의 timestamp가

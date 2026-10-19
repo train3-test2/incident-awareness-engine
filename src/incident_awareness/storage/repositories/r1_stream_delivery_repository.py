@@ -91,6 +91,12 @@ FROM r1_stream_run_closes
 WHERE run_id = %s
 FOR KEY SHARE
 """
+_SELECT_POSITION_CLOSE_FRONTIER = """
+SELECT host_id, source, source_channel, lower_record_id, upper_record_id
+FROM r1_stream_position_closes
+WHERE run_id = %s
+FOR KEY SHARE
+"""
 _SELECT_LATEST_WATERMARK_FOR_UPDATE = """
 SELECT watermark_id, watermark_sequence, watermark_at, allowed_lateness_ms,
        covered_through_chunk_sequence
@@ -221,6 +227,7 @@ class R1StreamDeliveryRepository:
         sequence: int,
         content_sha256: str,
         event_content_sha256s: tuple[tuple[str, str], ...],
+        event_source_record_ids: tuple[tuple[str, str | None], ...] = (),
     ) -> R1ChunkAdmission:
         """Classify a chunk before writes under the caller's transaction lock."""
         partition_params = _partition_params(partition)
@@ -248,6 +255,14 @@ class R1StreamDeliveryRepository:
             raise ValueError("chunk sequence conflicts with previously accepted identity")
         if is_closed:
             raise ValueError("cannot accept a new chunk after run_closed is accepted")
+
+        position_frontier = self._position_close_frontier(partition)
+        if position_frontier is not None:
+            self._assert_events_are_post_position_close(
+                event_content_sha256s=event_content_sha256s,
+                event_source_record_ids=event_source_record_ids,
+                upper_record_id=position_frontier,
+            )
 
         new_event_ids: list[str] = []
         for event_id, event_content_sha256 in event_content_sha256s:
@@ -477,6 +492,61 @@ class R1StreamDeliveryRepository:
         """Lock a Run and report whether a close already made it immutable."""
         self._lock_run(run_id)
         return self._connection.execute(_SELECT_CLOSE_EXISTS, (run_id,)).fetchone() is not None
+
+    def _position_close_frontier(self, partition: R1StreamPartition) -> int | None:
+        row = self._connection.execute(
+            _SELECT_POSITION_CLOSE_FRONTIER,
+            (partition.run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if len(row) != 5:
+            raise ValueError("position close frontier has an invalid ledger shape")
+        host_id, source, source_channel, lower_record_id, upper_record_id = row
+        if (host_id, source, source_channel) != (
+            partition.host_id,
+            partition.source,
+            partition.source_channel,
+        ):
+            raise ValueError("position close is bound to another stream partition")
+        if (
+            not isinstance(lower_record_id, int)
+            or isinstance(lower_record_id, bool)
+            or not isinstance(upper_record_id, int)
+            or isinstance(upper_record_id, bool)
+            or lower_record_id < 1
+            or upper_record_id < lower_record_id
+        ):
+            raise ValueError("position close frontier has invalid RecordId bounds")
+        return upper_record_id
+
+    @staticmethod
+    def _assert_events_are_post_position_close(
+        *,
+        event_content_sha256s: tuple[tuple[str, str], ...],
+        event_source_record_ids: tuple[tuple[str, str | None], ...],
+        upper_record_id: int,
+    ) -> None:
+        expected_event_ids = tuple(event_id for event_id, _ in event_content_sha256s)
+        received_event_ids = tuple(event_id for event_id, _ in event_source_record_ids)
+        if received_event_ids != expected_event_ids or len(set(received_event_ids)) != len(
+            received_event_ids
+        ):
+            raise ValueError("position-closed chunk has incomplete Event RecordId bindings")
+        for event_id, source_record_id in event_source_record_ids:
+            if (
+                not isinstance(source_record_id, str)
+                or not source_record_id.isascii()
+                or not source_record_id.isdecimal()
+                or str(int(source_record_id)) != source_record_id
+            ):
+                raise ValueError(
+                    f"position-closed Event {event_id!r} has no canonical decimal RecordId"
+                )
+            if int(source_record_id) <= upper_record_id:
+                raise ValueError(
+                    f"position-closed Event {event_id!r} is not strictly after the RecordId frontier"
+                )
 
     def _resolve_closed_chunk_replay(
         self,

@@ -28,6 +28,7 @@ class _Ledger:
         self._chunk_hashes_by_id: dict[str, tuple[int, str]] = {}
         self._chunk_ids_by_sequence: dict[int, str] = {}
         self.event_hashes: list[tuple[str, str]] = []
+        self.event_source_record_ids: list[tuple[tuple[str, str | None], ...]] = []
         self._event_hashes_by_id: dict[str, str] = {}
         self.watermark_hashes: list[str] = []
         self.close_hashes: list[str] = []
@@ -40,8 +41,10 @@ class _Ledger:
         sequence: int,
         content_sha256: str,
         event_content_sha256s: tuple[tuple[str, str], ...],
+        event_source_record_ids: tuple[tuple[str, str | None], ...],
         **_: object,
     ) -> R1ChunkAdmission:
+        self.event_source_record_ids.append(event_source_record_ids)
         existing_chunk = self._chunk_hashes_by_id.get(chunk_id)
         if existing_chunk is not None:
             if existing_chunk == (sequence, content_sha256):
@@ -140,6 +143,10 @@ def test_chunk_replay_is_a_duplicate_not_a_second_delivery() -> None:
     assert replay.disposition is R1StreamDeliveryDisposition.DUPLICATE
     assert replay.new_event_ids == ()
     assert ledger.chunk_hashes == [chunk.chunk_content_sha256]
+    assert ledger.event_source_record_ids == [
+        (("evt-001", "1"),),
+        (("evt-001", "1"),),
+    ]
 
 
 def test_rejects_new_events_at_or_before_the_durable_watermark_without_saving() -> None:
@@ -355,7 +362,12 @@ def _chunk() -> R1EventChunk:
                     "source_layer": "raw_telemetry",
                     "source_event_id": "1",
                     "event_type": "process_create",
-                    "raw_ref": {"raw_log_id": "RAW-001", "segment_no": 1, "record_no": 1},
+                    "raw_ref": {
+                        "raw_log_id": "RAW-001",
+                        "source_record_id": "1",
+                        "segment_no": 1,
+                        "record_no": 1,
+                    },
                 }
             ],
         }

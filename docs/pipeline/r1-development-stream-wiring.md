@@ -156,3 +156,8 @@ watermark와 혼동되지 않는 RecordId position frontier 및 전용 close, la
 correction/retraction을 포함한 candidate-scoped partial close 중 하나를 별도 versioned 계약으로
 승인해야 한다. provider queue drain, A04 이전 early close와
 `reference_time + 600초` 안의 causal 확정은 여전히 보장하지 않는다.
+
+RecordId position close 경로(`python -m incident_awareness.pipeline.r1_record_position_finality`)는
+[`r1-sysmon-record-position-finality-v0.md`](../schema/r1-sysmon-record-position-finality-v0.md)에
+정의한다. 이 sidecar는 아직 freeze ack와 channel generation 관측을 쓰지 않는다. runner도 RecordId
+bound canonical export를 하지 않으므로, 그 경로를 실제 Run에 적용하려면 두 쪽의 구현이 먼저 필요하다.

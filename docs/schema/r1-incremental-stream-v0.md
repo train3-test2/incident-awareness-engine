@@ -485,3 +485,7 @@ accepted canonical snapshot 안에서 collector가 전달한 raw/chunk와 canoni
 
 그 전까지 current Sysmon producer는 watermark, close, accepted-close, seal과 proof를 발급하지
 않으며 기존 `r1-incremental-stream/v0.1`의 event-time completeness 의미를 완화하지 않는다.
+
+두 번째 근거의 계약은 [R1 Sysmon RecordId position finality v0.1](r1-sysmon-record-position-finality-v0.md)이다
+(development, 리뷰 승인 전). 이 계약의 `record_position_close`는 별도 schema·ledger·seal·proof를 쓰며,
+이 문서의 `source_watermark`·`run_closed`·accepted-close로 표현하거나 그 형식을 가장하지 않는다.
