@@ -31,20 +31,22 @@ event-time과 섞이지 않는 별도 finality 종류인 **RecordId position clo
 | `causal_confirmation_within_reference_plus_600s` | `reference_time + 600초` 안의 causal 확정 |
 | `ttsd_or_online_eligibility` | TTSD/online 적격성 |
 
-### 1.1 이번 구현 범위
+### 1.1 구현 범위
 
-이번 구현은 backend 계약과 검증 경로까지다. 실제 VM end-to-end finality를 완료한 것이 아니다.
+backend 계약과 검증 경로(PR #304), 그리고 실제 VM용 runner·producer 실행 경로(§6)까지 구현했다.
+VM 경로는 합성 fixture와 가짜 transport로만 검증했다. 실제 VM end-to-end finality를 완료한 것이 아니다.
 
 | 포함 | 포함하지 않음 |
 | --- | --- |
-| RecordId position-finality Python 모델 | 실제 VM runner의 freeze request·run-finalized 생성 |
-| reconciliation finalizer | producer의 freeze ack와 generation observation 생성 |
-| Role3 ledger·receipt | RecordId XPath 기반 canonical export 연결 |
-| Role4 seal·trusted projection | 실제 PostgreSQL에서의 migration 013 실행 검증 |
-| Role2-safe proof | 실제 WMI Run에서의 end-to-end 실행 |
-| strict loader와 변조·회귀 테스트 | event-time `source_watermark`·`run_closed` 발급 |
-| | A04 이전 close, `reference_time + 600초` 안의 causal 확정 |
-| | Evidence `available_at` 실측 |
+| RecordId position-finality Python 모델 | 실제 Target-A·WinRM에서의 VM 경로 실행 |
+| reconciliation finalizer | 실제 PostgreSQL에서의 migration 013 실행 검증 |
+| Role3 ledger·receipt | 실제 WMI Run에서의 end-to-end 실행 |
+| Role4 seal·trusted projection | event-time `source_watermark`·`run_closed` 발급 |
+| Role2-safe proof | A04 이전 close, `reference_time + 600초` 안의 causal 확정 |
+| strict loader와 변조·회귀 테스트 | Evidence `available_at` 실측 |
+| runner의 freeze request·export generation·run-finalized 생성(opt-in, VM 미검증) | |
+| producer의 freeze ack와 generation observation 생성(opt-in, VM 미검증) | |
+| RecordId XPath 기반 canonical snapshot export(opt-in, VM 미검증) | |
 
 ## 2. 기존 계약과의 차이
 
@@ -283,40 +285,104 @@ record가 다른 seal에서 나왔거나 digest가 seal과 맞지 않으면 발�
 validator를 거치는 #266 incremental Evidence state도 position proof로 Evidence를 확정하지 않는다.
 position proof를 incremental Evidence state에 소비하는 연결은 Role2 소유 범위로 남긴다.
 
-## 6. 실제 VM 실행 전 준비
+## 6. 실제 VM 실행 경로
 
-이번 구현은 합성 fixture로만 검증했다. 실제 Run/Pair ID를 발급하거나 WMI 수집을 하지 않았다.
+runner와 producer 쪽을 opt-in `-PositionFinality`로 구현했다. 합성 fixture와 가짜 transport로만
+검증했다. 실제 Run/Pair ID를 발급하거나 WMI 수집을 하지 않았다. 스위치를 주지 않으면 runner와
+producer의 기존 동작과 산출물은 그대로다(producer raw 레코드에 `Channel`이 더해진 것만 다르다).
 
-### 6.1 아직 없는 VM 쪽 구현 (blocker)
+### 6.1 실행 순서와 소유
 
-- **runner:** 다음 기록이 없다.
-  - observation 종료 뒤 `collection-freeze-requested.json`
-  - 같은 RecordId bound XPath로 하는 canonical export
-  - export 뒤 `canonical-export-generation.json`
-  - `run-finalized.json`
-- **producer:** freeze request를 읽고 upper bound를 고정하는 처리가 없다. 그 bound까지 chunk를 publish한
-  뒤 `collection-freeze-ack.json`과 `collection-freeze-generation.json`을 쓰는 처리도 없다.
-- **현재 canonical export:** time window 기준이다. RecordId bound 기준이 아니다.
+```text
+producer (-PositionFinality)   평소처럼 polling: EID 1/3 chunk publish → consume → post-commit ack
+runner (-PositionFinality)     A04 → candidate-boundary-completed.json
+                               observation 대기 → Controller 시계로도 observation 경계가 지난 뒤
+                               → collection-freeze-requested.json → ack 대기(기본 900초)
+producer                       freeze request 발견 → Target-A에서 upper RecordId 1회 고정
+                               → lower = context 시작 이후 첫 EID 1/3 (첫 publish 레코드와 같아야 함)
+                               → [lower, upper] EID 1/3 두 번 읽기 → 남은 레코드 publish → consume
+                               → publish한 live 레코드 = bound 레코드 확인
+                               → collection-freeze-generation.json → collection-freeze-ack.json
+                               → 이후 polling은 upper 초과 레코드만(post-bound chunk)
+runner                         ack·freeze generation 검사 → 기존 time-window export·fetch
+                               → 같은 session에서 RecordId bound export(export_record_bounded)·fetch
+                               → JSONL 변환 → snapshot manifest → canonical-export-generation.json
+                               → (기존 lineage·reference·provenance 검사와 Run 산출물 게시)
+                               → run-finalized.json (마지막)
+producer                       run-finalized 발견 → 종료
+finalizer (6.3 명령)           reconcile-snapshot → issue-position-close → consume → export
+```
 
-위가 구현되기 전에는 아래 명령을 실제 Run에 적용할 수 없다.
+- **runner:** `scenarios/R1/r1-position-finality-common.ps1`. request의 `candidate_boundary_at`은
+  runner가 쓴 `candidate-boundary-completed.json`의 A04 완료 시각, `observation_boundary_at`은
+  `start_time + ObservationSec`(Target-A 시계)이다. `requested_at`·`observed_at`·`finalized_at`은
+  Controller 시계다. 그래서 request를 쓰기 전에 Controller 시계로도 observation 경계까지 기다린다
+  (rehearsal에서도 같다).
+- **producer:** `scenarios/R1/r1-incremental-sysmon-producer.ps1 -PositionFinality`. Target-A 쪽 조회는
+  `$R1_POSITION_FREEZE_SNAPSHOT`(`r1-incremental-sysmon-producer-common.ps1`)이다. ack와 freeze
+  generation은 `python -m incident_awareness.pipeline.r1_record_bounded_freeze`가 쓴다. 이 도구는 covered
+  raw segment·chunk·post-commit ack를 finalizer와 같은 규칙으로 다시 읽은 뒤에만 쓴다.
+- **canonical snapshot:** Run의 기존 time-window export(`<data>/raw/<run_id>/telemetry/`)는 바꾸지 않는다.
+  snapshot은 그 옆에서 ack의 RecordId 폐구간
+  `*[System[(EventID=1 or EventID=3) and EventRecordID >= lower and EventRecordID <= upper]]`로 따로
+  export한다. 두 export는 서로를 대신하지 않는다. Run manifest에는 snapshot이 들어가지 않는다.
+- identity 줄은 producer와 runner 모두 `host\tchannel\tRecordId\tEventId\t(raw XML + LF)의 SHA-256`이다
+  (PR #303 smoke `v0.2`의 `Get-Sha256Text` 계산과 같다).
 
-### 6.2 명령과 산출물 경로 (Controller, PowerShell)
+| 파일 | 쓰는 쪽 |
+| --- | --- |
+| `<control>/<run_id>/collection-freeze-requested.json` | runner |
+| `<control>/<run_id>/collection-freeze-generation.json` (`freeze_ack`) | producer (Python 도구) |
+| `<control>/<run_id>/collection-freeze-ack.json` | producer (Python 도구) |
+| `<control>/<run_id>/position-finality/telemetry/sysmon-0001.evtx` · `.jsonl` | runner |
+| `<control>/<run_id>/position-finality/manifest.json` | runner |
+| `<control>/<run_id>/canonical-export-generation.json` (`after_canonical_export`) | runner |
+| `<control>/<run_id>/run-finalized.json` | runner |
+
+### 6.2 fail-closed 조건
+
+다음 중 하나라도 맞으면 해당 단계가 예외로 멈춘다. runner는 Run 산출물을 남기지 않고(이미 게시한 파일은
+지운다) `run-failed.json`을 쓴다. `run-finalized.json`은 쓰지 않는다. producer는 ack를 쓰지 않는다.
+
+- **producer freeze:** 빈 channel·빈 bound, 두 번 읽은 bound가 다름, host·channel이 partition과 다름,
+  lower가 첫 publish 레코드와 다름, upper가 이미 publish한 RecordId보다 작음, channel이 lower를 더 이상
+  보존하지 않음(`oldest_record_number > lower`), channel 생성 시각을 읽지 못함, publish한 live 레코드가
+  bound 레코드와 다름, raw segment와 chunk 번호가 1:1이 아님, chunk 누락·중복·post-commit ack 누락,
+  live raw에 bound 밖 레코드가 있음, request의 Run·host·contract가 sidecar와 다름. `-NoConsume`과 함께
+  쓰거나, ack 없는 freeze generation이 남은 상태(중단된 freeze)로 다시 시작하면 거부한다.
+- **runner:** 시작 시 이 Run의 position artifact가 이미 있음, candidate boundary가 observation 경계보다
+  늦음, 제한 시간 안에 ack가 없음, ack·freeze generation의 request·Run·host·channel·bound·EID·시각
+  순서가 맞지 않음, export의 Event 수·identity digest가 ack와 다름(canonical export drift), export에
+  다른 host·channel 레코드가 있음, export 뒤 다시 읽은 양 끝 레코드·channel 생성 시각이 다르거나
+  oldest record가 뒤로 감·lower를 잃음(generation 변경), fetch한 EVTX가 Target-A가 export한 파일과 다름,
+  JSONL에 bound 밖·중복·다른 host 레코드가 있거나 EVTX export와 레코드 집합이 다름, export
+  generation이 ack보다 이름, snapshot EVTX·JSONL·manifest가 export 뒤에 바뀜, `run-finalized`가 export
+  generation이나 ack보다 이름.
+- 이 경로의 어떤 파일도 `source_watermark`·`run_closed`가 아니다. `observation_boundary_at`을 watermark로
+  쓰지 않는다. provider queue drain, snapshot 밖 raw-source completeness, TTSD/online 적격성을 주장하지 않는다.
+  active TCP probe나 source completeness 추정도 하지 않는다.
+
+### 6.3 명령과 산출물 경로 (Controller, PowerShell)
+
+producer와 runner는 [stream wiring 문서](../pipeline/r1-development-stream-wiring.md)의 명령에
+`-PositionFinality`를 더해 실행한다. runner의 ack 대기 시간은 `-PositionFreezeAckTimeoutSec`(기본 900)이다.
+run-finalized가 생긴 뒤 finalizer를 실행한다.
 
 ```powershell
 $env:PYTHONPATH = "src"
 $env:INCIDENT_AWARENESS_EVENT_TYPES_PATH = "configs/event_types_v0.2.yaml"
 $Run = Join-Path $SpoolRoot $RunId
 $Control = Join-Path $ControlRoot $RunId
-$Raw = "<canonical raw root>\$RunId"
+$Canonical = Join-Path $Control "position-finality"
 $Contract = "$SpoolRoot\contracts\$RunId-required-partitions.json"
 $Snapshot = @(
   "--run-spool-root", $Run,
   "--freeze-request", "$Control\collection-freeze-requested.json",
   "--freeze-ack", "$Control\collection-freeze-ack.json",
   "--run-finalized", "$Control\run-finalized.json",
-  "--canonical-evtx", "$Raw\telemetry\sysmon-0001.evtx",
-  "--canonical-jsonl", "$Raw\telemetry\sysmon-0001.jsonl",
-  "--canonical-manifest", "$Raw\manifest.json",
+  "--canonical-evtx", "$Canonical\telemetry\sysmon-0001.evtx",
+  "--canonical-jsonl", "$Canonical\telemetry\sysmon-0001.jsonl",
+  "--canonical-manifest", "$Canonical\manifest.json",
   "--required-partition-contract", $Contract
 )
 uv run python -m incident_awareness.pipeline.r1_record_position_finality reconcile-snapshot @Snapshot `
@@ -346,7 +412,7 @@ history에 기록하고, 일부만 존재하면 fail-closed한다.
 | accepted close export | `<spool>/<run_id>/exports/<run_id>/accepted-record-position-close.json` |
 | Role4 seal / projection record / proof | Role4 작업 경로의 `position-candidate-generation-seal.json`, `position-seal-projection-record.json`, `role2-verified-position-close-proof.json` (Python API `write_*`) |
 
-### 6.3 Role2가 받는 파일
+### 6.4 Role2가 받는 파일
 
 1. `accepted-record-position-close.json` (Role3 export)
 2. `<run_id>-required-partitions.json` (export가 path·SHA-256으로 결속)
@@ -359,6 +425,13 @@ snapshot artifact와 reconciliation은 감사용으로 함께 보관할 수 있�
 
 ## 7. 실제 VM에서 검증할 항목
 
+아래는 모두 실제 Target-A·WinRM·PostgreSQL에서 아직 확인하지 않았다.
+
+- producer의 `Invoke-PositionFreeze`(Controller 쪽 연결: Target-A 조회 → publish → consume → 비교 →
+  Python 도구 호출)가 실제 session과 `uv`에서 동작하는지. 이 부분은 정적 순서 검사만 했다
+- freeze request부터 ack까지 걸리는 시간이 runner 대기 시간(기본 900초) 안인지
+- `export_record_bounded`의 `wevtutil epl` RecordId XPath export와 `Get-WinEvent -Path` 재읽기가 Target-A에서
+  producer와 같은 identity digest를 내는지
 - producer freeze ack가 bound 안 target Event를 모두 publish한 뒤에만 기록되는지
 - RecordId bound XPath canonical export와 live 집합이 일치하는지(PR #303 smoke `v0.2` 재실행 포함)
 - 두 generation 관측이 실제 Target-A에서 같은 anchor·생성 시각을 보이는지

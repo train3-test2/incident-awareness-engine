@@ -159,5 +159,13 @@ correction/retraction을 포함한 candidate-scoped partial close 중 하나를 
 
 RecordId position close 경로(`python -m incident_awareness.pipeline.r1_record_position_finality`)는
 [`r1-sysmon-record-position-finality-v0.md`](../schema/r1-sysmon-record-position-finality-v0.md)에
-정의한다. 이 sidecar는 아직 freeze ack와 channel generation 관측을 쓰지 않는다. runner도 RecordId
-bound canonical export를 하지 않으므로, 그 경로를 실제 Run에 적용하려면 두 쪽의 구현이 먼저 필요하다.
+정의한다. 실제 VM용 producer·runner 쪽은 opt-in `-PositionFinality`로 연결했다(같은 문서 §6).
+이 스위치를 주지 않은 sidecar와 runner의 동작·산출물은 바뀌지 않는다. 다만 raw segment 레코드에는
+`Channel` 필드가 항상 함께 기록된다(position finality의 live raw 검증에 필요한 additive 필드).
+이 경로는 합성 fixture와 가짜 transport로만 검증했고, 실제 Target-A에서는 아직 실행하지 않았다.
+
+```powershell
+scenarios\R1\r1-incremental-sysmon-producer.ps1 <위와 같은 인자> -PositionFinality
+scenarios\R1\attack\run.ps1 <existing arguments> `
+  -IncrementalStreamControlRoot $ControlRoot -PositionFinality
+```
