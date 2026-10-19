@@ -38,7 +38,14 @@ $env:AWS_DEFAULT_REGION = $settings.LOCAL_AWS_REGION
 
 try {
     aws --endpoint-url $endpoint s3 cp $source "s3://$bucket/$key"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to upload local First Cycle input (aws exit code $LASTEXITCODE)"
+    }
+
     aws --endpoint-url $endpoint s3api head-object --bucket $bucket --key $key | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to verify uploaded local First Cycle input (aws exit code $LASTEXITCODE)"
+    }
 } finally {
     $env:AWS_ACCESS_KEY_ID = $previousAccessKey
     $env:AWS_SECRET_ACCESS_KEY = $previousSecretKey
