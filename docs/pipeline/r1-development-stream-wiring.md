@@ -163,6 +163,9 @@ RecordId position close 경로(`python -m incident_awareness.pipeline.r1_record_
 이 스위치를 주지 않은 sidecar와 runner의 동작·산출물은 바뀌지 않는다. 다만 raw segment 레코드에는
 `Channel` 필드가 항상 함께 기록된다(position finality의 live raw 검증에 필요한 additive 필드).
 이 경로는 합성 fixture와 가짜 transport로만 검증했고, 실제 Target-A에서는 아직 실행하지 않았다.
+`-PositionFinality` producer는 시작할 때 `collection-producer-binding.json`을 쓰고, runner는 첫 action
+전에 이 파일의 Run·host·partition·contract를 검사한다. 그래서 producer를 먼저 시작한다. 계약과 Role4 → Role2
+인계 명령은 같은 문서 §6.3~§6.6에 있다.
 
 ```powershell
 scenarios\R1\r1-incremental-sysmon-producer.ps1 <위와 같은 인자> -PositionFinality
