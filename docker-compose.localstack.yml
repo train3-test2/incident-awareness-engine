@@ -31,6 +31,7 @@ services:
       - "127.0.0.1:${LOCALSTACK_PORT:-4566}:4566"
     volumes:
       - ./infra/localstack/init:/etc/localstack/init/ready.d:ro
+      # PERSISTENCE is intentionally disabled: this volume does not preserve S3/SQS state.
       - incident_awareness_localstack_state:/var/lib/localstack
     healthcheck:
       test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name \"$$LOCAL_FIRST_CYCLE_QUEUE\" >/dev/null 2>&1"]

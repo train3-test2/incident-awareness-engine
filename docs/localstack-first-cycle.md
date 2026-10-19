@@ -70,13 +70,17 @@ DLQ로 이동한다. Worker 로그의 `PermanentWorkerError`와 LocalStack DLQ�
 
 ## 중지와 삭제
 
-컨테이너만 중지하고 PostgreSQL·LocalStack state volume을 유지하려면 다음을 사용한다.
+컨테이너를 중지하되 PostgreSQL volume의 분석 결과를 유지하려면 다음을 사용한다.
+현재 Compose는 LocalStack `PERSISTENCE=1`을 설정하지 않으므로
+`incident_awareness_localstack_state` volume이 남아도 S3 객체·SQS 메시지 상태는 재시작 후
+보존되지 않는다. LocalStack 시작 시 init 스크립트가 bucket과 queue만 다시 생성한다.
 
 ```powershell
 docker compose --env-file .env.localstack -f docker-compose.localstack.yml down
 ```
 
-모든 로컬 입력·Queue·PostgreSQL 데이터를 삭제할 때만 아래 명령을 사용한다.
+PostgreSQL 데이터를 포함한 Compose volume을 삭제할 때만 아래 명령을 사용한다.
+LocalStack S3·SQS 상태는 위의 일반 중지 명령 후에도 보존 대상이 아니다.
 
 ```powershell
 docker compose --env-file .env.localstack -f docker-compose.localstack.yml down -v
