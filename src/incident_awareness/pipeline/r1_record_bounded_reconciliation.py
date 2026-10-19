@@ -523,6 +523,56 @@ def r1_raw_segment_inventory_sha256(run_spool_root: Path, covered_through: int) 
     )
 
 
+@dataclass(frozen=True, slots=True)
+class R1LiveSnapshotDelivery:
+    """What the live producer has durably delivered for one RecordId bound."""
+
+    event_count: int
+    raw_segment_inventory_sha256: str
+    covered_chunks: tuple[R1CoveredChunk, ...]
+    post_bound_chunk_sequences: tuple[int, ...]
+
+
+def verify_r1_live_snapshot_delivery(
+    run_spool_root: Path,
+    *,
+    partition: R1StreamPartition,
+    lower: int,
+    upper: int,
+    covered_through: int,
+) -> R1LiveSnapshotDelivery:
+    """Apply the finalizer's live-side gates before a producer writes its freeze ack.
+
+    The covered raw segments must hold only bound Events of this partition, and every
+    covered chunk must exist without a gap, carry exactly those Events and have a
+    post-commit Role3 ack bound to its bytes.
+    """
+
+    if isinstance(lower, bool) or isinstance(upper, bool) or not 1 <= lower <= upper:
+        raise R1RecordBoundedSnapshotError("the RecordId bound must satisfy 1 <= lower <= upper")
+    if isinstance(covered_through, bool) or covered_through < 1:
+        raise R1RecordBoundedSnapshotError("at least one covered chunk is required")
+    segments = _read_covered_segments(run_spool_root, covered_through)
+    live = _live_identities(segments, partition, lower, upper)
+    covered, chunk_identities, post_bound = _verify_chunks(
+        run_spool_root,
+        partition=partition,
+        covered_through=covered_through,
+        segments=segments,
+        upper=upper,
+    )
+    if chunk_identities != set(live):
+        raise R1RecordBoundedSnapshotError(
+            "covered chunks do not contain exactly the live raw Event identities"
+        )
+    return R1LiveSnapshotDelivery(
+        event_count=len(live),
+        raw_segment_inventory_sha256=_raw_segment_inventory_sha256(run_spool_root, segments),
+        covered_chunks=covered,
+        post_bound_chunk_sequences=post_bound,
+    )
+
+
 def _live_identities(
     segments: dict[int, tuple[dict[str, object], ...]],
     partition: R1StreamPartition,
@@ -722,6 +772,7 @@ def _utc_milliseconds(value: datetime) -> datetime:
 
 __all__ = [
     "R1CoveredChunk",
+    "R1LiveSnapshotDelivery",
     "R1SnapshotSources",
     "R1VerifiedChannelGeneration",
     "R1VerifiedSnapshotDelivery",
@@ -731,6 +782,7 @@ __all__ = [
     "reconcile_r1_record_bounded_snapshot",
     "required_partition_contract_sha256",
     "verify_r1_channel_generation",
+    "verify_r1_live_snapshot_delivery",
     "verify_r1_record_bounded_reconciliation",
     "verify_r1_record_bounded_snapshot",
 ]
