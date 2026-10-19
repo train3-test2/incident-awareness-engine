@@ -638,6 +638,8 @@ def _chunk_event_identity(
     if not 1 <= raw_ref.record_no <= len(records):
         raise R1RecordBoundedSnapshotError("a covered Event references a missing raw record")
     record = records[raw_ref.record_no - 1]
+    if record.get("Channel") != partition.source_channel:
+        raise R1RecordBoundedSnapshotError("a covered Event raw record belongs to another channel")
     record_id = _source_record_id(raw_ref.source_record_id)
     if record.get("RecordId") != record_id:
         raise R1RecordBoundedSnapshotError("a covered Event does not match its raw record")
@@ -662,6 +664,8 @@ def _record_identity(
         raise R1RecordBoundedSnapshotError(f"{label} record is not Sysmon EID 1 or 3")
     if data.get("Computer") != partition.host_id:
         raise R1RecordBoundedSnapshotError(f"{label} record belongs to another host")
+    if data.get("Channel") != partition.source_channel:
+        raise R1RecordBoundedSnapshotError(f"{label} record belongs to another channel")
     if not lower <= record_id <= upper:
         raise R1RecordBoundedSnapshotError(f"{label} record is outside the RecordId bound")
     return _Identity(partition.host_id, partition.source_channel, record_id, event_id)

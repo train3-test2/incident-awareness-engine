@@ -91,6 +91,7 @@ def raw_record(record_id: int, *, host_id: str = HOST_ID) -> dict[str, object]:
         "RecordId": record_id,
         "EventId": event_id,
         "Computer": host_id,
+        "Channel": CHANNEL,
         "TimeCreated": f"2026-10-19T01:0{record_id - 1000}:00.100Z",
         "Provider": "Microsoft-Windows-Sysmon",
         "EventData": data,

@@ -78,7 +78,9 @@ def test_role3_commit_then_ack_then_receipt_export(tmp_path) -> None:
         connection=connection,
         contract_path=snapshot.contract_path,
     )
-    loaded_close, receipt = load_r1_accepted_record_position_close_export(export_path)
+    loaded_close, receipt = load_r1_accepted_record_position_close_export(
+        export_path, contract_path=snapshot.contract_path
+    )
 
     assert connection.commits == 1
     assert ack["disposition"] == "accepted"
@@ -155,7 +157,7 @@ def test_event_time_close_first_then_position_close_keep_separate_meanings(tmp_p
 
     _consume(snapshot, connection)
     loaded_close, receipt = load_r1_accepted_record_position_close_export(
-        _export(snapshot, connection)
+        _export(snapshot, connection), contract_path=snapshot.contract_path
     )
 
     assert loaded_close == close
@@ -172,7 +174,8 @@ def test_position_close_first_then_event_time_close_keep_separate_meanings(tmp_p
     _consume(snapshot, connection)
     first_export = _export(snapshot, connection).read_bytes()
     _, first_receipt = load_r1_accepted_record_position_close_export(
-        position_close_export_path(snapshot.run_spool_root, fixture.RUN_ID)
+        position_close_export_path(snapshot.run_spool_root, fixture.RUN_ID),
+        contract_path=snapshot.contract_path,
     )
 
     # A later event-time close is a separate v0.1 ledger record; the position ledger
@@ -180,7 +183,8 @@ def test_position_close_first_then_event_time_close_keep_separate_meanings(tmp_p
     connection.event_time_closed_runs.add(fixture.RUN_ID)
     second_export = _export(snapshot, connection).read_bytes()
     _, second_receipt = load_r1_accepted_record_position_close_export(
-        position_close_export_path(snapshot.run_spool_root, fixture.RUN_ID)
+        position_close_export_path(snapshot.run_spool_root, fixture.RUN_ID),
+        contract_path=snapshot.contract_path,
     )
 
     assert first_export == second_export
@@ -276,7 +280,42 @@ def test_export_contract_linkage_tampering_fails_closed(tmp_path) -> None:
     export_path.write_bytes(canonical_json_bytes(payload))
 
     with pytest.raises(R1RecordBoundedSnapshotError, match="contract file digest mismatch"):
-        load_r1_accepted_record_position_close_export(export_path)
+        load_r1_accepted_record_position_close_export(
+            export_path, contract_path=snapshot.contract_path
+        )
+
+
+def test_role2_loader_uses_the_explicitly_delivered_contract_path(tmp_path) -> None:
+    snapshot, _ = _published(tmp_path)
+    connection = fixture.FakeLedgerConnection.with_snapshot_chunks(snapshot)
+    _consume(snapshot, connection)
+    export_path = _export(snapshot, connection)
+    delivered_root = tmp_path / "role2-delivery"
+    delivered_root.mkdir()
+    delivered_export = delivered_root / export_path.name
+    delivered_contract = delivered_root / snapshot.contract_path.name
+    delivered_export.write_bytes(export_path.read_bytes())
+    delivered_contract.write_bytes(snapshot.contract_path.read_bytes())
+    snapshot.contract_path.unlink()
+
+    loaded_close, receipt = load_r1_accepted_record_position_close_export(
+        delivered_export, contract_path=delivered_contract
+    )
+
+    assert loaded_close.run_id == fixture.RUN_ID
+    assert receipt.close_id == loaded_close.close_id
+
+
+def test_role2_loader_reports_the_missing_delivered_contract_path(tmp_path) -> None:
+    snapshot, _ = _published(tmp_path)
+    connection = fixture.FakeLedgerConnection.with_snapshot_chunks(snapshot)
+    _consume(snapshot, connection)
+    export_path = _export(snapshot, connection)
+    missing = tmp_path / "role2-delivery" / snapshot.contract_path.name
+
+    with pytest.raises(R1RecordBoundedSnapshotError) as error:
+        load_r1_accepted_record_position_close_export(export_path, contract_path=missing)
+    assert str(missing) in str(error.value)
 
 
 def test_export_requires_a_committed_receipt_and_its_ack(tmp_path) -> None:

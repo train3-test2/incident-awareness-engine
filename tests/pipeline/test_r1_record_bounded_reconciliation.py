@@ -20,6 +20,8 @@ from incident_awareness.common.models.r1_record_position_close import (
 )
 from incident_awareness.common.models.r1_stream import R1EventChunk
 from incident_awareness.pipeline.r1_record_bounded_reconciliation import (
+    _chunk_event_identity,
+    r1_raw_segment_inventory_sha256,
     reconcile_r1_record_bounded_snapshot,
     verify_r1_record_bounded_reconciliation,
     verify_r1_record_bounded_snapshot,
@@ -150,6 +152,44 @@ def test_canonical_host_or_channel_change_fails_closed(tmp_path, old, new, messa
 
     with pytest.raises(R1RecordBoundedSnapshotError, match=message):
         verify_r1_record_bounded_snapshot(snapshot.sources)
+
+
+def _rewrite_live_channel_and_refresh_delivery(snapshot: fixture.Snapshot) -> None:
+    segment = snapshot.run_spool_root / "raw-segments" / "sysmon-00000001.jsonl"
+    records = [json.loads(line) for line in segment.read_text(encoding="utf-8").splitlines()]
+    records[0]["Channel"] = "Microsoft-Windows-PowerShell/Operational"
+    segment.write_bytes(
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in records).encode()
+    )
+    fixture.publish_chunk(snapshot, 1)
+    freeze_ack = snapshot.read_json(snapshot.sources.freeze_ack_path)
+    freeze_ack["raw_segment_inventory_sha256"] = r1_raw_segment_inventory_sha256(
+        snapshot.run_spool_root, 2
+    )
+    snapshot.rewrite_json(snapshot.sources.freeze_ack_path, freeze_ack)
+
+
+def test_live_raw_channel_change_fails_after_inventory_chunk_and_ack_refresh(tmp_path) -> None:
+    snapshot = fixture.build_snapshot(tmp_path, reconcile=False)
+    _rewrite_live_channel_and_refresh_delivery(snapshot)
+
+    with pytest.raises(R1RecordBoundedSnapshotError, match="live raw segment.*another channel"):
+        verify_r1_record_bounded_snapshot(snapshot.sources)
+
+
+def test_covered_chunk_rejects_a_raw_record_from_another_channel(tmp_path) -> None:
+    snapshot = fixture.build_snapshot(tmp_path, reconcile=False)
+    chunk = R1EventChunk.model_validate_json(snapshot.chunk_paths[0].read_bytes())
+    records = [
+        json.loads(line)
+        for line in (snapshot.run_spool_root / "raw-segments" / "sysmon-00000001.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    records[0]["Channel"] = "Microsoft-Windows-PowerShell/Operational"
+
+    with pytest.raises(R1RecordBoundedSnapshotError, match="raw record belongs to another channel"):
+        _chunk_event_identity(chunk.events[0], chunk, {1: tuple(records)}, fixture.partition())
 
 
 def test_contract_bound_to_another_host_fails_closed(tmp_path) -> None:

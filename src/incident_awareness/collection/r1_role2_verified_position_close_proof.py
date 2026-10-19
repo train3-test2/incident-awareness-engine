@@ -254,6 +254,7 @@ def validate_r1_role2_verified_position_close_proof(
     expected_required_partition_contract_sha256: str,
     accepted_source_seal_id: str,
     accepted_source_seal_projection_sha256: str,
+    accepted_source_seal_projection_record_sha256: str,
     proof_validated_at: datetime,
 ) -> R1Role2VerifiedPositionCloseProofValidation:
     """Role2 check of every proof binding without Ground Truth or a Role4 object."""
@@ -273,6 +274,10 @@ def validate_r1_role2_verified_position_close_proof(
     seal_id = _unpadded("accepted_source_seal_id", accepted_source_seal_id)
     projection_sha256 = _sha256(
         "accepted_source_seal_projection_sha256", accepted_source_seal_projection_sha256
+    )
+    projection_record_sha256 = _sha256(
+        "accepted_source_seal_projection_record_sha256",
+        accepted_source_seal_projection_record_sha256,
     )
     contract_sha256 = _sha256(
         "expected_required_partition_contract_sha256",
@@ -306,6 +311,10 @@ def validate_r1_role2_verified_position_close_proof(
         raise ValueError("proof source_seal_id does not match the accepted source seal")
     if proof.source_seal_projection_sha256 != projection_sha256:
         raise ValueError("proof projection digest does not match the trusted projection digest")
+    if proof.source_seal_projection_record_sha256 != projection_record_sha256:
+        raise ValueError(
+            "proof projection record digest does not match the trusted projection record digest"
+        )
     if _proof_projection_sha256(proof) != projection_sha256:
         raise ValueError("proof fields do not match the trusted source seal projection digest")
     if proof.input_position_close_id != accepted_position_close.close_id:

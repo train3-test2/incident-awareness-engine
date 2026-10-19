@@ -282,6 +282,8 @@ def export_r1_accepted_record_position_close(
 
 def load_r1_accepted_record_position_close_export(
     path: Path,
+    *,
+    contract_path: Path,
 ) -> tuple[R1RecordPositionClose, R1AcceptedRecordPositionCloseReceipt]:
     """Role4/Role2 loader: verify the receipt and the contract linkage before use."""
 
@@ -314,9 +316,11 @@ def load_r1_accepted_record_position_close_export(
     linkage = payload["required_partition_contract"]
     if not isinstance(linkage, dict):
         raise R1RecordBoundedSnapshotError("position close export has no contract linkage")
-    contract_file = Path(str(linkage.get("path")))
+    contract_file = contract_path
     if not contract_file.is_file():
-        raise R1RecordBoundedSnapshotError(f"linked required-partition contract is missing: {path}")
+        raise R1RecordBoundedSnapshotError(
+            f"linked required-partition contract is missing: {contract_file}"
+        )
     if sha256_hex(contract_file.read_bytes()) != linkage.get("sha256"):
         raise R1RecordBoundedSnapshotError(
             "linked required-partition contract file digest mismatch"

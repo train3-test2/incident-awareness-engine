@@ -20,6 +20,7 @@ from incident_awareness.collection.r1_position_candidate_generation_seal import 
     issue_r1_position_seal_projection_record,
     load_r1_position_candidate_generation_seal,
     load_r1_position_seal_projection_record,
+    position_seal_projection_record_sha256,
     role2_safe_position_seal_projection_sha256,
     validate_r1_position_candidate_generation_seal_binding,
     write_r1_position_message,
@@ -188,6 +189,9 @@ def _validate(proof: R1Role2VerifiedPositionCloseProof, **overrides: object):
         "expected_required_partition_contract_sha256": CONTRACT_SHA256,
         "accepted_source_seal_id": f"SEAL-{RUN_ID}-position-000001",
         "accepted_source_seal_projection_sha256": _record(_seal()).projection_sha256,
+        "accepted_source_seal_projection_record_sha256": (
+            position_seal_projection_record_sha256(_record(_seal()))
+        ),
         "proof_validated_at": VALIDATED_AT,
     }
     arguments.update(overrides)
@@ -318,6 +322,10 @@ def test_projection_record_content_hash_is_enforced() -> None:
     ("overrides", "message"),
     [
         ({"accepted_source_seal_projection_sha256": "8" * 64}, "trusted projection digest"),
+        (
+            {"accepted_source_seal_projection_record_sha256": "8" * 64},
+            "trusted projection record digest",
+        ),
         ({"accepted_source_seal_id": "SEAL-OTHER"}, "accepted source seal"),
         ({"expected_selector_partition": _partition("R1-TGTB")}, "not the closed partition"),
         ({"expected_required_partition_contract_sha256": "b" * 64}, "expected contract"),
@@ -344,6 +352,14 @@ def test_role2_rejects_a_rehashed_proof_with_changed_bindings(field, value) -> N
     payload[field] = value
 
     with pytest.raises(ValueError, match="trusted source seal projection digest"):
+        _validate(_rehash_proof(payload))
+
+
+def test_role2_rejects_a_rehashed_proof_with_changed_projection_record_digest() -> None:
+    payload = _proof().model_dump(mode="json", by_alias=True)
+    payload["source_seal_projection_record_sha256"] = "0" * 64
+
+    with pytest.raises(ValueError, match="trusted projection record digest"):
         _validate(_rehash_proof(payload))
 
 
@@ -460,5 +476,6 @@ def test_role2_api_requires_every_external_binding() -> None:
         "expected_required_partition_contract_sha256",
         "accepted_source_seal_id",
         "accepted_source_seal_projection_sha256",
+        "accepted_source_seal_projection_record_sha256",
         "proof_validated_at",
     }

@@ -210,6 +210,8 @@ close가 결속하는 값은 다음과 같다.
 - `export-position-close`는 ledger에서 receipt를 다시 읽는다. 이 receipt와 ack의 `ledger_entry_id`,
   contract digest가 모두 맞을 때만 `<spool>/<run_id>/exports/<run_id>/accepted-record-position-close.json`을 쓴다.
   이 파일에는 close, receipt, contract 경로·file SHA-256·content SHA-256이 들어 있다.
+  기록된 Controller contract 경로는 provenance이며 Role4/Role2 loader의 파일 위치가 아니다. loader는
+  별도로 전달받은 contract 경로를 명시적으로 받고 두 SHA-256으로 export linkage를 검증한다.
 
 ## 5. Role4 seal과 Role2 proof
 
@@ -251,10 +253,12 @@ record가 다른 seal에서 나왔거나 digest가 seal과 맞지 않으면 발�
 
 `validate_r1_role2_verified_position_close_proof()`는 Role4 객체 없이 다음 입력을 받는다.
 
-- Role3 export에서 읽은 accepted close와 receipt (`load_r1_accepted_record_position_close_export`)
+- Role3 export에서 읽은 accepted close와 receipt. loader에는 Controller 절대 경로를 신뢰하지 않고
+  별도로 전달받은 required-partition contract 경로를 명시한다
+  (`load_r1_accepted_record_position_close_export(path, contract_path=...)`).
 - registered candidate policy
 - expected run/family/selector partition/required-partition contract hash
-- 신뢰 경로로 받은 source seal ID와 projection digest
+- 신뢰 경로로 받은 source seal ID, projection digest, projection record digest
 - Role2 검증 시각
 
 검증기는 다음을 모두 대조한다.
@@ -263,6 +267,7 @@ record가 다른 seal에서 나왔거나 digest가 seal과 맞지 않으면 발�
 - receipt가 close와 같고, contract hash가 기대값과 같다.
 - candidate boundary가 freeze request boundary와 같다.
 - proof 필드로 projection을 다시 계산한 값이 trusted digest와 같다.
+- proof의 projection record digest가 신뢰 경로로 받은 record digest와 같다.
 - 시각 순서가 맞다.
 
 ### 5.4 시간 의미
