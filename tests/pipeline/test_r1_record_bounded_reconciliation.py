@@ -113,6 +113,21 @@ def test_ack_that_no_longer_matches_the_chunk_bytes_fails_closed(tmp_path) -> No
         verify_r1_record_bounded_snapshot(snapshot.sources)
 
 
+def test_duplicate_key_in_post_commit_ack_fails_closed(tmp_path) -> None:
+    snapshot = fixture.build_snapshot(tmp_path, reconcile=False)
+    ack_path = snapshot.run_spool_root / "acks" / f"{snapshot.chunk_paths[0].name}.ack.json"
+    ack_path.write_bytes(
+        ack_path.read_bytes().replace(
+            b'"disposition":"accepted"',
+            b'"disposition":"rejected","disposition":"accepted"',
+            1,
+        )
+    )
+
+    with pytest.raises(R1RecordBoundedSnapshotError, match="Role3 ack cannot be read"):
+        verify_r1_record_bounded_snapshot(snapshot.sources)
+
+
 def test_changed_recordid_bound_fails_closed(tmp_path) -> None:
     snapshot = fixture.build_snapshot(tmp_path, reconcile=False)
     fixture.refresh_finalized(snapshot, source_upper_record_id=fixture.UPPER_RECORD_ID + 1)
@@ -228,6 +243,18 @@ def test_manifest_digest_that_differs_from_the_file_fails_closed(tmp_path) -> No
     fixture.refresh_finalized(snapshot)
 
     with pytest.raises(R1RecordBoundedSnapshotError, match="manifest digest"):
+        verify_r1_record_bounded_snapshot(snapshot.sources)
+
+
+def test_duplicate_key_in_canonical_manifest_fails_closed(tmp_path) -> None:
+    snapshot = fixture.build_snapshot(tmp_path, reconcile=False)
+    path = snapshot.sources.canonical_manifest_path
+    path.write_bytes(
+        path.read_bytes().replace(b'"sha256": "', b'"sha256": "' + b"0" * 64 + b'", "sha256": "', 1)
+    )
+    fixture.refresh_finalized(snapshot)
+
+    with pytest.raises(R1RecordBoundedSnapshotError, match="manifest is not valid"):
         verify_r1_record_bounded_snapshot(snapshot.sources)
 
 

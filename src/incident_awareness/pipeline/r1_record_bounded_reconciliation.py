@@ -417,8 +417,8 @@ def _verify_canonical_files(sources: R1SnapshotSources, finalized: R1SysmonRunFi
     if sha256_hex(manifest_bytes) != finalized.manifest_sha256:
         raise R1RecordBoundedSnapshotError("manifest digest does not match run-finalized")
     try:
-        manifest = json.loads(manifest_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        manifest = json.loads(manifest_bytes.decode("utf-8"), object_pairs_hook=_unique_json_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise R1RecordBoundedSnapshotError("canonical manifest is not valid UTF-8 JSON") from error
     if not isinstance(manifest, dict) or manifest.get("run_id") != finalized.partition.run_id:
         raise R1RecordBoundedSnapshotError("canonical manifest is bound to another Run")
@@ -608,8 +608,10 @@ def _require_post_commit_ack(run_spool_root: Path, message_path: Path) -> str:
             f"covered chunk has no post-commit Role3 ack: {message_path.name}"
         )
     try:
-        ack = json.loads(ack_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        ack = json.loads(
+            ack_path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise R1RecordBoundedSnapshotError(f"Role3 ack cannot be read: {ack_path}") from error
     message_sha256 = sha256_hex(message_bytes)
     if not isinstance(ack, dict):
@@ -697,6 +699,15 @@ def _read_bytes(path: Path) -> bytes:
         return path.read_bytes()
     except OSError as error:
         raise R1RecordBoundedSnapshotError(f"required file cannot be read: {path}") from error
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError(f"duplicate JSON key: {key}")
+        payload[key] = value
+    return payload
 
 
 def _file_sha256(path: Path) -> str:
