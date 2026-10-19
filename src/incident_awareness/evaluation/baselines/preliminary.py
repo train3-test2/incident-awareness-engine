@@ -5,10 +5,11 @@ import warnings
 from typing import Literal
 
 import sklearn
-from pydantic import Field
+from pydantic import Field, model_validator
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression
 
+from incident_awareness.common.models.run import RunMetadata
 from incident_awareness.evaluation.baselines.static_ml import (
     Digest,
     FeatureRow,
@@ -19,6 +20,22 @@ from incident_awareness.evaluation.baselines.static_ml import (
     TrainingRow,
     _digest,
 )
+from incident_awareness.evaluation.dataset_usage import UsagePolicy, usage_digest
+
+
+class PreliminaryInventoryRun(FrozenModel):
+    """Caller-verified actual allocation and exact training sample for one Run."""
+
+    assignment: Literal["development", "train", "validation", "test"]
+    row: TrainingRow
+
+
+def preliminary_inventory_digest(inventory: list[PreliminaryInventoryRun]) -> str:
+    """Pin actual allocations and samples in canonical Run order."""
+    checked = [PreliminaryInventoryRun.model_validate(item) for item in inventory]
+    return _digest(
+        [item.model_dump(mode="json") for item in sorted(checked, key=lambda x: x.row.run_id)]
+    )
 
 
 class PreliminaryPlan(FrozenModel):
@@ -31,6 +48,15 @@ class PreliminaryPlan(FrozenModel):
     input_inventory_sha256: Digest
     run_ids: tuple[Identifier, ...] = Field(min_length=2)
 
+    @model_validator(mode="after")
+    def valid_runs(self) -> "PreliminaryPlan":
+        """Reject duplicate and malformed planned Run identifiers at load time."""
+        if len(set(self.run_ids)) != len(self.run_ids):
+            raise ValueError("duplicate planned Run")
+        for run_id in self.run_ids:
+            RunMetadata.validate_run_id(run_id)
+        return self
+
 
 class PreliminaryModel(FrozenModel):
     """Not accepted by the formal StaticModel loader; no invented split digest."""
@@ -38,16 +64,29 @@ class PreliminaryModel(FrozenModel):
     schema_version: Literal["preliminary-logistic-v0.1"] = "preliminary-logistic-v0.1"
     plan: PreliminaryPlan
     config: TrainingConfig
-    feature_names: tuple[Identifier, ...]
+    feature_names: tuple[Identifier, ...] = Field(min_length=1)
     feature_config_version: Identifier
-    coefficients: tuple[Finite, ...]
+    coefficients: tuple[Finite, ...] = Field(min_length=1)
     intercept: Finite
     training_sha256: Digest
     sklearn_version: Identifier
 
+    @model_validator(mode="after")
+    def valid_contract(self) -> "PreliminaryModel":
+        """Validate managed vocabulary and coefficient dimensions on construction/load."""
+        FeatureRow.valid_names(self.feature_names)
+        if len(self.feature_names) != len(self.coefficients):
+            raise ValueError("coefficient dimensions mismatch")
+        return self
+
 
 def train_preliminary_model(
-    rows: list[TrainingRow], plan: PreliminaryPlan, config: TrainingConfig
+    rows: list[TrainingRow],
+    plan: PreliminaryPlan,
+    config: TrainingConfig,
+    *,
+    usage: UsagePolicy,
+    inventory: list[PreliminaryInventoryRun],
 ) -> PreliminaryModel:
     """Fit one sample per explicitly permitted Run; do not claim validation or tuning."""
     plan = PreliminaryPlan.model_validate(plan.model_dump(mode="json"))
@@ -56,8 +95,6 @@ def train_preliminary_model(
         (TrainingRow.model_validate(row.model_dump(mode="json")) for row in rows),
         key=lambda row: row.sample_id,
     )
-    if len(set(plan.run_ids)) != len(plan.run_ids):
-        raise ValueError("duplicate planned Run")
     if len(rows) != len(plan.run_ids) or {row.run_id for row in rows} != set(plan.run_ids):
         raise ValueError("exactly one row per planned Run required")
     if len({row.sample_id for row in rows}) != len(rows):
@@ -71,6 +108,28 @@ def train_preliminary_model(
         for r in rows
     ):
         raise ValueError("feature contract mismatch")
+    usage = UsagePolicy.model_validate(usage)
+    inventory = [PreliminaryInventoryRun.model_validate(item) for item in inventory]
+    if usage_digest(usage) != plan.usage_record_sha256:
+        raise ValueError("usage digest mismatch")
+    if preliminary_inventory_digest(inventory) != plan.input_inventory_sha256:
+        raise ValueError("inventory digest mismatch")
+    if len(inventory) != len(rows) or {item.row.run_id for item in inventory} != set(plan.run_ids):
+        raise ValueError("inventory must exactly cover planned Runs")
+    inventory_rows = sorted((item.row for item in inventory), key=lambda row: row.sample_id)
+    if inventory_rows != rows:
+        raise ValueError("inventory training rows mismatch")
+    permissions = {record.run_id: record for record in usage.runs}
+    for item in inventory:
+        record = permissions.get(item.row.run_id)
+        if record is None:
+            raise ValueError("missing Run usage permission")
+        if item.assignment in ("validation", "test"):
+            raise ValueError("holdout Run cannot be used for preliminary training")
+        if not (record.used_for_tuning or "train" in record.eligible_splits):
+            raise ValueError("Run usage does not permit training")
+        if item.assignment == "train" and "train" not in record.eligible_splits:
+            raise ValueError("tuning-only Run cannot be assigned to formal train")
     estimator = LogisticRegression(
         solver="lbfgs",
         C=config.c,
@@ -100,8 +159,6 @@ def train_preliminary_model(
 def predict_preliminary_model(model: PreliminaryModel, rows: list[FeatureRow]) -> dict:
     """Return offline probabilities, with explicit training overlap and no metric claim."""
     model = PreliminaryModel.model_validate(model.model_dump(mode="json"))
-    if len(model.coefficients) != len(model.feature_names):
-        raise ValueError("coefficient dimensions mismatch")
     rows = [FeatureRow.model_validate(r.model_dump(mode="json")) for r in rows]
     if len({r.sample_id for r in rows}) != len(rows):
         raise ValueError("duplicate sample_id")
@@ -130,6 +187,8 @@ def predict_preliminary_model(model: PreliminaryModel, rows: list[FeatureRow]) -
     return {
         "purpose": "offline_development_only",
         "model_sha256": _digest(model.model_dump(mode="json")),
+        "input_sha256": _digest([row.model_dump(mode="json") for row in rows]),
+        "probability_interpretation": "uncalibrated_P_label_1_not_attack_likelihood",
         "predictions": result,
         "performance_metrics": None,
     }
