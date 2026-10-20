@@ -133,6 +133,7 @@ function Assert-R1PositionPreflight {
         [Parameter(Mandatory = $true)][string]$RunId,
         [Parameter(Mandatory = $true)][string]$TargetHost,
         [Parameter(Mandatory = $true)][string]$Channel,
+        [Parameter(Mandatory = $true)]$ExpectedContextStartUtc,
         [AllowNull()]$Scenario
     )
 
@@ -150,6 +151,13 @@ function Assert-R1PositionPreflight {
         -not (Test-R1SamePartition (Get-R1Value $binding "partition") $expected)) {
         throw ("the producer collects another Run, host or partition than this run (" + $RunId + " on " +
             $TargetHost + ")")
+    }
+    $bindingContextStart = ConvertFrom-R1UtcStamp (Get-R1Value $binding "context_start_utc") `
+        "producer binding context_start_utc"
+    $expectedContextStart = ConvertFrom-R1UtcStamp $ExpectedContextStartUtc "Target-A boot UTC"
+    if ($bindingContextStart -ne $expectedContextStart) {
+        throw ("the producer context start " + (Get-UtcStamp $bindingContextStart) +
+            " does not match the Target-A boot UTC " + (Get-UtcStamp $expectedContextStart))
     }
     $contractBinding = Get-R1Value $binding "required_partition_contract"
     $contractPath = [string](Get-R1Value $contractBinding "path")
