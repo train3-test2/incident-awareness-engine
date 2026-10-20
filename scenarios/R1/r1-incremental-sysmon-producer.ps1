@@ -7,6 +7,23 @@
     immediately deliver the spool to Role3's PostgreSQL ledger. No approved
     Sysmon source-completeness proof exists, so this sidecar does not publish a
     source watermark or run_closed.
+
+    -PositionFinality adds the producer side of the RecordId position-finality
+    path (docs/schema/r1-sysmon-record-position-finality-v0.md). Once the runner
+    writes <ControlRoot>/<RunId>/collection-freeze-requested.json, the sidecar
+    fixes one all-channel upper RecordId on Target-A, publishes every EID 1/3 of
+    the closed bound as chunks, delivers them to Role3 and checks their
+    post-commit acks, and only then writes collection-freeze-generation.json and
+    collection-freeze-ack.json through
+    incident_awareness.pipeline.r1_record_bounded_freeze. Later polls publish only
+    records above the bound (post-bound chunks), and the sidecar stops once the
+    runner writes run-finalized.json. At start it writes
+    collection-producer-binding.json (Run, host, partition, contract) for the
+    runner's check before any action, and a freeze that fails leaves
+    collection-freeze-failed.json with a stable reason code so the runner stops
+    waiting at once. Neither file is a source watermark or
+    run_closed, and neither claims Sysmon provider queue drain or completeness
+    outside the bound.
 #>
 [CmdletBinding()]
 param(
@@ -23,11 +40,15 @@ param(
     [Parameter(Mandatory = $true)][int]$ChunkMaxEvents,
     [Parameter(Mandatory = $true)][int]$AllowedLatenessMs,
     [switch]$UseSsl,
-    [switch]$NoConsume
+    [switch]$NoConsume,
+    [switch]$PositionFinality
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if ($PositionFinality -and $NoConsume) {
+    throw "PositionFinality checks the post-commit acks this sidecar writes when it consumes; NoConsume cannot be used with it"
+}
 if ($PollIntervalSec -lt 1) { throw "PollIntervalSec must be at least 1" }
 if ($ChunkMaxEvents -lt 1) { throw "ChunkMaxEvents must be at least 1" }
 if ($AllowedLatenessMs -lt 0) { throw "AllowedLatenessMs must not be negative" }
@@ -42,17 +63,6 @@ $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $env:PYTHONPATH = Join-Path $projectRoot "src"
 . (Join-Path $PSScriptRoot "r1-incremental-sysmon-producer-common.ps1")
 
-function Write-AtomicText([string]$Path, [string]$Text) {
-    $temp = $Path + "." + [Guid]::NewGuid().ToString("N") + ".tmp"
-    [IO.File]::WriteAllText($temp, $Text, $utf8)
-    if (Test-Path -LiteralPath $Path) {
-        if ([IO.File]::ReadAllText($Path) -cne $Text) { throw "immutable path conflict: $Path" }
-        Remove-Item -LiteralPath $temp -Force
-        return
-    }
-    [IO.File]::Move($temp, $Path)
-}
-
 function Invoke-Wiring([string[]]$Arguments) {
     Push-Location $projectRoot
     try {
@@ -63,9 +73,25 @@ function Invoke-Wiring([string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "r1_stream_wiring failed with exit code $LASTEXITCODE" }
 }
 
+function Invoke-FreezeTool([string[]]$Arguments) {
+    Push-Location $projectRoot
+    try {
+        & uv run python -m incident_awareness.pipeline.r1_record_bounded_freeze @Arguments
+    } finally {
+        Pop-Location
+    }
+    if ($LASTEXITCODE -ne 0) { throw "r1_record_bounded_freeze failed with exit code $LASTEXITCODE" }
+}
+
 $runControlDir = Join-Path $ControlRoot $RunId
 $failedControlPath = Join-Path $runControlDir "run-failed.json"
 $abortedControlPath = Join-Path $runControlDir "run-aborted.json"
+$freezeRequestPath = Join-Path $runControlDir "collection-freeze-requested.json"
+$freezeAckPath = Join-Path $runControlDir "collection-freeze-ack.json"
+$freezeGenerationPath = Join-Path $runControlDir "collection-freeze-generation.json"
+$runFinalizedPath = Join-Path $runControlDir "run-finalized.json"
+$freezeFailurePath = Join-Path $runControlDir "collection-freeze-failed.json"
+$producerBindingPath = Join-Path $runControlDir "collection-producer-binding.json"
 if (Test-Path -LiteralPath $failedControlPath) {
     throw "runner failed before completion (found $failedControlPath)"
 }
@@ -162,6 +188,28 @@ while ($state.chunk_sequence -lt $state.segment_no) {
         "--observed-at", [string]$capture.observed_at_utc)
 }
 
+# A freeze is resumed only when its ack is complete; the ack's upper bound is
+# then where the post-bound polls start. A generation observation without its
+# ack is an interrupted freeze and is not repaired here.
+$frozenUpper = $null
+if ($PositionFinality) {
+    if (Test-Path -LiteralPath $freezeAckPath) {
+        $existingAck = Get-Content -LiteralPath $freezeAckPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $frozenUpper = [long]$existingAck.source_upper_record_id
+        if ([long]$state.last_record_id -lt $frozenUpper) { $state.last_record_id = $frozenUpper }
+    } elseif (Test-Path -LiteralPath $freezeFailurePath) {
+        throw "a failed collection freeze cannot be resumed (found $freezeFailurePath)"
+    } elseif (Test-Path -LiteralPath $freezeGenerationPath) {
+        throw "an interrupted collection freeze cannot be resumed (found $freezeGenerationPath without its ack)"
+    } elseif (Test-Path -LiteralPath $runFinalizedPath) {
+        throw "run-finalized exists without a collection freeze ack of this sidecar"
+    }
+    # The runner checks this before its first action: the same Run, host,
+    # partition and required-partition contract as this sidecar.
+    New-Item -ItemType Directory -Path $runControlDir -Force | Out-Null
+    Write-PositionProducerBinding
+}
+
 $sessionOptions = New-PSSessionOption
 $sessionArgs = @{ ComputerName = $TargetAddress; Port = $WinRmPort; Credential = $Credential; SessionOption = $sessionOptions }
 if ($UseSsl) { $sessionArgs.UseSSL = $true }
@@ -174,49 +222,49 @@ try {
         if (Test-Path -LiteralPath $abortedControlPath) {
             throw "runner was aborted during polling (found $abortedControlPath)"
         }
+        if ($PositionFinality) {
+            if ($null -ne $frozenUpper -and (Test-Path -LiteralPath $runFinalizedPath)) {
+                Write-Host "run-finalized found: the RecordId-bounded snapshot is sealed and the sidecar stops"
+                break
+            }
+            if ($null -eq $frozenUpper) {
+                if (Test-Path -LiteralPath $runFinalizedPath) {
+                    throw "run-finalized was written before the collection freeze ack of this sidecar"
+                }
+                if (Test-Path -LiteralPath $freezeRequestPath) {
+                    try {
+                        $frozenUpper = Invoke-PositionFreeze $session
+                    } catch {
+                        # The runner stops waiting as soon as this file appears.
+                        $freezeError = $_
+                        try {
+                            $reasonCode = Write-PositionFreezeFailure ([string]$freezeError.Exception.Message)
+                            Write-Host ("collection freeze failed: " + $reasonCode)
+                        } catch {
+                            Write-Host ("writing the collection freeze failure failed: " + $_.Exception.Message)
+                        }
+                        throw $freezeError
+                    }
+                    Write-Host ("collection freeze ack written; the RecordId bound ends at " + $frozenUpper)
+                    Start-Sleep -Seconds $PollIntervalSec
+                    continue
+                }
+            }
+        }
 
         $answer = Invoke-Command -Session $session -ScriptBlock $R1_INCREMENTAL_SYSMON_QUERY `
             -ArgumentList @([long]$state.last_record_id, $ContextStartUtc)
 
         $controllerReceivedAtUtc = [DateTime]::UtcNow.ToString("o")
-        $records = @($answer.records)
-        for ($offset = 0; $offset -lt $records.Count; $offset += $ChunkMaxEvents) {
-            $end = [Math]::Min($offset + $ChunkMaxEvents - 1, $records.Count - 1)
-            $slice = @($records[$offset..$end])
-            $state.segment_no++
-            $state.chunk_sequence++
-            $state.message_ordinal++
-            $rawPath = Join-Path $rawRoot ("sysmon-{0:D8}.jsonl" -f $state.segment_no)
-            $metaPath = $rawPath + ".capture.json"
-            $lines = @($slice | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 8 })
-            if (-not (Test-Path -LiteralPath $metaPath)) {
-                Write-AtomicText $metaPath (([ordered]@{
-                    target_queried_at_utc = [string]$answer.target_queried_at_utc
-                    controller_received_at_utc = $controllerReceivedAtUtc
-                    observed_at_utc = $controllerReceivedAtUtc
-                } | ConvertTo-Json -Compress) + "`n")
-            }
-            Write-AtomicText $rawPath (($lines -join "`n") + "`n")
-            $capture = Get-Content -LiteralPath $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            Invoke-Wiring @("publish-segment", "--spool-root", $runSpool,
-                "--required-partition-contract", $RequiredPartitionContract,
-                "--target-host", $TargetHost, "--run-id", $RunId,
-                "--raw-jsonl", $rawPath, "--raw-log-id", ("R1-INCREMENTAL-" + $RunId + "-SYSMON"),
-                "--segment-no", [string]$state.segment_no,
-                "--chunk-sequence", [string]$state.chunk_sequence,
-                "--message-ordinal", [string]$state.message_ordinal,
-                "--observed-at", [string]$capture.observed_at_utc)
-            $state.last_record_id = [long]$slice[-1].RecordId
-        }
+        Publish-Records -Records @($answer.records) -TargetQueriedAtUtc ([string]$answer.target_queried_at_utc) `
+            -ControllerReceivedAtUtc $controllerReceivedAtUtc
 
         if ([bool]$answer.snapshot_consistent -and
             [long]$state.last_record_id -lt [long]$answer.target_high_water_record_id) {
             throw "bounded Sysmon target events were not durably persisted"
         }
 
-        $stateTemp = $statePath + "." + [Guid]::NewGuid().ToString("N") + ".next"
-        [IO.File]::WriteAllText($stateTemp, (($state | ConvertTo-Json -Compress) + "`n"), $utf8)
-        Move-Item -LiteralPath $stateTemp -Destination $statePath -Force
+        Save-ProducerState
         if (-not $NoConsume) {
             Invoke-Wiring @("consume", "--spool-root", $runSpool,
                 "--required-partition-contract", $RequiredPartitionContract,

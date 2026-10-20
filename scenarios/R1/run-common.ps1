@@ -58,6 +58,9 @@ $ErrorActionPreference = "Stop"
 # Loading it leaves an empty $ChannelDir behind, so nothing here uses that name.
 . (Join-Path $PSScriptRoot "remote\r1_task.ps1")
 
+# The runner side of the RecordId position-finality path; used only with -PositionFinality.
+. (Join-Path $PSScriptRoot "r1-position-finality-common.ps1")
+
 $R1_SCENARIO_ID = "R1"
 $R1_TASK_SOURCE = Join-Path $PSScriptRoot "remote\r1_task.ps1"
 $R1_TASK_FILE = "r1_task.ps1"
@@ -2169,6 +2172,9 @@ $R1_REMOTE_STEPS = @{
     }
 }
 
+# The export of the freeze ack's closed RecordId bound (-PositionFinality only).
+$R1_REMOTE_STEPS["export_record_bounded"] = $R1_RECORD_BOUNDED_EXPORT_STEP
+
 function Convert-R1EvtxToJsonl {
     <#
         Render a fetched EVTX file as the JSONL shape the S0 runner writes: one
@@ -3345,6 +3351,8 @@ function Invoke-R1PilotRun {
         [AllowEmptyString()][string]$ExpectedSysmonConfigSha256,
         [AllowEmptyString()][string]$ReadinessRecordPath,
         [AllowEmptyString()][string]$IncrementalStreamControlRoot,
+        [switch]$PositionFinality,
+        [int]$PositionFreezeAckTimeoutSec = 900,
         [AllowNull()]$Connection,
         [AllowNull()][hashtable]$Transport,
         [scriptblock]$NowProvider = { Get-Date },
@@ -3367,6 +3375,13 @@ function Invoke-R1PilotRun {
     $rawFromBoot = ($collectionProfile.raw_window -ceq $R1_RAW_WINDOW_BOOT)
     if ($entryIsSession -and -not [string]::IsNullOrWhiteSpace($IncrementalStreamControlRoot)) {
         throw "IncrementalStreamControlRoot is supported only by the WMI collection path"
+    }
+    if ($PositionFinality) {
+        if ([string]::IsNullOrWhiteSpace($IncrementalStreamControlRoot)) {
+            throw "PositionFinality needs IncrementalStreamControlRoot: the freeze request, the producer's ack and run-finalized are written there"
+        }
+        if ($entryIsSession) { throw "PositionFinality is supported only by the WMI collection path" }
+        if ($PositionFreezeAckTimeoutSec -lt 1) { throw "PositionFreezeAckTimeoutSec must be at least 1" }
     }
     # The registered policies the scenario was rendered with. A scenario whose
     # intermediate is started through WMI has to carry them: nothing is
@@ -3492,9 +3507,31 @@ function Invoke-R1PilotRun {
         # only schedules the offsets and measures durations.
         $startTime = ConvertTo-R1Utc $probe.utc "probe utc"
 
+        # The raw export of this run starts here: at the start of the run, as it
+        # always has, or at the boot of the target when the scenario says the
+        # root of the lineage was created then. Both are stamps of the target.
+        $rawStartTime = $startTime
+        if ($rawFromBoot) {
+            $rawStartTime = ConvertTo-R1Utc (Get-R1Value $probe "boot_utc") "probe boot_utc"
+            if ($rawStartTime -gt $startTime) {
+                throw ("the target reports a boot at " + (Get-UtcStamp $rawStartTime) +
+                    ", after the start of the run (" + (Get-UtcStamp $startTime) + ")")
+            }
+        }
+
         if (-not [string]::IsNullOrWhiteSpace($IncrementalStreamControlRoot)) {
             $controlDir = Join-Path $IncrementalStreamControlRoot $RunId
             New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
+            if ($PositionFinality) {
+                # Before any action: no artifact of this run yet, and a producer
+                # for the same Run, host, partition and contract.
+                $stage = "position_preflight"
+                $preflightPaths = Get-R1PositionPaths -ControlDir $controlDir
+                Assert-R1PositionControlFree -Paths $preflightPaths
+                Assert-R1PositionPreflight -Paths $preflightPaths -RunId $RunId -TargetHost $targetHost `
+                    -Channel $SYSMON_LOG -ExpectedContextStartUtc $rawStartTime -Scenario $scenario
+                $stage = "pre_run_check"
+            }
             $startControl = [ordered]@{
                 schema = "r1-incremental-run-control"
                 contract_version = "v0.1"
@@ -3508,17 +3545,6 @@ function Invoke-R1PilotRun {
                 -Bytes $utf8Control.GetBytes(($startControl | ConvertTo-Json -Compress))
         }
 
-        # The raw export of this run starts here: at the start of the run, as it
-        # always has, or at the boot of the target when the scenario says the
-        # root of the lineage was created then. Both are stamps of the target.
-        $rawStartTime = $startTime
-        if ($rawFromBoot) {
-            $rawStartTime = ConvertTo-R1Utc (Get-R1Value $probe "boot_utc") "probe boot_utc"
-            if ($rawStartTime -gt $startTime) {
-                throw ("the target reports a boot at " + (Get-UtcStamp $rawStartTime) +
-                    ", after the start of the run (" + (Get-UtcStamp $startTime) + ")")
-            }
-        }
         if ($null -ne $readiness -and $readiness.checked_at_time -gt $startTime) {
             throw ("the readiness record was taken at " + $readiness.checked_at +
                 ", after the start of the run (" + (Get-UtcStamp $startTime) + ")")
@@ -3766,6 +3792,33 @@ function Invoke-R1PilotRun {
             Wait-R1Until -Due $clockStart.AddSeconds($ObservationSec) -NowProvider $NowProvider -Sleeper $Sleeper
         }
 
+        # --- 5b. collection freeze (RecordId position finality) ---------------------
+        # The request is written once the observation boundary of the run has
+        # passed on the Controller clock too, also in a rehearsal, and the run
+        # exports nothing until the producer has acked a RecordId bound.
+        $positionPaths = $null
+        $freezeRequest = $null
+        $frozen = $null
+        if ($PositionFinality) {
+            $stage = "collection_freeze"
+            $positionPaths = Get-R1PositionPaths -ControlDir (Join-Path $IncrementalStreamControlRoot $RunId)
+            $candidateBoundary = Read-R1CandidateBoundary -ControlDir $positionPaths.control_dir -RunId $RunId `
+                -TargetHost $targetHost
+            $observationBoundary = $startTime.AddSeconds($ObservationSec)
+            Wait-R1Until -Due $observationBoundary -NowProvider $NowProvider -Sleeper $Sleeper
+            $freezeRequest = New-R1FreezeRequest -RunId $RunId -TargetHost $targetHost -Channel $SYSMON_LOG `
+                -CandidateBoundaryAt $candidateBoundary -ObservationBoundaryAt $observationBoundary `
+                -RequestedAt (& $NowProvider)
+            Write-R1PositionJson -Path $positionPaths.request -Value $freezeRequest | Out-Null
+            Write-Step ("collection freeze requested; waiting for the producer's ack (" +
+                $PositionFreezeAckTimeoutSec + " s at most)")
+            $frozen = Wait-R1FreezeAck -Paths $positionPaths -Request $freezeRequest `
+                -RequestSha256 (Get-R1FileSha256 -Path $positionPaths.request) `
+                -TimeoutSec $PositionFreezeAckTimeoutSec -NowProvider $NowProvider -Sleeper $Sleeper
+            Write-Ok ("collection freeze acked: RecordId " + $frozen.lower + ".." + $frozen.upper + ", " +
+                $frozen.target_event_count + " EID 1/3 Event(s)")
+        }
+
         # --- 6. collection session ---------------------------------------------
         $stage = "collection"
         Write-Step "collecting the Sysmon window from Target-A"
@@ -3783,7 +3836,27 @@ function Invoke-R1PilotRun {
             export_path = $exportPath
         }
         & $Transport.fetch $session ([string]$export.evtx_path) $evtxPath | Out-Null
-        & $Transport.invoke $session "cleanup" @{ paths = @($plan.channel_dir, $exportPath) } | Out-Null
+        $cleanupPaths = @($plan.channel_dir, $exportPath)
+        $positionExport = $null
+        if ($PositionFinality) {
+            # The canonical snapshot: the same closed RecordId bound the producer
+            # acked, exported next to the time-window export and never in its place.
+            $stage = "record_bounded_export"
+            $positionExportPath = $plan.work_dir + "\" + $R1_POSITION_EXPORT_FILE
+            $cleanupPaths += $positionExportPath
+            $positionExport = & $Transport.invoke $session "export_record_bounded" @{
+                log_name      = $SYSMON_LOG
+                lower         = [long]$frozen.lower
+                upper         = [long]$frozen.upper
+                expected_host = $targetHost
+                export_path   = $positionExportPath
+            }
+            $positionExportObservedAt = & $NowProvider
+            New-Item -ItemType Directory -Path $positionPaths.telemetry_dir | Out-Null
+            & $Transport.fetch $session ([string]$positionExport.evtx_path) $positionPaths.evtx | Out-Null
+            $stage = "collection"
+        }
+        & $Transport.invoke $session "cleanup" @{ paths = $cleanupPaths } | Out-Null
         & $Transport.close $session | Out-Null
         $session = $null
 
@@ -3797,6 +3870,17 @@ function Invoke-R1PilotRun {
             path = $jsonlPath; source = "sysmon"; layer = "raw_telemetry"; derived_from = $evtxPath
         })
         Write-Ok ("sysmon window collected: " + $eventCount + " events")
+
+        $positionSnapshot = $null
+        if ($PositionFinality) {
+            $stage = "record_bounded_snapshot"
+            $positionSnapshot = Complete-R1PositionSnapshot -Paths $positionPaths -Request $freezeRequest `
+                -Frozen $frozen -Export $positionExport -ExportObservedAt $positionExportObservedAt `
+                -RunId $RunId -TargetHost $targetHost -Channel $SYSMON_LOG -Convert $Transport.convert `
+                -NowProvider $NowProvider
+            Write-Ok ("RecordId-bounded snapshot exported: " + $positionSnapshot.canonical_event_count +
+                " Event(s), identity " + $positionSnapshot.canonical_identity_sha256)
+        }
 
         # --- 7. lineage of this run ---------------------------------------------
         $stage = "lineage"
@@ -4023,6 +4107,27 @@ function Invoke-R1PilotRun {
             -Published $publishedCompletionPaths
         Remove-R1CompletionStage -Stage $completionStage
         $completionStage = $null
+
+        # run-finalized is the last file of a run with position finality. A
+        # failure here still removes the Run files published above.
+        $runFinalizedPath = $null
+        if ($PositionFinality) {
+            $stage = "run_finalized"
+            # The A04 result the seal needs, recorded once the run has succeeded.
+            # The failure path removes it with the other files of this run.
+            if ($null -eq $provenance) { throw "a run with position finality has no collection provenance" }
+            $attestation = New-R1BoundaryAttestation -BoundaryAction (@($inputs.actions)[-1]) `
+                -CompletedUtc ([string]$runEnd.completed_utc) `
+                -RequestCandidateBoundaryAt ([string]$freezeRequest.candidate_boundary_at) -RunEnd $runEnd `
+                -IntermediatePid ([int]$wmiCall.process_id) -FinalPid ([int]$toolStart.final_pid) `
+                -LineageRecords ([object[]]@($provenance.lineage.records))
+            $attestationExisted = Test-Path -LiteralPath $positionPaths.boundary_attestation
+            Write-R1PositionJsonOnce -Path $positionPaths.boundary_attestation -Value $attestation | Out-Null
+            if (-not $attestationExisted) { $publishedCompletionPaths.Add($positionPaths.boundary_attestation) }
+            $runFinalizedPath = Write-R1RunFinalized -Paths $positionPaths -Request $freezeRequest -Frozen $frozen `
+                -Snapshot $positionSnapshot -FinalizedAt (& $NowProvider)
+            Write-Ok ("run-finalized written: " + $runFinalizedPath)
+        }
         if ($null -ne $provenancePath) {
             Write-Ok ("collection provenance written: " + $provenancePath)
         }
@@ -4050,6 +4155,19 @@ function Invoke-R1PilotRun {
             }
         }
         if ($null -ne $provenancePath) { $result.collection_provenance = $provenancePath }
+        if ($PositionFinality) {
+            $result.position_finality = [ordered]@{
+                freeze_request    = $positionPaths.request
+                freeze_ack        = $positionPaths.ack
+                run_finalized     = $runFinalizedPath
+                boundary_attestation = $positionPaths.boundary_attestation
+                snapshot_manifest = $positionPaths.manifest
+                lower_record_id   = [long]$frozen.lower
+                upper_record_id   = [long]$frozen.upper
+                event_count       = [long]$positionSnapshot.canonical_event_count
+                identity_sha256   = [string]$positionSnapshot.canonical_identity_sha256
+            }
+        }
         if ($null -ne $toolIdentity) {
             $result.tool_identity = $toolIdentity
             $result.run_end = $runEnd
