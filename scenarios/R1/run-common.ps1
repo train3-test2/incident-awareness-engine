@@ -3507,6 +3507,18 @@ function Invoke-R1PilotRun {
         # only schedules the offsets and measures durations.
         $startTime = ConvertTo-R1Utc $probe.utc "probe utc"
 
+        # The raw export of this run starts here: at the start of the run, as it
+        # always has, or at the boot of the target when the scenario says the
+        # root of the lineage was created then. Both are stamps of the target.
+        $rawStartTime = $startTime
+        if ($rawFromBoot) {
+            $rawStartTime = ConvertTo-R1Utc (Get-R1Value $probe "boot_utc") "probe boot_utc"
+            if ($rawStartTime -gt $startTime) {
+                throw ("the target reports a boot at " + (Get-UtcStamp $rawStartTime) +
+                    ", after the start of the run (" + (Get-UtcStamp $startTime) + ")")
+            }
+        }
+
         if (-not [string]::IsNullOrWhiteSpace($IncrementalStreamControlRoot)) {
             $controlDir = Join-Path $IncrementalStreamControlRoot $RunId
             New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
@@ -3517,7 +3529,7 @@ function Invoke-R1PilotRun {
                 $preflightPaths = Get-R1PositionPaths -ControlDir $controlDir
                 Assert-R1PositionControlFree -Paths $preflightPaths
                 Assert-R1PositionPreflight -Paths $preflightPaths -RunId $RunId -TargetHost $targetHost `
-                    -Channel $SYSMON_LOG -Scenario $scenario
+                    -Channel $SYSMON_LOG -ExpectedContextStartUtc $rawStartTime -Scenario $scenario
                 $stage = "pre_run_check"
             }
             $startControl = [ordered]@{
@@ -3533,17 +3545,6 @@ function Invoke-R1PilotRun {
                 -Bytes $utf8Control.GetBytes(($startControl | ConvertTo-Json -Compress))
         }
 
-        # The raw export of this run starts here: at the start of the run, as it
-        # always has, or at the boot of the target when the scenario says the
-        # root of the lineage was created then. Both are stamps of the target.
-        $rawStartTime = $startTime
-        if ($rawFromBoot) {
-            $rawStartTime = ConvertTo-R1Utc (Get-R1Value $probe "boot_utc") "probe boot_utc"
-            if ($rawStartTime -gt $startTime) {
-                throw ("the target reports a boot at " + (Get-UtcStamp $rawStartTime) +
-                    ", after the start of the run (" + (Get-UtcStamp $startTime) + ")")
-            }
-        }
         if ($null -ne $readiness -and $readiness.checked_at_time -gt $startTime) {
             throw ("the readiness record was taken at " + $readiness.checked_at +
                 ", after the start of the run (" + (Get-UtcStamp $startTime) + ")")
