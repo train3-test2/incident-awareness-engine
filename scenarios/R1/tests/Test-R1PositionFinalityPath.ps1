@@ -504,22 +504,46 @@ Assert-True "producer: the binding names the Run, host, partition and the contra
     $binding.partition.source_channel -ceq $CHANNEL -and
     $binding.required_partition_contract.sha256 -ceq (Get-R1FileSha256 -Path $script:RequiredPartitionContract) -and
     [Convert]::ToBase64String($bindingBytes) -ceq [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:producerBindingPath)))
-Assert-R1PositionPreflight -Paths $bindingPaths -RunId $RUN_ID -TargetHost $HOST_A -Channel $CHANNEL -Scenario $null
+Assert-R1PositionPreflight -Paths $bindingPaths -RunId $RUN_ID -TargetHost $HOST_A -Channel $CHANNEL -ExpectedContextStartUtc $CONTEXT_START -Scenario $null
 Assert-True "preflight: the runner accepts the binding of its own producer" $true
+$bindingMismatch = (New-Object System.Text.UTF8Encoding($false)).GetString($bindingBytes) | ConvertFrom-Json
+$bindingMismatch.context_start_utc = Get-UtcStamp ((ConvertFrom-R1UtcStamp $CONTEXT_START "test context start").AddSeconds(1))
+[System.IO.File]::WriteAllText($script:producerBindingPath, ($bindingMismatch | ConvertTo-Json -Depth 4))
+Assert-Throws "preflight: a producer context start after Target-A boot is refused" {
+    Assert-R1PositionPreflight -Paths $bindingPaths -RunId $RUN_ID -TargetHost $HOST_A -Channel $CHANNEL `
+        -ExpectedContextStartUtc $CONTEXT_START -Scenario $null
+} "*producer context start*does not match the Target-A boot UTC*"
+[System.IO.File]::WriteAllBytes($script:producerBindingPath, $bindingBytes)
+$bindingInvalid = (New-Object System.Text.UTF8Encoding($false)).GetString($bindingBytes) | ConvertFrom-Json
+$bindingInvalid.context_start_utc = "not-a-utc-stamp"
+[System.IO.File]::WriteAllText($script:producerBindingPath, ($bindingInvalid | ConvertTo-Json -Depth 4))
+Assert-Throws "preflight: a malformed producer context start is refused" {
+    Assert-R1PositionPreflight -Paths $bindingPaths -RunId $RUN_ID -TargetHost $HOST_A -Channel $CHANNEL `
+        -ExpectedContextStartUtc $CONTEXT_START -Scenario $null
+} "*producer binding context_start_utc is not a UTC millisecond stamp*"
+[System.IO.File]::WriteAllBytes($script:producerBindingPath, $bindingBytes)
+$bindingMissing = (New-Object System.Text.UTF8Encoding($false)).GetString($bindingBytes) | ConvertFrom-Json
+$bindingMissing.PSObject.Properties.Remove("context_start_utc")
+[System.IO.File]::WriteAllText($script:producerBindingPath, ($bindingMissing | ConvertTo-Json -Depth 4))
+Assert-Throws "preflight: a missing producer context start is refused" {
+    Assert-R1PositionPreflight -Paths $bindingPaths -RunId $RUN_ID -TargetHost $HOST_A -Channel $CHANNEL `
+        -ExpectedContextStartUtc $CONTEXT_START -Scenario $null
+} "*producer binding context_start_utc is not a UTC millisecond stamp*"
+[System.IO.File]::WriteAllBytes($script:producerBindingPath, $bindingBytes)
 Assert-Throws "preflight: a runner on another host refuses the binding" {
-    Assert-R1PositionPreflight -Paths $bindingPaths -RunId $RUN_ID -TargetHost "TARGET-B" -Channel $CHANNEL -Scenario $null
+    Assert-R1PositionPreflight -Paths $bindingPaths -RunId $RUN_ID -TargetHost "TARGET-B" -Channel $CHANNEL -ExpectedContextStartUtc $CONTEXT_START -Scenario $null
 } "*collects another Run, host or partition*"
 Assert-Throws "preflight: a runner of another Run refuses the binding" {
-    Assert-R1PositionPreflight -Paths $bindingPaths -RunId "RUN-20300101-902" -TargetHost $HOST_A -Channel $CHANNEL -Scenario $null
+    Assert-R1PositionPreflight -Paths $bindingPaths -RunId "RUN-20300101-902" -TargetHost $HOST_A -Channel $CHANNEL -ExpectedContextStartUtc $CONTEXT_START -Scenario $null
 } "*collects another Run, host or partition*"
 Assert-Throws "preflight: a scenario that states another host is refused" {
-    Assert-R1PositionPreflight -Paths $bindingPaths -RunId $RUN_ID -TargetHost $HOST_A -Channel $CHANNEL `
+    Assert-R1PositionPreflight -Paths $bindingPaths -RunId $RUN_ID -TargetHost $HOST_A -Channel $CHANNEL -ExpectedContextStartUtc $CONTEXT_START `
         -Scenario ([pscustomobject]@{ run_metadata = [pscustomobject]@{ target_host = "TARGET-B" } })
 } "*scenario states the target host TARGET-B*"
 $contract.target_host = "TARGET-B"
 [System.IO.File]::WriteAllText($script:RequiredPartitionContract, ($contract | ConvertTo-Json -Depth 4))
 Assert-Throws "preflight: a contract changed after the producer started is refused" {
-    Assert-R1PositionPreflight -Paths $bindingPaths -RunId $RUN_ID -TargetHost $HOST_A -Channel $CHANNEL -Scenario $null
+    Assert-R1PositionPreflight -Paths $bindingPaths -RunId $RUN_ID -TargetHost $HOST_A -Channel $CHANNEL -ExpectedContextStartUtc $CONTEXT_START -Scenario $null
 } "*not the one the producer was started with*"
 $fixture = New-ProducerFixture
 [System.IO.File]::WriteAllText($script:RequiredPartitionContract, ($contract | ConvertTo-Json -Depth 4))
@@ -532,7 +556,7 @@ $contract.required_partitions = @(
 Assert-Throws "producer: a contract with another partition is refused at start" { Write-PositionProducerBinding } "*exactly the Sysmon partition*"
 $noBinding = Get-R1PositionPaths -ControlDir (New-TempRoot)
 Assert-Throws "preflight: a run without a producer binding does not start" {
-    Assert-R1PositionPreflight -Paths $noBinding -RunId $RUN_ID -TargetHost $HOST_A -Channel $CHANNEL -Scenario $null
+    Assert-R1PositionPreflight -Paths $noBinding -RunId $RUN_ID -TargetHost $HOST_A -Channel $CHANNEL -ExpectedContextStartUtc $CONTEXT_START -Scenario $null
 } "*no producer binding*"
 
 Remove-Item -LiteralPath function:Invoke-Command, function:Invoke-Wiring, function:Invoke-FreezeTool
