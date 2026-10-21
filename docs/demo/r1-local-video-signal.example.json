@@ -1,0 +1,51 @@
+{
+  "schema": "r1-local-demo-signal",
+  "contract_version": "v0.1",
+  "data_class": "demo_only",
+  "run_id": "RUN-20300101-001",
+  "host_id": "R1-TGTA",
+  "state": "demo_rule_match",
+  "generated_at": "2030-01-01T00:08:03.000Z",
+  "last_accepted_at": "2030-01-01T00:08:02.000Z",
+  "accepted_chunk_count": 4,
+  "accepted_event_count": 4,
+  "policy": {
+    "policy_id": "r1-wmi-management-approved-lineage",
+    "version": "v0.1",
+    "config_hash": "f5ca732ab6987bbca9d2d44fa51eb30c0a13ba980545b4cbf7c64c7ccf2b5a9a",
+    "lifecycle": "development",
+    "approved_lineage": [
+      "WmiPrvSE.exe",
+      "wscript.exe",
+      "powershell.exe"
+    ]
+  },
+  "observed_lineage": [
+    "WmiPrvSE.exe",
+    "cmd.exe",
+    "powershell.exe"
+  ],
+  "lineage_event_ids": [
+    "evt-root",
+    "evt-middle",
+    "evt-terminal"
+  ],
+  "network_event_id": "evt-network",
+  "source_event_ids": [
+    "100",
+    "101",
+    "102",
+    "103"
+  ],
+  "terminal_process_guid": "{33333333-3333-3333-3333-333333333333}",
+  "destination_ip": "192.168.34.30",
+  "destination_port": 8443,
+  "diagnostics": [],
+  "canonical_result": null,
+  "non_guarantees": [
+    "canonical_evidence_or_decision",
+    "source_completeness",
+    "causal_or_online_eligibility",
+    "ttsd"
+  ]
+}
