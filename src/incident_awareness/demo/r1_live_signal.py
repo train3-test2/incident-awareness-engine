@@ -410,7 +410,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 destination_port=args.destination_port,
                 policy_config=Path(args.policy_config),
             )
-        except (DemoSignalInputError, ValueError):
+        except Exception:
             output_path.unlink(missing_ok=True)
             raise
         write_demo_signal(output_path, signal)

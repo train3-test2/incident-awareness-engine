@@ -77,8 +77,8 @@ uv run --frozen python -m incident_awareness.demo.r1_live_signal `
   --poll-seconds 1
 ```
 
-Run it against a copy or a Track-B-only spool. Do not point it at Track A while a formal
-Run owns the Controller DB and spool.
+Run it only against an original-path, Track-B-only accepted spool. Do not point it at
+Track A while a formal Run owns the Controller DB and spool.
 
 The post-commit ack binds the absolute Controller spool path. A copied export is
 therefore expected to fail validation at a different path; do not rewrite the ack to

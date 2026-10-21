@@ -291,6 +291,36 @@ def test_cli_removes_stale_state_when_ack_validation_fails(tmp_path: Path) -> No
     assert not output.exists()
 
 
+def test_cli_removes_stale_state_on_unexpected_build_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "demo-state.json"
+    output.write_text('{"state":"demo_rule_match"}', encoding="utf-8")
+
+    def fail_build(**_kwargs: object) -> R1LocalDemoSignal:
+        raise RuntimeError("unexpected build failure")
+
+    monkeypatch.setattr(
+        "incident_awareness.demo.r1_live_signal.build_demo_signal",
+        fail_build,
+    )
+    with pytest.raises(RuntimeError, match="unexpected build failure"):
+        main(
+            [
+                "--spool-root",
+                str(tmp_path / "spool"),
+                "--run-id",
+                RUN_ID,
+                "--destination-ip",
+                DESTINATION_IP,
+                "--output",
+                str(output),
+            ]
+        )
+
+    assert not output.exists()
+
+
 def test_role1_example_payload_conforms_to_contract() -> None:
     example = Path(__file__).parents[2] / "docs" / "demo" / "r1-local-video-signal.example.json"
 
