@@ -37,6 +37,9 @@ CONTRACT_VERSION = "v0.1"
 FAMILY_ID = "wmi_management"
 POLICY_ID = "r1-wmi-management-approved-lineage"
 POLICY_VERSION = "v0.1"
+HOST_ID = "R1-TGTA"
+SOURCE = "sysmon"
+SOURCE_CHANNEL = "Microsoft-Windows-Sysmon/Operational"
 
 DemoSignalState = Literal["observing", "condition_not_met", "demo_rule_match", "input_error"]
 
@@ -120,6 +123,8 @@ def build_demo_signal(
     if len(host_ids) > 1:
         raise DemoSignalInputError("accepted Events span more than one host")
     host_id = next(iter(host_ids), None)
+    if host_id is not None and host_id != HOST_ID:
+        raise DemoSignalInputError("accepted Events are outside the R1-TGTA demo host")
 
     candidates = _find_candidates(
         events=events,
@@ -188,7 +193,13 @@ def _load_accepted_chunks(
         if not isinstance(message, R1EventChunk):
             continue
         if message.partition.run_id != run_id:
-            continue
+            raise DemoSignalInputError("accepted EventChunk run_id does not match the demo Run")
+        if (
+            message.partition.host_id != HOST_ID
+            or message.partition.source != SOURCE
+            or message.partition.source_channel != SOURCE_CHANNEL
+        ):
+            raise DemoSignalInputError("accepted EventChunk is outside the Sysmon demo partition")
         ack = json.loads(ack_path.read_text(encoding="utf-8"))
         accepted_at = _parse_utc(ack.get("accepted_at"))
         accepted.append((message, accepted_at))
@@ -200,6 +211,19 @@ def _load_accepted_chunks(
     if len(sequences) != len(set(sequences)):
         raise DemoSignalInputError("accepted chunk sequences are not unique")
     chunks = tuple(item[0] for item in accepted)
+    chunk_ids = [chunk.chunk_id for chunk in chunks]
+    if len(chunk_ids) != len(set(chunk_ids)):
+        raise DemoSignalInputError("accepted chunk IDs are not unique")
+    partitions = {
+        (
+            chunk.partition.host_id,
+            chunk.partition.source,
+            chunk.partition.source_channel,
+        )
+        for chunk in chunks
+    }
+    if len(partitions) > 1:
+        raise DemoSignalInputError("accepted EventChunks span more than one partition")
     last_accepted_at = max((item[1] for item in accepted), default=None)
     return chunks, last_accepted_at
 

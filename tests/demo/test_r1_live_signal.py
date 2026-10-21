@@ -299,3 +299,77 @@ def test_role1_example_payload_conforms_to_contract() -> None:
     assert signal.state == "demo_rule_match"
     assert signal.data_class == "demo_only"
     assert signal.canonical_result is None
+
+
+@pytest.mark.parametrize(
+    ("middle_name", "final_state"),
+    (("cmd.exe", "demo_rule_match"), ("wscript.exe", "condition_not_met")),
+)
+def test_incremental_accepted_chunks_drive_expected_display_states(
+    tmp_path: Path,
+    middle_name: str,
+    final_state: str,
+) -> None:
+    spool = _accepted_spool(tmp_path, _events(middle_name))
+    ack_paths = sorted((spool / "acks").glob("*.json"))
+    ack_bytes = {path.name: path.read_bytes() for path in ack_paths}
+    for path in ack_paths:
+        path.unlink()
+
+    observed = []
+    for index, path in enumerate(ack_paths, start=1):
+        path.write_bytes(ack_bytes[path.name])
+        signal = _build(spool)
+        observed.append(signal.state)
+        assert signal.accepted_chunk_count == index
+        assert signal.accepted_event_count == index
+
+    assert observed == ["observing", "observing", "observing", final_state]
+
+
+def test_accepted_chunk_for_another_run_is_rejected(tmp_path: Path) -> None:
+    spool = _accepted_spool(tmp_path, (_events("cmd.exe")[0],))
+    message_path = next((spool / "outbox").glob("*.json"))
+    ack_path = spool / "acks" / f"{message_path.name}.ack.json"
+    content = message_path.read_text(encoding="utf-8").replace(RUN_ID, "RUN-20300101-002")
+    message_path.write_text(content, encoding="utf-8")
+    ack = json.loads(ack_path.read_text(encoding="utf-8"))
+    ack["message_sha256"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    ack_path.write_text(json.dumps(ack, separators=(",", ":")), encoding="utf-8")
+
+    with pytest.raises(DemoSignalInputError, match="run_id does not match"):
+        _build(spool)
+
+
+def test_accepted_chunk_outside_sysmon_partition_is_rejected(tmp_path: Path) -> None:
+    spool = _accepted_spool(tmp_path, (_events("cmd.exe")[0],))
+    message_path = next((spool / "outbox").glob("*.json"))
+    ack_path = spool / "acks" / f"{message_path.name}.ack.json"
+    payload = json.loads(message_path.read_text(encoding="utf-8"))
+    payload["partition"]["source_channel"] = "Security"
+    content = json.dumps(payload, separators=(",", ":"))
+    message_path.write_text(content, encoding="utf-8")
+    ack = json.loads(ack_path.read_text(encoding="utf-8"))
+    ack["message_sha256"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    ack_path.write_text(json.dumps(ack, separators=(",", ":")), encoding="utf-8")
+
+    with pytest.raises(DemoSignalInputError, match="outside the Sysmon demo partition"):
+        _build(spool)
+
+
+def test_accepted_chunk_outside_demo_host_is_rejected(tmp_path: Path) -> None:
+    spool = _accepted_spool(tmp_path, (_events("cmd.exe")[0],))
+    message_path = next((spool / "outbox").glob("*.json"))
+    ack_path = spool / "acks" / f"{message_path.name}.ack.json"
+    payload = json.loads(message_path.read_text(encoding="utf-8"))
+    payload["partition"]["host_id"] = "R1-OTHER"
+    for event in payload["events"]:
+        event["host_id"] = "R1-OTHER"
+    content = json.dumps(payload, separators=(",", ":"))
+    message_path.write_text(content, encoding="utf-8")
+    ack = json.loads(ack_path.read_text(encoding="utf-8"))
+    ack["message_sha256"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    ack_path.write_text(json.dumps(ack, separators=(",", ":")), encoding="utf-8")
+
+    with pytest.raises(DemoSignalInputError, match="outside the Sysmon demo partition"):
+        _build(spool)

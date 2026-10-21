@@ -13,6 +13,11 @@ acceptance authority; the payload is recovered from the acknowledged immutable s
 because `r1_stream_events` stores Event identity and content hash rather than the full
 NormalizedEvent.
 
+Every accepted EventChunk must match the requested Run and the single
+`R1-TGTA/sysmon/Microsoft-Windows-Sysmon/Operational` partition. A different Run,
+source/channel, partition, duplicate chunk identity, or sequence gap is an input error;
+the detector never silently converts it into a non-match.
+
 ## Match rule
 
 The display changes to `demo_rule_match` only when all conditions hold:
