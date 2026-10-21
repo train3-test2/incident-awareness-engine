@@ -209,6 +209,15 @@ def test_unacknowledged_events_are_not_consumed(tmp_path: Path) -> None:
     assert signal.accepted_event_count == 0
 
 
+def test_orphan_accepted_ack_is_rejected(tmp_path: Path) -> None:
+    spool = _accepted_spool(tmp_path, _events("cmd.exe"))
+    last_message = max((spool / "outbox").glob("*.json"))
+    last_message.unlink()
+
+    with pytest.raises(DemoSignalInputError, match="ack has no corresponding spool message"):
+        _build(spool)
+
+
 def test_network_event_without_complete_lineage_stays_observing(tmp_path: Path) -> None:
     signal = _build(_accepted_spool(tmp_path, (_network("evt-network", 200, T0),)))
 

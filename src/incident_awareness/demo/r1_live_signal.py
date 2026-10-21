@@ -189,10 +189,11 @@ def _load_accepted_chunks(
     outbox = spool_root / "outbox"
     acks = spool_root / "acks"
     accepted: list[tuple[R1EventChunk, datetime]] = []
-    for message_path in sorted(outbox.glob("*.json")):
-        ack_path = acks / f"{message_path.name}.ack.json"
-        if not ack_path.is_file():
-            continue
+    for ack_path in sorted(acks.glob("*.ack.json")):
+        message_name = ack_path.name.removesuffix(".ack.json")
+        message_path = outbox / message_name
+        if not message_path.is_file():
+            raise DemoSignalInputError("accepted ack has no corresponding spool message")
         message = load_accepted_spool_message(message_path, ack_path)
         if not isinstance(message, R1EventChunk):
             continue

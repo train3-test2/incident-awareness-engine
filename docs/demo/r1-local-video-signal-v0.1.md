@@ -17,6 +17,8 @@ Every accepted EventChunk must match the requested Run and the single
 `R1-TGTA/sysmon/Microsoft-Windows-Sysmon/Operational` partition. A different Run,
 source/channel, partition, duplicate chunk identity, or sequence gap is an input error;
 the detector never silently converts it into a non-match.
+An accepted ack whose corresponding immutable spool message is missing is also an input
+error, not an unobserved Event.
 
 ## Match rule
 
