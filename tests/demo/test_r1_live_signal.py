@@ -61,7 +61,13 @@ def _process(
     )
 
 
-def _network(event_id: str, record_id: int, timestamp: datetime) -> NormalizedEvent:
+def _network(
+    event_id: str,
+    record_id: int,
+    timestamp: datetime,
+    *,
+    protocol: str | None = "tcp",
+) -> NormalizedEvent:
     return NormalizedEvent.model_validate(
         {
             "event_id": event_id,
@@ -88,7 +94,7 @@ def _network(event_id: str, record_id: int, timestamp: datetime) -> NormalizedEv
                 "parent_process_guid": MIDDLE_GUID,
             },
             "network": {
-                "protocol": "tcp",
+                "protocol": protocol,
                 "dst_ip": DESTINATION_IP,
                 "dst_port": 8443,
             },
@@ -207,6 +213,44 @@ def test_network_event_without_complete_lineage_stays_observing(tmp_path: Path) 
     signal = _build(_accepted_spool(tmp_path, (_network("evt-network", 200, T0),)))
 
     assert signal.state == "observing"
+
+
+@pytest.mark.parametrize("protocol", ("udp", None))
+def test_non_tcp_network_event_does_not_match(tmp_path: Path, protocol: str | None) -> None:
+    events = (*_events("cmd.exe")[:-1], _network("evt-network", 103, T0, protocol=protocol))
+
+    signal = _build(_accepted_spool(tmp_path, events))
+
+    assert signal.state == "observing"
+    assert signal.network_event_id is None
+
+
+@pytest.mark.parametrize("duplicate_role", ("terminal", "parent"))
+def test_duplicate_lineage_process_guid_is_input_error(tmp_path: Path, duplicate_role: str) -> None:
+    duplicate = (
+        _process(
+            "evt-terminal-duplicate",
+            104,
+            T0 + timedelta(seconds=2),
+            "powershell.exe",
+            TERMINAL_GUID,
+            MIDDLE_GUID,
+        )
+        if duplicate_role == "terminal"
+        else _process(
+            "evt-middle-duplicate",
+            104,
+            T0 + timedelta(seconds=1),
+            "cmd.exe",
+            MIDDLE_GUID,
+            ROOT_GUID,
+        )
+    )
+    signal = _build(_accepted_spool(tmp_path, (*_events("cmd.exe"), duplicate)))
+
+    assert signal.state == "input_error"
+    assert signal.diagnostics == ("duplicate_process_guid",)
+    assert signal.network_event_id is None
 
 
 def test_multiple_matching_connections_fail_closed(tmp_path: Path) -> None:

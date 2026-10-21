@@ -126,16 +126,20 @@ def build_demo_signal(
     if host_id is not None and host_id != HOST_ID:
         raise DemoSignalInputError("accepted Events are outside the R1-TGTA demo host")
 
-    candidates = _find_candidates(
-        events=events,
-        policy=policy,
-        destination_ip=destination_ip,
-        destination_port=destination_port,
+    diagnostics = _process_identity_diagnostics(events)
+    candidates = (
+        ()
+        if diagnostics
+        else _find_candidates(
+            events=events,
+            policy=policy,
+            destination_ip=destination_ip,
+            destination_port=destination_port,
+        )
     )
-    diagnostics: tuple[str, ...] = ()
     selected: _Candidate | None = None
-    state: DemoSignalState = "observing"
-    if len(candidates) > 1:
+    state: DemoSignalState = "input_error" if diagnostics else "observing"
+    if not diagnostics and len(candidates) > 1:
         state = "input_error"
         diagnostics = ("ambiguous_demo_candidate",)
     elif candidates:
@@ -261,6 +265,8 @@ def _find_candidates(
         for event in events
         if event.event_type == "network_connection"
         and event.network is not None
+        and event.network.protocol is not None
+        and event.network.protocol.casefold() == "tcp"
         and event.network.dst_ip == destination_ip
         and event.network.dst_port == destination_port
     )
@@ -307,6 +313,21 @@ def _find_candidates(
                 )
             )
     return tuple(candidates)
+
+
+def _process_identity_diagnostics(
+    events: tuple[NormalizedEvent, ...],
+) -> tuple[str, ...]:
+    counts: dict[str, int] = {}
+    for event in events:
+        if event.event_type != "process_create":
+            continue
+        guid = _process_guid(event)
+        if guid is not None:
+            counts[guid] = counts.get(guid, 0) + 1
+    if any(count > 1 for count in counts.values()):
+        return ("duplicate_process_guid",)
+    return ()
 
 
 def _lineage(

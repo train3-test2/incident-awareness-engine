@@ -32,7 +32,9 @@ The display changes to `demo_rule_match` only when all conditions hold:
 
 An approved Normal lineage with the same network follow-on produces
 `condition_not_met`. A process name or an EID 3 by itself never produces a match.
-Multiple candidates produce `input_error` rather than selecting one.
+Multiple candidates or duplicate lineage ProcessGuid values produce `input_error`
+rather than selecting one. UDP or missing-protocol Events never satisfy the TCP/8443
+condition.
 
 ## Role1 interface
 
