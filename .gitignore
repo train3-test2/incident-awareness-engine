@@ -40,6 +40,13 @@ data/_rehearsal/
 # VM delivery build artifacts (see scenarios/S0/README.md section 1)
 /build/
 
+# Optional loopback QA companion discovery, generated only for a live local session.
+/src/incident_awareness/dashboard/ui/assets/dashboard-local-qa.json
+
+# Sanitized local role-5 display export; never publish the private handoff archive.
+/src/incident_awareness/dashboard/ui/assets/offline-ml-data.local.json
+/src/incident_awareness/dashboard/ui/assets/offline-ml-data.local.tmp
+
 # VMware
 *.vmdk
 *.vmem
