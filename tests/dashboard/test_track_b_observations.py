@@ -25,7 +25,7 @@ from incident_awareness.demo.r1_snapshot_service import create_snapshot_app
 NOW = datetime(2030, 12, 31, 0, 1, tzinfo=UTC)
 NORMAL = "RUN-20301231-009"
 ATTACK = "RUN-20301231-010"
-TOKEN = "fixture-secret-never-render-this-1234567890"
+TOKEN = "fixture-token-" + ("x" * 40)
 ROOT = Path(__file__).resolve().parents[2]
 
 
