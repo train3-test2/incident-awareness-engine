@@ -61,7 +61,7 @@ def connection(database_url):
         conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
         conn.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema)))
         applied = apply_migrations(conn)
-        assert applied[-1] == "013_pipeline_stage_timings"
+        assert applied[-1] == "015_raw_artifact_retention"
         conn.commit()
         try:
             yield conn

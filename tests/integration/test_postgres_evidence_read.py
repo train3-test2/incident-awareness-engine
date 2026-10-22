@@ -59,7 +59,7 @@ def connection(database_url):
         assert conn.info.dbname.startswith("iae_evidence_test_")
         conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
         conn.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema)))
-        assert apply_migrations(conn)[-1] == "013_pipeline_stage_timings"
+        assert apply_migrations(conn)[-1] == "015_raw_artifact_retention"
         conn.commit()
         try:
             yield conn

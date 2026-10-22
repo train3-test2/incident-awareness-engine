@@ -27,6 +27,8 @@ MIGRATION_IDS = (
     "011_pipeline_telemetry_timeseries",
     "012_pipeline_telemetry_input_identity",
     "013_pipeline_stage_timings",
+    "014_human_workflow",
+    "015_raw_artifact_retention",
 )
 
 
