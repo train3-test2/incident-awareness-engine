@@ -5,6 +5,7 @@ from incident_awareness.dashboard.api.analysis_summaries import router as analys
 from incident_awareness.dashboard.api.evidence_provenance import router as provenance_router
 from incident_awareness.dashboard.api.human_workflow import router as human_workflow_router
 from incident_awareness.dashboard.api.kisa_forms import router as kisa_forms_router
+from incident_awareness.dashboard.api.observations import router as observations_router
 from incident_awareness.dashboard.api.report_drafts import router as report_drafts_router
 from incident_awareness.dashboard.api.report_drafts import tools_router as report_tools_router
 from incident_awareness.dashboard.api.routes import router
@@ -137,6 +138,26 @@ def create_app() -> FastAPI:
         StoredEvaluationSnapshotInvalidError,
         _handle_stored_evaluation_snapshot_invalid_error,
     )
+
+    @application.middleware("http")
+    async def reject_live_formal_processing(request: Request, call_next):
+        # Live identities never enter canonical Workflow/AI routes, including same-Run collisions.
+        # An unmarked canonical identity still has to satisfy the existing native repository contracts.
+        if request.url.path.startswith("/human-workflow/"):
+            source = request.headers.get("x-incident-source-kind") or request.query_params.get(
+                "source_kind"
+            )
+            identifiers = [request.path_params.get("run_id", ""), *request.url.path.split("/")]
+            if source == "live_observation" or any(
+                part.startswith("live:") for part in identifiers
+            ):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Live observations cannot use formal Workflow or reporting"},
+                )
+        return await call_next(request)
+
+    application.include_router(observations_router)
     application.include_router(router)
     application.include_router(provenance_router)
     application.include_router(human_workflow_router)

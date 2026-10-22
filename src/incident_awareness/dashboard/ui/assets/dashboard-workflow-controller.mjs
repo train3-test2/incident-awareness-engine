@@ -6,7 +6,7 @@ export function actionPayload(action, version, fields = {}, key = crypto.randomU
 }
 
 export function createHumanWorkflowController(document, {
-    fetchImpl = globalThis.fetch.bind(globalThis), developerTools = false, onOpen = () => {}, onDraft = () => {}, onProgress = () => {},
+    fetchImpl = globalThis.fetch.bind(globalThis), canUseSelectedSource = () => true, developerTools = false, onOpen = () => {}, onDraft = () => {}, onProgress = () => {},
 } = {}) {
     const node = (name) => document.getElementById(`workflow-${name}`);
     let runId = null;
@@ -321,6 +321,7 @@ export function createHumanWorkflowController(document, {
         }
     }
     async function request(path, options = {}) {
+        if (!canUseSelectedSource()) throw new Error("Live 관측에서는 Workflow·AI 신고서를 실행할 수 없습니다.");
         const { timeoutMs = 10000, ...fetchOptions } = options;
         const response = await fetchImpl(`/human-workflow/${path}`, {
             ...fetchOptions, signal: AbortSignal.timeout(timeoutMs),
@@ -422,6 +423,8 @@ export function createHumanWorkflowController(document, {
         });
     }
     async function select(selectedRun, { readOnly = false } = {}) {
+        // Reject a Live identity before clearing saved formal inputs or issuing any request.
+        if (selectedRun !== null && (typeof selectedRun !== "string" || selectedRun.startsWith("live:"))) return;
         const current = ++generation;
         ++detailGeneration;
         draftReads.clear();

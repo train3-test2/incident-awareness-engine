@@ -283,10 +283,12 @@
                     </table>
                 </div>
                 <div class="dashboard-runs-footer">
+                    <p id="live-source-status" class="dashboard-summary-note" role="status" hidden></p>
                     <span id="runs-visibility-status" role="status" aria-live="polite" tabindex="-1"></span>
                 </div>
             </section>
             <section class="section-card dashboard-section dashboard-selected-panel" aria-labelledby="selected-item-heading">
+                <div id="stored-selection-view">
                 <div class="dashboard-selected-header">
                 <h2 id="selected-item-heading" class="section-heading">선택 항목</h2>
                 <div class="dashboard-selected-workflow-link">
@@ -309,10 +311,19 @@
                     <dl id="selected-item-facts" class="dashboard-selected-facts"></dl>
                     </div>
                 </div>
+                </div>
+                <div id="live-selection-view" hidden>
+                    <h2 class="section-heading">Live 관측 · 시연</h2>
+                    <p><strong id="live-selected-target"></strong> · <span id="live-selected-run"></span></p>
+                    <p id="live-selected-status" class="dashboard-summary-judgment"></p>
+                    <p>정식 분석 미수행 · 저장 사건과 별도</p>
+                    <button id="live-detail-open" class="operator-secondary" type="button">Live 상세 보기</button>
+                </div>
             </section>
         </div>
 
         <section class="section-card dashboard-section dashboard-analysis" aria-labelledby="selected-run-heading">
+            <div id="stored-analysis-view">
             <div class="dashboard-detail-header">
                 <div>
                     <h2 id="selected-run-heading" class="section-heading">
@@ -686,6 +697,21 @@
                     </section>
                     </details>
                 </div>
+            </div>
+            </div>
+            <div id="live-analysis-view" hidden>
+                <div class="dashboard-detail-header">
+                    <h2 id="live-analysis-heading" class="section-heading" tabindex="-1">Live 관측 상세 · <span id="live-detail-target"></span></h2>
+                    <button id="live-detail-refresh" class="operator-secondary" type="button">상태 다시 조회</button>
+                </div>
+                <p>Track-B · demo_only · 정식 Fast/Fusion/Decision 분석 미수행</p>
+                <p>조건 미충족은 정상·안전 판정이 아닙니다. 규칙 기반 의심 관측은 확정된 침해사고가 아닙니다.</p>
+                <div id="live-detail-content"></div>
+                <details id="live-technical-details" class="operator-technical"><summary>출처·진단·검증 범위</summary>
+                    <p>수락 상태는 detector가 검증했다고 보고한 값입니다. Dashboard는 DB ledger나 ACK 원문을 독립 재검증하지 않습니다.</p>
+                    <p>보고 시각은 detector heartbeat, ACK 수락 시각은 수락 보고 기준입니다. 이벤트 발생 시각이나 정식 판단 시각이 아닙니다.</p>
+                    <pre id="live-technical-json"></pre>
+                </details>
             </div>
         </section>
     </main>

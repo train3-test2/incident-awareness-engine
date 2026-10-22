@@ -2,13 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {createKisaFormController} from "../../../src/incident_awareness/dashboard/ui/assets/dashboard-kisa-controller.mjs";
 
-function harness(fetchImpl) {
+function harness(fetchImpl, options = {}) {
     const nodes = new Map();
     const element = () => ({value:"",hidden:false,disabled:false,textContent:"",children:[],listeners:{},
         append(...values){this.children.push(...values);},replaceChildren(...values){this.children=values;},
         setAttribute(){},addEventListener(name,fn){this.listeners[name]=fn;}});
     const document = {createElement:element,getElementById(id){if(!nodes.has(id))nodes.set(id,element());return nodes.get(id);}};
-    return {controller:createKisaFormController(document,{fetchImpl}),node:name=>document.getElementById(`kisa-${name}`),nodes};
+    return {controller:createKisaFormController(document,{fetchImpl,...options}),node:name=>document.getElementById(`kisa-${name}`),nodes};
 }
 const draft={draft_id:"D",workflow_version:3,generated_at:"2026-10-20T00:00:00Z"};
 const schema={common_fields:{company_name:"기업명"},type_fields:{other_hacking:{},undetermined:{}},choices:{},consents:{privacy_collection:"필수 동의"},types:{other_hacking:"그 밖의 해킹",undetermined:"미확정"}};
@@ -355,4 +355,17 @@ test("Report version selectors show KST while their raw timestamps and version I
     assert.match(h.node('version').children[0].textContent,/2026\.10\.03 09:41:00\.123456 KST/);
     assert.equal(h.node('version').children[0].title,saved.recorded_at);
     assert.equal(h.node('version').children[0].value,"F");
+});
+
+test("Track-B capability prevents KISA save requests without losing unsaved form inputs", async () => {
+    let allowed = true;
+    const calls = [];
+    const h = harness(async (url, options) => { calls.push({url, options}); return response(url.endsWith('/report-drafts') ? {items: []} : list()); }, {canUseSelectedSource: () => allowed});
+    await h.controller.setDraft({alertId: 'A',draft,current:true});
+    h.node('type').value = 'other_hacking';h.node('reason').value = '저장하지 않은 내용';
+    const count = calls.length;allowed = false;
+    await h.controller.save();
+    assert.equal(calls.length,count);
+    assert.equal(h.node('reason').value,'저장하지 않은 내용');
+    assert.match(h.node('status').textContent,/Live 관측/);
 });

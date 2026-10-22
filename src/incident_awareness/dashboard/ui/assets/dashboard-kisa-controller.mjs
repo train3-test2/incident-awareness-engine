@@ -1,7 +1,7 @@
 import { formatOperatorProse, formatRunTimestamp, operatorAwarenessTerm } from "./dashboard-contract.mjs";
 import { draftPresentation, readinessSummary, classificationReason } from "./dashboard-operator-contract.mjs";
 
-export function createKisaFormController(document, {fetchImpl = globalThis.fetch.bind(globalThis)} = {}) {
+export function createKisaFormController(document, {fetchImpl = globalThis.fetch.bind(globalThis), canUseSelectedSource = () => true} = {}) {
     const node = name => document.getElementById(`kisa-${name}`);
     let context = null, source = null, entry = null, schema = null, saved = null, latest = 0;
     let generation = 0, busy = false, loading = false, dirty = false, pending = null, template = null;
@@ -20,6 +20,7 @@ export function createKisaFormController(document, {fetchImpl = globalThis.fetch
         node("download").hidden = false;
     }
     async function request(path, options = {}) {
+        if (!canUseSelectedSource()) throw new Error("Live 관측에서는 KISA 신고서를 실행할 수 없습니다.");
         const response = await fetchImpl(path, {...options, headers:{"Content-Type":"application/json"},signal:AbortSignal.timeout(60000)});
         if (!response.ok) {
             const error = new Error(response.status === 409 ? "동시 수정 또는 이전 초안입니다. 저장 상태를 다시 조회하세요."

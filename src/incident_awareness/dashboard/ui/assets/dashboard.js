@@ -1,3 +1,4 @@
+import { createLiveObservationController } from "./dashboard-live-observations.mjs";
 import { createPipelineIcon } from "./dashboard-icons.mjs";
 import { rawVerificationLabel, normalizeRawVerificationScope, sameRawVerificationScope, analysisStatusLabel, analysisDecisionPresentation, workflowRowLabel, observationDisplayText } from "./dashboard-operator-contract.mjs";
 import { createListSummaryController, runInputRange, runRowAnalysis, runRowWorkflow, runRowObservation, EVENT_TYPE_NAMES } from "./dashboard-analysis-list.mjs";
@@ -120,9 +121,10 @@ const provenanceController = createProvenanceController(document, {
     },
 });
 const kisaController = document.getElementById("kisa-panel")
-    ? createKisaFormController(document) : { setDraft: async () => {} };
+    ? createKisaFormController(document, { canUseSelectedSource: () => !liveObservationController?.isSelected }) : { setDraft: async () => {} };
 let selectedWorkflowProgress = null;
 const workflowController = createHumanWorkflowController(document, {
+    canUseSelectedSource: () => !liveObservationController?.isSelected,
     developerTools: new URLSearchParams(window.location?.search ?? "").get("developer_tools") === "1",
     onOpen: () => activateSelectedRunPanel("workflow"),
     onDraft: value => void kisaController.setDraft(value),
@@ -275,6 +277,7 @@ let overviewState = resolveOverviewQueryState(null, { kind: "loading" });
 let runListState = resolveRunListQueryState(null, { kind: "loading" });
 let runtimeState = resolveRuntimeSummaryQueryState(null, { kind: "loading" });
 let selectedRunId = null;
+let liveObservationController = null;
 let runsExpanded = false;
 // Search text for the fetched Runs; it only changes which rows are shown, never runListState.
 let runSearchQuery = "";
@@ -309,6 +312,7 @@ function createStatusBadge(presentation) {
 }
 
 function isSelectedTarget(runId, runtimeEntityId) {
+    if (liveObservationController?.isSelected) return false;
     return isRunSelectionTarget(
         selectedRunId,
         selectedRuntimeEntityId,
@@ -731,6 +735,8 @@ function renderRuntimeState(state) {
 }
 
 function renderRunListState(state) {
+    const focusedLive = document.activeElement?.dataset?.kind === "live_observation"
+        ? { runId: document.activeElement.dataset.runId, entityId: document.activeElement.dataset.entityId } : null;
     runsStatus.textContent = state.message;
     runsStatus.hidden = state.queryState === "success";
     replaceSelectionRows(
@@ -741,6 +747,11 @@ function renderRunListState(state) {
         state.items,
     );
     updateRunVisibility();
+    if (focusedLive) {
+        Array.from(runsList.querySelectorAll(".dashboard-run-selector"))
+            .find(button => button.dataset.kind === "live_observation" && button.dataset.runId === focusedLive.runId && button.dataset.entityId === focusedLive.entityId)
+            ?.focus({ preventScroll: true });
+    }
 }
 
 function updateAdjacentRunButtons() {
@@ -754,7 +765,7 @@ function updateAdjacentRunButtons() {
 
 // Rows are rendered from runListState.items in order, so row index and item index match.
 function updateRunVisibility() {
-    const rows = Array.from(runsList.children);
+    const rows = Array.from(runsList.children).filter(row => row.dataset.kind !== "live_observation");
     const visibility = resolveRunListVisibility(
         runListState.items,
         runSearchQuery,
@@ -782,6 +793,9 @@ function updateRunVisibility() {
         runsVisibilityStatus.textContent = visibilityMessage;
     }
     workspace.dataset.shortList = String(visibility.visibleCount <= 2);
+    for (const row of Array.from(runsList.children).filter(row => row.dataset.kind === "live_observation")) row.remove();
+    runsList.append(...(liveObservationController?.rows(runSearchQuery, runType) ?? []));
+    if (liveObservationController?.items.length) workspace.dataset.shortList = String(visibility.visibleCount + liveObservationController.rows(runSearchQuery, runType).length <= 2);
     updateAdjacentRunButtons();
 }
 
@@ -816,6 +830,7 @@ function activateSelectedRunPanel(name) {
 }
 
 function openSelectedDetail(name) {
+    if (liveObservationController?.isSelected) return;
     activateSelectedRunPanel(name);
     const tab = selectedRunTabs.find((item) => item.name === name);
     tab?.button.focus();
@@ -1536,6 +1551,10 @@ function rerenderSelectedAnalysis() {
 async function selectRun(runId, runtimeEntityId = null) {
     const previous = storedCaseScope();
     const next = getStoredCaseScope(runId, runListState.items, null, runtimeEntityId);
+    const restoreStoredSelection = liveObservationController?.isSelected && previous?.kind === next?.kind
+        && previous?.runId === next?.runId && previous?.entityId === next?.entityId;
+    liveObservationController?.clearSelection();
+    if (restoreStoredSelection) { renderSelectionRows(); return; }
     if (previous?.kind !== next?.kind || previous?.runId !== next?.runId || previous?.entityId !== next?.entityId) {
         activateSelectedRunPanel("summary");
     }
@@ -1601,6 +1620,7 @@ function refreshSelectedRunAnalysis() {
 }
 
 function selectDefaultRunIfReady() {
+    if (liveObservationController?.isSelected) return;
     if (selectedRunId !== null) {
         return;
     }
@@ -1935,12 +1955,15 @@ if (dashboardView !== null) {
     });
     previousRunButton.addEventListener("click", () => selectAdjacentRun(1));
     nextRunButton.addEventListener("click", () => selectAdjacentRun(-1));
+    liveObservationController = createLiveObservationController(document, { onChange() { renderSelectionRows(); } });
+    void liveObservationController.start();
     void loadOverview();
     void loadRuns();
     startRuntimePolling();
     void telemetryController.start();
 
     window.addEventListener("pagehide", () => {
+        liveObservationController?.stop();
         ingestController.stop();
         manualRefreshVersion += 1;
         manualRefreshPending = false;
@@ -1957,6 +1980,7 @@ if (dashboardView !== null) {
     });
     window.addEventListener("pageshow", (event) => {
         if (event.persisted) {
+            void liveObservationController?.start();
             void ingestController.start();
             startRuntimePolling();
             void telemetryController.start();

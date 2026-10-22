@@ -1147,3 +1147,28 @@ test("Developer tools require explicit developer mode and do not become visible 
         assert.equal(h.node("dev-tools").hidden, true);
     }
 });
+
+test("Track-B identities are rejected before Workflow reads, writes, or saved-input resets", async () => {
+    const calls = [];
+    const h = harness(async (url, options) => { calls.push({url, options}); throw Error("No Live request allowed"); });
+    h.node("report-reason").value = "현재 저장 사건의 입력 유지";
+    await h.controller.select({ source_kind: "live_observation", run_id: "RUN-20301231-010", host_id: "R1-TGTA" });
+    await h.controller.select("live:RUN-20301231-010");
+    assert.equal(calls.length, 0);
+    assert.equal(h.node("report-reason").value, "현재 저장 사건의 입력 유지");
+});
+
+test("Track-B capability guard blocks hidden formal actions while preserving the prior case", async () => {
+    let allowed = true;
+    const calls = [];
+    const h = harness(async (url, options) => { calls.push({url, options}); return response(url.endsWith("/report-drafts") ? {items: []} : detail("A",0)); }, {canUseSelectedSource: () => allowed});
+    await h.controller.open("A");
+    const count = calls.length;
+    allowed = false;
+    await h.controller.act("acknowledge");
+    assert.equal(calls.length, count);
+    assert.match(h.node("action-status").textContent, /Live 관측/);
+    allowed = true;
+    await h.controller.act("acknowledge");
+    assert.equal(calls.slice(count).filter(call => call.options?.method === "POST").length, 1);
+});

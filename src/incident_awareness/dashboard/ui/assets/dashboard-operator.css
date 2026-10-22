@@ -756,3 +756,8 @@
     .dashboard-page .dashboard-system-strip[data-empty-runtime="true"] { grid-template-columns: minmax(0, 1fr); }
     .dashboard-page .dashboard-system-strip[data-empty-runtime="true"] > .dashboard-throughput-section { border-left: 0; border-top: 1px solid var(--soc-border-subtle); }
 }
+
+/* Source distinction only: Live observations do not inherit canonical result status. */
+.dashboard-page .runs-table tr[data-kind="live_observation"] { background: var(--soc-subtle); border-left: 3px solid var(--soc-border); }
+.dashboard-page .runs-table tr[data-kind="live_observation"][data-current-match="true"] { border-left-color: var(--soc-warning); }
+.dashboard-page #live-technical-json { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
