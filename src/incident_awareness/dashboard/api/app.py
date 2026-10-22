@@ -1,7 +1,15 @@
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from incident_awareness.dashboard.api.analysis_summaries import router as analysis_summaries_router
+from incident_awareness.dashboard.api.evidence_provenance import router as provenance_router
+from incident_awareness.dashboard.api.human_workflow import router as human_workflow_router
+from incident_awareness.dashboard.api.kisa_forms import router as kisa_forms_router
+from incident_awareness.dashboard.api.report_drafts import router as report_drafts_router
+from incident_awareness.dashboard.api.report_drafts import tools_router as report_tools_router
 from incident_awareness.dashboard.api.routes import router
+from incident_awareness.dashboard.api.runtime_context import router as runtime_context_router
+from incident_awareness.dashboard.api.sysmon_ingest import router as sysmon_ingest_router
 from incident_awareness.dashboard.decision_read_model import DashboardReadConsistencyError
 from incident_awareness.dashboard.evaluation_read_model import (
     EvaluationSnapshotUnavailableError,
@@ -130,6 +138,14 @@ def create_app() -> FastAPI:
         _handle_stored_evaluation_snapshot_invalid_error,
     )
     application.include_router(router)
+    application.include_router(provenance_router)
+    application.include_router(human_workflow_router)
+    application.include_router(report_drafts_router)
+    application.include_router(report_tools_router)
+    application.include_router(kisa_forms_router)
+    application.include_router(runtime_context_router)
+    application.include_router(analysis_summaries_router)
+    application.include_router(sysmon_ingest_router)
     application.include_router(operations_view_router)
     mount_dashboard_assets(application)
     return application
