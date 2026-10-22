@@ -1,6 +1,8 @@
 // Sparse, read-only SVG charts for the already validated Pipeline Telemetry model.
 // An absent one-second bucket is never replaced with an observed zero.
 
+import { formatOperatorTimestamp } from "./dashboard-contract.mjs";
+
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const WIDTH = 640;
 const HEIGHT = 240;
@@ -16,6 +18,7 @@ const SERIES_DEFINITIONS = Object.freeze([
 
 function formatTime(timestamp) {
     return new Date(timestamp).toLocaleTimeString("ko-KR", {
+        timeZone: "Asia/Seoul",
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",
@@ -36,7 +39,7 @@ function formatCompactLatency(value) {
 }
 
 function formatBucketTime(timestamp) {
-    return new Date(timestamp).toLocaleString("ko-KR", { hour12: false, timeZoneName: "short" });
+    return formatOperatorTimestamp(timestamp);
 }
 
 function axisMaximum(maximum, kind) {
@@ -96,7 +99,11 @@ export function buildTelemetryChartPresentation(model, kind, dimensions = null) 
     // Presentation only: adapt the plot, not the samples or the time window.
     const compact = Number.isFinite(dimensions?.width);
     const width = compact ? Math.max(300, Math.min(960, dimensions.width)) : WIDTH;
-    const height = compact ? (kind === "latency" ? 112 : 128) : HEIGHT;
+    if (compact && dimensions.height !== undefined
+        && (!Number.isFinite(dimensions.height) || dimensions.height < 72 || dimensions.height > HEIGHT)) {
+        throw new RangeError("Compact Telemetry height must be between 72 and 240");
+    }
+    const height = compact ? dimensions.height ?? (kind === "latency" ? 112 : 128) : HEIGHT;
     const padding = compact ? { left: 58, right: 34, top: 20, bottom: 28 } : PLOT;
     const plot = {
         ...padding,
@@ -120,11 +127,14 @@ export function buildTelemetryChartPresentation(model, kind, dimensions = null) 
         }
     }
     const yMaximum = axisMaximum(Math.max(0, ...values), kind);
-    const zeroY = pointY(0, yMaximum, plot);
+    // View 2 reference: a common axis, never a vertical/time offset of observations.
+    // Equal series use a blue outer ring and green centre; the lines have distinct dashes.
+    const lanes = [plot];
+    const laneFor = (seriesKind) => lanes.find((lane) => lane.kind === seriesKind) ?? plot;
     const makeMark = (second, index, value, seriesKind) => ({
         x: pointX(index, model.seconds.length, plot),
-        y: pointY(value, yMaximum, plot),
-        zeroY,
+        y: pointY(value, yMaximum, laneFor(seriesKind)),
+        zeroY: pointY(0, yMaximum, laneFor(seriesKind)),
         value,
         timestamp: second.timestamp,
         seriesKind,
@@ -149,7 +159,7 @@ export function buildTelemetryChartPresentation(model, kind, dimensions = null) 
         }))
         : [{
             key: "processingLatencyMeanMs",
-            label: "Normalization + Evidence 지연",
+            label: "Normalization + 증거 지연",
             kind: "latency",
             marks: model.seconds.flatMap((second, index) => (
                 second.observed && second.processingLatencyMeanMs !== null
@@ -184,17 +194,18 @@ export function buildTelemetryChartPresentation(model, kind, dimensions = null) 
         height,
         compact,
         plot,
+        lanes,
         yMaximum,
-        yTicks: Array.from({ length: 5 }, (_, index) => {
-            const value = (yMaximum * index) / 4;
+        yTicks: lanes.flatMap((lane) => Array.from({ length: height < 100 ? 3 : 5 }, (_, index) => {
+            const value = (yMaximum * index) / (height < 100 ? 2 : 4);
             return {
                 value,
                 label: kind === "throughput" ? formatNumber(value, kind)
                     : value > 0 && (value < 0.001 || value >= 1000000)
                         ? value.toExponential(1) : value.toLocaleString("ko-KR", { maximumSignificantDigits: 3 }),
-                y: pointY(value, yMaximum, plot),
+                y: pointY(value, yMaximum, lane),
             };
-        }),
+        })),
         xTicks: axisTimeTicks(model, plot),
         series,
         markCount: series.reduce((total, item) => total + item.marks.length, 0),
@@ -266,7 +277,7 @@ export function createTelemetryChart(model, kind, doc = document, dimensions = n
             "dashboard-telemetry-chart__x-label");
     }
     svg.append(grid);
-    addText(doc, svg, bounds.left, presentation.compact ? 13 : 20, kind === "throughput" ? "건/초" : "ms",
+    addText(doc, svg, kind === "throughput" ? 4 : bounds.left, presentation.compact ? 13 : 20, kind === "throughput" ? "건/초" : "ms",
         "dashboard-telemetry-chart__unit");
 
     const dataLayer = svgNode(doc, "g", "dashboard-telemetry-chart__data");
@@ -281,8 +292,8 @@ export function createTelemetryChart(model, kind, doc = document, dimensions = n
             circle.setAttribute("cx", String(mark.x));
             circle.setAttribute("cy", String(mark.y));
             circle.setAttribute("r", String(mark.isolated
-                ? series.kind === "input" ? 8 : 4.5
-                : presentation.compact ? (series.kind === "input" ? 1.75 : 1.5)
+                ? series.kind === "input" ? (presentation.compact ? 4 : 8) : (presentation.compact ? 3 : 4.5)
+                : presentation.compact ? (series.kind === "input" ? 3 : 1.5)
                     : series.kind === "input" ? 3.5 : 2.5));
             const accessibleValue = `${series.label} · ${formatBucketTime(mark.timestamp)} · ${mark.tooltip}`;
             circle.setAttribute("aria-label", accessibleValue);

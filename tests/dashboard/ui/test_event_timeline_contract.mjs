@@ -149,7 +149,7 @@ test("Event Timeline query states keep loading and failures distinct", () => {
     assert.deepEqual(runNotFound, {
         queryState: "run_not_found",
         payload: null,
-        message: "Run을 찾을 수 없습니다.",
+        message: "분석을 찾을 수 없습니다.",
     });
     assert.deepEqual(error, {
         queryState: "error",
@@ -194,7 +194,7 @@ test("Event Timeline total zero resolves to the empty state", () => {
     // Then
     assert.equal(state.queryState, "empty");
     assert.strictEqual(state.payload, payload);
-    assert.equal(state.message, "이 Run에 저장된 Event가 없습니다.");
+    assert.equal(state.message, "이 분석에 저장된 Event가 없습니다.");
 });
 
 test("Event Timeline preserves a whitespace-only string Event ID", () => {
@@ -800,7 +800,7 @@ test("Event filtering distinguishes empty page, failed query and a local zero re
     const filterStatus = harness.document.getElementById("event-timeline-filter-status");
 
     // Then
-    assert.equal(harness.status.textContent, "이 Run에 저장된 Event가 없습니다.");
+    assert.equal(harness.status.textContent, "이 분석에 저장된 Event가 없습니다.");
     assert.equal(filterStatus.textContent, "현재 페이지에 표시할 Event가 없습니다.");
     assert.equal(harness.range(), "0–0 / 0");
 });

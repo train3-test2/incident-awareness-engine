@@ -1,34 +1,204 @@
+@layer base, screens;
+
+/* Task 7: shared presentation. Geometry stays in the named base/screens layers.
+   Task 7-S: two-step tokens. --soc-g-* hold raw values only; components use the --soc-* aliases by meaning. */
 :root {
     color-scheme: light;
-    --shell-color-canvas: #f4f7fb;
-    --shell-color-surface: #ffffff;
-    --shell-color-surface-subtle: #f8fafc;
-    --shell-color-text: #172033;
-    --shell-color-muted: #5c687a;
-    --shell-color-border: #d8e0ea;
-    --shell-color-border-strong: #b8c4d4;
-    --shell-color-primary: #1456a0;
-    --shell-color-primary-strong: #0e3e77;
-    --shell-color-primary-soft: #e7f0fb;
-    --shell-color-success: #18794e;
-    --shell-color-success-soft: #e8f6ef;
-    --shell-color-warning: #946200;
-    --shell-color-warning-soft: #fff5d6;
-    --shell-color-danger: #b4232f;
-    --shell-color-danger-soft: #fdecef;
-    --shell-shadow-card: 0 0.125rem 0.375rem rgb(23 32 51 / 0.06);
-    --shell-radius-small: 0.375rem;
-    --shell-radius-medium: 0.625rem;
-    --shell-radius-large: 0.875rem;
-    --shell-space-1: 0.25rem;
-    --shell-space-2: 0.5rem;
-    --shell-space-3: 0.75rem;
-    --shell-space-4: 1rem;
-    --shell-space-5: 1.5rem;
-    --shell-space-6: 2rem;
-    --shell-page-width: 76rem;
+    --soc-g-navy-900: #0f2340;
+    --soc-g-navy-800: #1c3558;
+    --soc-g-navy-200: #c3d0e0;
+    --soc-g-sky-300: #7cb8ff;
+    --soc-g-white: #ffffff;
+    --soc-g-gray-25: #f6f8fa;
+    --soc-g-gray-50: #eef2f6;
+    --soc-g-gray-75: #e7ecf2;
+    --soc-g-gray-100: #e3e9f0;
+    --soc-g-gray-200: #d5dde6;
+    --soc-g-gray-300: #c3cdd8;
+    --soc-g-gray-500: #6b7a8c;
+    --soc-g-gray-700: #45566a;
+    --soc-g-gray-800: #26384a;
+    --soc-g-gray-900: #17263a;
+    --soc-g-blue-700: #1a5799;
+    --soc-g-blue-800: #134577;
+    --soc-g-blue-50: #e8f1fb;
+    --soc-g-green-700: #1d6b3a;
+    --soc-g-green-50: #ecf7ef;
+    --soc-g-amber-800: #8a4b08;
+    --soc-g-amber-50: #fdf3e3;
+    --soc-g-red-700: #b42318;
+    --soc-g-red-50: #fdf0ef;
+    --soc-canvas: var(--soc-g-gray-75);
+    --soc-surface: var(--soc-g-white);
+    --soc-subtle: var(--soc-g-gray-25);
+    --soc-title: var(--soc-g-gray-900);
+    --soc-body: var(--soc-g-gray-800);
+    --soc-muted: var(--soc-g-gray-700);
+    --soc-border: var(--soc-g-gray-300);
+    --soc-border-subtle: var(--soc-g-gray-200);
+    --soc-control-border: var(--soc-g-gray-500);
+    --soc-primary: var(--soc-g-blue-700);
+    --soc-primary-hover: var(--soc-g-blue-800);
+    --soc-selected: var(--soc-g-blue-50);
+    --soc-table-head: var(--soc-g-gray-100);
+    --soc-row-hover: var(--soc-g-gray-25);
+    --soc-nav-bg: var(--soc-g-navy-900);
+    --soc-nav-hover: var(--soc-g-navy-800);
+    --soc-nav-text: var(--soc-g-navy-200);
+    --soc-nav-current: var(--soc-g-white);
+    --soc-nav-indicator: var(--soc-g-sky-300);
+    --soc-warning: var(--soc-g-amber-800);
+    --soc-warning-bg: var(--soc-g-amber-50);
+    --soc-success: var(--soc-g-green-700);
+    --soc-success-bg: var(--soc-g-green-50);
+    --soc-danger: var(--soc-g-red-700);
+    --soc-danger-bg: var(--soc-g-red-50);
+    --soc-unknown: var(--soc-g-gray-700);
+    --soc-unknown-bg: var(--soc-g-gray-50);
+    /* Local fonts only, composed like Pretendard (Latin face + Source Han Sans Hangul): Segoe UI draws Latin, digits and
+       time colons; Hangul falls back to Noto Sans KR where installed, then Malgun Gothic. No bundled files, no CDN. */
+    --soc-font: "Segoe UI", "Noto Sans KR", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif;
+    --soc-mono: ui-monospace, Consolas, monospace;
+    --soc-space-1: 4px;
+    --soc-space-2: 8px;
+    --soc-space-3: 12px;
+    --soc-space-4: 16px;
+    --soc-space-5: 24px;
+    --soc-space-6: 32px;
+    --soc-panel-padding: 20px;
+    --soc-panel-radius: 8px;
+    --soc-control-radius: 6px;
+    --soc-label-radius: 4px;
 }
+:root, body {
+    --shell-color-canvas: var(--soc-canvas);
+    --shell-color-surface: var(--soc-surface);
+    --shell-color-surface-subtle: var(--soc-subtle);
+    --shell-color-text: var(--soc-body);
+    --shell-color-muted: var(--soc-muted);
+    --shell-color-border: var(--soc-border);
+    --shell-color-border-strong: var(--soc-control-border);
+    --shell-color-primary: var(--soc-primary);
+    --shell-color-primary-strong: var(--soc-primary-hover);
+    --shell-color-primary-soft: var(--soc-selected);
+    --shell-color-success: var(--soc-success);
+    --shell-color-success-soft: var(--soc-success-bg);
+    --shell-color-warning: var(--soc-warning);
+    --shell-color-warning-soft: var(--soc-warning-bg);
+    --shell-color-danger: var(--soc-danger);
+    --shell-color-danger-soft: var(--soc-danger-bg);
+    --shell-shadow-card: none;
+    --shell-radius-small: var(--soc-control-radius);
+    --shell-radius-medium: var(--soc-panel-radius);
+    --shell-radius-large: var(--soc-panel-radius);
+    --shell-space-1: var(--soc-space-1);
+    --shell-space-2: var(--soc-space-2);
+    --shell-space-3: var(--soc-space-3);
+    --shell-space-4: var(--soc-space-4);
+    --shell-space-5: var(--soc-space-5);
+    --shell-space-6: var(--soc-space-6);
+    --dashboard-font: var(--soc-font);
+    --dashboard-canvas: var(--soc-canvas);
+    --dashboard-input: var(--soc-primary);
+    --dashboard-processing: var(--soc-success);
+    --dashboard-latency: var(--soc-warning);
+    --dashboard-card-border: var(--soc-border);
+    --dashboard-grid: var(--soc-border);
+    --dashboard-neutral-soft: var(--soc-unknown-bg);
+}
+html { font-size: 100%; }
+body { font-family: var(--soc-font); font-size: 16px; line-height: 1.65; color: var(--soc-body); background: var(--soc-canvas); }
+h1, h2, h3, h4, strong { color: var(--soc-title); }
+h1, .page-title { font-size: 24px; font-weight: 700; line-height: 1.3; letter-spacing: -.02em; }
+h2, h3, h4, .section-heading { font-size: 18px; font-weight: 700; line-height: 1.5; }
+.dashboard-detail-header .section-heading, .dashboard-selected-target strong { font-size: 20px; font-weight: 600; }
+/* Task 7-S: solid navy global bar (no gradient); the current screen is white bold text over a light indicator. */
+.app-header, .dashboard-app-header { color: var(--soc-nav-current); background: var(--soc-nav-bg); border-bottom: 1px solid var(--soc-nav-bg); box-shadow: none; }
+.app-brand__name { color: var(--soc-nav-current); font-weight: 700; }
+.app-brand__context { color: var(--soc-nav-text); }
+.app-navigation a { color: var(--soc-nav-text); border: 0; border-radius: var(--soc-control-radius); font-size: 15px; font-weight: 600; }
+.app-navigation a:hover { color: var(--soc-nav-current); background: var(--soc-nav-hover); }
+.app-navigation a[aria-current="page"] { color: var(--soc-nav-current); background: var(--soc-nav-hover); font-weight: 700; box-shadow: inset 0 -3px var(--soc-nav-indicator); }
+.app-header :is(a, button, summary, input):focus-visible { outline-color: var(--soc-nav-current); }
+.dashboard-brand-mark { color: var(--soc-nav-indicator); background: transparent; }
+.dashboard-header-user { color: var(--soc-nav-text); background: var(--soc-nav-hover); }
+input#dashboard-run-search { padding-left: 36px; padding-right: 100px; }
+button#dashboard-run-search-results { min-height: 32px; padding: 4px 8px; font-size: 13px; background: var(--soc-surface); border-color: transparent; }
+.section-card { padding: var(--soc-panel-padding); background: var(--soc-surface); border: 1px solid var(--soc-border); border-radius: var(--soc-panel-radius); box-shadow: none; }
+.section-description, .page-description, .status-message, .dashboard-summary-note, .operator-safety-note, small { color: var(--soc-muted); font-size: 14px; }
+.dashboard-run-id-note, .dashboard-copyable code, .identifier, code, pre { font-family: var(--soc-mono); font-size: 13px; }
+pre { color: var(--soc-body); background: var(--soc-subtle); border-radius: var(--soc-label-radius); }
+a { color: var(--soc-primary); text-underline-offset: 3px; }
+button, input, select, textarea { font: inherit; font-size: 15px; border-radius: var(--soc-control-radius); }
+button, .operator-secondary, .operator-primary { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; max-width: 100%; padding: 8px 16px; gap: 8px; color: var(--soc-body); background: var(--soc-surface); border: 1px solid var(--soc-control-border); border-radius: var(--soc-control-radius); box-shadow: none; font-size: 15px; font-weight: 600; line-height: 1.4; text-decoration: none; cursor: pointer; }
+button:hover, .operator-secondary:hover { color: var(--soc-title); background: var(--soc-subtle); border-color: var(--soc-muted); }
+button:active, .operator-secondary:active { background: var(--soc-unknown-bg); }
+.operator-primary, button[data-next="true"], #workflow-next:not([data-tone="secondary"]) { color: var(--soc-surface); background: var(--soc-primary); border-color: var(--soc-primary); box-shadow: none; }
+.operator-primary:hover, button[data-next="true"]:hover, #workflow-next:not([data-tone="secondary"]):hover { color: var(--soc-surface); background: var(--soc-primary-hover); border-color: var(--soc-primary-hover); }
+.operator-primary:active, button[data-next="true"]:active { background: var(--soc-title); }
+button:disabled, input:disabled, select:disabled, textarea:disabled { color: var(--soc-muted); background: var(--soc-unknown-bg); border-color: var(--soc-border); opacity: 1; cursor: not-allowed; }
+.operator-primary:disabled, button[data-next="true"]:disabled, #workflow-next:disabled { color: var(--soc-muted); background: var(--soc-unknown-bg); border-color: var(--soc-border); }
+button[aria-busy="true"], [aria-busy="true"] button { cursor: progress; }
+.operator-ghost, .dashboard-manual-refresh, .dashboard-copy-button { min-height: 32px; padding: 4px 8px; border-color: transparent; background: transparent; color: var(--soc-primary); font-size: 13px; }
+table button, .dashboard-evidence-expand { min-height: 32px; padding: 4px 12px; font-size: 14px; }
+input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select, textarea { min-height: 40px; max-width: 100%; color: var(--soc-body); background: var(--soc-surface); border: 1px solid var(--soc-control-border); padding: 8px 12px; }
+input::placeholder, textarea::placeholder { color: var(--soc-muted); opacity: 1; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--soc-primary); min-width: 18px; min-height: 18px; }
+:is(a, button, summary, input, select, textarea, [tabindex]):focus-visible { outline: 3px solid var(--soc-primary); outline-offset: 3px; box-shadow: none; }
+summary { color: var(--soc-body); font-size: 14px; cursor: pointer; padding-block: 4px; }
+summary:hover { color: var(--soc-primary); }
+.dashboard-detail-tabs button { min-height: 40px; padding: 8px 12px; color: var(--soc-muted); background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0; box-shadow: none; font-size: 15px; }
+.dashboard-detail-tabs button[aria-selected="true"] { color: var(--soc-primary); border-bottom-color: var(--soc-primary); background: transparent; }
+table { border-collapse: collapse; font-size: 15px; color: var(--soc-body); font-variant-numeric: tabular-nums; }
+th { height: 40px; padding: 8px 12px; background: var(--soc-table-head); color: var(--soc-title); font-size: 14px; font-weight: 700; text-align: left; }
+td { height: 48px; padding: 12px; border: 0; border-bottom: 1px solid var(--soc-border-subtle); vertical-align: top; font-size: 15px; }
+th { border: 0; border-bottom: 2px solid var(--soc-control-border); }
+/* Hover and keyboard focus stay neutral; only the selected row is tinted and marked by a left bar (selection, not severity). */
+tr:hover > td, tr:focus-within > td { background: var(--soc-row-hover); }
+.runs-table tbody tr[data-selected="true"] > td, .dashboard-table__row--selected > td { background: var(--soc-selected); }
+.runs-table tbody tr[data-selected="true"] > td:first-child, .dashboard-table__row--selected > td:first-child { box-shadow: inset 3px 0 var(--soc-primary); }
+td:has(.dashboard-evidence-cell), td:has(.dashboard-run-identity) { min-height: 64px; }
+time, [class*="timestamp"], .dashboard-analysis-field dd { font-variant-numeric: tabular-nums; }
+.status-badge, .dashboard-kind-label, .operator-demo-badge, .operator-source-label { padding: 4px 8px; border: 1px solid var(--soc-border); border-radius: var(--soc-label-radius); background: var(--soc-unknown-bg); color: var(--soc-unknown); font-size: 14px; font-weight: 600; box-shadow: none; }
+.status-badge--completed { color: var(--soc-success); background: var(--soc-success-bg); border-color: var(--soc-success); }
+.status-badge--failed { color: var(--soc-danger); background: var(--soc-danger-bg); border-color: var(--soc-danger); }
+.status-badge--running { color: var(--soc-primary); background: var(--soc-selected); }
+.status-badge--stale { color: var(--soc-warning); background: var(--soc-warning-bg); border-color: var(--soc-warning); }
+.status-badge--telemetry-unavailable { color: var(--soc-unknown); background: var(--soc-unknown-bg); }
+.dashboard-decision-summary, .dashboard-selected-headline, .dashboard-summary-judgment { color: var(--soc-title); background: transparent; }
+.dashboard-summary-judgment { font-size: 20px; font-weight: 600; }
+.dashboard-selected-panel, .dashboard-current-task, .operator-current-task, .dashboard-decision-record--current { background: var(--soc-surface); border-color: var(--soc-border); box-shadow: none; }
+.dashboard-path-field, .dashboard-analysis-field, .evidence-overview__grid > div, .operator-report-summary, .operator-document-summary { background: var(--soc-subtle); border-color: var(--soc-border); border-radius: var(--soc-label-radius); }
+.dashboard-analysis-field dd, .dashboard-decision-record__fields dd, .operator-document-summary dd { color: var(--soc-title); font-size: 15px; font-weight: 600; }
+.dashboard-analysis-field dt, .dashboard-decision-record__fields dt, .operator-document-summary dt { color: var(--soc-muted); font-size: 14px; }
+.workflow-timeline li { color: var(--soc-muted); border-color: var(--soc-border); border-radius: var(--soc-control-radius); background: var(--soc-subtle); }
+.workflow-timeline li[data-state="complete"] { color: var(--soc-success); border-color: var(--soc-success); background: var(--soc-success-bg); }
+.workflow-timeline li[data-state="current"] { color: var(--soc-primary); border-color: var(--soc-primary); background: var(--soc-selected); }
+.workflow-timeline li[data-state="not_applicable"] { color: var(--soc-unknown); background: var(--soc-unknown-bg); border-style: dashed; }
+.operator-task-head, .operator-report-head { gap: 16px; }
+.operator-task-head #workflow-next { min-height: 40px; font-size: 15px; }
+.operator-current-step strong { color: var(--soc-title); font-size: 16px; }
+.dashboard-replay-chart__episode { fill: var(--soc-warning-bg); }
+.dashboard-replay-chart__episode-legend { background: var(--soc-warning-bg); border: 1px solid var(--soc-warning); }
+.dashboard-replay-chart__area { fill: none; }
+.dashboard-replay-chart__persistence { fill: var(--soc-selected); }
+.fusion-score-chart__trajectory { stroke: var(--soc-primary); }
+.fusion-score-chart__threshold--on { stroke: var(--soc-warning); stroke-dasharray: 8 6; }
+.fusion-score-chart__threshold--off { stroke: var(--soc-unknown); stroke-dasharray: 3 5; }
+.fusion-score-chart__point--on { fill: var(--soc-warning); }
+.fusion-score-chart__point--off { fill: var(--soc-unknown); }
+.fusion-score-chart__legend-symbol--threshold-on { border-color: var(--soc-warning); background: transparent; }
+.fusion-score-chart__legend-symbol--threshold-off { border-color: var(--soc-unknown); background: transparent; }
+.fusion-score-chart__legend-symbol--policy-on { background: var(--soc-warning); }
+.fusion-score-chart__legend-symbol--policy-off { background: var(--soc-unknown); }
+.fusion-score-chart__axis-label, .fusion-score-chart__threshold-label { fill: var(--soc-muted); }
+.decision-status-guide { background: var(--soc-subtle); }
+.page-eyebrow { color: var(--soc-muted); font-size: 13px; letter-spacing: 0; text-transform: none; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; } }
+@media (forced-colors: active) { button, input, select, textarea { border: 1px solid ButtonText; } .status-badge { border: 1px solid CanvasText; } }
+@media (max-width: 700px) { .section-card { padding: 16px; } .dashboard-detail-header .section-heading { font-size: 20px; } button, .operator-secondary { white-space: normal; overflow-wrap: anywhere; } }
 
+@layer base {
 *,
 *::before,
 *::after {
@@ -269,4 +439,6 @@ button:focus-visible {
         padding: var(--shell-space-4);
         border-radius: var(--shell-radius-medium);
     }
+}
+
 }

@@ -23,7 +23,12 @@ class Element {
         this.href = "";
         this.title = "";
         this.focusCalls = [];
+        this.listeners = new Map();
     }
+
+    addEventListener(type, listener) { this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]); }
+
+    click() { for (const listener of this.listeners.get("click") ?? []) listener({ type: "click", target: this }); }
 
     get textContent() { return this.ownText + this.childNodes.map((c) => c.textContent).join(""); }
 
@@ -65,7 +70,7 @@ const fail = (status, detail) => ({ ok: false, status, json: async () => ({ deta
 
 function harness(fetchImpl = async () => ok()) {
     const doc = { activeElement: null, createElement: (tag) => new Element(doc, tag) };
-    const nodes = new Map(["status", "archive", "region", "list"].map((key) => [`evidence-${key}`, new Element(doc, "div")]));
+    const nodes = new Map(["status", "archive", "region", "list", "archive-state"].map((key) => [`evidence-${key}`, new Element(doc, "div")]));
     doc.getElementById = (id) => nodes.get(id) ?? null;
     const calls = [];
     const timers = new Map();
@@ -96,7 +101,7 @@ test("Evidence is read only once the tab is shown, once per Run", async () => {
     assert.equal(h.calls[0][1].cache, "no-store");
     assert.equal(h.rows().length, 2);
     assert.equal(h.node("region").hidden, false);
-    assert.match(h.node("status").textContent, /^Evidence 조회 완료 · 검증된 2건/);
+    assert.match(h.node("status").textContent, /^증거 조회 완료 · 검증된 2건/);
     assert.match(h.node("archive").textContent, /^R1 아카이브 · Extractor r1-v0\.1 · SHA-256 /);
     assert.equal(h.timers.size, 0);
 });
@@ -110,12 +115,12 @@ test("Rows show the contract fields and link only Events stored for the Run", as
     // Then
     const [lineage, network] = h.rows();
     const cells = lineage.children.map((c) => c.textContent);
-    assert.equal(cells[0], "evidence-lineage");
-    assert.equal(cells[1], "원격 세션 프로세스 계보 이탈· 정책 v0.3 · r1-remote-management-approved-lineage");
-    assert.equal(cells[2], "2026-10-08 17:10:30.538000");
-    assert.equal(lineage.children[2].children[0].getAttribute("datetime"), "2026-10-08T17:10:30.538000Z");
-    assert.deepEqual(cells.slice(3), ["PAIR004-DERIVED-HOST", "원시 Telemetry", "Fusion feature",
-        "evt-anchorevt-middleevt-terminal · 저장 Event 없음", "r1-v0.1"]);
+    // Task 6: the row leads with the KST time and the observation; identifiers move to the detail row.
+    assert.deepEqual(cells, ["2026.10.09 02:10:30.538000 KST", "원격 세션 프로세스 계보 이탈", "PAIR004-DERIVED-HOST",
+        "원시 TelemetryFusion feature", "evt-anchorevt-middleevt-terminal · 저장 Event 없음", "상세"]);
+    assert.equal(lineage.children[0].children[0].getAttribute("datetime"), "2026-10-08T17:10:30.538000Z");
+    assert.equal(lineage.children[0].children[0].title, "UTC 2026-10-08T17:10:30.538000Z");
+    assert.equal(cells.some((value) => value.includes("evidence-lineage")), false);
     const links = h.node("list").querySelectorAll(".dashboard-evidence-event-link");
     assert.deepEqual(links.map((l) => l.href), [
         `/dashboard/runs/${RUN_ID}/events/evt-anchor`,
@@ -124,6 +129,23 @@ test("Rows show the contract fields and link only Events stored for the Run", as
     ]);
     assert.equal(links[0].getAttribute("aria-label"), "Event evt-anchor 상세");
     assert.equal(network.find((e) => e.tagName === "A" && e.textContent === "evt-terminal").length, 0);
+});
+
+test("Completion invalidation rejects a late pre-commit response for the same Run", async () => {
+    // Given
+    const held = deferred(); let index = 0;
+    const h = harness(() => ++index === 1 ? held.promise : Promise.resolve(ok()));
+    await h.controller.setActive(true);
+    const first = h.controller.select(RUN_ID);
+    await Promise.resolve();
+    // When
+    await h.controller.refresh({ invalidatePending: true });
+    held.resolve(fail(404, "Run not found")); await first;
+    // Then
+    assert.equal(h.calls.length, 2);
+    assert.equal(h.calls[0][1].signal.aborted, true);
+    assert.equal(h.rows().length, 2);
+    assert.match(h.node("status").textContent, /^증거 조회 완료/);
 });
 
 test("Changing Run clears the previous Evidence at once and drops its late response", async () => {
@@ -259,9 +281,12 @@ test("Stored text is rendered as text, never as markup", async () => {
     await h.controller.setActive(true);
     // Then
     const [row] = h.rows();
-    assert.equal(row.children[0].textContent, hostile);
-    assert.equal(row.find((e) => e.tagName === "IMG").length, 0);
-    assert.equal(row.find((e) => e.tagName === "A")[0].href, `/dashboard/runs/${RUN_ID}/events/${encodeURIComponent(hostile)}`);
+    assert.equal(row.children[2].textContent, hostile);
+    row.find((e) => e.classList.contains("dashboard-evidence-expand"))[0].click();
+    const [, detail] = h.rows();
+    assert.match(detail.textContent, /<img src=x onerror=alert\(1\)>/);
+    for (const element of [h.rows()[0], detail]) assert.equal(element.find((e) => e.tagName === "IMG").length, 0);
+    assert.equal(h.rows()[0].find((e) => e.tagName === "A")[0].href, `/dashboard/runs/${RUN_ID}/events/${encodeURIComponent(hostile)}`);
     const source = await readFile(new URL("../../../src/incident_awareness/dashboard/ui/assets/dashboard-evidence-controller.mjs", import.meta.url), "utf8");
     for (const forbidden of ["innerHTML", "outerHTML", "insertAdjacentHTML", "setInterval("]) assert.equal(source.includes(forbidden), false);
 });
@@ -351,6 +376,70 @@ test("Leaving the page invalidates a pending read; returning re-reads the shown 
     assert.equal(h.calls.length, 2);
     assert.equal(h.rows().length, 2);
 });
+
+const expandButton = (row) => row.find((e) => e.classList.contains("dashboard-evidence-expand"))[0];
+
+test("Task 6 detail row keeps every stored identifier and mapping, shown only on request", async () => {
+    // Given
+    const h = harness();
+    await h.controller.select(RUN_ID);
+    await h.controller.setActive(true);
+    const toggle = expandButton(h.rows()[0]);
+    // When
+    toggle.click();
+    // Then
+    assert.equal(h.rows().length, 3);
+    const detail = h.rows()[1].textContent;
+    for (const expected of ["evidence-lineage", "remote_session_process_lineage_deviation",
+        "r1-remote-management-approved-lineage · v0.3", "b".repeat(64), "저장된 매핑 없음", "비공개 필드0개",
+        "r1-v0.1", "UTC 2026-10-08T17:10:30.538000Z", "Fusion 입력 아님"]) assert.ok(detail.includes(expected), expected);
+    const reopened = expandButton(h.rows()[0]);
+    assert.equal(reopened.getAttribute("aria-expanded"), "true");
+    assert.equal(reopened.getAttribute("aria-label"), "원격 세션 프로세스 계보 이탈 · 2026.10.09 02:10:30.538000 KST 상세 접기");
+    assert.strictEqual(h.doc.activeElement, reopened, "The re-rendered toggle keeps keyboard focus");
+    reopened.click();
+    assert.equal(h.rows().length, 2);
+    assert.equal(h.calls.length, 1, "Expanding a row never re-reads the archive");
+});
+
+test("Task 6 expansion and its toggle focus survive a same-Run refresh and reset on Run change", async () => {
+    // Given
+    const h = harness(async (url) => ok(evidencePayload({ runId: url.includes("918") ? "RUN-20261008-918" : RUN_ID })));
+    await h.controller.select(RUN_ID);
+    await h.controller.setActive(true);
+    expandButton(h.rows()[0]).click();
+    expandButton(h.rows()[0]).focus();
+    // When
+    await h.controller.refresh();
+    // Then
+    assert.equal(h.rows().length, 3);
+    assert.strictEqual(h.doc.activeElement, expandButton(h.rows()[0]));
+    assert.equal(h.doc.activeElement.dataset.rowKey, "evidence-lineage");
+    await h.controller.select("RUN-20261008-918");
+    assert.equal(h.rows().length, 2);
+    assert.ok(h.rows().every((row) => row.classList.contains("dashboard-evidence-row")));
+});
+
+for (const [label, fetchImpl, expected] of [
+    ["published", async () => ok(), "게시됨 · 검증된 증거 2건"],
+    ["no archive", async () => ok(evidencePayload({ availability: "no_archive" })), "게시 아카이브 없음 · 원본 보관과 별개"],
+    ["pending", async () => ok(evidencePayload({ availability: "not_published", archiveStatus: "pending" })), "게시 전"],
+    ["unprovisioned", async () => fail(503, "Evidence archive storage is not provisioned"), "조회 기능 미준비"],
+    ["network failure", async () => { throw new TypeError("offline"); }, "조회 실패"],
+]) {
+    test(`Task 6 archive overview names the ${label} state apart from raw retention`, async () => {
+        // Given
+        const h = harness(fetchImpl);
+        // When
+        await h.controller.select(RUN_ID);
+        const beforeActivation = h.node("archive-state").textContent;
+        await h.controller.setActive(true);
+        // Then
+        assert.equal(beforeActivation, "조회 중");
+        assert.equal(h.node("archive-state").textContent, expected);
+        assert.doesNotMatch(h.node("archive-state").textContent, /원본 없음|원본 전체/);
+    });
+}
 
 test("Without the Evidence DOM (e.g. Preview) the controller is inert", async () => {
     // Given

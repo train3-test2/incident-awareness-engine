@@ -32,7 +32,7 @@ test("A published archive lists verified items with Run, Entity, and unstored Ev
     assert.equal(model.state, "published");
     assert.equal(model.items.length, 2);
     assert.deepEqual(model.entityIds, ["PAIR004-DERIVED-HOST"]);
-    assert.equal(model.message, "Evidence 조회 완료 · 검증된 2건 · Entity 1개 · 저장 Event 미조회 1건(링크 없음)");
+    assert.equal(model.message, "증거 조회 완료 · 검증된 2건 · Entity 1개 · 저장 Event 미조회 1건(링크 없음)");
     assert.equal(model.evidenceSha256, SHA);
     assert.equal(describeVerifiedArchive(model), "R1 아카이브 · Extractor r1-v0.1 · SHA-256 aaaaaaaaaaaa… 검증");
 });

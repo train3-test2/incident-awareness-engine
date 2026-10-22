@@ -120,7 +120,7 @@ test("Compact asymmetric charts adapt ticks without changing observations or con
             const figure = createTelemetryChart(model, kind, fakeDocument, { width });
             assert.ok(figure.classes.has("dashboard-telemetry-chart--compact"));
             assert.equal(descendants(figure, "svg")[0].attributes.get("viewBox"), `0 0 ${width} ${compact.height}`);
-            assert.ok(descendants(figure, "circle").every((mark) => mark.attributes.get("aria-label").includes("GMT")
+            assert.ok(descendants(figure, "circle").every((mark) => mark.attributes.get("aria-label").includes("KST")
                 || mark.attributes.get("aria-label").includes("UTC")));
         }
     }
@@ -247,7 +247,7 @@ test("Invalid chart mode is rejected", () => {
     assert.throws(() => buildTelemetryChartPresentation(model, "unknown"), /Unknown Telemetry chart kind/);
 });
 
-test("A synthetic 7/7 single-bucket example keeps two concentric marks, time and precise latency", () => {
+test("A synthetic 7/7 single-bucket example keeps concentric distinct series, time and precise latency", () => {
     // Given: reconstruction of user-provided values, not an original AWS response.
     const response = makeResponse();
     Object.assign(response.points[0], {
@@ -336,7 +336,52 @@ test("Compact dense markers shrink without altering samples, coordinates or isol
         assert.equal(mark.attributes.get("data-timestamp"), sample.timestamp);
         assert.match(mark.textContent, /건\/초/);
         assert.equal(mark.attributes.get("tabindex"), sample.isolated ? "0" : undefined);
-        assert.ok(Number(mark.attributes.get("r")) >= (sample.isolated ? 4.5 : 1.5));
+        assert.ok(Number(mark.attributes.get("r")) >= (sample.isolated ? 3 : 1.5));
     }
     assert.equal(expected.series[0].segments.length, 1);
 });
+
+test("Throughput shares exact axes without shifting equal raw samples or filling gaps", () => {
+    // Given
+    const model = buildTelemetryChartModel(makeResponse());
+    const before = JSON.stringify(model);
+    // When / Then
+    for (const width of [300, 540, 700]) {
+        const view = buildTelemetryChartPresentation(model, "throughput", { width, height: 102 });
+        const [input, completed] = view.series.map(series => series.marks[0]);
+        assert.equal(input.x, completed.x);
+        assert.equal(input.timestamp, completed.timestamp);
+        assert.equal(input.value, completed.value);
+        assert.equal(input.y, completed.y);
+        assert.equal(input.zeroY - input.y, completed.zeroY - completed.y);
+        assert.equal(view.lanes.length, 1);
+        assert.equal(view.yTicks[0].value, 0);
+        assert.equal(view.yTicks.at(-1).value, view.yMaximum);
+        assert.equal(view.markCount, 2);
+    }
+    assert.equal(JSON.stringify(model), before);
+});
+
+test("Main card heights keep readable ticks and do not change sample values or continuity", () => {
+    // Given
+    const model = buildTelemetryChartModel(makeResponse());
+    // When
+    const throughput = buildTelemetryChartPresentation(model, "throughput", { width: 700, height: 102 });
+    const latency = buildTelemetryChartPresentation(model, "latency", { width: 350, height: 78 });
+    const standalone = buildTelemetryChartPresentation(model, "latency", { width: 350 });
+    // Then
+    assert.equal(throughput.height, 102);
+    assert.equal(latency.height, 78);
+    assert.equal(latency.yTicks.length, 3);
+    assert.ok(Math.abs(latency.yTicks[1].y - latency.yTicks[0].y) >= 12);
+    assert.equal(standalone.height, 112);
+    assert.deepEqual(latency.series[0].marks.map(m => m.value), standalone.series[0].marks.map(m => m.value));
+    assert.equal(latency.series[0].segments.length, standalone.series[0].segments.length);
+});
+
+for (const height of [71, 241, NaN]) {
+    test(`Invalid compact height ${height} is rejected`, () => {
+        // Given / When / Then
+        assert.throws(() => buildTelemetryChartPresentation(buildTelemetryChartModel(makeResponse()), "latency", { width: 350, height }), RangeError);
+    });
+}

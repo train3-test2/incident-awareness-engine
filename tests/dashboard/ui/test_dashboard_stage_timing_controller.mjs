@@ -6,7 +6,7 @@ import { target, timingPayload } from "./stage-timing-fixture.mjs";
 
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const response = (payload = timingPayload(), ok = true) => ({ ok, json: async () => payload });
-function harness(fetchImpl = async () => response()) {
+function harness(fetchImpl = async () => response(), options = {}) {
     const nodes = new Map();
     for (const key of ["state", "caption", "scope", "records", "refresh", "detail"]) {
         nodes.set(`insight-bottleneck-${key}`, {
@@ -23,6 +23,7 @@ function harness(fetchImpl = async () => response()) {
         fetchImpl: (...args) => { calls.push(args); return fetchImpl(...args); },
         setTimeoutImpl: (fn) => { timers.set(++timer, fn); return timer; },
         clearTimeoutImpl: (id) => timers.delete(id),
+        ...options,
     });
     return { ...controller, nodes, calls, timers, node: (key) => nodes.get(`insight-bottleneck-${key}`) };
 }
@@ -40,9 +41,39 @@ test("One exact Execution request renders duration, scope, UTC invocation detail
     assert.match(h.node("scope").textContent, /Run RUN-TEST · Entity ENTITY-TEST/);
     assert.equal(h.node("detail").textContent, h.node("scope").textContent);
     assert.equal(h.node("records").children.length, 6);
-    assert.match(h.node("records").children[0].textContent, /2026-10-18T01:02:03.000Z/);
+    assert.match(h.node("records").children[0].textContent, /2026\.10\.18 10:02:03 KST/);
+    assert.match(h.node("records").children[0].title, /2026-10-18T01:02:03.000Z/);
     assert.equal(h.node("refresh").disabled, false);
     assert.equal(h.timers.size, 0);
+});
+
+test("Validated timing callback shares one response and clears evidence on unselection", async () => {
+    // Given
+    const changes = [];
+    const h = harness(undefined, { onResult: value => changes.push(value) });
+    // When
+    await h.select({ target });
+    const measured = changes.at(-1);
+    await h.select({ target: null, reason: "No selection" });
+    // Then
+    assert.deepEqual(measured.target, target);
+    assert.equal(measured.records.length, 6);
+    assert.equal(changes[0], null);
+    assert.equal(changes.at(-1), null);
+    assert.equal(h.calls.length, 1);
+});
+
+test("Late abort-ignoring response cannot republish stage evidence for a previous selection", async () => {
+    // Given
+    const changes = [], held = deferred();
+    const h = harness(() => held.promise, { onResult: value => changes.push(value) });
+    const first = h.select({ target });
+    await Promise.resolve();
+    // When
+    await h.select({ target: null, reason: "No selection" });
+    held.resolve(response()); await first;
+    // Then
+    assert.ok(changes.every(value => value === null));
 });
 
 test("Unchanged Runtime heartbeats cause neither duplicate fetch nor live-region text mutations", async () => {
@@ -100,7 +131,7 @@ test("No scope or Runtime query failure clears old measurements and invalidates 
     const held = deferred(); const h = harness(() => held.promise);
     const pending = h.select({ target }); await Promise.resolve();
     // When
-    await h.select({ target: null, reason: "Runtime 조회 실패" }); held.resolve(response()); await pending;
+    await h.select({ target: null, reason: "실행 보고 조회 실패" }); held.resolve(response()); await pending;
     // Then
     assert.equal(h.node("state").textContent, "비교 대상 없음");
     assert.equal(h.node("refresh").disabled, true);
@@ -159,11 +190,11 @@ test("An unresolved selection shows the short caption and keeps the full reason 
     // Given
     const h = harness();
     // When
-    await h.select({ target: null, caption: "Runtime 보고 없음", reason: "Run만 선택되어 Execution을 알 수 없습니다." });
+    await h.select({ target: null, caption: "실행 보고 없음", reason: "분석만 선택되어 Execution을 알 수 없습니다." });
     // Then
     assert.equal(h.node("state").textContent, "비교 대상 없음");
-    assert.equal(h.node("caption").textContent, "Runtime 보고 없음");
-    assert.equal(h.node("scope").textContent, "Run만 선택되어 Execution을 알 수 없습니다.");
+    assert.equal(h.node("caption").textContent, "실행 보고 없음");
+    assert.equal(h.node("scope").textContent, "분석만 선택되어 Execution을 알 수 없습니다.");
     assert.equal(h.calls.length, 0);
 });
 
@@ -227,6 +258,7 @@ test("Dashboard wiring retains Runtime/Telemetry cadence, lifecycle, six Pipelin
     assert.match(source, /stageTimingController\.start\(\)/);
     assert.match(source, /createDashboardTelemetryController\(document\)/);
     assert.match(html, /id="insight-bottleneck-state" role="status" aria-live="polite" aria-atomic="true"/);
-    assert.ok(html.indexOf('id="insight-bottleneck-state"') < html.indexOf('<summary>인사이트 계측 안내'));
-    assert.match(html, /id="insight-bottleneck-refresh"[^>]*type="button"/);
+    // The 계측 지원 정보 help (record list and manual re-query) was removed; the summary cell remains.
+    assert.doesNotMatch(html, /계측 지원 정보|id="insight-bottleneck-refresh"|id="insight-bottleneck-records"/);
+    assert.match(html, /id="insight-bottleneck-caption"/);
 });

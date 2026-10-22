@@ -26,24 +26,24 @@ const utc = (value) => typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:
 const noTarget = (caption, reason) => ({ target: null, caption, reason });
 
 export function resolveStageTimingTarget({ runId, entityId, items, queryFailed = false, outsideQuery = false }) {
-    if (queryFailed) return noTarget("Runtime 조회 실패", "Runtime 조회 실패 · 비교 대상 확인 불가");
-    if (outsideQuery) return noTarget("조회 범위 밖", "선택 Runtime이 최근 5건 조회 범위 밖입니다.");
-    if (!identity(runId)) return noTarget("Runtime 선택 필요", "Run·Entity의 Runtime을 선택하세요.");
+    if (queryFailed) return noTarget("실행 보고 조회 실패", "실행 보고 조회 실패 · 비교 대상 확인 불가");
+    if (outsideQuery) return noTarget("조회 범위 밖", "선택 실행 보고이 최근 5건 조회 범위 밖입니다.");
+    if (!identity(runId)) return noTarget("실행 보고 선택 필요", "분석·Entity의 실행 보고를 선택하세요.");
     if (!identity(entityId)) {
         return items.some((item) => item.run_id === runId)
-            ? noTarget("Runtime 선택 필요", "Run만 선택되어 Execution을 알 수 없습니다. Runtime 표에서 Entity를 선택하세요. Run만으로 Execution을 추정하지 않습니다.")
-            : noTarget("Runtime 보고 없음", "Run만 선택되어 Execution을 알 수 없고, 이 Run의 Runtime 보고가 최근 5건에 없습니다. Run만으로 Execution을 추정하지 않습니다.");
+            ? noTarget("실행 보고 선택 필요", "분석만 선택되어 Execution을 알 수 없습니다. 실행 보고 표에서 Entity를 선택하세요. 분석만으로 Execution을 추정하지 않습니다.")
+            : noTarget("실행 보고 없음", "분석만 선택되어 Execution을 알 수 없고, 이 분석의 실행 보고가 최근 5건에 없습니다. 분석만으로 Execution을 추정하지 않습니다.");
     }
     const matches = items.filter((item) => item.run_id === runId && item.entity_id === entityId);
     if (matches.length !== 1) {
         return matches.length
             ? noTarget("복수 Execution", "복수 Execution · 단일 비교 대상 확인 불가. 서로 다른 Execution을 합치지 않습니다.")
-            : noTarget("Runtime 보고 없음", "일치하는 Runtime Execution이 최근 5건에 없습니다.");
+            : noTarget("실행 보고 없음", "일치하는 실행 보고 Execution이 최근 5건에 없습니다.");
     }
     const report = matches[0];
     if (!identity(report.execution_id) || report.execution_id.length > 512
         || !["running", "completed", "failed"].includes(report.status)) {
-        return noTarget("Execution 확인 불가", "Runtime Execution 식별 정보 확인 불가");
+        return noTarget("Execution 확인 불가", "실행 보고 Execution 식별 정보 확인 불가");
     }
     return { target: { runId, entityId, executionId: report.execution_id,
         status: report.status, currentStage: report.current_stage }, caption: "", reason: "" };
@@ -146,7 +146,7 @@ export function buildStageTimingModel(payload, target) {
             + "관측된 종료 invocation 중 최장 소요이며 전체 실행의 확정 병목이 아닙니다. 경로·완전성·전체 종료는 확인 불가. "
             + "First Cycle은 6개 operation, Standalone은 독립 fast_handoff 없이 5개 operation이지만 이 응답으로 실행 경로를 식별하지 않습니다. "
             + "미관측은 미실행 또는 0ns가 아니며, 재시도는 invocation별 비교하고 합산하지 않습니다. "
-            + `Runtime 마지막 보고: ${target.status}. ${comparison}. 저장 시각: ${payload.persisted_at ?? "없음"}. `
+            + `실행 보고 마지막 보고: ${target.status}. ${comparison}. 저장 시각: ${payload.persisted_at ?? "없음"}. `
             + `Attempt ${snapshot?.attempt_id ?? "없음"}, revision ${snapshot?.revision ?? "없음"}. `
             + `진행 단계: ${active ? getStageLabel(active) : "미보고"}, 진행 중 duration 없음. `
             + `계측 이슈: ${snapshot?.issues.join(", ") || "없음"}. `

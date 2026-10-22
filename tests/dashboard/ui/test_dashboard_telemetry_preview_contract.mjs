@@ -19,6 +19,7 @@ class Node {
     append(...items) { this.children.push(...items); }
     replaceChildren(...items) { this.text = ""; this.children = items; }
     setAttribute(key, value) { this.attributes[key] = value; }
+    removeAttribute(key) { delete this.attributes[key]; }
 }
 function fakeDocument() {
     const nodes = new Map();

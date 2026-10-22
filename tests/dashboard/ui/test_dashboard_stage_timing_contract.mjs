@@ -160,12 +160,12 @@ test("Each unresolved selection state has its own short card caption", () => {
     const input = { runId: target.runId, entityId: target.entityId, items: [report] };
     const caption = (overrides) => resolveStageTimingTarget({ ...input, ...overrides }).caption;
     // When / Then
-    assert.equal(caption({ runId: null, entityId: null }), "Runtime 선택 필요");
-    assert.equal(caption({ entityId: null }), "Runtime 선택 필요");
-    assert.equal(caption({ entityId: null, items: [] }), "Runtime 보고 없음");
-    assert.equal(caption({ items: [] }), "Runtime 보고 없음");
+    assert.equal(caption({ runId: null, entityId: null }), "실행 보고 선택 필요");
+    assert.equal(caption({ entityId: null }), "실행 보고 선택 필요");
+    assert.equal(caption({ entityId: null, items: [] }), "실행 보고 없음");
+    assert.equal(caption({ items: [] }), "실행 보고 없음");
     assert.equal(caption({ outsideQuery: true }), "조회 범위 밖");
-    assert.equal(caption({ queryFailed: true }), "Runtime 조회 실패");
+    assert.equal(caption({ queryFailed: true }), "실행 보고 조회 실패");
     assert.equal(caption({ items: [report, { ...report, execution_id: "other" }] }), "복수 Execution");
     assert.equal(caption({ items: [{ ...report, execution_id: " padded" }] }), "Execution 확인 불가");
     assert.equal(resolveStageTimingTarget(input).caption, "");

@@ -70,7 +70,7 @@ def test_operations_view_serves_html_shell_without_database_access(
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     html = response.text
-    assert "Pipeline Runtime Operations" in html
+    assert "시스템 운영" in html
     assert 'href="/dashboard-assets/dashboard-shell.css"' in html
     assert 'href="/dashboard-assets/operations.css"' in html
     assert '<script type="module" src="/dashboard-assets/operations.js"></script>' in html
@@ -345,13 +345,14 @@ def test_operations_script_builds_runtime_cards_with_dom_api() -> None:
 
     # When
     script = client.get("/dashboard-assets/operations.js").text
-    field_body = _block_body(script, "function createField(label, value) {")
+    field_body = _block_body(script, "function createField(label, value, original = null) {")
     card_body = _block_body(script, "function createRuntimeCard(runtime, telemetryAvailable) {")
 
     # Then
     assert "document.createElement(" in field_body
     assert "term.textContent = label;" in field_body
     assert "description.textContent = value;" in field_body
+    assert "if (original !== null) description.title = `원본 ${original}`;" in field_body
     assert 'document.createElement("article")' in card_body
     assert 'if (runtime.status === "completed" && runtime.run_id.trim()) {' in card_body
     assert "link.href = buildRunDetailViewPath(runtime.run_id);" in card_body
@@ -445,7 +446,7 @@ def test_dashboard_assets_do_not_serve_operations_html_shell() -> None:
 
     # Then
     assert response.status_code == 404
-    assert "Pipeline Runtime Operations" not in response.text
+    assert "시스템 운영" not in response.text
 
 
 def test_operations_runtime_api_is_not_shadowed_by_operations_view(

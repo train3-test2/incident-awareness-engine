@@ -2,6 +2,7 @@
 // Observations are never synthesized; API errors must not look like zero throughput.
 
 import { buildTelemetryChartModel, TELEMETRY_ENDPOINT } from "./dashboard-telemetry-contract.mjs";
+import { formatOperatorTimestamp } from "./dashboard-contract.mjs";
 import { createTelemetryChart } from "./dashboard-telemetry-chart.mjs";
 
 const POLL_INTERVAL_MS = 5000;
@@ -31,20 +32,27 @@ function formatObservedTime(timestamp) {
     if (timestamp === null) {
         return "마지막 관측 시각: 확인 불가";
     }
-    return `마지막 관측: ${new Date(timestamp).toLocaleString("ko-KR")}`;
+    return `마지막 관측: ${formatOperatorTimestamp(timestamp)}`;
 }
 
 function formatCount(value) {
     return value === null ? "미관측" : `${value.toLocaleString("ko-KR")}건`;
 }
 
-function formatLatency(value) {
+function formatLatency(value, compact = false) {
+    if (compact && value !== null) {
+        // Main cards cannot fit long fractional means. Keep the exact API value in
+        // title/aria-label; never round a positive sub-millisecond value to zero.
+        return `${value > 0 && (value < 0.01 || value >= 10000)
+            ? value.toExponential(1) : value.toLocaleString("ko-KR", { maximumSignificantDigits: 3 })} ms`;
+    }
     return value === null
         ? "미관측"
         : `${value.toLocaleString("ko-KR", { maximumFractionDigits: 6 })} ms`;
 }
 
 function replaceWithNotice(doc, frame, notice) {
+    frame.setAttribute("data-empty", "true");
     const restoreFocus = doc.activeElement && frame.contains?.(doc.activeElement);
     const label = doc.createElement("span");
     label.textContent = notice;
@@ -52,15 +60,43 @@ function replaceWithNotice(doc, frame, notice) {
     if (restoreFocus) frame.focus?.({ preventScroll: true });
 }
 
-function replaceObservedChart(doc, frame, model, kind) {
+function replaceObservedChart(doc, frame, model, kind, details) {
+    frame.setAttribute("data-empty", "false");
     const active = doc.activeElement;
     const restoreFocus = active && frame.contains?.(active);
     const previousPlot = frame.querySelector?.(".dashboard-telemetry-chart__plot");
     const timestamp = active?.getAttribute?.("data-timestamp");
     const series = active?.getAttribute?.("data-series");
+    const summary = doc.getElementById("dashboard-view") !== null
+        ? details?.closest?.("details")?.querySelector("summary") : null;
     const dimensions = Number.isFinite(frame.clientWidth) && frame.clientWidth > 0
-        ? { width: Math.max(300, frame.clientWidth - 2) } : null;
-    frame.replaceChildren(createTelemetryChart(model, kind, doc, dimensions));
+        ? { width: Math.max(300, frame.clientWidth - 2),
+            ...(summary ? { height: kind === "throughput" ? 102 : 78 } : {}) } : null;
+    const chart = createTelemetryChart(model, kind, doc, dimensions);
+    let observation = "";
+    if (summary) {
+        // Main cards have a fixed desktop footprint. Preserve the visible legend in
+        // their existing summary row; detailed observations remain in the disclosure
+        // and the SVG accessible description. Standalone pages keep their full figure.
+        summary.querySelector(".dashboard-telemetry-chart__legend")?.remove();
+        const legend = chart.querySelector(".dashboard-telemetry-chart__legend");
+        const compactLegend = doc.createElement("span");
+        compactLegend.classList.add("dashboard-telemetry-chart__legend");
+        compactLegend.setAttribute("role", "list");
+        compactLegend.setAttribute("aria-label", "그래프 범례");
+        for (const item of Array.from(legend.children)) {
+            const key = doc.createElement("span");
+            key.setAttribute("role", "listitem");
+            key.append(...Array.from(item.childNodes));
+            compactLegend.append(key);
+        }
+        summary.append(compactLegend);
+        legend.remove();
+        const note = chart.querySelector(".dashboard-telemetry-chart__observation");
+        observation = note?.textContent ?? "";
+        note?.remove();
+    }
+    frame.replaceChildren(chart);
     const plot = frame.querySelector?.(".dashboard-telemetry-chart__plot");
     if (plot) plot.scrollLeft = previousPlot ? previousPlot.scrollLeft : plot.scrollWidth;
     if (restoreFocus) {
@@ -70,6 +106,11 @@ function replaceObservedChart(doc, frame, model, kind) {
         ));
         (marker || plot || frame).focus?.({ preventScroll: true });
     }
+    return observation;
+}
+
+function clearMainLegend(node) {
+    node.closest?.("details")?.querySelector("summary .dashboard-telemetry-chart__legend")?.remove();
 }
 
 function updateStatusText(element, message) {
@@ -103,7 +144,7 @@ function renderProcessingObservation(nodes, model, queryState = "success") {
             label = `부분 관측 · ${freshness}`;
             tone = "warning";
         } else if (model.qualityStatus === "no_samples" || !observed) {
-            label = hasHistory ? `구간 미관측 · ${freshness}` : "관측 이력 없음";
+            label = hasHistory ? `구간 미관측 · ${freshness}` : "조회 구간 미관측";
             tone = hasHistory && model.freshnessStatus === "stale" ? "warning" : "neutral";
         } else {
             label = model.freshnessStatus === "stale" ? "오래된 관측"
@@ -111,9 +152,9 @@ function renderProcessingObservation(nodes, model, queryState = "success") {
             tone = model.freshnessStatus === "stale" ? "warning"
                 : model.freshnessStatus === "unknown" ? "neutral" : "observed";
         }
-        // Explicit UTC keeps a compact, unambiguous date/time; the full precision is in datetime/title.
+        // Operator clocks use KST; the original UTC string remains in datetime/title.
         timeText = timestamp === null ? "관측 시각 없음"
-            : `${timestamp.slice(0, 19).replace("T", " ")} UTC`;
+            : formatOperatorTimestamp(timestamp);
         detail = `Telemetry 처리 관측 · 품질 ${model.qualityStatus} · 최근성 ${model.freshnessStatus}. `
             + `최근 60초 관측 ${model.observedBucketCount}초 / 미관측 ${model.missingBucketCount}초. `
             + `입력 ${formatCount(model.recent60s.inputAcceptedCount)} / 처리 ${formatCount(model.recent60s.processingCompletedCount)}. `
@@ -121,7 +162,8 @@ function renderProcessingObservation(nodes, model, queryState = "success") {
             + "Event 최초 수신 시각이나 시스템 가동 여부가 아닙니다.";
     }
     updateStatusText(nodes.state, label);
-    updateStatusText(nodes.time, timeText);
+    updateStatusText(nodes.time, timestamp === null ? "" : timeText);
+    nodes.time.hidden = timestamp === null;
     updateStatusText(nodes.details, detail);
     if (nodes.state.getAttribute("data-observation-tone") !== tone) {
         nodes.state.setAttribute("data-observation-tone", tone);
@@ -138,6 +180,10 @@ function renderProcessingObservation(nodes, model, queryState = "success") {
 }
 
 function renderUnavailable(doc, nodes, kind) {
+    nodes.latencySummary.removeAttribute("title");
+    nodes.latencySummary.removeAttribute("aria-label");
+    clearMainLegend(nodes.throughputDetails);
+    clearMainLegend(nodes.latencyDetails);
     replaceWithNotice(doc, nodes.throughputFrame,
         kind === "loading" ? "처리량 관측값 조회 중" : "처리량 조회 실패");
     replaceWithNotice(doc, nodes.latencyFrame,
@@ -161,23 +207,57 @@ function renderUnavailable(doc, nodes, kind) {
 
 function renderTelemetry(doc, nodes, model) {
     const observed = model.seconds.some((second) => second.observed);
+    let throughputObservation = "", latencyObservation = "";
     if (!observed) {
+        clearMainLegend(nodes.throughputDetails);
+        clearMainLegend(nodes.latencyDetails);
         replaceWithNotice(doc, nodes.throughputFrame, "실제 관측 데이터 없음");
         replaceWithNotice(doc, nodes.latencyFrame, "실제 처리 지연 데이터 없음");
     } else {
-        replaceObservedChart(doc, nodes.throughputFrame, model, "throughput");
-        replaceObservedChart(doc, nodes.latencyFrame, model, "latency");
+        throughputObservation = replaceObservedChart(doc, nodes.throughputFrame, model, "throughput", nodes.throughputDetails);
+        if (model.seconds.some(second => second.processingLatencyMeanMs !== null)) {
+            latencyObservation = replaceObservedChart(doc, nodes.latencyFrame, model, "latency", nodes.latencyDetails);
+        } else {
+            clearMainLegend(nodes.latencyDetails);
+            replaceWithNotice(doc, nodes.latencyFrame, "실제 처리 지연 데이터 없음");
+        }
     }
 
     const recent = model.recent60s;
     nodes.throughputSummary.textContent =
         `입력 ${formatCount(recent.inputAcceptedCount)} / 처리 ${formatCount(recent.processingCompletedCount)}`;
-    nodes.latencySummary.textContent = formatLatency(recent.processingLatencyMeanMs);
+    const mainCard = doc.getElementById("dashboard-view") !== null;
+    if (mainCard) {
+        const input = doc.createElement("span");
+        input.classList.add("dashboard-throughput-total-row");
+        input.textContent = `입력 ${formatCount(recent.inputAcceptedCount)}`;
+        input.setAttribute("aria-label", `최근 60초 입력 수락 ${formatCount(recent.inputAcceptedCount)}`);
+        const separator = doc.createElement("span");
+        separator.classList.add("dashboard-visually-hidden");
+        separator.textContent = " / ";
+        const completed = doc.createElement("span");
+        completed.classList.add("dashboard-throughput-total-row");
+        completed.textContent = `처리 ${formatCount(recent.processingCompletedCount)}`;
+        completed.setAttribute("aria-label", `최근 60초 처리 완료 ${formatCount(recent.processingCompletedCount)}`);
+        nodes.throughputSummary.replaceChildren(input, separator, completed);
+    }
+    nodes.latencySummary.textContent = formatLatency(recent.processingLatencyMeanMs, mainCard);
+    if (mainCard && recent.processingLatencyMeanMs !== null) {
+        const exact = `최근 60초 Normalization + 증거 평균 지연 ${recent.processingLatencyMeanMs} ms · 카드 표시는 반올림`;
+        nodes.latencySummary.setAttribute("title", exact);
+        nodes.latencySummary.setAttribute("aria-label", exact);
+    } else {
+        nodes.latencySummary.removeAttribute("title");
+        nodes.latencySummary.removeAttribute("aria-label");
+    }
     const coverage = `최근 60초 관측 ${model.observedBucketCount}초 · 미관측 ${model.missingBucketCount}초`;
     nodes.throughputDetails.textContent = coverage;
-    nodes.latencyDetails.textContent = `${coverage} · 지연 샘플 ${formatCount(recent.processingLatencySampleCount)}`;
+    nodes.latencyDetails.textContent = coverage;
 
     const statusParts = [];
+    if (observed && model.observedBucketCount === 0) {
+        statusParts.push("최근 60초 미관측 · 그래프에는 과거 관측만 표시됩니다.");
+    }
     if (model.qualityStatus === "no_samples" || !observed) {
         statusParts.push("해당 조회 구간에 관측된 데이터가 없습니다. 미관측을 0건으로 계산하지 않습니다.");
     }
@@ -196,9 +276,12 @@ function renderTelemetry(doc, nodes, model) {
     const status = statusParts.join(" ");
     updateStatusText(nodes.throughputStatus, status);
     updateStatusText(nodes.latencyStatus, status);
-    const detail = `${status} · ${formatObservedTime(model.lastObservedAt)}`;
+    // The status sentences stay in the screen-reader live region only; the disclosure keeps coverage and time.
+    const detail = formatObservedTime(model.lastObservedAt);
     nodes.throughputDetails.textContent += ` · ${detail}`;
     nodes.latencyDetails.textContent += ` · ${detail}`;
+    if (throughputObservation) nodes.throughputDetails.textContent += ` · ${throughputObservation}`;
+    if (latencyObservation) nodes.latencyDetails.textContent += ` · ${latencyObservation}`;
     const qualityLabel = model.qualityStatus === "partial"
         ? "부분 관측"
         : model.qualityStatus === "no_samples" || !observed ? "미관측" : "실측";

@@ -1,3 +1,5 @@
+import mimetypes
+import re
 from pathlib import Path
 
 import psycopg
@@ -97,6 +99,49 @@ class _EmptyRunRepository:
         return 0, []
 
 
+@pytest.mark.parametrize(
+    "path,media_type",
+    [
+        ("/dashboard-assets/offline-ml.html", "text/html"),
+        ("/dashboard-assets/offline-ml.js", "text/javascript"),
+        ("/dashboard-assets/offline-ml-contract.mjs", "text/javascript"),
+        ("/dashboard-assets/offline-ml.css", "text/css"),
+    ],
+)
+def test_offline_ml_assets_use_existing_static_mount_without_database_access(
+    path: str, media_type: str, database_connection_attempts: list[str]
+) -> None:
+    client = TestClient(create_app())
+    response = client.get(path)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith(media_type)
+    assert database_connection_attempts == []
+
+
+def test_offline_ml_navigation_is_separate_from_selected_run() -> None:
+    client = TestClient(create_app())
+    assert 'href="/dashboard-assets/offline-ml.html"' in client.get("/dashboard").text
+    html = client.get("/dashboard-assets/offline-ml.html").text
+    assert 'href="/dashboard-assets/dashboard-shell.css"' in html
+    assert "오프라인 모델 분석" in html
+    assert "실제 공격 확률, 확정 탐지, 공식 성능평가 또는 TTSD 결과가 아닙니다." in html
+    assert "RUN-20261019-006" not in html and "RUN-20261019-007" not in html
+    for path in ["provenance/usage-record.json", "role5-demo-handoff-20261019-v0.2.zip"]:
+        assert client.get(f"/dashboard-assets/{path}").status_code == 404
+
+
+@pytest.mark.parametrize("registry_type", ["application/javascript", "text/plain"])
+def test_javascript_mime_overrides_platform_registry(registry_type, monkeypatch) -> None:
+    mimetypes.init()
+    monkeypatch.setitem(mimetypes.types_map, ".js", registry_type)
+    monkeypatch.setitem(mimetypes.types_map, ".mjs", registry_type)
+    client = TestClient(create_app())
+    for name in ("offline-ml.js", "offline-ml-contract.mjs"):
+        response = client.get(f"/dashboard-assets/{name}")
+        assert response.status_code == 200
+        assert response.headers["content-type"].split(";", 1)[0] == "text/javascript"
+
+
 @pytest.fixture(autouse=True)
 def database_connection_attempts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     attempts: list[str] = []
@@ -130,13 +175,13 @@ def test_dashboard_view_serves_html_shell_without_database_access(
     assert 'href="/dashboard" aria-current="page"' in html
     assert 'href="/operations"' in html
     assert "Detection Hub" in html
-    assert "운영 View" in html
-    assert "저장된 Runtime 보고와 Run 분석 결과" in html
-    assert "Run 시각은 원본 관측 구간" in html
-    assert "Runtime updated_at은 마지막 저장 보고 시각" in html
-    assert "최근 Runtime 조회 결과는" in html
+    assert "운영 현황" in html
+    assert "저장된 실행 보고와 분석 결과" in html
+    assert "분석 시각은 원본 관측 구간" in html
+    assert "실행 보고 updated_at은 마지막 저장 보고 시각" in html
+    assert "최근 실행 보고 조회 결과는" in html
     assert "전체 실행 통계가 아닙니다" in html
-    for section in ("운영 상태 요약", "파이프라인 상태", "실시간 운영 인사이트", "최근 Run 목록"):
+    for section in ("실행 보고 요약", "분석 처리 단계", "처리 계측", "관측·분석 목록"):
         assert section in html
     for status_id in (
         "total-runs-value",
@@ -152,7 +197,6 @@ def test_dashboard_view_serves_html_shell_without_database_access(
         "selected-run-refresh",
         "selected-run-status",
         "selected-run-summary",
-        "selected-run-settings",
         "selected-run-chart-status",
         "selected-run-chart",
         "runs-status",
@@ -161,12 +205,15 @@ def test_dashboard_view_serves_html_shell_without_database_access(
         "dashboard-runs-toggle",
     ):
         assert f'id="{status_id}"' in html
-    assert "조회 완료 후 약 5초 간격으로 Runtime 상태 갱신" in html
-    assert "조회 범위 내 최신 Runtime 상태" in html
-    assert "조회 범위 내 최신 Runtime 보고" in html
+    assert "조회 완료 후 약 5초 간격으로 실행 보고 상태 갱신" in html
+    assert '<p class="dashboard-kpi__label">실행 보고</p>' in html
+    assert '저장 분석 · 전체 <strong id="total-runs-value">' in html
+    # Unmeasured uptime is a measurement-support line, never a KPI card.
+    assert "최근 처리 업데이트" not in html
+    assert '<strong id="insight-uptime-state">미계측</strong>' in html
     assert '<table class="dashboard-table runtime-table">' in html
     assert '<table class="dashboard-table runs-table">' in html
-    assert 'aria-controls="runs-list" hidden>전체 Run 펼치기</button>' in html
+    assert 'aria-controls="runs-list" hidden>전체 분석 펼치기</button>' in html
     assert "Run Type" not in html
     assert database_connection_attempts == []
 
@@ -218,7 +265,7 @@ def test_dashboard_run_status_and_table_are_visible_without_disclosure() -> None
     assert "<summary>표시 기준 및 상태 안내</summary>" in html
 
 
-def test_dashboard_view_2_uses_real_data_regions_and_defaults_to_replay() -> None:
+def test_dashboard_view_2_uses_real_data_regions_and_defaults_to_summary() -> None:
     # Given
     client = TestClient(create_app())
 
@@ -226,15 +273,16 @@ def test_dashboard_view_2_uses_real_data_regions_and_defaults_to_replay() -> Non
     html = client.get("/dashboard").text
 
     # Then
+    # Task 7-S: system status cells come first, then the list, the analysis and its workflow tab.
     region_ids = (
         "system-status-value",
         "pipeline-heading",
         "throughput-heading",
-        "runs-heading",
-        "insights-heading",
         "latency-heading",
-        "workflow-heading",
+        "insights-heading",
+        "runs-heading",
         "selected-run-heading",
+        "workflow-heading",
     )
     assert [html.index(f'id="{region_id}"') for region_id in region_ids] == sorted(
         html.index(f'id="{region_id}"') for region_id in region_ids
@@ -248,8 +296,16 @@ def test_dashboard_view_2_uses_real_data_regions_and_defaults_to_replay() -> Non
     replay_panel = html.split('id="dashboard-panel-replay"', maxsplit=1)[1].split(">", maxsplit=1)[
         0
     ]
-    assert 'aria-selected="true"' in replay_button
-    assert " hidden" not in replay_panel
+    assert 'aria-selected="false"' in replay_button
+    assert " hidden" in replay_panel
+    summary_button = html.split('id="dashboard-tab-summary"', maxsplit=1)[1].split(">", maxsplit=1)[
+        0
+    ]
+    summary_panel = html.split('id="dashboard-panel-summary"', maxsplit=1)[1].split(
+        ">", maxsplit=1
+    )[0]
+    assert 'aria-selected="true"' in summary_button
+    assert " hidden" not in summary_panel
     assert (
         html.index('id="dashboard-panel-replay"')
         < html.index('id="selected-run-chart"')
@@ -257,16 +313,111 @@ def test_dashboard_view_2_uses_real_data_regions_and_defaults_to_replay() -> Non
     )
     assert 'id="decision-history-list"' in html
     assert 'id="event-type-summary"' in html
-    assert "계측 미연결" in html
+    # The 계측 지원 정보 help was removed on request; the unmeasured states themselves stay.
+    assert "계측 지원 정보" not in html
     assert "미계측" in html
-    assert "Evidence 목록 연동 전" not in html
+    assert "증거 목록 연동 전" not in html
     assert 'id="evidence-status" class="status-message dashboard-status" role="status"' in html
     assert 'id="evidence-list"' in html
-    assert "게시 완료된 R1 Evidence 아카이브만 표시" in html
-    assert "Fusion 입력 아님" in html
-    assert "Human Workflow 연동 전" in html
+    assert "게시된 보관 증거" in html
+    assert "누적 분석 입력 아님 · 이벤트 시각" in html
+    assert 'id="workflow-awareness-form"' in html
+    assert 'id="workflow-report-form"' in html
+    assert "실제 인증 계정이 아닙니다" in html
     assert "정상 운영 중" not in html
     assert "판단 입력하기" not in html
+
+
+def test_task6_detail_areas_lead_with_operator_content_without_database_access(
+    database_connection_attempts: list[str],
+) -> None:
+    # Given
+    client = TestClient(create_app())
+
+    # When
+    html = client.get("/dashboard").text
+    modules = [
+        client.get(f"/dashboard-assets/{name}")
+        for name in ("dashboard-records.mjs", "dashboard-detail-rows.mjs")
+    ]
+
+    # Then
+    def headers(markup: str) -> list[str]:
+        return re.findall(r'<th scope="col">([^<]+)</th>', markup.split("</thead>", maxsplit=1)[0])
+
+    def ordered(markup: str, markers: tuple[str, ...]) -> bool:
+        positions = [markup.index(f'id="{marker}"') for marker in markers]
+        return positions == sorted(positions)
+
+    decision_tab = html.split('id="dashboard-tab-decision"', maxsplit=1)[1]
+    assert decision_tab.split("</button>", maxsplit=1)[0].endswith(">기록")
+    assert 'id="decision-timeline-list"' not in html
+    assert ordered(
+        html,
+        (
+            "dashboard-panel-replay",
+            "replay-records-open",
+            "selected-run-chart",
+            "event-type-summary",
+            "dashboard-panel-evidence",
+        ),
+    )
+    evidence = html.split('id="dashboard-panel-evidence"', maxsplit=1)[1]
+    evidence = evidence.split('id="dashboard-panel-decision"', maxsplit=1)[0]
+    assert ordered(
+        evidence,
+        (
+            "provenance-count",
+            "provenance-status",
+            "provenance-retention-state",
+            "evidence-archive-state",
+            "provenance-list",
+            "evidence-list",
+        ),
+    )
+    assert headers(evidence.split('id="provenance-region"', maxsplit=1)[1]) == [
+        "관측 시각 (KST)",
+        "관측 내용",
+        "대상·프로세스",
+        "출처",
+        "검증 상태",
+        "상세",
+    ]
+    assert headers(evidence.split('id="evidence-region"', maxsplit=1)[1]) == [
+        "관측 시각 (KST)",
+        "관측 내용",
+        "대상",
+        "출처 계층 · 채널",
+        "연결 Event",
+        "상세",
+    ]
+    assert ">Evidence ID</th>" not in evidence
+    records = html.split('id="dashboard-panel-decision"', maxsplit=1)[1]
+    assert ordered(
+        records, ("decision-history-list", "workflow-records-list", "dashboard-panel-workflow")
+    )
+    workflow = html.split('id="dashboard-panel-workflow"', maxsplit=1)[1]
+    assert ordered(
+        workflow,
+        (
+            "workflow-heading",
+            "workflow-detail-timeline",
+            "workflow-task-heading",
+            "workflow-next",
+            "workflow-compose",
+            "kisa-panel",
+            "workflow-history",
+            "workflow-dev-tools",
+            "workflow-synthetic-consent",
+        ),
+    )
+    # Task 7-S: system status moved above the list, so it no longer follows the workflow panel.
+    assert html.index('id="system-heading"') < html.index('id="dashboard-panel-workflow"')
+    for response in modules:
+        assert response.status_code == 200
+        media_type = response.headers["content-type"].split(";", maxsplit=1)[0].strip()
+        assert media_type in JAVASCRIPT_MEDIA_TYPES
+    assert database_connection_attempts == []
 
 
 def test_processing_observation_shell_exposes_true_scope_without_database_access(
@@ -279,7 +430,7 @@ def test_processing_observation_shell_exposes_true_scope_without_database_access
     html = client.get("/dashboard").text
 
     # Then
-    assert '<h3 id="processing-observation-heading">최근 처리 관측</h3>' in html
+    assert '<h4 id="processing-observation-heading">최근 처리 관측</h4>' in html
     assert '<strong id="processing-observation-state">조회 중</strong>' in html
     assert '<time id="processing-observation-time">관측 시각 조회 중</time>' in html
     assert 'aria-describedby="processing-observation-details telemetry-throughput-status"' in html
@@ -287,13 +438,14 @@ def test_processing_observation_shell_exposes_true_scope_without_database_access
         '<strong id="insight-bottleneck-state" role="status" aria-live="polite" '
         'aria-atomic="true">비교 대상 없음</strong>' in html
     )
-    assert 'id="insight-bottleneck-refresh"' in html
+    # The help disclosure (record list, manual re-query, long definitions) was removed on request.
+    assert 'id="insight-bottleneck-refresh"' not in html
     assert '<strong id="insight-sla-state">기준 미설정</strong>' in html
     assert '<strong id="insight-queue-state">미계측</strong>' in html
     assert "최신 이벤트 수신" not in html
-    assert "Event 최초 수신 시각이나 시스템 가동 여부가 아닙니다" in html
-    assert "SQS 큐 깊이가 아닙니다" in html
-    assert "E2E SLA로 사용하지 않습니다" in html
+    assert "Event 최초 수신 시각이나 시스템 가동 여부가 아닙니다" not in html
+    assert "SQS 큐 깊이" in html
+    assert "E2E SLA로 사용하지 않습니다" not in html
     assert database_connection_attempts == []
 
 
@@ -356,7 +508,7 @@ def test_dashboard_run_rows_link_to_encoded_run_detail_view_paths() -> None:
     assert "buildRunDetailViewPath," in script
     assert 'const detailLink = document.createElement("a");' in script
     assert "detailLink.href = buildRunDetailViewPath(run.run_id);" in script
-    assert 'detailLink.textContent = "Run Detail";' in script
+    assert 'detailLink.textContent = "기술 상세";' in script
     assert "state.items.map((run) => createRunRow(run))" in script
     assert 'encodeURIComponent(requireIdentifier(runId, "runId"))' in contract
     assert "`/dashboard/runs/${run.run_id}`" not in script
@@ -385,8 +537,9 @@ def test_dashboard_script_fetches_independent_apis_and_polls_only_runtime() -> N
     assert "buildEventTimelineApiPath(runId, EVENT_TIMELINE_LIMIT, 0)" in script
     assert script.count('Accept: "application/json"') == 4
     assert script.count('cache: "no-store"') == 4
-    assert script.count("void loadOverview();") == 1
-    assert script.count("void loadRuns();") == 1
+    # Startup and completed-Runtime reconciliation, not a second polling loop.
+    assert script.count("void loadOverview();") == 2
+    assert script.count("void loadRuns();") == 2
     assert "startRuntimePolling();" in script
     assert 'document.getElementById("runs-status")' in script
     assert 'document.getElementById("runs-list")' in script
@@ -420,7 +573,7 @@ def test_main_refresh_is_a_named_keyboard_button_with_nonvisual_status() -> None
 
     # Then
     assert '<button id="dashboard-refresh"' in html
-    assert 'aria-label="운영 View 데이터 새로고침"' in html
+    assert 'aria-label="운영 현황 데이터 새로고침"' in html
     assert 'aria-describedby="dashboard-refresh-status"' in html
     assert 'id="dashboard-refresh-status" class="dashboard-visually-hidden" role="status"' in html
     assert 'dashboardRefreshButton.addEventListener("click", async () =>' in script
@@ -471,9 +624,16 @@ def test_dashboard_view_uses_shared_shell_and_responsive_layout() -> None:
 
     runtime_index = html.index('id="runtime-summary-heading"')
     analysis_index = html.index('id="selected-run-heading"')
-    chart_index = html.index("Fusion Score Trajectory")
+    chart_index = html.index('id="replay-chart-heading">증거 누적 점수')
     runs_index = html.index('id="runs-heading"')
-    assert runtime_index < runs_index < analysis_index < chart_index
+    # Task 7-S: system status (with its run table disclosure) sits above the list and analysis.
+    assert (
+        html.index('id="system-heading"')
+        < runtime_index
+        < runs_index
+        < analysis_index
+        < chart_index
+    )
 
 
 def test_dashboard_script_uses_contract_and_safe_dom_rendering() -> None:
@@ -507,12 +667,17 @@ def test_dashboard_script_uses_contract_and_safe_dom_rendering() -> None:
         "new Function",
     ):
         assert forbidden_api not in script
-    assert "displayValue(run.scenario_id)" in script
+    assert "displayValue(runMetadata?.scenario_id)" in script
     assert "displayValue(run.target_host)" in script
     assert "createRunTimestamp(run.start_time)" in script
     assert 'time.setAttribute("datetime", value)' in script
     assert 'time.setAttribute("title", formatRunTimestamp(value))' in script
-    assert "run.run_type" not in script
+    run_row_source = script.split("function createRunRow(", 1)[1].split(
+        "function createRunTimestamp(", 1
+    )[0]
+    assert "run.run_type" not in run_row_source
+    assert "실행 Metadata run_type:" in script
+    assert "원본 수집 라벨과 별도" in script
     assert 'document.createElement("a")' in script
     assert 'document.createElement("button")' in script
     assert 'document.createElement("tr")' in script
@@ -542,15 +707,23 @@ def test_dashboard_script_keeps_overview_runs_and_runtime_state_independent() ->
     assert 'overviewStatus.textContent = state.queryState === "success"' in script
     assert 'state.queryState === "empty"' in script
     assert "runsStatus.textContent = state.message;" in script
-    assert "runtimeSummaryStatus.textContent = state.message;" in script
-    assert 'const topMessage = state.queryState === "success" ? "" : state.message;' in script
+    # No report is stated once, by the KPI; loading and errors keep their message.
+    assert (
+        'runtimeSummaryStatus.textContent = state.queryState === "empty" ? "" : state.message;'
+        in script
+    )
+    assert (
+        'const topMessage = state.queryState === "success" || state.queryState === "empty" ? "" : state.message;'
+        in script
+    )
     assert "if (runtimeTopStatus.textContent !== topMessage)" in script
     assert "runtimeTopStatus.textContent = topMessage;" in script
     assert (
         'runtimeTopStatus.classList.toggle("dashboard-visually-hidden", state.queryState === "empty");'
         in script
     )
-    assert '? "최근 Runtime 보고 없음"' in script
+    assert "systemStatusValue.hidden = !systemStatusValue.textContent;" in script
+    assert "pipelineStageContext.hidden = !pipelineStageContext.textContent;" in script
     assert "async function loadRunDetailState(runId)" in script
     assert "async function loadFusionEngineState(runId)" in script
     assert 'resolveRunDetailQueryState(loading, { kind: "error" })' in script

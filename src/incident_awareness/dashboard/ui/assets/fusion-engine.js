@@ -13,6 +13,8 @@ import {
     displayValue,
     formatRunTimestamp,
     getDecisionPathLabel,
+    getFusionStatusLabel,
+    getHybridDecisionNotice,
     getStatusLabel,
     getWinningPathLabel,
 } from "./run-detail-contract.mjs";
@@ -74,18 +76,18 @@ function formatIdentifierList(values) {
 
 function renderFusionRuntime(run, fusion) {
     if (fusion === null) {
-        fusionRuntimeStatus.textContent = "저장된 최신 Fusion Runtime 결과가 없습니다.";
+        fusionRuntimeStatus.textContent = "저장된 최신 Fusion 실행 보고 결과가 없습니다.";
         renderFields(fusionRuntimeSummary, [
-            ["Run ID", displayValue(run.run_id)],
+            ["분석 ID", displayValue(run.run_id)],
             ["Target Host", displayValue(run.target_host)],
         ]);
         return;
     }
-    fusionRuntimeStatus.textContent = "Fusion Runtime을 불러왔습니다.";
+    fusionRuntimeStatus.textContent = "Fusion 실행 보고를 불러왔습니다.";
     renderFields(fusionRuntimeSummary, [
-        ["Run ID", displayValue(run.run_id)],
+        ["분석 ID", displayValue(run.run_id)],
         ["Target Host", displayValue(run.target_host)],
-        ["Fusion Status", getStatusLabel(fusion.fusion_status)],
+        ["Fusion Status", getFusionStatusLabel(fusion.fusion_status)],
         ["Fusion Time", formatRunTimestamp(fusion.fusion_time)],
         ["Score at Decision", displayValue(fusion.score_at_decision)],
         ["Scoring Config Version", displayValue(fusion.scoring_config_version)],
@@ -102,13 +104,13 @@ function renderFusionRuntime(run, fusion) {
 
 function renderRuntimeConfig(config) {
     if (config === null) {
-        runtimeConfigStatus.textContent = "Runtime Config Snapshot이 없습니다.";
+        runtimeConfigStatus.textContent = "실행 보고 Config 저장본이 없습니다.";
         runtimeConfigSummary.replaceChildren();
         return;
     }
-    runtimeConfigStatus.textContent = "Runtime Config Snapshot을 불러왔습니다.";
+    runtimeConfigStatus.textContent = "실행 보고 Config 저장본을 불러왔습니다.";
     renderFields(runtimeConfigSummary, [
-        ["Run ID", displayValue(config.run_id)],
+        ["분석 ID", displayValue(config.run_id)],
         ["Entity ID", displayValue(config.entity_id)],
         ["Config Version", displayValue(config.config_version)],
         ["Model Version", displayValue(config.model_version)],
@@ -126,15 +128,15 @@ function renderRuntimeConfig(config) {
 
 function renderStoppingTrace(trace) {
     if (trace === null) {
-        stoppingTraceStatus.textContent = "저장된 Stopping Trace가 없습니다.";
+        stoppingTraceStatus.textContent = "저장된 점수 기록가 없습니다.";
         stoppingTraceSummary.replaceChildren();
         return;
     }
     stoppingTraceStatus.textContent = trace.points.length === 0
-        ? "Stopping Trace point가 없습니다."
-        : `Stopping Trace point ${trace.points.length}개를 불러왔습니다.`;
+        ? "점수 기록 point가 없습니다."
+        : `점수 기록 point ${trace.points.length}개를 불러왔습니다.`;
     renderFields(stoppingTraceSummary, [
-        ["Run ID", displayValue(trace.run_id)],
+        ["분석 ID", displayValue(trace.run_id)],
         ["Entity ID", displayValue(trace.entity_id)],
         ["Scoring Config Version", displayValue(trace.scoring_config_version)],
         ["Point Count", displayValue(trace.points.length)],
@@ -143,12 +145,12 @@ function renderStoppingTrace(trace) {
 
 function renderScoreTrajectory(trace, runtimeConfig) {
     if (trace === null) {
-        fusionScoreTrajectoryStatus.textContent = "저장된 Stopping Trace가 없습니다.";
+        fusionScoreTrajectoryStatus.textContent = "저장된 점수 기록가 없습니다.";
         fusionScoreTrajectory.replaceChildren();
         return;
     }
     if (trace.points.length === 0) {
-        fusionScoreTrajectoryStatus.textContent = "Stopping Trace point가 없습니다.";
+        fusionScoreTrajectoryStatus.textContent = "점수 기록 point가 없습니다.";
         fusionScoreTrajectory.replaceChildren();
         return;
     }
@@ -159,23 +161,24 @@ function renderScoreTrajectory(trace, runtimeConfig) {
         SCORE_CHART_DIMENSIONS,
     );
     fusionScoreTrajectoryStatus.textContent = runtimeConfig === null
-        ? "Runtime Config Snapshot이 없어 threshold 기준선을 표시할 수 없습니다."
+        ? "실행 보고 Config 저장본이 없어 threshold 기준선을 표시할 수 없습니다."
         : `Score point ${model.points.length}개와 threshold 기준선을 표시합니다.`;
     fusionScoreTrajectory.replaceChildren(createScoreTrajectoryChart(model));
 }
 
 function renderDecisionTiming(decision) {
     if (decision === null) {
-        decisionTimingStatus.textContent = "Current Decision이 없습니다.";
+        decisionTimingStatus.textContent = "현재 분석 결정이 없습니다.";
         decisionTimingSummary.replaceChildren();
         return;
     }
-    decisionTimingStatus.textContent = "Current Decision timing을 불러왔습니다.";
+    decisionTimingStatus.textContent = getHybridDecisionNotice(decision)
+        ?? "현재 분석 결정 timing을 불러왔습니다.";
     renderFields(decisionTimingSummary, [
-        ["Decision ID", displayValue(decision.decision_id)],
+        ["결정 ID", displayValue(decision.decision_id)],
         ["Entity ID", displayValue(decision.entity_id)],
         ["Fast Status", getStatusLabel(decision.fast_status)],
-        ["Fusion Status", getStatusLabel(decision.fusion_status)],
+        ["Fusion Status", getFusionStatusLabel(decision.fusion_status)],
         ["Detector Time", formatRunTimestamp(decision.detector_time)],
         ["Fusion Time", formatRunTimestamp(decision.fusion_time)],
         ["기술적 판정 시각 (t_e)", formatRunTimestamp(decision.t_e)],
@@ -212,7 +215,7 @@ function createFusionEpisodeCard(episode) {
 
 function renderFusionEpisodes(fusion) {
     if (fusion === null) {
-        fusionEpisodesStatus.textContent = "Fusion Runtime이 없어 Episode를 표시할 수 없습니다.";
+        fusionEpisodesStatus.textContent = "Fusion 실행 보고이 없어 Episode를 표시할 수 없습니다.";
         fusionEpisodesList.replaceChildren();
         return;
     }
@@ -264,7 +267,7 @@ function renderFusionEngineState(state) {
 function renderRunDetailNavigation(runId) {
     const link = document.createElement("a");
     link.href = buildRunDetailViewPath(runId);
-    link.textContent = "Run Detail로 돌아가기";
+    link.textContent = "분석 상세로 돌아가기";
     runDetailBackNavigation.replaceChildren(link);
 }
 

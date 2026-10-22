@@ -1,5 +1,5 @@
 // Dashboard UI contract tests use Node's built-in test runner only.
-// Run with: node --test tests/dashboard/ui/test_dashboard_contract.mjs
+// 분석 with: node --test tests/dashboard/ui/test_dashboard_contract.mjs
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -10,6 +10,7 @@ import {
     RUN_SEARCH_FIELDS,
     SELECTED_RUNTIME_RECHECK_POLL_THRESHOLDS,
     buildPipelineStagePresentation,
+    buildStoredFusionContext,
     canRefreshSelectedAnalysis,
     createSelectedRuntimeTracking,
     filterRunsBySearch,
@@ -39,8 +40,28 @@ import {
     shouldApplySelectedRunResponse,
     shouldRecheckSelectedRuntimeAnalysis,
     shouldRefreshSelectedRunAnalysis,
+    shouldRefreshStoredRunIndex,
     shouldUpdateSelectedRunFailureState,
+    summarizePipelineStages,
 } from "../../../src/incident_awareness/dashboard/ui/assets/dashboard-contract.mjs";
+
+test("Stored Fusion context separates observed zero, missing Trace, decision score and provenance scopes", () => {
+    const fusion = { run_id: "R", entity_id: "H", scoring_config_version: "C", score_at_decision: null,
+        fusion_episodes: [], contributing_evidence_ids: [] };
+    const trace = { run_id: "R", entity_id: "H", scoring_config_version: "C", points: [{ score: 0 }, { score: 0.5 }] };
+    const before = JSON.stringify([fusion, trace]);
+    assert.deepEqual(buildStoredFusionContext(fusion, trace), {
+        traceMax: 0.5, decisionScore: null, episodeCount: 0, evidenceIds: [],
+    });
+    assert.equal(buildStoredFusionContext(fusion, { ...trace, points: [{ score: 0 }] }).traceMax, 0);
+    for (const altered of [null, { ...trace, run_id: "OTHER" }, { ...trace, entity_id: "OTHER" },
+        { ...trace, scoring_config_version: "OTHER" }, { ...trace, points: [] },
+        { ...trace, points: [{ score: null }] }]) {
+        assert.equal(buildStoredFusionContext(fusion, altered).traceMax, null);
+    }
+    assert.equal(buildStoredFusionContext(null, trace), null);
+    assert.equal(JSON.stringify([fusion, trace]), before);
+});
 import {
     buildFusionEngineApiPath,
 } from "../../../src/incident_awareness/dashboard/ui/assets/fusion-engine-contract.mjs";
@@ -60,7 +81,7 @@ import {
 import { timingPayload } from "./stage-timing-fixture.mjs";
 import { evidenceItem, evidencePayload } from "./evidence-fixture.mjs";
 
-test("Run Type presentation maps the persisted vocabulary with a safe fallback", () => {
+test("분석 Type presentation maps the persisted vocabulary with a safe fallback", () => {
     // Given
     const runTypes = ["attack", "normal", "future_type", null, undefined];
 
@@ -99,8 +120,8 @@ test("Overview loading has no data and a loading message", () => {
         queryState: "loading",
         totalRuns: null,
         recentRuns: [],
-        totalMessage: "Total Runs를 불러오는 중입니다.",
-        message: "Recent Runs를 불러오는 중입니다.",
+        totalMessage: "전체 분석을 불러오는 중입니다.",
+        message: "최근 분석을 불러오는 중입니다.",
     });
 });
 
@@ -129,8 +150,8 @@ test("Overview success preserves total and recent Runs without mutation", () => 
     assert.equal(state.queryState, "success");
     assert.equal(state.totalRuns, 3);
     assert.strictEqual(state.recentRuns, payload.recent_runs);
-    assert.equal(state.totalMessage, "Total Runs를 불러왔습니다.");
-    assert.equal(state.message, "Recent Runs를 불러왔습니다.");
+    assert.equal(state.totalMessage, "전체 분석을 불러왔습니다.");
+    assert.equal(state.message, "최근 분석을 불러왔습니다.");
     assert.deepEqual(payload, payloadSnapshot);
 });
 
@@ -155,15 +176,15 @@ test("Overview empty preserves the reported total and shows the empty message", 
         queryState: "empty",
         totalRuns: 0,
         recentRuns: [],
-        totalMessage: "Total Runs를 불러왔습니다.",
-        message: "최근 Run이 없습니다.",
+        totalMessage: "전체 분석을 불러왔습니다.",
+        message: "최근 분석이 없습니다.",
     });
     assert.equal(nonzeroTotal.queryState, "empty");
     assert.equal(nonzeroTotal.totalRuns, 7);
     assert.strictEqual(nonzeroTotal.recentRuns, nonzeroTotalPayload.recent_runs);
 });
 
-test("Overview error is a query failure without Pipeline or Run failure semantics", () => {
+test("Overview error is a query failure without Pipeline or 분석 failure semantics", () => {
     // Given
     const previousState = resolveOverviewQueryState(null, { kind: "loading" });
 
@@ -175,10 +196,10 @@ test("Overview error is a query failure without Pipeline or Run failure semantic
         queryState: "error",
         totalRuns: null,
         recentRuns: [],
-        totalMessage: "Total Runs를 불러오지 못했습니다.",
-        message: "Recent Runs를 불러오지 못했습니다.",
+        totalMessage: "전체 분석을 불러오지 못했습니다.",
+        message: "최근 분석을 불러오지 못했습니다.",
     });
-    assert.doesNotMatch(state.message, /Pipeline failed|Run failed/i);
+    assert.doesNotMatch(state.message, /Pipeline failed|분석 failed/i);
 });
 
 test("Overview query messages reject an unknown state", () => {
@@ -220,7 +241,7 @@ test("Overview query state rejects malformed results and payloads", () => {
     }
 });
 
-test("Run List loading has no items and a loading message", () => {
+test("분석 List loading has no items and a loading message", () => {
     // Given
     const previousState = null;
 
@@ -231,11 +252,11 @@ test("Run List loading has no items and a loading message", () => {
     assert.deepEqual(state, {
         queryState: "loading",
         items: [],
-        message: "Run 목록을 불러오는 중입니다.",
+        message: "분석 목록을 불러오는 중입니다.",
     });
 });
 
-test("Run List success preserves API order and reports the item count", () => {
+test("분석 List success preserves API order and reports the item count", () => {
     // Given
     const previousState = resolveRunListQueryState(null, { kind: "loading" });
     const payload = {
@@ -253,11 +274,11 @@ test("Run List success preserves API order and reports the item count", () => {
     assert.equal(state.queryState, "success");
     assert.strictEqual(state.items, payload.runs);
     assert.deepEqual(state.items.map((run) => run.run_id), ["RUN-2", "RUN-1"]);
-    assert.equal(state.message, "Run 2건을 불러왔습니다.");
+    assert.equal(state.message, "분석 2건을 불러왔습니다.");
     assert.deepEqual(payload, payloadSnapshot);
 });
 
-test("Run List empty returns no items and an empty message", () => {
+test("분석 List empty returns no items and an empty message", () => {
     // Given
     const previousState = resolveRunListQueryState(null, { kind: "loading" });
     const payload = { runs: [] };
@@ -269,12 +290,12 @@ test("Run List empty returns no items and an empty message", () => {
     assert.deepEqual(state, {
         queryState: "empty",
         items: [],
-        message: "표시할 Run이 없습니다.",
+        message: "표시할 분석이 없습니다.",
     });
     assert.strictEqual(state.items, payload.runs);
 });
 
-test("Run List error is a generalized query failure", () => {
+test("분석 List error is a generalized query failure", () => {
     // Given
     const previousState = resolveRunListQueryState(null, { kind: "loading" });
 
@@ -285,12 +306,12 @@ test("Run List error is a generalized query failure", () => {
     assert.deepEqual(state, {
         queryState: "error",
         items: [],
-        message: "Run 목록을 불러오지 못했습니다.",
+        message: "분석 목록을 불러오지 못했습니다.",
     });
-    assert.doesNotMatch(state.message, /Pipeline failed|Run failed/i);
+    assert.doesNotMatch(state.message, /Pipeline failed|분석 failed/i);
 });
 
-test("Overview success is preserved when Run List fails", () => {
+test("Overview success is preserved when 분석 List fails", () => {
     // Given
     const overviewLoading = resolveOverviewQueryState(null, { kind: "loading" });
     const runListLoading = resolveRunListQueryState(null, { kind: "loading" });
@@ -315,7 +336,7 @@ test("Overview success is preserved when Run List fails", () => {
     assert.deepEqual(runListState.items, []);
 });
 
-test("Run List success is preserved when Overview fails", () => {
+test("분석 List success is preserved when Overview fails", () => {
     // Given
     const overviewLoading = resolveOverviewQueryState(null, { kind: "loading" });
     const runListLoading = resolveRunListQueryState(null, { kind: "loading" });
@@ -342,7 +363,7 @@ test("Run List success is preserved when Overview fails", () => {
     assert.deepEqual(runListState.items.map((run) => run.run_id), ["RUN-2", "RUN-1"]);
 });
 
-test("Run List query state rejects malformed results and payloads", () => {
+test("분석 List query state rejects malformed results and payloads", () => {
     // Given
     const previousState = resolveRunListQueryState(null, { kind: "loading" });
     const invalidCalls = [
@@ -372,7 +393,7 @@ test("Run List query state rejects malformed results and payloads", () => {
     }
 });
 
-test("Runtime Summary loading is independent and exposes no inferred Runtime data", () => {
+test("실행 보고 Summary loading is independent and exposes no inferred 실행 보고 data", () => {
     // Given
     const previousState = null;
 
@@ -384,11 +405,11 @@ test("Runtime Summary loading is independent and exposes no inferred Runtime dat
         queryState: "loading",
         items: [],
         telemetryAvailable: false,
-        message: "Runtime 정보를 불러오는 중입니다.",
+        message: "실행 보고 정보를 불러오는 중입니다.",
     });
 });
 
-test("Runtime Summary success preserves API order and empty state", () => {
+test("실행 보고 Summary success preserves API order and empty state", () => {
     // Given
     const loading = resolveRuntimeSummaryQueryState(null, { kind: "loading" });
     const payload = {
@@ -425,17 +446,17 @@ test("Runtime Summary success preserves API order and empty state", () => {
     assert.strictEqual(success.items, payload.items);
     assert.deepEqual(success.items.map((runtime) => runtime.run_id), ["RUN-2", "RUN-1"]);
     assert.equal(success.telemetryAvailable, true);
-    assert.equal(success.message, "Runtime 2건을 불러왔습니다.");
+    assert.equal(success.message, "실행 보고 2건을 불러왔습니다.");
     assert.deepEqual(empty, {
         queryState: "empty",
         items: [],
         telemetryAvailable: true,
-        message: "표시할 Runtime 정보가 없습니다.",
+        message: "표시할 실행 보고 정보가 없습니다.",
     });
     assert.deepEqual(payload, payloadSnapshot);
 });
 
-test("Latest Runtime report uses updated_at without reordering the API response", () => {
+test("Latest 실행 보고 report uses updated_at without reordering the API response", () => {
     // Given
     const runtimeItems = [
         {
@@ -460,7 +481,7 @@ test("Latest Runtime report uses updated_at without reordering the API response"
     assert.equal(getLatestRuntimeReport([]), null);
 });
 
-test("Runtime Summary accepts null current_stage for terminal states", () => {
+test("실행 보고 Summary accepts null current_stage for terminal states", () => {
     // Given
     const payload = {
         items: [
@@ -491,7 +512,7 @@ test("Runtime Summary accepts null current_stage for terminal states", () => {
     assert.deepEqual(state.items.map((runtime) => runtime.current_stage), [null, null]);
 });
 
-test("Runtime Summary stale Running success preserves the Operations display contract", () => {
+test("실행 보고 Summary stale Running success preserves the Operations display contract", () => {
     // Given
     const staleRunning = {
         run_id: "RUN-1",
@@ -524,7 +545,7 @@ test("Runtime Summary stale Running success preserves the Operations display con
     assert.doesNotMatch(JSON.stringify(presentation), /현재 실행 중/);
 });
 
-test("Runtime Summary error retains only its own last data without claiming liveness", () => {
+test("실행 보고 Summary error retains only its own last data without claiming liveness", () => {
     // Given
     const staleRunning = {
         run_id: "RUN-1",
@@ -549,7 +570,7 @@ test("Runtime Summary error retains only its own last data without claiming live
     // Then
     assert.equal(failedQuery.queryState, "error");
     assert.strictEqual(failedQuery.items, success.items);
-    assert.equal(failedQuery.message, "Runtime 정보를 불러오지 못했습니다.");
+    assert.equal(failedQuery.message, "실행 보고 정보를 불러오지 못했습니다.");
     assert.equal(failedQuery.telemetryAvailable, false);
     assert.equal(presentation.statusLabel, "실행 중(마지막 보고)");
     assert.equal(presentation.telemetryLabel, "확인 불가 (조회 실패)");
@@ -557,7 +578,7 @@ test("Runtime Summary error retains only its own last data without claiming live
     assert.doesNotMatch(JSON.stringify(presentation), /현재 실행 중/);
 });
 
-test("Runtime Summary state rejects malformed results and payloads", () => {
+test("실행 보고 Summary state rejects malformed results and payloads", () => {
     // Given
     const loading = resolveRuntimeSummaryQueryState(null, { kind: "loading" });
     const validRuntime = {
@@ -655,7 +676,7 @@ test("Runtime Summary state rejects malformed results and payloads", () => {
     }
 });
 
-test("Pipeline stages highlight only states justified by persisted Runtime data", () => {
+test("Pipeline stages highlight only states justified by persisted 실행 보고 data", () => {
     // Given
     const running = {
         status: "running",
@@ -691,7 +712,15 @@ test("Pipeline stages highlight only states justified by persisted Runtime data"
     assert.equal(unavailableStages[2].state, "unknown");
     assert.equal(failedStages[4].state, "failed");
     assert.equal(failedStages.filter((stage) => stage.state === "completed").length, 0);
-    assert.equal(completedStages.every((stage) => stage.state === "completed"), true);
+    assert.equal(completedStages.every((stage) => stage.state === "unknown"), true);
+    // Overall completion cannot establish a path's stage history (Standalone has no Fast stage).
+    const measuredStages = buildPipelineStagePresentation(completed, true, [
+        { stage: "normalization", outcome: "completed" },
+        { stage: "fusion", outcome: "completed" },
+    ]);
+    assert.equal(measuredStages[1].state, "completed");
+    assert.equal(measuredStages[2].state, "completed");
+    assert.equal(measuredStages[3].state, "unknown");
 });
 
 test("Pipeline stages remain unknown when the selected Run has no Runtime report", () => {
@@ -715,6 +744,32 @@ test("Pipeline stages remain unknown when the selected Run has no Runtime report
             "persistence",
         ],
     );
+});
+
+test("Stage summary separates no report, unconfirmed reports and query failures without inventing completion", () => {
+    // Given
+    const none = buildPipelineStagePresentation(null, true);
+    const running = buildPipelineStagePresentation(
+        { status: "running", current_stage: "fusion", is_stale: false, execution_id: "EX-1" }, true,
+        [{ stage: "artifact_validation", outcome: "completed" }, { stage: "normalization", outcome: "completed" }],
+    );
+    const stale = buildPipelineStagePresentation({ status: "running", current_stage: "fusion", is_stale: true }, true);
+    const failed = buildPipelineStagePresentation({ status: "failed", failed_stage: "hybrid" }, true);
+
+    // When / Then
+    assert.deepEqual(summarizePipelineStages(none, { hasRuntime: false }), { text: "처리 단계 기록 없음", tone: "none" });
+    assert.deepEqual(summarizePipelineStages(none, { hasRuntime: false, unconfirmed: true }), { text: "단계 보고 확인 불가", tone: "none" });
+    assert.deepEqual(summarizePipelineStages(none, { hasRuntime: false, queryState: "loading" }), { text: "확인 중", tone: "neutral" });
+    assert.deepEqual(summarizePipelineStages(none, { hasRuntime: false, queryState: "error" }), { text: "조회 실패", tone: "error" });
+    assert.deepEqual(summarizePipelineStages(none, { hasRuntime: false, queryState: "not_ready" }), { text: "조회 미지원", tone: "none" });
+    assert.deepEqual(summarizePipelineStages(running, { hasRuntime: true, readFailed: true }), { text: "단계 계측 조회 실패", tone: "error" });
+    assert.deepEqual(summarizePipelineStages(running, { hasRuntime: true }),
+        { text: "완료 보고 2단계 · 진행 단계 보고 · 일부 단계 보고 없음", tone: "reported" });
+    assert.deepEqual(summarizePipelineStages(stale, { hasRuntime: true }), { text: "마지막 보고 오래됨 · 일부 단계 보고 없음", tone: "warning" });
+    assert.deepEqual(summarizePipelineStages(failed, { hasRuntime: true }), { text: "실패 보고 1단계 · 일부 단계 보고 없음", tone: "error" });
+    // A report whose stages are all unmeasured is not described as complete or failed.
+    assert.deepEqual(summarizePipelineStages(none, { hasRuntime: true }), { text: "완료 보고 없음", tone: "none" });
+    assert.doesNotMatch(summarizePipelineStages(running, { hasRuntime: true }).text, /\/\s*6|정상|중단/);
 });
 
 test("Stopping Trace availability distinguishes missing, empty, and stored points", () => {
@@ -1161,16 +1216,16 @@ test("Run list visibility messages separate matches, misses, and the unchanged d
     assert.equal(message("", false, "RUN-0"), "10개 중 5개 표시");
     assert.equal(message("", false, "RUN-7"), "10개 중 5개 표시 · 선택 유지: RUN-7 (접힌 목록)");
     assert.equal(message("", true, "RUN-7"), "10개 중 10개 표시");
-    assert.equal(message("RUN-7", false, "RUN-7"), "검색 결과 1건 / 조회된 Run 10건");
+    assert.equal(message("RUN-7", false, "RUN-7"), "검색 결과 1건 / 조회된 분석 10건");
     assert.equal(
         message("RUN-7", false, "RUN-2"),
-        "검색 결과 1건 / 조회된 Run 10건 · 선택 유지: RUN-2 (검색 결과 밖)",
+        "검색 결과 1건 / 조회된 분석 10건 · 선택 유지: RUN-2 (검색 결과 밖)",
     );
     assert.equal(
         message("RUN-99", false, "RUN-2"),
-        "현재 조회된 Run에서 일치하는 결과가 없습니다. · 선택 유지: RUN-2 (검색 결과 밖)",
+        "현재 조회된 분석에서 일치하는 결과가 없습니다. · 선택 유지: RUN-2 (검색 결과 밖)",
     );
-    assert.equal(message("RUN-99", false, null), "현재 조회된 Run에서 일치하는 결과가 없습니다.");
+    assert.equal(message("RUN-99", false, null), "현재 조회된 분석에서 일치하는 결과가 없습니다.");
     assert.equal(
         getRunListVisibilityMessage(resolveRunListVisibility([], "RUN", false, 5, null), null),
         "",
@@ -1493,7 +1548,7 @@ test("Missing selected Runtime is never inferred as completed or failed", () => 
     );
     assert.equal(
         failedLabel,
-        "Runtime API 조회 실패 · 조회 범위 밖 항목의 현재 상태 확인 불가",
+        "실행 보고 API 조회 실패 · 조회 범위 밖 항목의 현재 상태 확인 불가",
     );
     assert.equal(insideLabel, null);
     assert.equal(stages.every((stage) => stage.state === "unknown"), true);
@@ -1583,13 +1638,13 @@ test("Recheck messages separate Runtime API failure from leaving the query range
     assert.equal(inside, null);
     assert.equal(
         rechecking,
-        "선택한 Runtime이 최근 5건 조회 범위를 벗어나 현재 상태를 확인할 수 없습니다. "
+        "선택한 실행 보고이 최근 5건 조회 범위를 벗어나 현재 상태를 확인할 수 없습니다. "
             + "저장 결과를 제한된 간격으로 다시 확인합니다 (1/5회).",
     );
     assert.match(exhausted, /저장 결과 재확인 5회를 마쳤지만 아직 결과가 없습니다/);
     assert.match(exhausted, /결과 다시 조회 버튼으로 저장 결과를 다시 조회할 수 있습니다/);
-    assert.match(queryFailed, /^Runtime API 조회에 실패해/);
-    assert.match(queryFailed, /Runtime 조회가 복구되면 이어서 진행합니다/);
+    assert.match(queryFailed, /^실행 보고 API 조회에 실패해/);
+    assert.match(queryFailed, /실행 보고 조회가 복구되면 이어서 진행합니다/);
     for (const message of [rechecking, exhausted, queryFailed]) {
         assert.doesNotMatch(message, /실행 중입니다|완료되었습니다|실패했습니다\.$/);
     }
@@ -1815,23 +1870,24 @@ test("Dashboard selection loads both detail APIs and discards delayed responses"
     assert.match(script, /getDecisionVersionConsistency\(/);
     assert.match(script, /getSelectedAnalysisSource\(/);
     assert.match(script, /analysisState === "version_mismatch"/);
-    assert.match(script, /Decision 버전이 달라 결과를 결합하지 않았습니다/);
-    assert.match(script, /Decision ID를 비교할 수 없어 Run Detail 출처의 결과만 표시합니다/);
-    assert.match(script, /Decision ID를 비교할 수 없어 Fusion Engine 출처의 결과만 표시합니다/);
-    assert.match(script, /Fusion Engine Decision ID를 확인할 수 없어 Trace를 결합하지 않았습니다/);
-    assert.match(script, /Decision 없는 Fusion Engine 저장 결과를 단일 출처로 표시합니다/);
+    assert.match(script, /분석 결정 버전이 달라 결과를 결합하지 않았습니다/);
+    assert.match(script, /결정 ID를 비교할 수 없어 분석 상세 출처의 결과만 표시합니다/);
+    assert.match(script, /결정 ID를 비교할 수 없어 Fusion Engine 출처의 결과만 표시합니다/);
+    assert.match(script, /Fusion Engine 결정 ID를 확인할 수 없어 Trace를 결합하지 않았습니다/);
+    assert.match(script, /분석 결정 없는 Fusion Engine 저장 결과를 단일 출처로 표시합니다/);
     assert.equal(analysisLoader.match(/Promise\.all\(\[/g)?.length, 2);
     assert.doesNotMatch(analysisLoader, /while \(|for \(/);
     assert.match(script, /getStoppingTraceAvailability\(stoppingTrace\)/);
     assert.match(script, /buildScoreTrajectoryModel\(/);
     assert.match(script, /createDashboardReplayChart\(/);
-    assert.match(script, /decision\?\.t_e \?\? null/);
-    assert.match(script, /저장된 Stopping Trace가 없습니다/);
+    assert.match(script, /const chartDecisionTime = decision === null \? undefined : decision\.t_e \?\? null;/);
+    assert.match(script, /저장된 점수 기록 없음/);
     assert.match(script, /fusionResult\?\.fusion_status === "not_evaluated"/);
-    assert.match(script, /Fusion이 평가되지 않아 저장된 Trace point가 없습니다/);
-    assert.match(script, /Stopping Trace가 비어 있습니다/);
+    assert.match(script, /증거 누적 분석 미평가 · 점수 기록 없음/);
+    assert.match(script, /저장된 점수 0건/);
     assert.match(script, /fusionState\.queryState !== "success"/);
-    assert.match(script, /Runtime Config Snapshot이 없어 threshold 기준선을 표시할 수 없습니다/);
+    assert.match(script, /판정 기준 미확인 · 저장 설정 없음/);
+    assert.match(script, /createDashboardReplayRecords\(fusionResult, chartDecisionTime, presentation\.summary\)/);
     assert.match(script, /결과 저장을 기다리는 중입니다/);
 });
 
@@ -1857,7 +1913,7 @@ test("Dashboard restores Run selector focus without moving external focus", asyn
     );
 });
 
-test("Dashboard renders dense Runtime and Run tables without exposing Run Type", async () => {
+test("Dashboard keeps dense Run tables while explaining Metadata separately", async () => {
     // Given
     const scriptPath = new URL(
         "../../../src/incident_awareness/dashboard/ui/assets/dashboard.js",
@@ -1882,14 +1938,18 @@ test("Dashboard renders dense Runtime and Run tables without exposing Run Type",
     // Then
     assert.match(script, /const RUNS_ENDPOINT = "\/runs\?limit=20";/);
     assert.match(script, /state\.items\.map\(\(run\) => createRunRow\(run\)\)/);
-    assert.match(script, /displayValue\(run\.scenario_id\)/);
+    assert.match(script, /\["시나리오 ID", displayValue\(runMetadata\?\.scenario_id\)\]/);
     assert.match(script, /displayValue\(run\.target_host\)/);
     assert.match(script, /createRunTimestamp\(run\.start_time\)/);
     assert.match(script, /buildRunDetailViewPath\(run\.run_id\)/);
-    assert.doesNotMatch(script, /run\.run_type|getRunTypeLabel/);
+    const rowSource = script.slice(script.indexOf("function createRunRow("), script.indexOf("function createRunTimestamp("));
+    assert.doesNotMatch(rowSource, /run\.run_type|getRunTypeLabel/);
+    assert.match(html, /입력 유형/);
+    // The list scope disclosure was removed on request; the filter no longer points at it.
+    assert.doesNotMatch(html, /dashboard-runs-context|aria-describedby="dashboard-run-filter-scope"/);
     assert.match(html, /<table class="dashboard-table runtime-table">/);
-    assert.match(html, /<th scope="col">Run ID<\/th>\s*<th scope="col">Entity ID<\/th>/);
-    assert.match(html, /Run ID와 Entity ID 조합으로 선택/);
+    assert.match(html, /<th scope="col">분석 ID<\/th>\s*<th scope="col">Entity ID<\/th>/);
+    assert.doesNotMatch(html, /분석 ID와 Entity ID 조합으로 선택/, "The API-order explanation was removed on request");
     assert.match(html, /id="selected-run-scope"/);
     assert.match(
         html,
@@ -1897,16 +1957,18 @@ test("Dashboard renders dense Runtime and Run tables without exposing Run Type",
     );
     assert.match(script, /createTableCell\(runtime\.entity_id\)/);
     assert.match(html, /<table class="dashboard-table runs-table">/);
-    assert.match(html, /관측 시작 시각 최근순 최대 20건/);
-    assert.match(html, /최근 Runtime 조회 결과는\s+전체 실행 통계가 아닙니다/);
-    assert.match(html, /조회 완료 후 약 5초 간격으로 Runtime 상태 갱신/);
-    assert.match(html, /조회 범위 내 최신 Runtime 상태/);
-    assert.match(html, /조회 범위 내 최신 Runtime 보고/);
+    assert.doesNotMatch(html, /입력 이벤트 시작 시각 최근순 최대 20건/, "The list scope disclosure was removed on request");
+    assert.match(html, /최근 실행 보고 조회 결과는\s+전체 실행 통계가 아닙니다/);
+    assert.match(html, /조회 완료 후 약 5초 간격으로 실행 보고 상태 갱신/);
+    assert.match(html, /<p class="dashboard-kpi__label">실행 보고<\/p>/);
+    assert.match(html, /저장 분석 · 전체 <strong id="total-runs-value">/);
+    assert.doesNotMatch(html, /최근 분석 상태|최근 처리 업데이트|가동 시간<\/p>/);
     assert.match(html, /<details class="dashboard-time-note">/);
     assert.match(html, /<summary>표시 기준 및 상태 안내<\/summary>/);
     assert.match(html, /class="dashboard-monitor-grid"/);
     assert.match(html, /id="selected-run-summary"/);
-    assert.match(html, /id="selected-run-settings"/);
+    // The Threshold settings list was removed on request.
+    assert.doesNotMatch(html, /id="selected-run-settings"|Threshold 설정/);
     assert.match(html, /class="dashboard-stage-scroll"/);
     assert.match(stylesheet, /\.app-page\.dashboard-page\s*{[^}]*width: 100%;/s);
     assert.match(stylesheet, /\.app-page\.dashboard-page\s*{[^}]*max-width: 116rem;/s);
@@ -1923,18 +1985,20 @@ test("Dashboard renders dense Runtime and Run tables without exposing Run Type",
     );
     assert.match(stylesheet, /#selected-run-chart:empty\s*{[^}]*display: none;/s);
     assert.doesNotMatch(stylesheet, /minmax\(36rem, 0\.9fr\)/);
+    // Task 7-S: the run table lives in the system status disclosure above the list.
     assert.ok(
         html.indexOf('id="runtime-summary-heading"')
-        < html.indexOf('id="selected-run-heading"'),
+        < html.indexOf('id="runs-heading"'),
     );
     assert.ok(
         html.indexOf('id="selected-run-heading"')
-        < html.indexOf("Fusion Score Trajectory"),
+        < html.indexOf("증거 누적 점수"),
     );
     assert.ok(html.indexOf('id="runs-heading"') < html.indexOf('id="selected-run-heading"'));
     assert.doesNotMatch(html, />Type<|>Run Type</);
     assert.match(script, /runsStatus\.textContent = state\.message;/);
-    assert.equal(script.match(/void loadRuns\(\);/g)?.length, 1);
+    // Startup plus terminal-Runtime reconciliation; no separate Run polling loop.
+    assert.equal(script.match(/void loadRuns\(\);/g)?.length, 2);
     assert.doesNotMatch(script, /\.sort\(|\.toSorted\(|\.reverse\(|\.toReversed\(/);
 });
 
@@ -1952,10 +2016,10 @@ const RUNNING_LABEL = getRuntimeStatePresentation(
     true,
 ).statusLabel;
 const COMPLETED_LABEL = getRuntimeStatePresentation({ status: "completed" }, true).statusLabel;
-const WAITING_STATUS = "마지막 Runtime 보고는 실행 중이며 결과 저장을 기다리는 중입니다.";
+const WAITING_STATUS = "마지막 실행 보고는 실행 중이며 결과 저장을 기다리는 중입니다.";
 const STORED_STATUS = "저장된 분석 결과를 불러왔습니다.";
 const RECHECK_LOADING_STATUS = (
-    "조회 범위를 벗어난 Runtime의 저장 분석 결과를 다시 확인하는 중입니다."
+    "조회 범위를 벗어난 실행 보고의 저장 분석 결과를 다시 확인하는 중입니다."
 );
 let dashboardHarnessCount = 0;
 
@@ -2024,6 +2088,7 @@ class FakeElement extends FakeNode {
 
     setAttribute(name, value) {
         this.attributes.set(name, String(value));
+        if (name === "class") this.classList.add(...String(value).split(" "));
     }
 
     getAttribute(name) {
@@ -2079,13 +2144,23 @@ class FakeElement extends FakeNode {
         return false;
     }
 
+    before(sibling) {
+        const index = this.parentNode.childNodes.indexOf(this);
+        sibling.parentNode = this.parentNode;
+        this.parentNode.childNodes.splice(index, 0, sibling);
+    }
+
+    querySelector(selector) {
+        return this.querySelectorAll(selector)[0] ?? null;
+    }
+
     querySelectorAll(selector) {
-        assert.match(selector, /^\.[\w-]+$/);
+        assert.match(selector, /^\.?[\w-]+$/);
         const className = selector.slice(1);
         const matches = [];
         const visit = (element) => {
             for (const child of element.childNodes) {
-                if (child.classList.contains(className)) {
+                if (selector.startsWith(".") ? child.classList.contains(className) : child.tagName === selector) {
                     matches.push(child);
                 }
                 visit(child);
@@ -2098,13 +2173,13 @@ class FakeElement extends FakeNode {
 
 // extraElementIds adds DOM owned by imported modules (e.g. the Stage Timing card), which the
 // dashboard.js id scan below cannot see; without them those modules stay inert.
-async function startDashboardHarness({ extraElementIds = [] } = {}) {
+async function startDashboardHarness({ extraElementIds = [], autoFollow = false } = {}) {
     const source = await readFile(new URL("dashboard.js", DASHBOARD_ASSETS_URL), "utf8");
     const document = {
         activeElement: null,
         elements: new Map(),
-        createElement: () => new FakeElement(document),
-        createElementNS: () => new FakeElement(document),
+        createElement: (tagName) => Object.assign(new FakeElement(document), { tagName }),
+        createElementNS: (_namespace, tagName) => Object.assign(new FakeElement(document), { tagName }),
         getElementById: (id) => document.elements.get(id) ?? null,
     };
     for (const [, id] of source.matchAll(/document\.getElementById\("([^"]+)"\)/g)) {
@@ -2113,8 +2188,27 @@ async function startDashboardHarness({ extraElementIds = [] } = {}) {
     for (const id of extraElementIds) {
         document.elements.set(id, new FakeElement(document));
     }
+    // Existing selection scenarios exercise explicit Auto Off. New follow scenarios use On.
+    document.getElementById("pipeline-auto-follow").checked = autoFollow;
 
     const requests = [];
+    const persistedRuntime = new Map();
+    let runtimeReady = false, runtimeError = false;
+    const settleContexts = () => {
+        for (const request of requests.filter(r => !r.settled && r.url.startsWith("/operations/runtime-context?"))) {
+            const query = new URL(request.url, "http://test.invalid").searchParams;
+            const all = [...persistedRuntime.values()].sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
+            const pipeline = all.find(r => r.status === "running") ?? all[0] ?? null;
+            request.settled = true;
+            request.resolve({ ok: !runtimeError, status: runtimeError ? 503 : 200, json: async () => ({
+                schema_version: "dashboard_runtime_context_v1", generated_at: "2026-10-09T00:03:00Z", pipeline,
+                scopes: query.getAll("run_id").map((run_id, index) => {
+                    const entity_id = query.getAll("entity_id")[index];
+                    return { run_id, entity_id, runtime: persistedRuntime.get(JSON.stringify([run_id, entity_id])) ?? null };
+                }),
+            }) });
+        }
+    };
     const timers = new Map();
     const windowListeners = new Map();
     let nextTimerId = 1;
@@ -2150,6 +2244,11 @@ async function startDashboardHarness({ extraElementIds = [] } = {}) {
                 rejectAborted();
             }
             requests.push(request);
+            if (runtimeReady && request.url.startsWith("/operations/runtime-context?")) {
+                queueMicrotask(() => {
+                    if (!requests.some(r => !r.settled && r.url === RUNTIME_API_PATH)) settleContexts();
+                });
+            }
         }),
         setTimeout: (callback, delay) => {
             const id = nextTimerId;
@@ -2167,6 +2266,7 @@ async function startDashboardHarness({ extraElementIds = [] } = {}) {
         ),
     );
     const restore = () => {
+        delete globalThis.__dashboardWorkflowOptions;
         for (const [name, descriptor] of originalGlobals) {
             if (descriptor === undefined) {
                 delete globalThis[name];
@@ -2188,7 +2288,7 @@ async function startDashboardHarness({ extraElementIds = [] } = {}) {
         url,
         status,
         body,
-        { newest = false, deferJson = false } = {},
+        { newest = false, deferJson = false, ignoreBodyAbort = false } = {},
     ) => {
         const pending = requests.filter(
             (candidate) => !candidate.settled && candidate.url === url,
@@ -2196,6 +2296,11 @@ async function startDashboardHarness({ extraElementIds = [] } = {}) {
         const request = newest ? pending.at(-1) : pending[0];
         assert.ok(request, `Expected a pending request for ${url}`);
         request.settled = true;
+        if (url === RUNTIME_API_PATH) {
+            runtimeReady = true; runtimeError = status !== 200;
+            if (status === 200) for (const item of body.items) persistedRuntime.set(JSON.stringify([item.run_id, item.entity_id]), item);
+            settleContexts();
+        }
         request.resolve({
             ok: status >= 200 && status < 300,
             status,
@@ -2204,6 +2309,11 @@ async function startDashboardHarness({ extraElementIds = [] } = {}) {
                     return body;
                 }
                 return new Promise((resolve, reject) => {
+                    request.jsonResolve = resolve;
+                    // ignoreBodyAbort models a body that still arrives after abort().
+                    if (ignoreBodyAbort) {
+                        return;
+                    }
                     if (request.options.signal?.aborted) {
                         reject(new Error("Response body aborted"));
                         return;
@@ -2250,6 +2360,13 @@ async function startDashboardHarness({ extraElementIds = [] } = {}) {
     const isolatedSource = source.replace(
         'import { createDashboardTelemetryController } from "./dashboard-telemetry-controller.mjs";',
         "const createDashboardTelemetryController = () => ({ start() {}, stop() {}, async poll() { return true; } });",
+    ).replace(
+        'import { createHumanWorkflowController } from "./dashboard-workflow-controller.mjs";',
+        // Task 6: the stub keeps its callbacks so a test can publish already-loaded alerts.
+        "const createHumanWorkflowController = (_document, options) => { globalThis.__dashboardWorkflowOptions = options; return ({ async select() {}, savedSelection() { return null; } }); };",
+    ).replace(
+        'import { createKisaFormController } from "./dashboard-kisa-controller.mjs";',
+        "const createKisaFormController = () => ({ async setDraft() {} });",
     );
     assert.notEqual(isolatedSource, source, "Expected Dashboard Telemetry import");
     const moduleSource = isolatedSource.replaceAll(
@@ -2282,6 +2399,8 @@ async function startDashboardHarness({ extraElementIds = [] } = {}) {
         ).length,
         requestCount: (url) => requests.filter((request) => request.url === url).length,
         requestsFor: (url) => requests.filter((request) => request.url === url),
+        allRequests: () => requests.map((request) => ({ url: request.url, method: request.options.method ?? "GET" })),
+        workflowOptions: () => globalThis.__dashboardWorkflowOptions,
         totalRequests: () => requests.length,
         // Types into the header Run search the way a browser reports it: value, then "input".
         typeSearch(value) {
@@ -2371,6 +2490,28 @@ function runtimeReport(runId, entityId, status, currentStage) {
     };
 }
 
+test("Auto On follows latest Pipeline independently of past incident selection and observed failure", async (t) => {
+    // Given
+    const latest = runtimeReport("RUN-NEW", "WIN-N", "running", "persistence");
+    const previous = runtimeReport("RUN-OLD", "WIN-O", "completed", null);
+    previous.updated_at = "2026-10-09T00:00:00Z";
+    const harness = await startDashboardWithRuntime([latest, previous],
+        [runListItem("RUN-NEW", "WIN-N"), runListItem("RUN-OLD", "WIN-O")], {autoFollow:true});
+    t.after(harness.restore);
+    // When
+    harness.runButton("RUN-OLD").click();await harness.flush();
+    // Then
+    assert.match(harness.text("pipeline-stage-context"), /분석 RUN-NEW · Entity WIN-N/);
+    assert.equal(harness.text("selected-run-id"), "RUN-OLD");
+    assert.equal(harness.stageStates()[5], "current");
+    assert.ok(harness.stageStates().slice(0,5).every(s=>s==="unknown"));
+    // When / Then: terminal failure is actual saved Runtime, not synthesized transitions.
+    await harness.poll([{...latest,status:"failed",current_stage:null,failed_stage:"persistence",has_error:true},previous]);
+    assert.match(harness.text("pipeline-stage-context"), /RUN-NEW.*실패/);
+    assert.equal(harness.stageStates()[5], "failed");
+    assert.equal(harness.text("selected-run-id"), "RUN-OLD");
+});
+
 function runListItem(runId, targetHost) {
     return {
         run_id: runId,
@@ -2431,6 +2572,84 @@ async function startDashboardWithRuntime(runtimeItems, runs, options = {}) {
     return harness;
 }
 
+test("Stored Run index reconciles first-seen completion without guessing missing/failed executions", () => {
+    // Given
+    const completed = runtimeReport("RUN-A", "WIN-A", "completed", null);
+    const anotherExecution = { ...completed, execution_id: "another-execution" };
+    // When / Then
+    assert.equal(shouldRefreshStoredRunIndex([], [completed]), true);
+    assert.equal(shouldRefreshStoredRunIndex([completed], [completed]), false);
+    assert.equal(shouldRefreshStoredRunIndex([completed], [anotherExecution]), true);
+    assert.equal(shouldRefreshStoredRunIndex([completed], []), false);
+    assert.equal(shouldRefreshStoredRunIndex([], [runtimeReport("RUN-B", "WIN-B", "failed", null)]), false);
+});
+
+test("A fast new completed Run refreshes the list once without replacing the selected Run", async (t) => {
+    // Given
+    const old = runListItem("RUN-A", "WIN-A");
+    const added = runListItem("RUN-B", "WIN-B");
+    const harness = await startDashboardWithRuntime([], [old]);
+    t.after(harness.restore);
+    await harness.respondAnalysis("RUN-A", storedDetail("RUN-A", "WIN-A"), storedFusion("RUN-A", "WIN-A"));
+    const focus = harness.document.getElementById("dashboard-run-search");
+    focus.focus();
+    // When: RUN-B started and finished entirely between two 5-second polls.
+    const completed = runtimeReport("RUN-B", "WIN-B", "completed", null);
+    await harness.poll([completed]);
+    assert.equal(harness.requestCount("/runs?limit=20"), 2);
+    assert.equal(harness.requestCount("/overview"), 2);
+    await harness.respond("/runs?limit=20", 200, { runs: [added, old] });
+    await harness.respond("/overview", 200, { total_runs: 2, recent_runs: [added, old] });
+    await harness.poll([completed]);
+    // Then
+    assert.equal(harness.text("selected-run-id"), "RUN-A");
+    assert.equal(harness.requestCount("/runs?limit=20"), 2);
+    assert.deepEqual(harness.runRows().map(row => row.runId), ["RUN-B", "RUN-A"]);
+    assert.equal(harness.document.activeElement, focus);
+});
+
+test("Completion queues a fresh Run index after an older in-flight list snapshot", async (t) => {
+    // Given
+    const harness = await startDashboardHarness();
+    t.after(harness.restore);
+    await harness.respond(RUNTIME_API_PATH, 200, { items: [] });
+    // When: the first list/overview reads still represent the pre-commit state.
+    await harness.poll([runtimeReport("RUN-NEW", "WIN-A", "completed", null)]);
+    assert.equal(harness.requestCount("/runs?limit=20"), 1);
+    await harness.respond("/overview", 200, { total_runs: 0, recent_runs: [] });
+    await harness.respond("/runs?limit=20", 200, { runs: [] });
+    // Then: one post-completion read must replace that old snapshot.
+    assert.equal(harness.requestCount("/runs?limit=20"), 2);
+    assert.equal(harness.requestCount("/overview"), 2);
+    const added = runListItem("RUN-NEW", "WIN-A");
+    await harness.respond("/overview", 200, { total_runs: 1, recent_runs: [added] });
+    await harness.respond("/runs?limit=20", 200, { runs: [added] });
+    assert.equal(harness.runRows()[0].runId, "RUN-NEW");
+});
+
+test("Selected completion invalidates the open Evidence cache but keeps its tab and focus", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime(
+        [runtimeReport("RUN-A", "WIN-A", "running", "normalization")], [],
+        { extraElementIds: EVIDENCE_ELEMENT_IDS },
+    );
+    t.after(harness.restore);
+    await harness.respondAnalysis("RUN-A", notFound(), notFound());
+    const tab = harness.document.getElementById("dashboard-tab-evidence");
+    tab.click(); tab.focus();
+    await harness.flush();
+    const path = evidencePath("RUN-A");
+    await harness.respond(path, 200, evidencePayload({ runId: "RUN-A", availability: "no_archive" }));
+    // When
+    await harness.poll([runtimeReport("RUN-A", "WIN-A", "completed", null)]);
+    // Then
+    assert.equal(harness.requestCount(path), 2);
+    assert.equal(tab.getAttribute("aria-selected"), "true");
+    assert.equal(harness.document.activeElement, tab);
+    await harness.respond(path, 200, evidencePayload({ runId: "RUN-A", availability: "no_archive" }));
+    assert.equal(harness.text("evidence-status"), "", "no_archive has no status sentence");
+});
+
 test("Main refresh joins startup reads and ignores repeated activation without moving focus", async (t) => {
     // Given: the first three API reads are still pending.
     const harness = await startDashboardHarness();
@@ -2454,6 +2673,23 @@ test("Main refresh joins startup reads and ignores repeated activation without m
     assert.match(harness.text("dashboard-refresh-status"), /화면 재조회 완료/);
     assert.equal(harness.document.activeElement, button);
     assert.equal(harness.timerCount(5000), 1);
+});
+
+test("Empty Run overview keeps its accessible announcement without a duplicate layout row", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], []);
+    t.after(harness.restore);
+    const status = harness.document.getElementById("overview-status");
+    // When / Then
+    assert.equal(harness.text("total-runs-value"), "0");
+    assert.equal(status.classList.contains("dashboard-visually-hidden"), true);
+    assert.ok(status.textContent.length > 0);
+    harness.document.getElementById("dashboard-refresh").click();
+    await harness.respond("/overview", 503, {});
+    await harness.respond("/runs?limit=20", 200, { runs: [] });
+    await harness.respond(RUNTIME_API_PATH, 200, { items: [] });
+    await harness.flush();
+    assert.equal(status.classList.contains("dashboard-visually-hidden"), false);
 });
 
 test("Main refresh rereads fetched scope while retaining query, type, selection and closed Evidence", async (t) => {
@@ -2584,6 +2820,9 @@ test("Evidence tab reads the selected Run lazily, once per Run, and never on Run
     harness.runButton("RUN-B").click();
     await harness.flush();
     const clearedOnRunChange = list.children.length;
+    assert.equal(harness.document.getElementById("dashboard-tab-summary").getAttribute("aria-selected"), "true");
+    tab.click();
+    await harness.flush();
     await harness.respond(evidencePath("RUN-B"), 200, evidencePayload({ runId: "RUN-B", availability: "no_archive" }));
     await harness.respondAnalysis("RUN-B", notFound(), notFound());
     harness.document.getElementById("selected-run-refresh").click();
@@ -2592,11 +2831,11 @@ test("Evidence tab reads the selected Run lazily, once per Run, and never on Run
     // Then
     assert.equal(beforeTab, 0);
     assert.equal(shown.rows, 1);
-    assert.match(shown.status, /^Evidence 조회 완료 · 검증된 1건/);
+    assert.match(shown.status, /^증거 조회 완료 · 검증된 1건/);
     assert.equal(shown.focused, true);
     assert.equal(readsForRunA, 1);
     assert.equal(clearedOnRunChange, 0);
-    assert.equal(status.textContent, "선택한 Run의 Evidence 아카이브를 조회하는 중입니다.");
+    assert.equal(status.textContent, "선택한 분석의 증거 아카이브를 조회하는 중입니다.");
     assert.equal(harness.requestCount(evidencePath("RUN-B")), 2);
     assert.equal(harness.timerCount(RUNTIME_POLL_DELAY_MS), 1);
 });
@@ -2696,9 +2935,9 @@ test("Stage Timing follows Run, Entity and Run-only selection without mixing or 
     assert.match(afterEntityChange.scope, /Entity WIN-B · Execution RUN-A-WIN-B/);
     assert.doesNotMatch(afterEntityChange.scope, /WIN-A/);
     assert.equal(afterEntityChange.rows, 6);
-    assert.deepEqual(runOnlyWithRuntime, { label: "비교 대상 없음", caption: "Runtime 선택 필요", rows: 0 });
-    assert.equal(runOnlyWithoutRuntime, "Runtime 보고 없음");
-    assert.deepEqual(afterRuntimeFailure, { label: "비교 대상 없음", caption: "Runtime 조회 실패" });
+    assert.deepEqual(runOnlyWithRuntime, { label: "비교 대상 없음", caption: "실행 보고 선택 필요", rows: 0 });
+    assert.equal(runOnlyWithoutRuntime, "실행 보고 없음");
+    assert.deepEqual(afterRuntimeFailure, { label: "비교 대상 없음", caption: "실행 보고 조회 실패" });
     assert.equal(harness.requestCount(stageTimingPath("RUN-C-WIN-D")), 0);
     assert.equal(harness.requestCount(stageTimingPath(winA.executionId)), 1);
 });
@@ -2710,28 +2949,29 @@ test("Pipeline context keeps the same element across status, Entity, query-error
     const harness = await startDashboardWithRuntime([first, second], [runListItem("RUN-A", "WIN-A")]);
     t.after(harness.restore);
     const context = harness.document.getElementById("pipeline-stage-context");
-    assert.equal(context.textContent, `RUN-A · WIN-A · ${RUNNING_LABEL}`);
+    assert.equal(context.textContent, `선택 항목 · RUN-A · WIN-A · ${RUNNING_LABEL}`);
 
     // When / Then
     await harness.poll([runtimeReport("RUN-A", "WIN-A", "completed", null), second]);
     assert.strictEqual(harness.document.getElementById("pipeline-stage-context"), context);
-    assert.equal(context.textContent, `RUN-A · WIN-A · ${COMPLETED_LABEL}`);
-    assert.deepEqual(harness.stageStates(), Array(6).fill("completed"));
+    assert.equal(context.textContent, `선택 항목 · RUN-A · WIN-A · ${COMPLETED_LABEL}`);
+    assert.deepEqual(harness.stageStates(), Array(6).fill("unknown"));
     harness.runtimeButton("RUN-A", "WIN-B").click();
     await harness.flush();
     assert.strictEqual(harness.document.getElementById("pipeline-stage-context"), context);
-    assert.equal(context.textContent, `RUN-A · WIN-B · ${RUNNING_LABEL}`);
+    assert.equal(context.textContent, `선택 항목 · RUN-A · WIN-B · ${RUNNING_LABEL}`);
     assert.deepEqual(harness.stageStates(), ["unknown", "unknown", "unknown", "unknown", "current", "unknown"]);
     await harness.pollFailure();
     assert.strictEqual(harness.document.getElementById("pipeline-stage-context"), context);
-    assert.equal(context.textContent, `RUN-A · WIN-B · ${RUNNING_LABEL}`);
+    assert.equal(context.textContent, `선택 항목 · RUN-A · WIN-B · ${RUNNING_LABEL}`);
     assert.match(harness.text("runtime-top-status"), /불러오지 못했습니다/);
     await harness.poll(otherRunningReports());
     assert.strictEqual(harness.document.getElementById("pipeline-stage-context"), context);
-    assert.match(context.textContent, /RUN-A · WIN-B · 최근 5건 조회 범위 밖/);
+    assert.match(context.textContent, /^선택 항목 · RUN-A · WIN-B · 최근 5건 조회 범위 밖/);
     assert.equal(context.hidden, false);
     assert.equal(harness.stageStates().length, 6);
-    assert.equal(harness.text("pipeline-status-note"), "완료 보고 부족");
+    // Outside the query range the report may still exist, so the summary never says "no report".
+    assert.equal(harness.text("pipeline-status-note"), "단계 보고 확인 불가");
 });
 
 test("Recent Runs defaults to five rows and explicitly expands all twenty without refetching", async (t) => {
@@ -2904,13 +3144,13 @@ test("Pipeline SVG icons preserve six stage identities independently of reported
     assert.equal(harness.stageStates()[4], "failed");
     assert.equal(harness.stageStates().includes("completed"), false);
     await harness.poll([runtimeReport("RUN-A", "WIN-A", "completed", null)]);
-    assert.deepEqual(harness.stageStates(), Array(6).fill("completed"));
+    assert.deepEqual(harness.stageStates(), Array(6).fill("unknown"));
     assert.deepEqual(icons(), expectedIcons);
     assert.equal(new Set(icons()).size, 6);
     assert.match(harness.text("pipeline-stage-list"), /완료/);
 });
 
-test("Dashboard opens the Replay panel and switches detail tabs without changing the selection", async (t) => {
+test("Dashboard opens the case summary and switches detail tabs without changing the selection", async (t) => {
     // Given
     const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
     t.after(harness.restore);
@@ -2937,8 +3177,8 @@ test("Dashboard opens the Replay panel and switches detail tabs without changing
 
     // Then
     assert.deepEqual(defaultStates, [
-        { tab: "false", hidden: true },
         { tab: "true", hidden: false },
+        { tab: "false", hidden: true },
         { tab: "false", hidden: true },
         { tab: "false", hidden: true },
         { tab: "false", hidden: true },
@@ -2971,7 +3211,7 @@ test("Recent Runs reveals the focused detail link without selecting or refetchin
     const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
     t.after(harness.restore);
     const row = harness.document.getElementById("runs-list").children[0];
-    const link = row.children[6].children[0];
+    const link = row.querySelectorAll(".dashboard-run-detail-link")[0];
     const selected = harness.text("selected-run-id");
     const reads = harness.requestCount("/runs?limit=20");
 
@@ -2993,7 +3233,7 @@ function recentRunRow(harness, runId) {
 }
 
 function recentRunDetailLink(harness, runId) {
-    return recentRunRow(harness, runId).children[6].children[0];
+    return recentRunRow(harness, runId).querySelectorAll(".dashboard-run-detail-link")[0];
 }
 
 test("Runtime polling restores Run Detail link focus to the same Run without scrolling", async (t) => {
@@ -3022,7 +3262,7 @@ test("Runtime polling restores Run Detail link focus to the same Run without scr
     assert.strictEqual(secondRestore, recentRunDetailLink(harness, "RUN-6"));
     for (const restored of [firstRestore, secondRestore]) {
         assert.equal(restored.href, buildRunDetailViewPath("RUN-6"));
-        assert.equal(restored.textContent, "Run Detail");
+        assert.equal(restored.textContent, "기술 상세");
         assert.deepEqual(restored.focusOptions, { preventScroll: true });
         assert.equal(restored.scrollIntoViewCalls, undefined);
     }
@@ -3091,7 +3331,7 @@ test("Runtime polling does not pull focus back to a Run row after the user moved
     assert.strictEqual(afterTabMove, decisionTab);
     assert.equal(afterBlur, null);
     assert.strictEqual(afterRowMove, harness.runButton("RUN-C"));
-    assert.notEqual(afterRowMove.textContent, "Run Detail");
+    assert.notEqual(afterRowMove.textContent, "분석 상세");
 });
 
 function visibleRunIds(harness) {
@@ -3135,7 +3375,7 @@ test("Run type filter uses persisted run_type and combines with the unchanged se
     assert.deepEqual(combined.visible, [false, true, false, false]);
     assert.equal(attack.toggleHidden, true);
     assert.equal(attack.selectedHidden, true);
-    assert.match(getRunListVisibilityMessage(attack, "RUN-B"), /필터 결과 2건.*조회된 Run 4건.*유형 attack.*최대 20건.*선택 유지/);
+    assert.match(getRunListVisibilityMessage(attack, "RUN-B"), /필터 결과 2건.*조회된 분석 4건.*유형 attack.*최대 20건.*선택 유지/);
     assert.equal(cleared.visibleCount, 4);
     assert.equal(JSON.stringify(runs), snapshot);
     assert.throws(() => resolveRunListVisibility(runs, "", false, 5, null, "att"), RangeError);
@@ -3259,7 +3499,7 @@ test("Run search filters fetched rows in place without selecting, fetching, or r
     assert.deepEqual(exact, {
         ids: ["RUN-7"],
         toggleHidden: true,
-        status: "검색 결과 1건 / 조회된 Run 10건 · 선택 유지: RUN-0 (검색 결과 밖)",
+        status: "검색 결과 1건 / 조회된 분석 10건 · 선택 유지: RUN-0 (검색 결과 밖)",
     });
     assert.deepEqual(hiddenRows, ["RUN-5", "RUN-6", "RUN-7", "RUN-8", "RUN-9"]);
     assert.deepEqual(cleared, {
@@ -3273,7 +3513,7 @@ test("Run search filters fetched rows in place without selecting, fetching, or r
     assert.equal(harness.runButton("RUN-0").getAttribute("aria-pressed"), "true");
 });
 
-test("Run search keeps the selected Run, opens filtered Runs, and moves in full-list order", async (t) => {
+test("Run search preserves selection and limits previous/next to the filtered list", async (t) => {
     // Given
     const harness = await startDashboardWithRuntime([], tenSearchRuns());
     t.after(harness.restore);
@@ -3311,16 +3551,16 @@ test("Run search keeps the selected Run, opens filtered Runs, and moves in full-
         pressed: "true",
         detailHref: buildRunDetailViewPath("RUN-7"),
         detailHidden: false,
-        status: "검색 결과 1건 / 조회된 Run 10건 · 선택 유지: RUN-7 (검색 결과 밖)",
+        status: "검색 결과 1건 / 조회된 분석 10건 · 선택 유지: RUN-7 (검색 결과 밖)",
         requests: 0,
     });
-    assert.deepEqual(afterPrevious, { selected: "RUN-8", ids: ["RUN-2"] });
+    assert.deepEqual(afterPrevious, { selected: "RUN-7", ids: ["RUN-2"] });
     assert.equal(afterNext, "RUN-7");
     assert.equal(harness.text("selected-run-id"), "RUN-2");
     assert.equal(harness.runButton("RUN-2").getAttribute("aria-pressed"), "true");
     assert.equal(harness.requestCount(buildRunDetailApiPath("RUN-2")), 1);
     assert.deepEqual(visibleRunIds(harness), ["RUN-2"]);
-    assert.equal(harness.text("runs-visibility-status"), "검색 결과 1건 / 조회된 Run 10건");
+    assert.equal(harness.text("runs-visibility-status"), "검색 결과 1건 / 조회된 분석 10건");
 });
 
 test("Clearing the Run search restores the collapsed or expanded list chosen before", async (t) => {
@@ -3361,7 +3601,7 @@ test("Clearing the Run search restores the collapsed or expanded list chosen bef
         ids: 5,
         toggleHidden: false,
         expanded: "false",
-        label: "전체 10개 Run 펼치기",
+        label: "전체 10개 분석 펼치기",
     });
     assert.deepEqual(searchingExpanded, { ids: ["RUN-3"], toggleHidden: true, expanded: "true" });
     assert.deepEqual(restoredExpanded, {
@@ -3407,8 +3647,7 @@ test("Runtime polling during a Run search keeps the input, filter, selection, an
         statusWrites: status.textContentWrites - statusWrites,
         selected: harness.text("selected-run-id"),
         scrolled: input.scrollIntoViewCalls,
-        runtimeStatusUpdated: harness.runButton("RUN-6").parentNode.parentNode.parentNode
-            .children[2].textContent.startsWith(RUNNING_LABEL),
+        runtimeStatusUpdated: recentRunRow(harness, "RUN-6").children[3].textContent.includes(RUNNING_LABEL),
     };
     const link = recentRunDetailLink(harness, "RUN-6");
     link.focus();
@@ -3454,13 +3693,13 @@ test("Run search distinguishes no matching fetched Run from a failed Run list qu
 
     // Then
     assert.deepEqual(noMatch, {
-        status: "현재 조회된 Run에서 일치하는 결과가 없습니다. · 선택 유지: RUN-0 (검색 결과 밖)",
+        status: "현재 조회된 분석에서 일치하는 결과가 없습니다. · 선택 유지: RUN-0 (검색 결과 밖)",
         queryStatusHidden: true,
         ids: [],
     });
     assert.equal(failed.text("runs-visibility-status"), "");
     assert.equal(failed.document.getElementById("runs-status").hidden, false);
-    assert.match(failed.text("runs-status"), /Run 목록을 불러오지 못했습니다/);
+    assert.match(failed.text("runs-status"), /분석 목록을 불러오지 못했습니다/);
 });
 
 test("Dashboard requests the selected Run timeline once and labels fetched Event counts", async (t) => {
@@ -3499,46 +3738,59 @@ test("Dashboard requests the selected Run timeline once and labels fetched Event
     ]);
     assert.equal(
         status,
-        "조회된 Event 2건 / 전체 75건 · Run 범위",
+        "조회 이벤트 2건 / 전체 75건",
     );
     const html = await readFile(new URL("../../../src/incident_awareness/dashboard/ui/dashboard.html", import.meta.url), "utf8");
-    assert.match(html, /<summary aria-label="연관 Event 집계 기준">집계<\/summary>\s*<p>조회된 Event에 포함된 유형만 집계합니다\. Run 단위 조회이며 선택 Runtime Entity로 한정되지 않습니다\./);
-    assert.match(html, /Event 시각과 기술적 판정 시각은 별도 의미입니다/);
+    assert.doesNotMatch(html, /aria-label="연관 Event 집계 기준"/);
+    assert.match(html, /id="event-type-summary"/);
+    assert.doesNotMatch(html, /Event 시각과 기술적 판정 시각은 별도 의미입니다/);
     assert.equal(harness.requestCount(timelinePath), 1);
 });
 
-test("Dashboard shows stored Decision history without deriving a causal Event timeline", async (t) => {
+// Task 6: one stored Decision record as label -> value, read from its own field list.
+function decisionRecordFieldMap(item) {
+    const fields = [item.querySelector(".dashboard-decision-record__fields"), item.querySelector(".dashboard-decision-record__technical-fields")];
+    const values = fields.flatMap((list) => list.childNodes.map((field) => [field.childNodes[0].textContent, field.childNodes[1].textContent]));
+    const reason = item.querySelector(".dashboard-decision-record__reason");
+    if (reason) values.push(["판단 사유", reason.childNodes[1].textContent]);
+    return Object.fromEntries(values);
+}
+
+test("Task 6 stored 분석 결정 history lives only in the 기록 tab, newest first, without a storage time", async (t) => {
     // Given
     const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
     t.after(harness.restore);
     const detail = storedDetail("RUN-A", "WIN-A", "DEC-2");
     detail.body.decision_history = [
-        { decision_id: "DEC-2", decision_path: "fusion", t_e: "2026-10-09T00:02:00Z" },
+        { decision_id: "DEC-2", decision_path: "fusion", t_e: "2026-10-09T00:02:00Z", supersedes_decision_id: "DEC-1" },
         { decision_id: "DEC-1", decision_path: "fast", t_e: "2026-10-09T00:01:00Z" },
     ];
 
     // When
     await harness.respondAnalysis("RUN-A", detail, storedFusion("RUN-A", "WIN-A", "DEC-2"));
     const history = harness.text("decision-history-list");
-    const replayTimeline = harness.text("decision-timeline-list");
-    const entries = harness.document.getElementById("decision-timeline-list").childNodes;
+    const entries = harness.document.getElementById("decision-history-list").childNodes;
 
     // Then
-    assert.equal(harness.text("decision-history-status"), "최신 Decision부터 저장된 순서로 표시합니다.");
+    assert.equal(harness.document.getElementById("decision-timeline-list"), null, "The score tab repeats no Decision list");
+    assert.doesNotMatch(harness.text("selected-run-chart"), /DEC-2|DEC-1/);
+    assert.equal(harness.text("decision-history-status"), "", "The record labels carry the order; no status sentence");
     assert.ok(history.indexOf("DEC-2") < history.indexOf("DEC-1"));
-    assert.match(replayTimeline, /DEC-2/);
-    assert.match(replayTimeline, /DEC-1/);
-    assert.deepEqual(entries.map((item) => [
-        item.childNodes[0].textContent,
-        ...item.childNodes[1].childNodes.map((detail) => detail.textContent),
-    ]), [
-        ["DEC-2", `t_e · ${formatRunTimestamp("2026-10-09T00:02:00Z")}`, "판단 경로 · Fusion"],
-        ["DEC-1", `t_e · ${formatRunTimestamp("2026-10-09T00:01:00Z")}`, "판단 경로 · Fast"],
-    ]);
+    assert.deepEqual(entries.map((item) => item.querySelector(".dashboard-decision-record__header").textContent), [
+        "현재 결정종합 판단 상태 확인 필요", "이전 결정 1종합 판단 상태 확인 필요"]);
+    assert.ok(entries[0].classList.contains("dashboard-decision-record--current"));
+    assert.equal(entries[1].classList.contains("dashboard-decision-record--current"), false);
+    const [current, previous] = entries.map(decisionRecordFieldMap);
+    assert.equal(current["종합 판단 시각"], "확정 · 2026.10.09 09:02:00 KST");
+    assert.equal(current["종합 판단 경로"], "확정 · 증거 누적 분석");
+    assert.equal(current["이전 결정 연결"], "DEC-1를 대체한 결정");
+    assert.equal(previous["이전 결정 연결"], "연결된 이전 결정 없음");
+    assert.equal(previous["종합 판단 경로"], "확정 · 즉시 규칙 분석");
+    assert.equal(Object.keys(current).some((label) => /저장 ?시각|기록 ?시각/.test(label)), false);
     assert.doesNotMatch(history, /Alert Sent|Analyst Ack|24h/);
 });
 
-test("Dashboard keeps a single stored Decision readable as a distinct timeline entry", async (t) => {
+test("Task 6 a single stored Decision is the current record with its identity and raw JSON", async (t) => {
     // Given
     const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
     t.after(harness.restore);
@@ -3549,15 +3801,33 @@ test("Dashboard keeps a single stored Decision readable as a distinct timeline e
 
     // When
     await harness.respondAnalysis("RUN-A", detail, storedFusion("RUN-A", "WIN-A", "DEC-1"));
-    const entries = harness.document.getElementById("decision-timeline-list").childNodes;
+    const entries = harness.document.getElementById("decision-history-list").childNodes;
 
     // Then
     assert.equal(entries.length, 1);
-    assert.equal(entries[0].childNodes[0].textContent, "DEC-1");
-    assert.deepEqual(entries[0].childNodes[1].childNodes.map((detailItem) => detailItem.textContent), [
-        `t_e · ${formatRunTimestamp("2026-10-09T00:02:00Z")}`,
-        "판단 경로 · Fast + Fusion",
-    ]);
+    assert.equal(entries[0].querySelector(".dashboard-decision-id").textContent, "DEC-1");
+    const fields = decisionRecordFieldMap(entries[0]);
+    assert.equal(fields["종합 판단 시각"], "확정 · 2026.10.09 09:02:00 KST");
+    assert.equal(fields["종합 판단 경로"], "확정 · 즉시 규칙·증거 누적 분석");
+    assert.match(fields["결정 ID"], /DEC-1/);
+    const contents = entries[0].textContent;
+    assert.match(contents, /판단 식별 정보·버전·원문/);
+    assert.match(contents, /"decision_id": "DEC-1"/);
+});
+
+test("Task 6 no stored 분석 결정 and a failed 분석 상세 read stay distinct in the 기록 tab", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A"), runListItem("RUN-B", "WIN-B")]);
+    t.after(harness.restore);
+    // When
+    await harness.respondAnalysis("RUN-A", storedDetail("RUN-A", "WIN-A"), storedFusion("RUN-A", "WIN-A"));
+    const empty = harness.text("decision-history-status");
+    harness.runButton("RUN-B").click();
+    await harness.respondAnalysis("RUN-B", { status: 503, body: { detail: "unavailable" } }, storedFusion("RUN-B", "WIN-B"));
+    // Then
+    assert.equal(empty, "저장된 분석 결정 이력이 없습니다.");
+    assert.notEqual(harness.text("decision-history-status"), empty);
+    assert.equal(harness.document.getElementById("decision-history-list").childNodes.length, 0);
 });
 
 test("Dashboard distinguishes empty and failed Event category reads", async (t) => {
@@ -3628,49 +3898,21 @@ test("Dashboard refreshes Event categories once when a selected Running Run comp
     assert.equal(harness.text("selected-run-status"), STORED_STATUS);
 });
 
-test("Recent Runs uses Runtime status and progress only for the exact Run and Entity scope", async (t) => {
-    // Given
-    const otherEntity = runtimeReport("RUN-A", "WIN-B", "running", "normalization");
-    otherEntity.normalization_processed_count = 9;
-    otherEntity.remaining_count = 1;
-    const matchingEntity = runtimeReport("RUN-A", "WIN-A", "running", "normalization");
-    matchingEntity.normalization_processed_count = 7;
-    matchingEntity.remaining_count = 3;
-    const harness = await startDashboardWithRuntime(
-        [otherEntity],
-        [runListItem("RUN-A", "WIN-A")],
-    );
+test("Observation list shows execution progress only for the exact Run and Entity report", async t => {
+    const other = runtimeReport("RUN-A", "WIN-B", "running", "normalization");
+    const matching = { ...runtimeReport("RUN-A", "WIN-A", "running", "normalization"),
+        normalization_processed_count: 7, remaining_count: 3 };
+    const harness = await startDashboardWithRuntime([other], [runListItem("RUN-A", "WIN-A")]);
     t.after(harness.restore);
-    const timelinePath = buildEventTimelineApiPath("RUN-A", 50, 0);
-    await harness.respondAnalysis("RUN-A", notFound(), notFound());
-    await harness.respond(timelinePath, 200, { items: [], total: 0, limit: 50, offset: 0 });
-    const runCells = () => harness.document.getElementById("runs-list").childNodes[0].childNodes;
-    const initial = {
-        target: runCells()[1].textContent,
-        status: runCells()[2].textContent,
-        progress: runCells()[4].textContent,
-    };
-
-    // When
-    await harness.poll([otherEntity, matchingEntity]);
-    const matched = {
-        status: runCells()[2].textContent,
-        progress: runCells()[4].textContent,
-    };
-    await harness.poll([otherEntity, { ...matchingEntity, is_stale: true }]);
-    const staleStatus = runCells()[2].textContent;
+    const cells = () => harness.document.getElementById("runs-list").children[0].children;
+    assert.match(cells()[1].textContent, /WIN-A/);
+    assert.doesNotMatch(cells()[3].textContent, /실행 보고 ·|7 \/ 10/);
+    await harness.poll([other, matching]);
+    assert.match(cells()[3].textContent, /실행 보고 ·.*7 \/ 10 처리/);
+    await harness.poll([other, { ...matching, is_stale: true }]);
+    assert.match(cells()[3].textContent, /오래됨/);
     await harness.pollFailure();
-    const failedQueryStatus = runCells()[2].textContent;
-
-    // Then
-    assert.match(initial.target, /분석 대상 WIN-A/);
-    assert.equal(initial.status, "최근 5건 미포함");
-    assert.equal(initial.progress, "-");
-    assert.match(matched.status, /최근 갱신/);
-    assert.equal(matched.progress, "7 / 10 처리");
-    assert.match(staleStatus, /오래됨/);
-    assert.match(failedQueryStatus, /확인 불가 \(조회 실패\)/);
-    assert.doesNotMatch(failedQueryStatus, /최근 갱신/);
+    assert.doesNotMatch(cells()[3].textContent, /최근 갱신/);
 });
 
 test("Dashboard keeps empty Runtime explicit in the KPI without a duplicate status row", async (t) => {
@@ -3689,6 +3931,7 @@ test("Dashboard keeps empty Runtime explicit in the KPI without a duplicate stat
         summary: harness.text("runtime-summary-status"),
     };
     const emptyKpi = harness.text("system-status-value");
+    const emptyReportLine = harness.document.getElementById("latest-runtime-line").hidden;
     const emptyStages = harness.stageStates();
     const topStatus = harness.document.getElementById("runtime-top-status");
     const emptyAccessible = !topStatus.hidden
@@ -3709,28 +3952,27 @@ test("Dashboard keeps empty Runtime explicit in the KPI without a duplicate stat
 
     // Then
     assert.deepEqual(loading, {
-        top: "Runtime 정보를 불러오는 중입니다.",
-        summary: "Runtime 정보를 불러오는 중입니다.",
+        top: "실행 보고 정보를 불러오는 중입니다.",
+        summary: "실행 보고 정보를 불러오는 중입니다.",
     });
-    assert.deepEqual(empty, {
-        top: "표시할 Runtime 정보가 없습니다.",
-        summary: "표시할 Runtime 정보가 없습니다.",
-    });
-    assert.equal(emptyKpi, "최근 Runtime 보고 없음");
+    // No report is stated once, by the KPI; no extra status sentence.
+    assert.deepEqual(empty, { top: "", summary: "" });
+    assert.equal(emptyKpi, "");
+    assert.equal(emptyReportLine, true);
     assert.equal(emptyAccessible, true);
     assert.deepEqual(emptyStages, Array(6).fill("unknown"));
     assert.deepEqual(success, {
         top: "",
-        summary: "Runtime 1건을 불러왔습니다.",
+        summary: "실행 보고 1건을 불러왔습니다.",
     });
     assert.deepEqual(error, {
-        top: "Runtime 정보를 불러오지 못했습니다.",
-        summary: "Runtime 정보를 불러오지 못했습니다.",
+        top: "실행 보고 정보를 불러오지 못했습니다.",
+        summary: "실행 보고 정보를 불러오지 못했습니다.",
     });
     assert.equal(topStatus.classList.contains("dashboard-visually-hidden"), false);
 });
 
-test("Compact Run timestamps retain local seconds, timezone and the original instant", async (t) => {
+test("Compact Run timestamps retain KST seconds, timezone and the original instant", async (t) => {
     // Given
     const run = { ...runListItem("RUN-20261008-920", "R1-TGTA"), start_time: "2026-10-08T18:49:53.429Z" };
     const harness = await startDashboardWithRuntime([], [run]);
@@ -3738,21 +3980,20 @@ test("Compact Run timestamps retain local seconds, timezone and the original ins
 
     // When
     const cells = harness.document.getElementById("runs-list").children[0].children;
-    const time = cells[0].children[0];
+    const time = cells[0].querySelectorAll(".dashboard-run-time")[0];
     const instant = new Date(run.start_time);
 
     // Then
     assert.equal(time.getAttribute("datetime"), run.start_time);
     assert.equal(time.getAttribute("title"), formatRunTimestamp(run.start_time));
     assert.equal(time.getAttribute("aria-label"), formatRunTimestamp(run.start_time));
-    assert.equal(time.children[0].textContent, [instant.getFullYear(), instant.getMonth() + 1, instant.getDate()]
-        .map((part, index) => index === 0 ? String(part) : String(part).padStart(2, "0")).join("-"));
-    assert.equal(time.children[1].textContent, instant.toLocaleTimeString("en-GB", {
-        hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short",
-    }));
-    assert.match(time.children[1].textContent, /:53/);
-    assert.match(cells[1].textContent, /RUN-20261008-920/);
-    assert.match(cells[1].textContent, /분석 대상 R1-TGTA/);
+    // 18:49:53Z is the next KST day; the literals hold in any test-process time zone.
+    assert.equal(instant.toISOString(), run.start_time);
+    assert.equal(time.textContent, "2026.10.09 03:49:53.429 ");
+    assert.match(cells[0].textContent, /KST/);
+    assert.match(cells[0].querySelectorAll(".dashboard-run-range")[0].title, /시작 원본 2026-10-08T18:49:53\.429Z/);
+    assert.match(cells[5].textContent, /RUN-20261008-920/);
+    assert.match(cells[1].textContent, /R1-TGTA/);
 });
 
 test("Dashboard separates primary decision results from threshold settings", async (t) => {
@@ -3777,23 +4018,58 @@ test("Dashboard separates primary decision results from threshold settings", asy
 
     // Then
     assert.deepEqual(harness.analysisFields("selected-run-summary"), [
-        { label: "Fast 상태", value: "탐지", primary: true, setting: false },
-        { label: "Fusion 상태", value: "미탐", primary: true, setting: false },
-        { label: "최종 판단 경로", value: "Fast", primary: true, setting: false },
-        {
-            label: "기술적 판정 시각 (t_e)",
-            value: formatRunTimestamp("2026-10-09T00:02:00Z"),
-            primary: true,
-            setting: false,
-        },
+        { label: "탐지 시각", value: "즉시 규칙 분석 · 탐지 시각 미확인 · 종합 판단 시각: 2026.10.09 09:02:00 KST", primary: true, setting: false },
+        { label: "기여 증거", value: "미확인", primary: true, setting: false },
+        { label: "원본 검증", value: "검증 상태 미조회", primary: true, setting: false },
     ]);
+    assert.deepEqual(harness.analysisFields("selected-run-paths").map(row => [row.label, row.value]), [
+        ["즉시 규칙 분석", "의심 행위 탐지"], ["증거 누적 분석", "탐지 기준 미충족"],
+    ]);
+    assert.equal(harness.text("selected-run-judgment"), "종합 판단 완료 · 의심 행위 탐지");
+    assert.equal(selectedResultValues(harness)["종합 판단 경로"], "즉시 규칙 분석");
+    assert.equal(selectedResultValues(harness)["실행 보고"], "실행 보고 없음");
     assert.deepEqual(harness.analysisFields("selected-run-settings"), [
         { label: "Threshold On", value: "0.8", primary: false, setting: true },
         { label: "Threshold Off", value: "0.4", primary: false, setting: true },
     ]);
     assert.equal(harness.text("selected-run-detail-status"), "");
-    assert.equal(harness.text("selected-run-chart-status"), "저장된 Stopping Trace가 없습니다.");
+    assert.equal(harness.text("selected-run-chart-status"), "저장된 점수 기록 없음");
 });
+
+for (const [name, score, decisionScore, episodes, ids] of [
+    ["miss", 0.5, null, [], []],
+    ["detected", 1, 1, [{ start_time: "2026-10-09T00:00:10Z", end_time: null }], ["E-A", "E-B"]],
+]) {
+    test(`Dashboard ${name} context explains stored Hybrid state and clears on another selection`, async (t) => {
+        const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A"), runListItem("RUN-B", "WIN-B")]);
+        t.after(harness.restore);
+        const detail = storedDetail("RUN-A", "WIN-A", "DEC-A");
+        detail.body.run.run_type = "attack";
+        detail.body.current_decision.decision = { decision_id: "DEC-A", fast_status: "not_evaluated",
+            fusion_status: name, t_e: null, decision_path: null, winning_path: null, config_version: "parallel-v0.2",
+            decision_reason: "Required parallel evaluation was not completed" };
+        const fusion = storedFusion("RUN-A", "WIN-A", "DEC-A");
+        fusion.body.fusion_result = { run_id: "RUN-A", entity_id: "WIN-A", scoring_config_version: "C",
+            score_at_decision: decisionScore, fusion_episodes: episodes, contributing_evidence_ids: ids };
+        fusion.body.stopping_trace = { run_id: "RUN-A", entity_id: "WIN-A", scoring_config_version: "C",
+            points: [{ timestamp: "2026-10-09T00:00:00Z", score: 0, policy_state: "off", persistence_count: null },
+                { timestamp: "2026-10-09T00:00:10Z", score, policy_state: "off", persistence_count: null }] };
+        await harness.respondAnalysis("RUN-A", detail, fusion);
+        assert.match(harness.text("selected-run-metadata-note"), /run_type: attack.*원본 수집 라벨과 별도/);
+        assert.equal(harness.text("selected-run-hybrid-note"), "종합 판단 미완료 · 즉시 규칙 분석 미평가");
+        assert.match(harness.text("selected-run-fusion-summary"), new RegExp(`Trace 최대 ${score}`));
+        assert.match(harness.text("selected-run-fusion-summary"), new RegExp(`판단 시 score ${decisionScore ?? "미확정"}`));
+        assert.equal(harness.document.getElementById("selected-run-contributing-ids").children.length, ids.length);
+        assert.equal(harness.document.getElementById("selected-run-event-provenance-link").href, "/dashboard/runs/RUN-A/timeline");
+        assert.equal(detail.body.current_decision.decision.t_e, null);
+        assert.equal(detail.body.current_decision.decision.decision_path, null);
+        harness.runButton("RUN-B").click();
+        await harness.flush();
+        assert.equal(harness.document.getElementById("selected-run-explanation").hidden, true);
+        assert.equal(harness.text("selected-run-hybrid-note"), "");
+        assert.equal(harness.document.getElementById("selected-run-contributing-ids").children.length, 0);
+    });
+}
 
 test("Dashboard pauses and resumes Runtime polling across bfcache lifecycle", async (t) => {
     // Given
@@ -3903,7 +4179,7 @@ test("Dashboard preserves Run Detail when Fusion Engine times out and can retry"
 
     // Then
     assert.deepEqual(timedOut, {
-        status: "Fusion Engine 조회에 실패해 Run Detail 출처의 결과만 표시합니다.",
+        status: "Fusion Engine 조회에 실패해 분석 상세 출처의 결과만 표시합니다.",
         disabled: false,
     });
     assert.equal(retryPending, true);
@@ -3932,7 +4208,7 @@ test("Dashboard preserves Fusion Engine when Run Detail response body times out"
     // Then
     assert.equal(
         harness.text("selected-run-status"),
-        "Run Detail 조회에 실패해 Fusion Engine 출처의 결과만 표시합니다.",
+        "분석 상세 조회에 실패해 Fusion Engine 출처의 결과만 표시합니다.",
     );
     assert.equal(harness.refreshButton().disabled, false);
 });
@@ -3957,11 +4233,11 @@ test("Dashboard distinguishes analysis timeout from 404 and clears pending state
 
     // Then
     assert.deepEqual(afterTimeout, {
-        status: "선택한 Run의 상세 결과를 불러오지 못했습니다.",
+        status: "선택한 분석의 상세 결과를 불러오지 못했습니다.",
         disabled: false,
     });
     assert.deepEqual(afterNotFound, {
-        status: "선택한 Run에 저장된 상세 결과가 없습니다.",
+        status: "선택한 분석에 저장된 상세 결과가 없습니다.",
         disabled: false,
     });
 });
@@ -3991,7 +4267,7 @@ test("Dashboard bounds a Decision mismatch retry even when its second read times
     assert.equal(harness.requestCount(fusionPath), 2);
     assert.equal(
         harness.text("selected-run-status"),
-        "Fusion Engine 조회에 실패해 Run Detail 출처의 결과만 표시합니다.",
+        "Fusion Engine 조회에 실패해 분석 상세 출처의 결과만 표시합니다.",
     );
     assert.equal(harness.refreshButton().disabled, false);
 });
@@ -4074,7 +4350,7 @@ test("Dashboard Runtime rows select one Run and Entity pair at a time", async (t
             runId: "RUN-A",
             entityId: "WIN-A",
             entityCell: "WIN-A",
-            label: "Run RUN-A, Entity WIN-A",
+            label: "분석 RUN-A, Entity WIN-A",
             pressed: "false",
             selected: false,
         },
@@ -4082,7 +4358,7 @@ test("Dashboard Runtime rows select one Run and Entity pair at a time", async (t
             runId: "RUN-A",
             entityId: "WIN-B",
             entityCell: "WIN-B",
-            label: "Run RUN-A, Entity WIN-B",
+            label: "분석 RUN-A, Entity WIN-B",
             pressed: "true",
             selected: true,
         },
@@ -4090,7 +4366,7 @@ test("Dashboard Runtime rows select one Run and Entity pair at a time", async (t
     assert.deepEqual(runtimeSelection.runRows, [
         { runId: "RUN-A", entityId: null, pressed: "false", selected: false },
     ]);
-    assert.equal(runtimeSelection.context, `RUN-A · WIN-B · ${RUNNING_LABEL}`);
+    assert.equal(runtimeSelection.context, `선택 항목 · RUN-A · WIN-B · ${RUNNING_LABEL}`);
     assert.deepEqual(
         runtimeSelection.stages,
         ["unknown", "unknown", "unknown", "unknown", "current", "unknown"],
@@ -4107,7 +4383,7 @@ test("Dashboard Runtime rows select one Run and Entity pair at a time", async (t
     assert.deepEqual(runListSelection.runRows, [
         { runId: "RUN-A", entityId: null, pressed: "true", selected: true },
     ]);
-    assert.match(runListSelection.context, /Run 목록 선택 · Entity 미지정/);
+    assert.match(runListSelection.context, /^선택 항목 · Entity 미지정/);
     assert.equal(runListSelection.stages.every((state) => state === "unknown"), true);
     assert.match(runListSelection.scope, /run_id 범위.*RunMetadata\.target_host WIN-A/);
 });
@@ -4176,7 +4452,7 @@ test("Dashboard restores focus and status transitions per Runtime Entity", async
     assert.match(harness.text("selected-run-scope"), /RunMetadata\.target_host도 WIN-B/);
     assert.equal(
         harness.text("pipeline-stage-context"),
-        `RUN-A · WIN-B · ${COMPLETED_LABEL}`,
+        `선택 항목 · RUN-A · WIN-B · ${COMPLETED_LABEL}`,
     );
 });
 
@@ -4207,7 +4483,7 @@ test("Dashboard keeps the selected Running to Failed notice scoped to its Entity
     // Then
     assert.equal(
         failedStatus,
-        "마지막 Runtime 보고가 실패했습니다. 상세 결과 자동 재조회는 수행하지 않습니다.",
+        "마지막 실행 보고가 실패했습니다. 상세 결과 자동 재조회는 수행하지 않습니다.",
     );
     assert.equal(harness.text("selected-run-status"), failedStatus);
     assert.equal(harness.requestCount(detailPath), 1);
@@ -4264,7 +4540,7 @@ test("Dashboard rechecks a Running Runtime that leaves the limit=5 query", async
     assert.equal(waitingStatus, WAITING_STATUS);
     assert.equal(
         leftQuery.context,
-        "RUN-A · WIN-B · 최근 5건 조회 범위 밖 · 현재 상태 확인 불가 (완료/실패로 추정하지 않음)",
+        "선택 항목 · RUN-A · WIN-B · 최근 5건 조회 범위 밖 · 현재 상태 확인 불가 (완료/실패로 추정하지 않음)",
     );
     assert.equal(leftQuery.stages.every((state) => state === "unknown"), true);
     assert.equal(leftQuery.status, RECHECK_LOADING_STATUS);
@@ -4274,7 +4550,7 @@ test("Dashboard rechecks a Running Runtime that leaves the limit=5 query", async
     assert.equal(requestsWhileRecheckPending, 2);
     assert.equal(
         afterFirstRecheck,
-        "선택한 Runtime이 최근 5건 조회 범위를 벗어나 현재 상태를 확인할 수 없습니다. "
+        "선택한 실행 보고이 최근 5건 조회 범위를 벗어나 현재 상태를 확인할 수 없습니다. "
             + "저장 결과를 제한된 간격으로 다시 확인합니다 (1/5회).",
     );
     assert.equal(requestsAfterBackoff, 3);
@@ -4318,9 +4594,9 @@ test("Dashboard bounds rechecks and pauses them while the Runtime API fails", as
     // Then
     assert.equal(
         duringFailure.context,
-        "RUN-A · WIN-B · Runtime API 조회 실패 · 조회 범위 밖 항목의 현재 상태 확인 불가",
+        "선택 항목 · RUN-A · WIN-B · 실행 보고 API 조회 실패 · 조회 범위 밖 항목의 현재 상태 확인 불가",
     );
-    assert.match(duringFailure.status, /^Runtime API 조회에 실패해/);
+    assert.match(duringFailure.status, /^실행 보고 API 조회에 실패해/);
     assert.equal(duringFailure.detailRequests, 2);
     assert.equal(afterRecovery, 3);
     assert.equal(harness.requestCount(detailPath), 1 + SELECTED_RUNTIME_RECHECK_POLL_THRESHOLDS.length);
@@ -4372,11 +4648,11 @@ test("Dashboard discards a delayed recheck after another Runtime Entity is selec
     assert.equal(afterDelayedResponse.runId, "RUN-C");
     assert.equal(
         afterDelayedResponse.status,
-        "선택한 Run의 저장 분석 결과를 불러오는 중입니다.",
+        "선택한 분석의 저장 분석 결과를 불러오는 중입니다.",
     );
     assert.match(afterDelayedResponse.scope, /Entity WIN-C/);
     assert.doesNotMatch(afterDelayedResponse.scope, /WIN-B/);
-    assert.equal(afterDelayedResponse.context, `RUN-C · WIN-C · ${COMPLETED_LABEL}`);
+    assert.equal(afterDelayedResponse.context, `선택 항목 · RUN-C · WIN-C · ${COMPLETED_LABEL}`);
     assert.equal(harness.text("selected-run-status"), STORED_STATUS);
     assert.match(harness.text("selected-run-scope"), /RunMetadata\.target_host도 WIN-C/);
     assert.deepEqual(
@@ -4450,7 +4726,7 @@ test("Dashboard manual refresh recovers a Run missing from both lists after rech
     // Then
     assert.equal(
         statusAfterEarlyManualRefresh,
-        "선택한 Runtime이 최근 5건 조회 범위를 벗어나 현재 상태를 확인할 수 없습니다. "
+        "선택한 실행 보고이 최근 5건 조회 범위를 벗어나 현재 상태를 확인할 수 없습니다. "
             + "저장 결과를 제한된 간격으로 다시 확인합니다 (1/5회).",
     );
     assert.match(exhausted.status, /저장 결과 재확인 5회를 마쳤지만 아직 결과가 없습니다/);
@@ -4463,7 +4739,7 @@ test("Dashboard manual refresh recovers a Run missing from both lists after rech
     assert.deepEqual([exhausted.hidden, exhausted.disabled], [false, false]);
     assert.deepEqual(whilePending, {
         disabled: true,
-        status: "선택한 Run의 저장 분석 결과를 다시 조회하는 중입니다.",
+        status: "선택한 분석의 저장 분석 결과를 다시 조회하는 중입니다.",
     });
     assert.equal(requestsAfterDuplicateClick, exhausted.detailRequests + 1);
     assert.equal(refreshed.runId, "RUN-A");
@@ -4471,7 +4747,7 @@ test("Dashboard manual refresh recovers a Run missing from both lists after rech
     assert.match(refreshed.scope, /Entity WIN-B\. 저장 분석 대상 RunMetadata\.target_host도 WIN-B/);
     assert.equal(
         refreshed.context,
-        "RUN-A · WIN-B · 최근 5건 조회 범위 밖 · 현재 상태 확인 불가 (완료/실패로 추정하지 않음)",
+        "선택 항목 · RUN-A · WIN-B · 최근 5건 조회 범위 밖 · 현재 상태 확인 불가 (완료/실패로 추정하지 않음)",
     );
     assert.equal(refreshed.disabled, false);
     assert.equal(harness.requestCount(detailPath), requestsAfterDuplicateClick);
@@ -4518,19 +4794,19 @@ test("Dashboard manual refresh retries after failure and keeps Decision checks",
     // Then
     assert.equal(runtimeRowCount, 0);
     assert.deepEqual(failed, {
-        status: "선택한 Run의 상세 결과를 불러오지 못했습니다.",
+        status: "선택한 분석의 상세 결과를 불러오지 못했습니다.",
         disabled: false,
     });
     assert.deepEqual(mismatch, {
-        status: "Run Detail과 Fusion Engine의 Decision 버전이 달라 결과를 결합하지 않았습니다.",
+        status: "분석 상세과 Fusion Engine의 분석 결정 버전이 달라 결과를 결합하지 않았습니다.",
         chartStatus: "조회 시점이 일치하지 않아 Fusion Trace를 표시하지 않습니다.",
     });
     assert.equal(harness.text("selected-run-status"), STORED_STATUS);
     assert.match(
         harness.text("selected-run-scope"),
-        /Run 목록 선택: run_id 범위입니다\. 저장 분석 대상은 RunMetadata\.target_host WIN-A/,
+        /분석 목록 선택: run_id 범위입니다\. 저장 분석 대상은 RunMetadata\.target_host WIN-A/,
     );
-    assert.match(harness.text("pipeline-stage-context"), /Run 목록 선택 · Entity 미지정/);
+    assert.match(harness.text("pipeline-stage-context"), /^선택 항목 · Entity 미지정/);
     assert.equal(harness.requestCount(detailPath), 5);
     assert.equal(harness.pendingCount(detailPath), 0);
 });
@@ -4573,7 +4849,7 @@ test("Dashboard discards a late manual refresh after another Entity is selected"
     assert.deepEqual(switching, { disabled: true, pending: 1 });
     assert.equal(current.status, WAITING_STATUS);
     assert.match(current.scope, /Entity WIN-A\. 저장 분석 대상 RunMetadata\.target_host도 WIN-A/);
-    assert.equal(current.context, `RUN-A · WIN-A · ${RUNNING_LABEL}`);
+    assert.equal(current.context, `선택 항목 · RUN-A · WIN-A · ${RUNNING_LABEL}`);
     assert.deepEqual(
         {
             status: harness.text("selected-run-status"),
@@ -4591,4 +4867,858 @@ test("Dashboard discards a late manual refresh after another Entity is selected"
     assert.equal(harness.refreshButton().disabled, false);
     assert.equal(harness.requestCount(detailPath), 3);
     assert.equal(harness.pendingCount(detailPath), 0);
+});
+
+
+test("Missing Fast execution and unknown timing outcomes never become completed analysis", () => {
+    // Given
+    const runtime = { status: "completed", current_stage: null, is_stale: false };
+    const records = [
+        { stage: "fusion", outcome: "completed" },
+        { stage: "normalization", outcome: "unknown" },
+        { stage: "persistence", outcome: "failed" },
+    ];
+    // When
+    const stages = buildPipelineStagePresentation(runtime, true, records);
+    // Then
+    assert.equal(stages.find(stage => stage.stage === "fusion").state, "completed");
+    assert.equal(stages.find(stage => stage.stage === "fast_handoff").state, "unknown");
+    assert.equal(stages.find(stage => stage.stage === "normalization").state, "unknown");
+    assert.equal(stages.find(stage => stage.stage === "persistence").state, "failed");
+    assert.equal(stages.some(stage => stage.state === "current"), false);
+});
+
+
+function selectedResultValues(harness) {
+    const fields = ["selected-run-summary", "selected-run-paths", "selected-run-identity"]
+        .flatMap(id => harness.analysisFields(id));
+    return { ...Object.fromEntries(fields.map(row => [row.label, row.value])),
+        "종합 판단": harness.text("selected-run-judgment") };
+}
+
+function task1Decision(overrides = {}) {
+    return {run_id:"RUN-20261021-901",entity_id:"WIN-01",decision_id:"DEC-RUN-20261021-901",
+        fast_status:"not_evaluated",fusion_status:"detected",detector_time:null,
+        fusion_time:"2026-10-03T00:00:20.000Z",t_e:null,decision_path:null,winning_path:null,
+        config_version:"parallel-v0.2",decision_reason:"Required parallel evaluation was not completed",
+        supersedes_decision_id:"DEC-PREVIOUS",...overrides};
+}
+
+test("Task 1 renders the persisted incomplete Decision, both clocks and accessible provenance", async (t) => {
+    // Given
+    const runId = "RUN-20261021-901", decision = task1Decision();
+    const harness = await startDashboardWithRuntime([], [runListItem(runId,"WIN-01")]);
+    t.after(harness.restore);
+    const detail = storedDetail(runId,"WIN-01",decision.decision_id);
+    detail.body.current_decision.decision = decision;
+    detail.body.decision_history = [decision];
+    const fusion = storedFusion(runId,"WIN-01",decision.decision_id);
+    fusion.body.fusion_result = {fusion_status:"detected",fusion_time:decision.fusion_time,contributing_evidence_ids:["E-A","E-B"]};
+    const before = JSON.stringify({detail,fusion});
+    // When
+    await harness.respondAnalysis(runId,detail,fusion);
+    // Then
+    assert.equal(harness.text("selected-decision-summary-heading"), "증거 누적 분석에서 의심 행위 탐지");
+    const fields = selectedResultValues(harness);
+    assert.equal(fields["종합 판단"], "종합 판단 미완료 · 즉시 규칙 분석 미평가");
+    assert.equal(fields["종합 판단 경로"], "미확정");
+    assert.equal(fields["탐지 시각"], "증거 누적 분석 · 2026.10.03 09:00:20 KST · 종합 판단 시각: 미확정");
+    assert.equal(fields["기여 증거"], "2건");
+    assert.equal(fields["원본 검증"], "검증 상태 미조회");
+    const history = harness.text("decision-history-list");
+    assert.match(history, /종합 판단 미완료 · 즉시 규칙 분석 미평가/);
+    // Task 6: the stored incomplete Decision is shown as a stored record, never as a missing one.
+    const record = decisionRecordFieldMap(harness.document.getElementById("decision-history-list").childNodes[0]);
+    assert.equal(record["판단 사유"], "필수 병렬 평가 미완료");
+    assert.equal(record["즉시 규칙 분석"], "미평가");
+    assert.equal(record["증거 누적 분석"], "의심 행위 탐지");
+    assert.equal(record["종합 판단 시각"], "미확정");
+    assert.equal(record["종합 판단 경로"], "미확정 · 저장값 없음");
+    assert.equal(record["이전 결정 연결"], "DEC-PREVIOUS를 대체한 결정");
+    assert.equal(record["설정·정책 버전"], "config parallel-v0.2");
+    assert.equal(record["판단 사유 원문"], "Required parallel evaluation was not completed");
+    assert.match(record["결정 ID"], /DEC-RUN-20261021-901/);
+    assert.doesNotMatch(history, /저장된 종합 판단 결과 없음|저장된 종합 판단 없음/);
+    assert.equal(harness.document.getElementById("decision-history-list").childNodes.length,1);
+    assert.equal(JSON.stringify({detail,fusion}),before);
+    assert.equal(harness.requestCount(`/human-workflow/runs/${runId}/sync`),0);
+});
+
+for (const scenario of [
+    {name:"both evaluated detections",change:{fast_status:"detected",detector_time:"2026-10-03T00:00:10Z",
+        t_e:"2026-10-03T00:00:10Z",decision_path:"fast_and_fusion",winning_path:"fast"},
+        summary:"종합 판단 완료 · 의심 행위 탐지",path:"즉시 규칙·증거 누적 분석"},
+    {name:"both misses",change:{fast_status:"miss",fusion_status:"miss",fusion_time:null,
+        decision_path:"none",winning_path:"none",decision_reason:"Both evaluated paths missed"},
+        summary:"종합 판단 완료 · 탐지 기준 미충족",path:"탐지 경로 없음"},
+    {name:"unknown unevaluated reason",change:{decision_reason:"future input exclusion reason"},
+        summary:"종합 판단 미완료 · 즉시 규칙 분석 미평가 · 사유 미확인",path:"미확정"},
+]) {
+    test(`Task 1 renders ${scenario.name} without guessing a missing result`, async (t) => {
+        // Given
+        const harness = await startDashboardWithRuntime([], [runListItem("RUN-A","WIN-A")]);
+        t.after(harness.restore);
+        const decision = task1Decision({run_id:"RUN-A",entity_id:"WIN-A",decision_id:"DEC-A",...scenario.change});
+        const detail = storedDetail("RUN-A","WIN-A","DEC-A");
+        detail.body.current_decision.decision = decision;
+        detail.body.decision_history = [decision];
+        // When
+        await harness.respondAnalysis("RUN-A",detail,storedFusion("RUN-A","WIN-A","DEC-A"));
+        // Then
+        const fields = selectedResultValues(harness);
+        assert.equal(fields["종합 판단"],scenario.summary);
+        assert.equal(fields["종합 판단 경로"],scenario.path);
+        assert.match(harness.text("decision-history-list"),new RegExp(scenario.summary.replaceAll("·","\\u00b7")));
+        assert.equal(decision.t_e,scenario.change.t_e ?? null);
+    });
+}
+
+for (const [status,expected] of [[200,"저장된 종합 판단 결과 없음"],[503,"종합 판단 조회 실패"]]) {
+    test(`Task 1 keeps Fusion-only detection distinct from Decision read status ${status}`, async (t) => {
+        // Given
+        const harness = await startDashboardWithRuntime([], [runListItem("RUN-A","WIN-A")]);
+        t.after(harness.restore);
+        const detail = status === 200 ? storedDetail("RUN-A","WIN-A") : {status,body:{detail:"unavailable"}};
+        const fusion = storedFusion("RUN-A","WIN-A");
+        fusion.body.fusion_result = {fusion_status:"detected",fusion_time:"2026-10-03T00:00:20.000Z"};
+        // When
+        await harness.respondAnalysis("RUN-A",detail,fusion);
+        // Then
+        const fields = selectedResultValues(harness);
+        assert.equal(fields["종합 판단"],expected);
+        assert.match(fields["탐지 시각"],/증거 누적 분석 · 2026.10.03 09:00:20 KST/);
+        assert.match(harness.text("selected-decision-summary-heading"),/증거 누적 분석에서 의심 행위 탐지/);
+        assert.equal(harness.document.getElementById("decision-history-list").childNodes.length,0);
+    });
+}
+
+test("Task 1 withholds a combined judgment after both mismatch reads", async (t) => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A","WIN-A")]);
+    t.after(harness.restore);
+    const detail = storedDetail("RUN-A","WIN-A","DEC-A");
+    detail.body.current_decision.decision = task1Decision({decision_id:"DEC-A"});
+    const fusion = storedFusion("RUN-A","WIN-A","DEC-B");
+    fusion.body.fusion_result = {fusion_status:"detected",fusion_time:"2026-10-03T00:09:00Z"};
+    // When
+    await harness.respondAnalysis("RUN-A",detail,fusion);
+    await harness.respondAnalysis("RUN-A",detail,fusion);
+    // Then
+    const fields = selectedResultValues(harness);
+    assert.equal(fields["종합 판단"],"종합 판단 확인 보류 · 조회 버전 불일치");
+    assert.equal(fields["종합 판단 경로"],"표시 보류");
+    assert.doesNotMatch(fields["탐지 시각"],/09:00:20|09:09:00/);
+    assert.match(harness.text("selected-run-status"),/분석 결정 버전이 달라 결과를 결합하지 않았습니다/);
+    assert.equal(harness.document.getElementById("selected-run-chart").childNodes.length,0);
+});
+
+test("Task 1 ignores an old Run body that arrives after the current decision is rendered", async (t) => {
+    // Given: the old response body deliberately ignores AbortSignal.
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A","WIN-A"),runListItem("RUN-B","WIN-B")]);
+    t.after(harness.restore);
+    const old = storedDetail("RUN-A","WIN-A","DEC-A");
+    old.body.current_decision.decision = task1Decision({decision_id:"DEC-A"});
+    const [request] = harness.requestsFor(buildRunDetailApiPath("RUN-A")).filter(item=>!item.settled);
+    let deliver;
+    request.settled = true;
+    request.resolve({ok:true,status:200,json:()=>new Promise(resolve=>{deliver=resolve;})});
+    await harness.flush();
+    await harness.respond(buildFusionEngineApiPath("RUN-A"),200,storedFusion("RUN-A","WIN-A","DEC-A").body);
+    // When
+    harness.runButton("RUN-B").click();
+    await harness.flush();
+    const current = storedDetail("RUN-B","WIN-B","DEC-B");
+    current.body.current_decision.decision = task1Decision({decision_id:"DEC-B",fast_status:"miss",fusion_status:"miss",
+        fusion_time:null,decision_path:"none",winning_path:"none",decision_reason:"Both evaluated paths missed"});
+    await harness.respondAnalysis("RUN-B",current,storedFusion("RUN-B","WIN-B","DEC-B"));
+    const before = JSON.stringify(selectedResultValues(harness));
+    deliver(old.body);
+    await harness.flush();
+    // Then
+    assert.equal(harness.text("selected-run-id"),"RUN-B");
+    assert.equal(JSON.stringify(selectedResultValues(harness)),before);
+    assert.match(before,/종합 판단 완료 · 탐지 기준 미충족/);
+    assert.doesNotMatch(before,/09:00:20|종합 판단 미완료/);
+});
+
+
+const PROVENANCE_ELEMENT_IDS=["provenance-status","provenance-list","provenance-retention"];
+const provenancePath=run=>`/runs/${run}/evidence-provenance`;
+function task2Provenance(run="RUN-A",entity="WIN-A",ids=["E-1","E-2"],levels=[]) {
+    return {schema_version:"evidence_provenance_v1",scope:"fusion_contributing_ids_only",run_id:run,
+        raw_retention:{available:true,status:"storage_verified",byte_size:42,content_sha256:"a".repeat(64),manifest_identity:"fixture-manifest"},
+        items:ids.map((id,i)=>({run_id:run,entity_id:entity,evidence_id:id,evidence_type:"fixture",event_ids:[`evt-${id}`],
+            resolution_status:levels[i]??"raw_verified",unresolved_reason:levels[i]==="event_verified"?"run_manifest_unavailable":null,
+            observed_behavior:[],validation_details:{}})),
+        source_events:ids.map(id=>({event_id:`evt-${id}`,run_id:run,host_id:entity,source_event_id:id,
+            timestamp:"2026-10-03T00:00:00Z",source:"sysmon",source_layer:"raw_telemetry",raw_ref:{}}))};
+}
+function task2Analysis(run="RUN-A",entity="WIN-A",decisionId="DEC-A",ids=["E-1","E-2"]){
+    const decision=task1Decision({run_id:run,entity_id:entity,decision_id:decisionId});
+    const detail=storedDetail(run,entity,decisionId);detail.body.current_decision.decision=decision;
+    const fusion=storedFusion(run,entity,decisionId);
+    fusion.body.fusion_result={run_id:run,entity_id:entity,fusion_status:"detected",fusion_time:decision.fusion_time,contributing_evidence_ids:ids};
+    return {detail,fusion};
+}
+const rawSummary=h=>h.analysisFields("selected-run-summary").find(row=>row.label==="원본 검증")?.value;
+
+test("Task 2 summary shares lazy verification and keeps no_archive separate",async(t)=>{
+    // Given
+    const h=await startDashboardWithRuntime([], [runListItem("RUN-A","WIN-A")],
+        {extraElementIds:[...PROVENANCE_ELEMENT_IDS,...EVIDENCE_ELEMENT_IDS]});t.after(h.restore);
+    const {detail,fusion}=task2Analysis();await h.respondAnalysis("RUN-A",detail,fusion);
+    assert.equal(rawSummary(h),"검증 상태 미조회");assert.equal(h.requestCount(provenancePath("RUN-A")),0);
+    // When
+    h.document.getElementById("dashboard-tab-evidence").click();await h.flush();
+    assert.equal(rawSummary(h),"원본 검증 확인 중");
+    await h.respond(evidencePath("RUN-A"),200,evidencePayload({runId:"RUN-A",availability:"no_archive"}));
+    await h.respond(provenancePath("RUN-A"),200,task2Provenance());
+    // Then
+    assert.equal(rawSummary(h),"원본 대조 통과 · 2/2건");
+    assert.equal(h.text("evidence-status"), "", "no_archive has no status sentence");
+    h.document.getElementById("dashboard-tab-summary").click();await h.flush();
+    assert.equal(rawSummary(h),"원본 대조 통과 · 2/2건");assert.equal(h.requestCount(provenancePath("RUN-A")),1);
+    assert.match(h.text("selected-run-judgment"),/종합 판단 미완료 · 즉시 규칙 분석 미평가/);
+});
+
+test("Task 2 same-Run Decision and Evidence changes invalidate a verified summary before any new read",async(t)=>{
+    // Given
+    const h=await startDashboardWithRuntime([], [runListItem("RUN-A","WIN-A")],{extraElementIds:PROVENANCE_ELEMENT_IDS});t.after(h.restore);
+    let analysis=task2Analysis();await h.respondAnalysis("RUN-A",analysis.detail,analysis.fusion);
+    h.document.getElementById("dashboard-tab-evidence").click();await h.flush();
+    await h.respond(provenancePath("RUN-A"),200,task2Provenance());assert.match(rawSummary(h),/대조 통과/);
+    h.document.getElementById("dashboard-tab-summary").click();await h.flush();
+    // When: explicit result refresh, new Decision, same Evidence.
+    h.refreshButton().click();await h.flush();assert.equal(rawSummary(h),undefined);
+    analysis=task2Analysis("RUN-A","WIN-A","DEC-NEXT");await h.respondAnalysis("RUN-A",analysis.detail,analysis.fusion);
+    assert.equal(rawSummary(h),"검증 상태 미조회");assert.equal(h.requestCount(provenancePath("RUN-A")),1);
+    h.document.getElementById("dashboard-tab-evidence").click();await h.flush();
+    await h.respond(provenancePath("RUN-A"),503,{detail:"unavailable"});assert.equal(rawSummary(h),"조회 실패");
+    // When: same Decision, new contributing set.
+    h.document.getElementById("dashboard-tab-summary").click();h.refreshButton().click();await h.flush();
+    analysis=task2Analysis("RUN-A","WIN-A","DEC-NEXT",["E-NEW"]);await h.respondAnalysis("RUN-A",analysis.detail,analysis.fusion);
+    // Then
+    assert.equal(rawSummary(h),"검증 상태 미조회");
+    h.document.getElementById("dashboard-tab-evidence").click();await h.flush();
+    await h.respond(provenancePath("RUN-A"),200,task2Provenance("RUN-A","WIN-A",["E-NEW"]));
+    assert.equal(rawSummary(h),"원본 대조 통과 · 1/1건");
+});
+
+test("Task 2 discards a late provenance body after Run selection changes",async(t)=>{
+    // Given
+    const h=await startDashboardWithRuntime([], [runListItem("RUN-A","WIN-A"),runListItem("RUN-B","WIN-B")],
+        {extraElementIds:PROVENANCE_ELEMENT_IDS});t.after(h.restore);
+    let analysis=task2Analysis();await h.respondAnalysis("RUN-A",analysis.detail,analysis.fusion);
+    h.document.getElementById("dashboard-tab-evidence").click();await h.flush();
+    const [request]=h.requestsFor(provenancePath("RUN-A")).filter(value=>!value.settled);let deliver;
+    request.settled=true;request.resolve({ok:true,status:200,json:()=>new Promise(resolve=>{deliver=resolve;})});await h.flush();
+    // When
+    h.runButton("RUN-B").click();await h.flush();
+    analysis=task2Analysis("RUN-B","WIN-B","DEC-B");await h.respondAnalysis("RUN-B",analysis.detail,analysis.fusion);
+    h.document.getElementById("dashboard-tab-evidence").click();await h.flush();
+    await h.respond(provenancePath("RUN-B"),200,task2Provenance("RUN-B","WIN-B",["E-1","E-2"],["event_verified","event_verified"]));
+    const current=rawSummary(h);deliver(task2Provenance());await h.flush();
+    // Then
+    assert.equal(rawSummary(h),current);assert.match(current,/원본 대조 미완료/);
+    assert.equal(h.text("selected-run-id"),"RUN-B");assert.doesNotMatch(h.text("provenance-list"),/RUN-A/);
+});
+
+function task3Analysis(runId = "RUN-A", decisionId = "DEC-A", shift = 0) {
+    const detail = storedDetail(runId, "WIN-A", decisionId);
+    const fusion = storedFusion(runId, "WIN-A", decisionId);
+    const decision = { run_id: runId, entity_id: "WIN-A", decision_id: decisionId,
+        fast_status: "not_evaluated", fusion_status: "detected", t_e: null,
+        fusion_time: new Date(Date.UTC(2026, 9, 3, shift, 0, 20)).toISOString(),
+        decision_path: null, winning_path: null, config_version: "parallel-v0.2",
+        decision_reason: "Required parallel evaluation was not completed" };
+    detail.body.current_decision.decision = decision;
+    detail.body.decision_history = [decision];
+    fusion.body.current_decision = { ...decision };
+    fusion.body.fusion_result = { run_id: runId, entity_id: "WIN-A", fusion_status: "detected",
+        fusion_time: decision.fusion_time, scoring_config_version: "F-C1",
+        contributing_evidence_ids: ["E-A", "E-B"], score_at_decision: 1,
+        fusion_episodes: [{ episode_id: `${runId}-EP`, start_time: decision.fusion_time,
+            end_time: new Date(Date.UTC(2026, 9, 3, shift, 5, 20)).toISOString(), end_reason: "released" }] };
+    fusion.body.stopping_trace = { run_id: runId, entity_id: "WIN-A", scoring_config_version: "F-C1",
+        points: Array.from({ length: 67 }, (_, index) => ({
+            timestamp: new Date(Date.UTC(2026, 9, 3, shift, 0, index * 10)).toISOString(),
+            score: index === 0 ? 0.5 : index < 32 ? 1 : 0,
+            policy_state: index >= 2 && index < 32 ? "on" : "off",
+            persistence_count: index === 1 ? 1 : index === 2 ? 2 : null,
+        })) };
+    fusion.body.runtime_config_snapshot = { stopping: { threshold_on: 0.8, threshold_off: 0.4, persistence_k: 2 } };
+    return { detail, fusion };
+}
+
+test("Task 3 actual Dashboard module renders exact transitions and preserves Task 1/2 meanings", async t => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    const { detail, fusion } = task3Analysis();
+    const before = JSON.stringify([detail, fusion]);
+    // When
+    await harness.respondAnalysis("RUN-A", detail, fusion);
+    // Then
+    const chart = harness.document.getElementById("selected-run-chart");
+    assert.ok(chart.querySelector(".dashboard-replay-chart"), harness.text("selected-run-chart-status"));
+    assert.equal(chart.querySelectorAll(".fusion-score-chart__point").length, 67);
+    assert.match(chart.textContent, /점수 기록 67개/);
+    assert.match(chart.textContent, /진입 기준 0\.80 이상 · 2회 연속/);
+    const records = chart.querySelector(".dashboard-replay-chart__records").textContent;
+    assert.match(records, /09:00:20\.000 KST — 탐지 구간 시작/);
+    assert.match(records, /09:05:20\.000 KST — 탐지 구간 해제/);
+    assert.match(records, /종합 판단 시각: 미확정/);
+    assert.doesNotMatch(records, /KST — 종합 판단 시각/);
+    assert.equal(chart.querySelector(".fusion-score-chart__clock").textContent, "2026-10-03 · KST");
+    assert.equal(harness.text("selected-run-hybrid-note"), "종합 판단 미완료 · 즉시 규칙 분석 미평가");
+    const callouts = chart.querySelectorAll(".dashboard-replay-chart__callout").map(label => label.ownText);
+    assert.deepEqual(callouts, ["09:00:20 탐지 구간 시작", "09:05:20 탐지 구간 해제"]);
+    assert.ok(chart.querySelectorAll(".fusion-score-chart__axis-label--x").some(label => label.ownText === "09:05:30"));
+    assert.match(harness.text("selected-run-summary"), /검증 상태 미조회/);
+    assert.match(harness.text("decision-history-list"), /DEC-A/);
+    assert.equal(JSON.stringify([detail, fusion]), before);
+    const marker = chart.querySelectorAll(".fusion-score-chart__point")[2];
+    marker.focus();
+    assert.match(chart.querySelector(".fusion-score-chart__point-detail").textContent, /09:00:20\.000 KST.*탐지 구간 활성/);
+});
+
+for (const kind of ["missing", "empty", "invalid"]) {
+    test(`Task 3 Dashboard ${kind} trajectory retains known Episode records without a fabricated curve`, async t => {
+        // Given
+        const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+        t.after(harness.restore);
+        const { detail, fusion } = task3Analysis();
+        fusion.body.stopping_trace = kind === "missing" ? null : kind === "empty" ? { points: [] }
+            : { points: [{ timestamp: "invalid", score: 1 }] };
+        // When
+        await harness.respondAnalysis("RUN-A", detail, fusion);
+        // Then
+        const chart = harness.document.getElementById("selected-run-chart");
+        assert.equal(chart.querySelectorAll(".fusion-score-chart__trajectory").length, 0);
+        assert.match(chart.textContent, /09:00:20\.000 KST — 탐지 구간 시작/);
+        assert.match(chart.textContent, /09:05:20\.000 KST — 탐지 구간 해제/);
+        assert.equal(harness.document.getElementById("selected-run-chart-status").hidden, false);
+    });
+}
+
+test("Task 3 Dashboard ignores a late non-abortable Fusion response after selecting another Run", async t => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A"), runListItem("RUN-B", "WIN-A")]);
+    t.after(harness.restore);
+    const old = task3Analysis();
+    await harness.respond(buildRunDetailApiPath("RUN-A"), 200, old.detail.body);
+    await harness.respond(buildFusionEngineApiPath("RUN-A"), 200, old.fusion.body,
+        { deferJson: true, ignoreBodyAbort: true });
+    const late = harness.requestsFor(buildFusionEngineApiPath("RUN-A"))[0];
+    assert.equal(typeof late.jsonResolve, "function");
+    // When
+    harness.runButton("RUN-B").click();
+    await harness.flush();
+    assert.equal(harness.text("selected-run-chart"), "");
+    const current = task3Analysis("RUN-B", "DEC-B", 1);
+    await harness.respondAnalysis("RUN-B", current.detail, current.fusion);
+    const beforeLateResponse = harness.text("selected-run-chart");
+    late.jsonResolve(old.fusion.body);
+    await harness.flush();
+    // Then
+    assert.equal(harness.text("selected-run-id"), "RUN-B");
+    assert.equal(harness.text("selected-run-chart"), beforeLateResponse);
+    const records = harness.document.getElementById("selected-run-chart").querySelector(".dashboard-replay-chart__records").textContent;
+    assert.match(records, /10:00:20\.000 KST — 탐지 구간 시작/);
+    assert.match(records, /RUN-B-EP/);
+    assert.doesNotMatch(records, /09:00:20|RUN-A-EP/);
+});
+
+test("Task 3 Dashboard shows a stored t_e as its own Decision clock, never as a Fusion transition", async t => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    const { detail, fusion } = task3Analysis();
+    const decision = { ...detail.body.current_decision.decision, t_e: "2026-10-03T00:00:30Z" };
+    detail.body.current_decision.decision = decision;
+    detail.body.decision_history = [decision];
+    fusion.body.current_decision = { ...decision };
+    // When
+    await harness.respondAnalysis("RUN-A", detail, fusion);
+    // Then
+    const records = harness.document.getElementById("selected-run-chart")
+        .querySelector(".dashboard-replay-chart__records").textContent;
+    assert.match(records, /09:00:20\.000 KST — 탐지 구간 시작/);
+    assert.match(records, /09:00:30\.000 KST — 종합 판단 시각 \(t_e\)/);
+    assert.match(records, /원천 Decision\.t_e/);
+    assert.match(records, /원천 fusion_episodes\.start_time/);
+    assert.equal(fusion.body.fusion_result.fusion_time, "2026-10-03T00:00:20.000Z");
+});
+
+test("Task 3 Dashboard without any stored Decision says nothing about t_e", async t => {
+    // Given: Fusion artifacts exist but neither API returns a Decision.
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    const { detail, fusion } = task3Analysis();
+    detail.body.current_decision = null;
+    detail.body.decision_history = [];
+    fusion.body.current_decision = null;
+    // When
+    await harness.respondAnalysis("RUN-A", detail, fusion);
+    // Then
+    const records = harness.document.getElementById("selected-run-chart")
+        .querySelector(".dashboard-replay-chart__records").textContent;
+    assert.match(records, /09:00:20\.000 KST — 탐지 구간 시작/);
+    assert.doesNotMatch(records, /종합 판단 시각/);
+});
+
+test("Task 3 Dashboard keeps mismatched Decision artifacts out of the chart", async t => {
+    // Given
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(harness.restore);
+    const { detail, fusion } = task3Analysis();
+    fusion.body.current_decision.decision_id = "DEC-OTHER";
+    // When: the Dashboard retries a mismatch once before withholding the combined view.
+    await harness.respondAnalysis("RUN-A", detail, fusion);
+    await harness.respondAnalysis("RUN-A", detail, fusion);
+    // Then
+    assert.equal(harness.text("selected-run-chart"), "");
+    assert.equal(harness.text("selected-run-chart-status"), "조회 시점이 일치하지 않아 Fusion Trace를 표시하지 않습니다.");
+    assert.match(harness.text("selected-run-judgment"), /종합 판단 확인 보류 · 조회 버전 불일치/);
+    assert.doesNotMatch(harness.text("selected-run-summary"), /09:00:20/);
+});
+
+test("Task 4 KPIs state one run-report condition and keep stored analysis separate from running state", async t => {
+    // Given: a stored analysis exists while no execution report was saved.
+    const harness = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")], { autoFollow: true });
+    t.after(harness.restore);
+    const line = id => harness.document.getElementById(id);
+    // When / Then: no report is not "no analysis" and not "service down".
+    assert.equal(harness.text("system-status-value"), "");
+    assert.equal(line("system-status-value").hidden, true);
+    assert.equal(line("runtime-report-cell").hidden, true);
+    assert.equal(line("latest-runtime-line").hidden, true);
+    assert.equal(line("active-runtime-line").hidden, true);
+    assert.equal(harness.text("total-runs-value"), "1");
+    assert.equal(harness.text("pipeline-stage-context"), "");
+    assert.equal(line("pipeline-stage-context").hidden, true);
+    assert.match(line("pipeline-stage-context").title, /서비스 가동·중단 여부를 뜻하지 않습니다/);
+    // When: an actual fresh running report arrives.
+    await harness.poll([runtimeReport("RUN-B", "WIN-B", "running", "normalization")]);
+    // Then
+    assert.equal(harness.text("system-status-value"), "실행 중 보고 있음");
+    assert.equal(line("runtime-report-cell").hidden, false);
+    assert.equal(line("active-runtime-line").hidden, false);
+    assert.equal(harness.text("active-runtime-run"), "RUN-B · WIN-B");
+    assert.equal(line("latest-runtime-line").hidden, false);
+    assert.match(harness.text("latest-runtime-updated"), /KST/);
+    assert.match(harness.text("pipeline-stage-context"), /^최신 실행 · 분석 RUN-B · Entity WIN-B · /);
+    // When: the report query fails, the failure is stated instead of an empty or healthy state.
+    await harness.pollFailure();
+    // Then
+    assert.equal(harness.text("system-status-value"), "실행 보고 조회 실패");
+    assert.equal(line("runtime-report-cell").hidden, false);
+    assert.equal(line("active-runtime-line").hidden, true);
+    assert.doesNotMatch(harness.text("system-status-value"), /없음|정상/);
+});
+
+test("Task 4 overview shell names the environment and actor once and keeps unmeasured metrics out of KPIs", async () => {
+    // Given / When
+    const html = await readFile(new URL("../../../src/incident_awareness/dashboard/ui/dashboard.html", import.meta.url), "utf8");
+    const command = html.split('aria-labelledby="command-heading"')[1].split("</section>")[0];
+    // Then
+    assert.match(html, /<span id="operator-demo-badge" class="operator-demo-badge" hidden\s+title="[^"]+">실험 환경<\/span>/);
+    assert.match(html, /<span class="dashboard-header-user" title="[^"]*실제 인증 계정이 아닙니다\.">[\s\S]*?<span>로컬 담당자<\/span><\/span>/);
+    assert.doesNotMatch(html, />로컬 데모 Actor<|>로컬 데모<|dashboard-header-updated|분석 구조 안내입니다/);
+    assert.equal((command.match(/class="dashboard-kpi(?: dashboard-kpi--system)?"/g) ?? []).length, 1);
+    assert.doesNotMatch(command, /미계측|가동 시간|SLA|큐/);
+    assert.match(html, /<p class="dashboard-measurement-gaps">/);
+    assert.match(html, /<label><input id="pipeline-auto-follow"[^>]*> 범위: 최신 실행 \(끄면 선택 항목\)<\/label>/);
+    // The explanatory structure diagram was removed on request.
+    assert.doesNotMatch(html, /operator-analysis-logic|분석 구조 보기/);
+});
+
+test("Task 5 promotes the list and selected item while preserving the system and technical records", async () => {
+    const html = await readFile(new URL("../../../src/incident_awareness/dashboard/ui/dashboard.html", import.meta.url), "utf8");
+    // Task 7-S order: page title, system status, list, selected item, analysis detail.
+    assert.ok(html.indexOf('class="page-title"') < html.indexOf('id="system-heading"'));
+    assert.ok(html.indexOf('id="system-heading"') < html.indexOf('id="runs-heading"'));
+    assert.ok(html.indexOf('id="runs-heading"') < html.indexOf('id="selected-item-heading"'));
+    assert.ok(html.indexOf('id="selected-item-heading"') < html.indexOf('id="selected-run-heading"'));
+    assert.match(html, /관측·분석 목록/);
+    assert.match(html, /id="selected-run-paths"/);
+    assert.match(html, /<summary>식별 정보<\/summary>/);
+    assert.match(html, /id="pipeline-stage-list"/);
+    assert.match(html, /id="workflow-next"/);
+    assert.match(html, /id="selected-run-observations"/);
+    assert.doesNotMatch(html, /Incident ID|T1059|T1071/);
+});
+
+test("Task 5 actual Dashboard list batches summaries without changing selection or requesting row details", async t => {
+    const h = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A"), runListItem("RUN-B", "WIN-B")]);
+    t.after(h.restore);
+    const selection = h.text("selected-run-id");
+    const analysisPath = "/analysis-summaries?run_id=RUN-A&run_id=RUN-B";
+    const workflowPath = "/human-workflow/alert-summaries?run_id=RUN-A&run_id=RUN-B";
+    assert.equal(h.requestCount(analysisPath), 1);
+    assert.equal(h.requestCount(workflowPath), 1);
+    const before = h.requestCount(buildRunDetailApiPath("RUN-B"));
+    const items = ["RUN-A", "RUN-B"].map((run_id, index) => ({ run_id, entity_id: index ? "WIN-B" : "WIN-A", status: "available",
+        decision: task1Decision({ run_id, entity_id: index ? "WIN-B" : "WIN-A" }), fusion_result: null }));
+    await h.respond(analysisPath, 200, { schema_version: "dashboard_analysis_summaries_v1", items });
+    await h.respond(workflowPath, 200, { schema_version: "human_workflow_alert_summaries_v1", items: items.map(item => ({ run_id: item.run_id, alerts: [] })) });
+    assert.equal(h.text("selected-run-id"), selection);
+    assert.equal(h.requestCount(buildRunDetailApiPath("RUN-B")), before);
+    assert.match(recentRunRow(h, "RUN-B").textContent, /미완료/);
+    assert.doesNotMatch(recentRunRow(h, "RUN-B").textContent, /즉시 규칙 분석 미평가/, "The list shows completion only");
+    assert.match(recentRunRow(h, "RUN-B").textContent, /처리 기록 없음/);
+    assert.doesNotMatch(recentRunRow(h, "RUN-A").textContent, /입력 출처 미확인/, "The input-source label was removed on request");
+});
+
+test("Task 5 summary actions focus the selected detail tab without refetching analysis", async t => {
+    const h = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(h.restore);
+    const data = task2Analysis(); await h.respondAnalysis("RUN-A", data.detail, data.fusion);
+    const count = h.requestCount(buildRunDetailApiPath("RUN-A"));
+    assert.equal(h.document.getElementById("selected-item-body").hidden, false);
+    h.document.getElementById("selected-item-open").click();
+    assert.equal(h.document.activeElement, h.document.getElementById("dashboard-tab-summary"));
+    h.document.getElementById("selected-run-workflow-open").click();
+    assert.equal(h.document.getElementById("dashboard-tab-workflow").getAttribute("aria-selected"), "true");
+    assert.equal(h.document.activeElement, h.document.getElementById("dashboard-tab-workflow"));
+    assert.equal(h.requestCount(buildRunDetailApiPath("RUN-A")), count);
+    assert.equal(h.requestCount("/human-workflow/runs/RUN-A/sync"), 0);
+});
+
+test("Task 5 observations reuse only raw-verified prose and disappear on selection change", async t => {
+    const h = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A"), runListItem("RUN-B", "WIN-B")],
+        { extraElementIds: PROVENANCE_ELEMENT_IDS });
+    t.after(h.restore);
+    const data = task2Analysis(); await h.respondAnalysis("RUN-A", data.detail, data.fusion);
+    assert.doesNotMatch(h.text("selected-run-observations"), /확인한 PowerShell/);
+    h.document.getElementById("selected-run-evidence-open").click(); await h.flush();
+    const provenance = task2Provenance("RUN-A", "WIN-A", ["E-1", "E-2"], ["raw_verified", "event_verified"]);
+    provenance.items[0].observed_behavior = [{ behavior_summary: "확인한 PowerShell 실행 옵션", observed_at: "2026-10-03T00:00:10Z" }];
+    provenance.items[1].observed_behavior = [{ behavior_summary: "미검증 활동을 표시하면 안 됨" }];
+    await h.respond(provenancePath("RUN-A"), 200, provenance);
+    assert.equal(h.text("selected-run-observations"), "2026.10.03 09:00:10 KST — 확인한 PowerShell 실행 옵션");
+    assert.match(h.text("selected-item-observation"), /확인한 PowerShell 실행 옵션/);
+    assert.doesNotMatch(h.text("selected-item-observation"), /미검증 활동/);
+    h.runButton("RUN-B").click(); await h.flush();
+    assert.equal(h.text("selected-run-observations"), "");
+    assert.doesNotMatch(h.text("selected-item-observation"), /PowerShell/);
+});
+
+test("Task 5 same-ID Live entries cannot enter the formal Run list or start workflow writes", async t => {
+    const h = await startDashboardHarness(); t.after(h.restore);
+    const formal = { ...runListItem("SAME", "HOST"), kind: "formal_run" };
+    const live = { ...runListItem("SAME", "LIVE"), kind: "live_observation", data_class: "demo_only", canonical_result: null };
+    await h.respond("/overview", 200, { total_runs: 1, recent_runs: [formal] });
+    await h.respond("/runs?limit=20", 200, { runs: [live, formal] });
+    await h.respond(RUNTIME_API_PATH, 200, { items: [] });
+    assert.equal(h.runRows().length, 1);
+    assert.equal(h.runButton("SAME").dataset.kind, "formal_run");
+    assert.match(recentRunRow(h, "SAME").textContent, /HOST/);
+    assert.doesNotMatch(recentRunRow(h, "SAME").textContent, /LIVE/);
+    assert.equal(h.requestCount("/human-workflow/runs/SAME/sync"), 0);
+});
+
+test("Task 5 an empty analysis list has no phantom selection or list-summary traffic", async t => {
+    const h = await startDashboardWithRuntime([], []); t.after(h.restore);
+    assert.equal(h.runRows().length, 0);
+    assert.equal(h.document.getElementById("selected-item-body").hidden, true);
+    assert.equal(h.requestsFor("/analysis-summaries?").length, 0);
+    assert.equal(h.text("selected-run-id"), "");
+});
+
+test("Task 5 review row, selected summary and header share the same formal case scope", async t => {
+    const h = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A"), runListItem("RUN-B", "WIN-B")]);
+    t.after(h.restore);
+    const data = task2Analysis(); await h.respondAnalysis("RUN-A", data.detail, data.fusion);
+    const header = h.document.getElementById("selected-run-heading");
+    const panel = h.document.getElementById("selected-item-body");
+    assert.equal(h.text("selected-run-target"), "WIN-A");
+    assert.equal(h.text("selected-item-target"), "WIN-A");
+    assert.deepEqual(header.dataset, { kind: "formal_run", runId: "RUN-A", entityId: "WIN-A" });
+    assert.deepEqual(header.dataset, panel.dataset);
+    assert.deepEqual(header.dataset, recentRunRow(h, "RUN-A").dataset);
+    h.runButton("RUN-B").click(); await h.flush();
+    assert.equal(h.text("selected-run-target"), "WIN-B");
+    assert.equal(h.text("selected-item-target"), "WIN-B");
+    assert.equal(h.text("selected-run-id"), "RUN-B");
+    assert.equal(header.dataset.entityId, "WIN-B");
+    assert.doesNotMatch(h.text("selected-item-headline"), /RUN-A/);
+});
+
+test("Task 5 review an unselected header never retains an old Run identifier", async t => {
+    const h = await startDashboardWithRuntime([], []); t.after(h.restore);
+    assert.equal(h.text("selected-run-target"), "선택 항목 없음");
+    assert.equal(h.text("selected-run-id"), "");
+    assert.equal(h.document.getElementById("selected-run-id-note").hidden, true);
+    assert.deepEqual(h.document.getElementById("selected-run-heading").dataset, { kind: "", runId: "", entityId: "" });
+});
+
+test("Task 5 review new selections open summary while refresh and same-case selection preserve the manual tab", async t => {
+    const h = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A"), runListItem("RUN-B", "WIN-B")]);
+    t.after(h.restore);
+    let data = task2Analysis(); await h.respondAnalysis("RUN-A", data.detail, data.fusion);
+    const summary = h.document.getElementById("dashboard-tab-summary");
+    const workflow = h.document.getElementById("dashboard-tab-workflow");
+    assert.equal(summary.getAttribute("aria-selected"), "true");
+    workflow.click(); h.refreshButton().click(); await h.flush();
+    await h.respondAnalysis("RUN-A", data.detail, data.fusion);
+    assert.equal(workflow.getAttribute("aria-selected"), "true");
+    h.runButton("RUN-A").click(); await h.flush();
+    await h.respondAnalysis("RUN-A", data.detail, data.fusion);
+    assert.equal(workflow.getAttribute("aria-selected"), "true");
+    h.runButton("RUN-B").click(); await h.flush();
+    assert.equal(summary.getAttribute("aria-selected"), "true");
+    workflow.click();
+    data = task2Analysis("RUN-B", "WIN-B", "DEC-B"); await h.respondAnalysis("RUN-B", data.detail, data.fusion);
+    assert.equal(workflow.getAttribute("aria-selected"), "true", "A user's tab change during loading is retained");
+});
+
+test("Task 5 review a late old body cannot replace the new header, quick view or detail scope", async t => {
+    const h = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A"), runListItem("RUN-B", "WIN-B")]);
+    t.after(h.restore);
+    const first = task2Analysis();
+    const request = h.requestsFor(buildRunDetailApiPath("RUN-A")).find(item => !item.settled);
+    let deliver; request.settled = true;
+    request.resolve({ ok: true, status: 200, json: () => new Promise(resolve => { deliver = resolve; }) });
+    await h.flush(); await h.respond(buildFusionEngineApiPath("RUN-A"), 200, first.fusion.body);
+    h.runButton("RUN-B").click(); await h.flush();
+    const second = task2Analysis("RUN-B", "WIN-B", "DEC-B"); await h.respondAnalysis("RUN-B", second.detail, second.fusion);
+    const before = [h.text("selected-run-target"), h.text("selected-item-target"), h.text("selected-run-id"), h.text("selected-run-judgment")];
+    deliver(first.detail.body); await h.flush();
+    assert.deepEqual([h.text("selected-run-target"), h.text("selected-item-target"), h.text("selected-run-id"), h.text("selected-run-judgment")], before);
+    assert.deepEqual(before.slice(0, 3), ["WIN-B", "WIN-B", "RUN-B"]);
+});
+
+test("Task 5 review a wrong-분석 response is rejected rather than shown under the selected title", async t => {
+    const h = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]); t.after(h.restore);
+    const data = task2Analysis("OTHER", "OTHER-HOST", "D");
+    await h.respondAnalysis("RUN-A", data.detail, data.fusion);
+    assert.equal(h.text("selected-run-target"), "WIN-A");
+    assert.doesNotMatch(h.text("selected-item-target"), /OTHER/);
+    assert.match(h.text("selected-run-status"), /불러오지 못했습니다/);
+    assert.doesNotMatch(h.text("selected-item-headline"), /의심 행위 탐지/);
+});
+
+test("Task 5 review short lists use a compact strip and Workflow controls live only in the detailed tab", async () => {
+    const html = await readFile(new URL("../../../src/incident_awareness/dashboard/ui/dashboard.html", import.meta.url), "utf8");
+    const css = await readFile(new URL("../../../src/incident_awareness/dashboard/ui/assets/dashboard-operator.css", import.meta.url), "utf8");
+    const sidebar = html.slice(html.indexOf('aria-labelledby="selected-item-heading"'), html.indexOf('aria-labelledby="selected-run-heading"'));
+    assert.doesNotMatch(sidebar, /id="workflow-next"|id="workflow-current"|id="workflow-alerts"|workflow-awareness-form/);
+    assert.match(sidebar, /id="selected-item-workflow-open"/);
+    const detailed = html.slice(html.indexOf('id="dashboard-panel-workflow"'));
+    for (const id of ["workflow-next", "workflow-current", "workflow-alerts", "workflow-awareness-form", "workflow-report-form", "kisa-panel"]) {
+        assert.ok(detailed.includes(`id="${id}"`), `${id} remains in detail`);
+    }
+    assert.match(css, /data-short-list="true"/);
+});
+
+// Task 6: evidence, score, records and Workflow areas wired through the real dashboard module.
+const TASK6_EVIDENCE_IDS = [...PROVENANCE_ELEMENT_IDS, "provenance-count", "provenance-retention-state", "provenance-region",
+    ...EVIDENCE_ELEMENT_IDS, "evidence-archive-state"];
+const task6Tab = (h) => ["summary", "replay", "evidence", "decision", "workflow"].find(
+    (name) => h.document.getElementById(`dashboard-tab-${name}`).getAttribute("aria-selected") === "true");
+function task6Alert(entityId = "WIN-A") {
+    const before = { version: 0, analyst_ack_time: null, evidence_reviewed_at: null, t_h: null, t_h_recorded_at: null,
+        report_choice: null, report_decided_at: null, report_reason: null };
+    const after = { ...before, version: 1, analyst_ack_time: "2026-10-21T01:00:00.000Z" };
+    return { alert_id: `ALERT-${entityId}`, run_id: "RUN-A", entity_id: entityId, decision_id: "DEC-A", detection_kind: "fusion",
+        issued_at: "2026-10-21T00:30:00.000Z", state: after, audit: [{ action_id: "ACT-1", alert_id: `ALERT-${entityId}`, version: 1,
+            idempotency_key: "key-1", actor_id: "local-demo-analyst", actor_kind: "unauthenticated_local_demo", action: "acknowledge",
+            recorded_at: "2026-10-21T01:00:00.000Z", command: { action: "acknowledge", expected_version: 0 },
+            previous_state: before, resulting_state: after }] };
+}
+
+test("Task 6 evidence overview shows stored retention, raw comparison and R1 no_archive side by side", async (t) => {
+    // Given
+    const h = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")], { extraElementIds: TASK6_EVIDENCE_IDS });
+    t.after(h.restore);
+    const { detail, fusion } = task2Analysis();
+    await h.respondAnalysis("RUN-A", detail, fusion);
+    // When
+    h.document.getElementById("dashboard-tab-evidence").click();
+    await h.flush();
+    await h.respond(evidencePath("RUN-A"), 200, evidencePayload({ runId: "RUN-A", availability: "no_archive" }));
+    await h.respond(provenancePath("RUN-A"), 200, task2Provenance());
+    // Then
+    const overview = ["provenance-count", "provenance-status", "provenance-retention-state", "evidence-archive-state"].map((id) => h.text(id));
+    assert.deepEqual(overview, ["2건", "원본 대조 통과 · 2/2건", "보관 원본 검증됨", "게시 아카이브 없음 · 원본 보관과 별개"]);
+    assert.doesNotMatch(overview.join(" "), /원본 없음|원본 전체/);
+    assert.equal(h.text("evidence-status"), "", "no_archive has no status sentence");
+    assert.equal(h.document.getElementById("provenance-region").hidden, false);
+    assert.equal(h.document.getElementById("evidence-region").hidden, true);
+    assert.equal(h.document.getElementById("provenance-list").childNodes.length, 2);
+    assert.equal(rawSummary(h), "원본 대조 통과 · 2/2건", "The analysis summary shares the same scoped state");
+});
+
+test("Task 6 the 기록 tab keeps analysis Decisions and human audit records apart and reuses loaded alerts", async (t) => {
+    // Given
+    const h = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(h.restore);
+    const { detail, fusion } = task3Analysis();
+    await h.respondAnalysis("RUN-A", detail, fusion);
+    const before = h.allRequests().length;
+    const pending = h.text("workflow-records-status");
+    // When
+    h.workflowOptions().onProgress({ runId: "RUN-A", entityId: "WIN-A", alerts: [task6Alert(), task6Alert("WIN-OTHER")], status: "", step: "", next: "" });
+    // Then
+    const decisions = h.text("decision-history-list");
+    const audits = h.text("workflow-records-list");
+    assert.match(decisions, /DEC-A/);
+    assert.doesNotMatch(decisions, /local-demo-analyst|담당자 확인 시각/);
+    // Review: one table row per stored action (time, action, actor, changed values); details on request.
+    const [row] = h.document.getElementById("workflow-records-list").childNodes[0].querySelectorAll(".dashboard-audit-row");
+    assert.deepEqual(row.childNodes.map((cell) => cell.textContent).slice(1, 3),
+        ["담당자 확인", "로컬 담당자로컬 실험 담당자 · 인증 계정 아님"]);
+    assert.match(row.childNodes[0].textContent, /KST기록 버전 v1$/);
+    assert.match(audits, /담당자 확인 시각: 미기록 → .*KST/);
+    assert.doesNotMatch(audits, /원본 기록/, "Raw records stay in the row detail");
+    assert.doesNotMatch(audits, /DEC-A|종합 판단/);
+    assert.equal(h.document.getElementById("workflow-records-list").childNodes.length, 1, "Only the selected target's alerts");
+    // Records shown: no count/order sentence above the table; the status line is used only for loading, empty and errors.
+    assert.equal(h.text("workflow-records-status"), "");
+    assert.notEqual(pending, h.text("workflow-records-status"));
+    assert.equal(h.allRequests().length, before, "The records tab starts no request of its own");
+    h.workflowOptions().onProgress({ runId: "RUN-A", entityId: "WIN-A", alerts: [], status: "" });
+    assert.equal(h.text("workflow-records-status"), "담당자 처리 기록 없음");
+    h.workflowOptions().onProgress({ runId: "RUN-A", entityId: null, alerts: null, status: "서버 오류: 같은 입력으로 재시도할 수 있습니다." });
+    assert.equal(h.text("workflow-records-status"), "서버 오류: 같은 입력으로 재시도할 수 있습니다.");
+    assert.equal(h.document.getElementById("workflow-records-list").childNodes.length, 0);
+});
+
+test("Task 6 cross-tab links and every new area read nothing extra and never write or send", async (t) => {
+    // Given
+    const h = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")], { extraElementIds: TASK6_EVIDENCE_IDS });
+    t.after(h.restore);
+    const { detail, fusion } = task3Analysis();
+    await h.respondAnalysis("RUN-A", detail, fusion);
+    const before = h.allRequests().length;
+    // When
+    h.document.getElementById("dashboard-tab-replay").click();
+    h.document.getElementById("replay-records-open").click();
+    const fromReplay = [task6Tab(h), h.document.activeElement === h.document.getElementById("dashboard-tab-decision")];
+    h.document.getElementById("records-workflow-open").click();
+    const fromRecords = task6Tab(h);
+    h.document.getElementById("workflow-records-open").click();
+    const fromWorkflow = task6Tab(h);
+    const afterLinks = h.allRequests().length;
+    for (const name of ["evidence", "decision", "workflow", "replay", "summary"]) {
+        h.document.getElementById(`dashboard-tab-${name}`).click();
+        await h.flush();
+    }
+    // Then
+    assert.deepEqual(fromReplay, ["decision", true]);
+    assert.equal(fromRecords, "workflow");
+    assert.equal(fromWorkflow, "decision");
+    assert.equal(afterLinks, before);
+    const all = h.allRequests();
+    assert.ok(all.every((request) => request.method === "GET"), JSON.stringify(all.filter((request) => request.method !== "GET")));
+    assert.equal(all.some((request) => /\/sync|report-drafts|report-snapshot|ai-report|kisa-forms|docx|\/actions|\/review/.test(request.url)), false);
+    assert.deepEqual(all.slice(before).map((request) => request.url).sort(), [evidencePath("RUN-A"), provenancePath("RUN-A")].sort());
+});
+
+test("Task 6 a Runtime poll keeps the 기록 tab, its rendered records and keyboard focus", async (t) => {
+    // Given
+    const h = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(h.restore);
+    const { detail, fusion } = task3Analysis();
+    await h.respondAnalysis("RUN-A", detail, fusion);
+    h.workflowOptions().onProgress({ runId: "RUN-A", entityId: "WIN-A", alerts: [task6Alert()], status: "" });
+    h.document.getElementById("dashboard-tab-decision").click();
+    const decisionNode = h.document.getElementById("decision-history-list").childNodes[0];
+    const auditNode = h.document.getElementById("workflow-records-list").childNodes[0];
+    const focused = decisionNode.querySelector(".dashboard-decision-id");
+    focused.focus();
+    // When: a poll, then the same stored alerts published again.
+    await h.poll([]);
+    h.workflowOptions().onProgress({ runId: "RUN-A", entityId: "WIN-A", alerts: [task6Alert()], status: "" });
+    // Then
+    assert.equal(task6Tab(h), "decision");
+    assert.strictEqual(h.document.getElementById("decision-history-list").childNodes[0], decisionNode);
+    assert.strictEqual(h.document.getElementById("workflow-records-list").childNodes[0], auditNode);
+    assert.strictEqual(h.document.activeElement, focused);
+});
+
+test("Review an opened audit row and its toggle focus survive a poll and an identical re-publication", async (t) => {
+    // Given
+    const h = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(h.restore);
+    const { detail, fusion } = task3Analysis();
+    await h.respondAnalysis("RUN-A", detail, fusion);
+    h.workflowOptions().onProgress({ runId: "RUN-A", entityId: "WIN-A", alerts: [task6Alert()], status: "" });
+    h.document.getElementById("dashboard-tab-decision").click();
+    const toggle = () => h.document.getElementById("workflow-records-list").querySelector(".dashboard-evidence-expand");
+    const detailRows = () => h.document.getElementById("workflow-records-list").querySelectorAll(".dashboard-evidence-detail-row");
+    const auditRegion = () => h.document.getElementById("workflow-records-list").querySelector(".dashboard-audit-region");
+    auditRegion().scrollLeft = 300;
+    // When
+    toggle().click();
+    const opened = toggle();
+    await h.poll([]);
+    h.workflowOptions().onProgress({ runId: "RUN-A", entityId: "WIN-A", alerts: [task6Alert()], status: "" });
+    // Then
+    assert.equal(opened.getAttribute("aria-expanded"), "true");
+    assert.strictEqual(h.document.activeElement, opened, "The re-rendered toggle keeps focus after opening");
+    assert.strictEqual(toggle(), opened, "Unchanged records are not rebuilt");
+    assert.equal(auditRegion().scrollLeft, 300, "Opening details and polling keep the audit table's horizontal position");
+    assert.equal(detailRows().length, 1);
+    assert.match(detailRows()[0].textContent, /원본 기록/);
+    toggle().click();
+    assert.equal(auditRegion().scrollLeft, 300, "Closing details keeps the same position");
+    h.runButton("RUN-A").click();
+    await h.flush();
+    h.workflowOptions().onProgress({ runId: "RUN-A", entityId: "WIN-A", alerts: [task6Alert()], status: "" });
+    assert.equal(detailRows().length, 0, "A new selection starts with every row closed");
+});
+
+test("Task 6 the score tab keeps stored transitions before the full score table and repeats no Decision", async (t) => {
+    // Given
+    const h = await startDashboardWithRuntime([], [runListItem("RUN-A", "WIN-A")]);
+    t.after(h.restore);
+    const { detail, fusion } = task3Analysis();
+    // When
+    await h.respondAnalysis("RUN-A", detail, fusion);
+    await h.respond(buildEventTimelineApiPath("RUN-A", 50, 0), 200, { items: [
+        { event_id: "EVT-1", timestamp: "2026-10-03T00:00:01Z", host_id: "WIN-A", event_type: "process_create" },
+        { event_id: "EVT-2", timestamp: "2026-10-03T00:00:02Z", host_id: "WIN-A", event_type: "network_connection" },
+        { event_id: "EVT-3", timestamp: "2026-10-03T00:00:03Z", host_id: "WIN-A", event_type: "network_connection" },
+    ], total: 3, limit: 50, offset: 0 });
+    // Then
+    const chart = h.document.getElementById("selected-run-chart").childNodes[0];
+    const order = chart.childNodes.map((node) => [...node.classNames].find((name) => /__svg|__records|__technical/.test(name))).filter(Boolean);
+    assert.deepEqual(order, ["fusion-score-chart__svg", "dashboard-replay-chart__records", "fusion-score-chart__technical"]);
+    assert.equal(chart.querySelector(".fusion-score-chart__svg").getAttribute("viewBox"), "0 0 960 180");
+    assert.match(chart.querySelector(".dashboard-replay-chart__records").textContent, /09:00:20\.000 KST — 탐지 구간 시작/);
+    assert.doesNotMatch(chart.textContent, /DEC-A/);
+    assert.match(chart.querySelector(".dashboard-replay-chart__judgment").textContent, /저장된 판단: 종합 판단 미완료/);
+    const kinds = h.document.getElementById("event-type-summary").childNodes.map((item) => [item.childNodes[0].textContent, item.childNodes[0].title, item.childNodes[1].textContent]);
+    assert.deepEqual(kinds, [["프로세스 생성", "process_create", "1"], ["네트워크 연결", "network_connection", "2"]]);
+});
+
+
+test("ISO prose clock display preserves precision and does not rewrite URLs, identifiers or quoted originals", async () => {
+    const {formatOperatorProse} = await import("../../../src/incident_awareness/dashboard/ui/assets/dashboard-contract.mjs");
+    const value = "관측 2026-10-03T00:00:00.123001Z · 다음 2026-10-03T00:00:00.123002+00:00";
+    assert.equal(formatOperatorProse(value),"관측 2026.10.03 09:00:00.123001 KST · 다음 2026.10.03 09:00:00.123002 KST");
+    assert.equal(formatOperatorProse("2026-10-03T15:00:00Z"),"2026.10.04 00:00:00 KST");
+    for (const raw of ['https://example.test/2026-10-03T00:00:00Z', 'ID-2026-10-03T00:00:00Z',
+        '{"timestamp":"2026-10-03T00:00:00Z"}', '2026-02-30T00:00:00Z', '2026-10-03T00:00:00', 'UNKNOWN']) {
+        assert.equal(formatOperatorProse(raw),raw);
+    }
+});
+
+test("Operators read 내부 인지시각, never the internal t_h name, while stored text and JSON keys stay intact", async () => {
+    const {formatOperatorProse, operatorAwarenessTerm} = await import("../../../src/incident_awareness/dashboard/ui/assets/dashboard-contract.mjs");
+    // Labels and prose stored before the wording change.
+    assert.equal(operatorAwarenessTerm("사고인지시점 (담당자 기록 t_h)"), "사고인지시점 (담당자 기록 내부 인지시각)");
+    assert.equal(operatorAwarenessTerm("담당자가 기록한 조직 내부 인지시각 t_h"), "담당자가 기록한 조직 내부 인지시각");
+    assert.equal(operatorAwarenessTerm("내부 인지시각 (t_h)"), "내부 인지시각");
+    assert.equal(operatorAwarenessTerm("t_h 시스템 기록시각"), "내부 인지시각 시스템 기록시각");
+    assert.equal(operatorAwarenessTerm("t_h는 미래 시각일 수 없습니다."), "내부 인지시각은 미래 시각일 수 없습니다.");
+    assert.equal(operatorAwarenessTerm("t_e는 조직 인지 시각 t_h가 아닙니다."), "t_e는 조직 인지시각이 아닙니다.");
+    // Identifiers and quoted keys are not prose.
+    for (const raw of ["t_h_recorded_at", "previous_t_h", '{"t_h":"2026-10-03T00:00:00Z"}', "path#/analysis/times/t_h_x"]) {
+        assert.equal(operatorAwarenessTerm(raw), raw);
+    }
+    assert.equal(formatOperatorProse("추가 확인: 담당자가 기록한 조직 내부 인지시각 t_h, 피해 규모"), "추가 확인: 담당자가 기록한 조직 내부 인지시각, 피해 규모");
+    assert.equal(operatorAwarenessTerm(null), null);
 });

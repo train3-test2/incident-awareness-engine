@@ -3,8 +3,8 @@
 const QUERY_MESSAGES = new Map([
     ["loading", "Event Timeline을 불러오는 중입니다."],
     ["success", "Event Timeline을 불러왔습니다."],
-    ["empty", "이 Run에 저장된 Event가 없습니다."],
-    ["run_not_found", "Run을 찾을 수 없습니다."],
+    ["empty", "이 분석에 저장된 Event가 없습니다."],
+    ["run_not_found", "분석을 찾을 수 없습니다."],
     ["error", "Event Timeline을 불러오지 못했습니다."],
 ]);
 

@@ -37,7 +37,7 @@ function createDetailField(label, value) {
 function renderEventMetadata(event) {
     eventDetailFields.replaceChildren(
         createDetailField("Event ID", event.event_id),
-        createDetailField("Run ID", event.run_id),
+        createDetailField("분석 ID", event.run_id),
         createDetailField("Timestamp", formatRunTimestamp(event.timestamp)),
         createDetailField("Host ID", event.host_id),
         createDetailField("Event Type", event.event_type),
@@ -91,7 +91,7 @@ function renderBackNavigation(runId) {
         ),
     );
     runDetailBackNavigation.replaceChildren(
-        createNavigationLink(buildRunDetailViewPath(runId), "Run Detail로 돌아가기"),
+        createNavigationLink(buildRunDetailViewPath(runId), "분석 상세로 돌아가기"),
     );
 }
 

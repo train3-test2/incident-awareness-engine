@@ -51,8 +51,8 @@ function formatIdentifierList(values) {
 
 function renderDecision(decision) {
     renderFields(historicalDecision, [
-        ["Decision ID", displayValue(decision.decision_id)],
-        ["Run ID", displayValue(decision.run_id)],
+        ["결정 ID", displayValue(decision.decision_id)],
+        ["분석 ID", displayValue(decision.run_id)],
         ["Entity ID", displayValue(decision.entity_id)],
         ["Fast Status", getStatusLabel(decision.fast_status)],
         ["Fusion Status", getStatusLabel(decision.fusion_status)],
@@ -105,7 +105,7 @@ function renderBackNavigation(runId) {
     }
     const link = document.createElement("a");
     link.href = buildRunDetailViewPath(runId);
-    link.textContent = "Run Detail로 돌아가기";
+    link.textContent = "분석 상세로 돌아가기";
     runDetailBackNavigation.append(link);
 }
 
@@ -126,21 +126,21 @@ function renderSuccess(payload) {
     const snapshot = payload.runtime_snapshot;
     if (snapshot === null) {
         runtimeSnapshotStatus.textContent = (
-            "저장된 Historical Runtime Snapshot이 없어 아래 Runtime 상세를 표시할 수 없습니다."
+            "저장된 당시 실행 보고이 없어 아래 실행 보고 상세를 표시할 수 없습니다."
         );
-        historicalDetectionStatus.textContent = "저장된 Historical Detection Runtime이 없습니다.";
-        historicalFusionStatus.textContent = "저장된 Historical Fusion Runtime이 없습니다.";
+        historicalDetectionStatus.textContent = "저장된 당시 규칙 분석 결과가 없습니다.";
+        historicalFusionStatus.textContent = "저장된 당시 증거 누적 분석이 없습니다.";
         historicalDetection.replaceChildren();
         historicalFusion.replaceChildren();
         return;
     }
 
     runtimeSnapshotStatus.textContent = (
-        "Historical Runtime Snapshot을 불러왔습니다. "
-        + "Detection과 Fusion 상세 값은 아래 Runtime 카드에서 확인할 수 있습니다."
+        "당시 실행 보고를 불러왔습니다. "
+        + "Detection과 Fusion 상세 값은 아래 실행 보고 카드에서 확인할 수 있습니다."
     );
-    historicalDetectionStatus.textContent = "Historical Detection Runtime을 불러왔습니다.";
-    historicalFusionStatus.textContent = "Historical Fusion Runtime을 불러왔습니다.";
+    historicalDetectionStatus.textContent = "당시 규칙 분석 결과를 불러왔습니다.";
+    historicalFusionStatus.textContent = "당시 증거 누적 분석을 불러왔습니다.";
     renderDetectionRuntime(snapshot.detection_result);
     renderFusionRuntime(snapshot.fusion_result);
 }

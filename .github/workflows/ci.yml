@@ -34,8 +34,16 @@ jobs:
       - run: uv run pytest
       - run: >-
           node --test
+          tests/dashboard/ui/test_dashboard_operator_contract.mjs
+          tests/dashboard/ui/test_dashboard_workflow_controller.mjs
+          tests/dashboard/ui/test_dashboard_kisa_controller.mjs
+          tests/dashboard/ui/test_dashboard_runtime_context.mjs
+          tests/dashboard/ui/test_dashboard_ingest_controller.mjs
+          tests/dashboard/ui/test_offline_ml_contract.mjs
+          tests/dashboard/ui/test_live_telemetry_lab_controls.mjs
           tests/dashboard/ui/test_dashboard_evidence_contract.mjs
           tests/dashboard/ui/test_dashboard_evidence_controller.mjs
+          tests/dashboard/ui/test_dashboard_provenance_controller.mjs
           tests/dashboard/ui/test_dashboard_stage_timing_contract.mjs
           tests/dashboard/ui/test_dashboard_stage_timing_controller.mjs
           tests/dashboard/ui/test_dashboard_contract.mjs
@@ -52,6 +60,8 @@ jobs:
           tests/dashboard/ui/test_evaluation_contract.mjs
           tests/dashboard/ui/test_fusion_engine_contract.mjs
           tests/dashboard/ui/test_dashboard_replay_chart.mjs
+          tests/dashboard/ui/test_dashboard_analysis_list.mjs
+          tests/dashboard/ui/test_dashboard_records.mjs
       - name: Scan secrets with gitleaks
         run: |
           docker run --rm \

@@ -220,10 +220,10 @@ test("query messages cover loading, success, empty, and error states", () => {
 
     // Then
     assert.deepEqual(messages, [
-        "Runtime 정보를 불러오는 중입니다.",
-        "Runtime 3건을 불러왔습니다.",
-        "표시할 Runtime 정보가 없습니다.",
-        "Runtime 정보를 불러오지 못했습니다.",
+        "실행 보고 정보를 불러오는 중입니다.",
+        "실행 보고 3건을 불러왔습니다.",
+        "표시할 실행 보고 정보가 없습니다.",
+        "실행 보고 정보를 불러오지 못했습니다.",
     ]);
 });
 
@@ -256,7 +256,7 @@ test("empty query success clears the visible Runtime items", () => {
     // Then
     assert.deepEqual(result.items, []);
     assert.equal(result.telemetryAvailable, true);
-    assert.equal(result.message, "표시할 Runtime 정보가 없습니다.");
+    assert.equal(result.message, "표시할 실행 보고 정보가 없습니다.");
     assert.deepEqual(previousItems, previousSnapshot);
 });
 
@@ -271,7 +271,7 @@ test("query error retains the last successful Runtime items", () => {
     // Then
     assert.strictEqual(result.items, previousItems);
     assert.equal(result.telemetryAvailable, false);
-    assert.equal(result.message, "Runtime 정보를 불러오지 못했습니다.");
+    assert.equal(result.message, "실행 보고 정보를 불러오지 못했습니다.");
     assert.deepEqual(previousItems, previousSnapshot);
 });
 
@@ -341,7 +341,8 @@ test("Operations DOM renderer links completed Runs and leaves running Runs as te
         );
         const moduleSource = (await readFile(moduleUrl, "utf8"))
             .replace("./operations-contract.mjs", operationsContractUrl.href)
-            .replace("./run-detail-contract.mjs", runDetailContractUrl.href);
+            .replace("./run-detail-contract.mjs", runDetailContractUrl.href)
+            .replace("./dashboard-contract.mjs", new URL("./dashboard-contract.mjs", moduleUrl).href);
         const moduleDataUrl = `data:text/javascript;charset=utf-8,${encodeURIComponent(
             moduleSource,
         )}`;

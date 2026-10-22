@@ -7,6 +7,7 @@ import {
     getStageLabel,
     resolveRuntimeQueryState,
 } from "./operations-contract.mjs";
+import { formatRunTimestamp } from "./dashboard-contract.mjs";
 import { buildRunDetailViewPath } from "./run-detail-contract.mjs";
 
 const RUNTIME_ENDPOINT = "/operations/runtime";
@@ -35,10 +36,10 @@ function formatTimestamp(value) {
     if (Number.isNaN(date.getTime())) {
         return String(value);
     }
-    return date.toLocaleString("ko-KR", { timeZoneName: "short" });
+    return formatRunTimestamp(value);
 }
 
-function createField(label, value) {
+function createField(label, value, original = null) {
     const field = document.createElement("div");
     field.classList.add("runtime-field");
 
@@ -49,6 +50,7 @@ function createField(label, value) {
     const description = document.createElement("dd");
     description.classList.add("runtime-field__value");
     description.textContent = value;
+    if (original !== null) description.title = `원본 ${original}`;
 
     field.append(term, description);
     return field;
@@ -102,10 +104,10 @@ export function createRuntimeCard(runtime, telemetryAvailable) {
         createField("현재 단계", getStageLabel(runtime.current_stage)),
         createField("진행", progress.processed),
         createField("남은 항목", progress.remaining),
-        createField("시작", formatTimestamp(runtime.started_at)),
-        createField("단계 시작", formatTimestamp(runtime.stage_started_at)),
-        createField("마지막 갱신", formatTimestamp(runtime.updated_at)),
-        createField("완료", formatTimestamp(runtime.completed_at)),
+        createField("시작", formatTimestamp(runtime.started_at), runtime.started_at),
+        createField("단계 시작", formatTimestamp(runtime.stage_started_at), runtime.stage_started_at),
+        createField("마지막 갱신", formatTimestamp(runtime.updated_at), runtime.updated_at),
+        createField("완료", formatTimestamp(runtime.completed_at), runtime.completed_at),
         createField("실패 단계", getStageLabel(runtime.failed_stage)),
     );
 

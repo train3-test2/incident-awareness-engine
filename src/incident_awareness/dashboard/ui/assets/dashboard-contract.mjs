@@ -8,26 +8,44 @@ import {
 
 export const NOT_APPLICABLE = "-";
 
+export function buildStoredFusionContext(fusion, trace) {
+    if (fusion == null) return null;
+    const sameTrace = trace != null && trace.run_id === fusion.run_id
+        && trace.entity_id === fusion.entity_id
+        && trace.scoring_config_version === fusion.scoring_config_version;
+    const measured = sameTrace && Array.isArray(trace.points) && trace.points.length > 0
+        && trace.points.every(point => Number.isFinite(point.score) && point.score >= 0 && point.score <= 1);
+    const evidenceIds = Array.isArray(fusion.contributing_evidence_ids)
+        && fusion.contributing_evidence_ids.every(id => typeof id === "string" && id.trim() !== "")
+        ? fusion.contributing_evidence_ids : null;
+    return {
+        traceMax: measured ? trace.points.reduce((max, point) => Math.max(max, point.score), 0) : null,
+        decisionScore: Number.isFinite(fusion.score_at_decision) ? fusion.score_at_decision : null,
+        episodeCount: Array.isArray(fusion.fusion_episodes) ? fusion.fusion_episodes.length : null,
+        evidenceIds,
+    };
+}
+
 const RUN_TYPE_LABELS = new Map([
     ["attack", "공격"],
     ["normal", "정상"],
 ]);
 const OVERVIEW_MESSAGES = new Map([
-    ["loading", "Recent Runs를 불러오는 중입니다."],
-    ["success", "Recent Runs를 불러왔습니다."],
-    ["empty", "최근 Run이 없습니다."],
-    ["error", "Recent Runs를 불러오지 못했습니다."],
+    ["loading", "최근 분석을 불러오는 중입니다."],
+    ["success", "최근 분석을 불러왔습니다."],
+    ["empty", "최근 분석이 없습니다."],
+    ["error", "최근 분석을 불러오지 못했습니다."],
 ]);
 const OVERVIEW_TOTAL_MESSAGES = new Map([
-    ["loading", "Total Runs를 불러오는 중입니다."],
-    ["success", "Total Runs를 불러왔습니다."],
-    ["empty", "Total Runs를 불러왔습니다."],
-    ["error", "Total Runs를 불러오지 못했습니다."],
+    ["loading", "전체 분석을 불러오는 중입니다."],
+    ["success", "전체 분석을 불러왔습니다."],
+    ["empty", "전체 분석을 불러왔습니다."],
+    ["error", "전체 분석을 불러오지 못했습니다."],
 ]);
 const RUN_LIST_MESSAGES = new Map([
-    ["loading", "Run 목록을 불러오는 중입니다."],
-    ["empty", "표시할 Run이 없습니다."],
-    ["error", "Run 목록을 불러오지 못했습니다."],
+    ["loading", "분석 목록을 불러오는 중입니다."],
+    ["empty", "표시할 분석이 없습니다."],
+    ["error", "분석 목록을 불러오지 못했습니다."],
 ]);
 const PIPELINE_RUNTIME_STATUSES = new Set(["running", "completed", "failed"]);
 export const PIPELINE_STAGE_ORDER = Object.freeze([
@@ -64,6 +82,49 @@ export function getRunTypeLabel(runType) {
     return RUN_TYPE_LABELS.get(runType) ?? String(runType);
 }
 
+// Operator clocks are KST regardless of the browser zone. Nonzero fractional digits
+// remain visible, so two observations in the same second never collapse to one label.
+export function formatOperatorTimestamp(value, { missing = "미확정", precise = false, zone = true } = {}) {
+    if (value == null || value === "") return missing;
+    if (typeof value !== "string" || !/(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) return "시각 확인 필요";
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "시각 확인 필요";
+    const kst = new Date(date.getTime() + 9 * 60 * 60 * 1000).toISOString();
+    const fraction = value.match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/i)?.[1] ?? "";
+    const digits = precise ? (fraction || "000").padEnd(3, "0") : /[1-9]/.test(fraction) ? fraction : "";
+    return `${kst.slice(0, 10).replaceAll("-", ".")} ${kst.slice(11, 19)}${digits ? `.${digits}` : ""}${zone ? " KST" : ""}`;
+}
+
+// Particles after a word ending in a consonant (인지시각).
+const AWARENESS_PARTICLES = new Map([["는", "은"], ["가", "이"], ["를", "을"], ["와", "과"], ["로", "으로"]]);
+
+// Presentation only: operators never see the internal field name t_h. Labels and prose stored before
+// the wording change still contain it; the stored text itself is never rewritten.
+export function operatorAwarenessTerm(value) {
+    if (typeof value !== "string") return value;
+    const particle = (after) => after ? AWARENESS_PARTICLES.get(after) : "";
+    return value
+        // "내부 인지시각 (t_h)", "조직 내부 인지시각 t_h", "인지 시각 t_h": the name already says it.
+        .replace(/인지\s?시각\s*(?:\(t_h\)|t_h(?![A-Za-z0-9_]))([는가를와]|로)?/g, (_, after) => `인지시각${particle(after)}`)
+        // Quoted keys ("t_h" in JSON) and identifiers such as t_h_recorded_at stay as they are.
+        .replace(/(?<![A-Za-z0-9_"'])t_h(?![A-Za-z0-9_"'])([는가를와]|로)?/g, (_, after) => `내부 인지시각${particle(after)}`);
+}
+
+// Presentation only: convert standalone ISO instants in human-readable prose.
+// URLs, identifiers, quoted JSON, input values and stored records are never rewritten.
+export function formatOperatorProse(value) {
+    if (typeof value !== "string") return value;
+    return operatorAwarenessTerm(value.replace(/(^|[\s(（])(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2}))(?=$|[\s)）,.;])/g,
+        (match, boundary, timestamp) => {
+            const day = new Date(`${timestamp.slice(0,10)}T00:00:00Z`);
+            const valid = Number.isFinite(day.getTime()) && day.toISOString().slice(0,10) === timestamp.slice(0,10)
+                && Number(timestamp.slice(11,13)) < 24 && Number(timestamp.slice(14,16)) < 60
+                && Number(timestamp.slice(17,19)) < 60;
+            const label = valid ? formatOperatorTimestamp(timestamp) : "시각 확인 필요";
+            return label === "시각 확인 필요" ? match : boundary + label;
+        }));
+}
+
 export function formatRunTimestamp(value) {
     if (value === null || value === undefined) {
         return NOT_APPLICABLE;
@@ -73,7 +134,8 @@ export function formatRunTimestamp(value) {
     if (Number.isNaN(timestamp.getTime())) {
         return String(value);
     }
-    return timestamp.toLocaleString("ko-KR", { timeZoneName: "short" });
+    // Every dashboard clock is KST, whatever time zone the browser runs in.
+    return formatOperatorTimestamp(value);
 }
 
 export function getOverviewQueryMessage(queryState) {
@@ -94,7 +156,7 @@ function getOverviewTotalQueryMessage(queryState) {
 
 function getRunListQueryMessage(queryState, itemCount = 0) {
     if (queryState === "success") {
-        return `Run ${itemCount}건을 불러왔습니다.`;
+        return `분석 ${itemCount}건을 불러왔습니다.`;
     }
     const message = RUN_LIST_MESSAGES.get(queryState);
     if (message === undefined) {
@@ -215,7 +277,7 @@ export function resolveRunListQueryState(previousState, result) {
 // Run search covers only the Runs already fetched by GET /runs?limit=20; it never queries
 // the server and never reorders or replaces the fetched list.
 export const RUN_SEARCH_FIELDS = Object.freeze(["run_id", "target_host", "scenario_id"]);
-const RUN_SEARCH_NO_MATCH_MESSAGE = "현재 조회된 Run에서 일치하는 결과가 없습니다.";
+const RUN_SEARCH_NO_MATCH_MESSAGE = "현재 조회된 분석에서 일치하는 결과가 없습니다.";
 
 function normalizeRunSearchQuery(query) {
     if (typeof query !== "string") {
@@ -288,6 +350,19 @@ export function resolveRunListVisibility(
     };
 }
 
+// Previous/next follow the list as currently searched and filtered; the 5-row collapse is only a view.
+// The list is newest first, so "previous" is the next older row.
+export function resolveAdjacentRuns(runItems, query, runType, selectedRunId) {
+    const visibility = resolveRunListVisibility(runItems, query, true, 0, selectedRunId, runType);
+    const shown = runItems.filter((_, index) => visibility.visible[index]);
+    const index = shown.findIndex((run) => run?.run_id === selectedRunId);
+    return {
+        previous: index < 0 ? null : shown[index + 1]?.run_id ?? null,
+        next: index <= 0 ? null : shown[index - 1].run_id,
+        selectedShown: index >= 0,
+    };
+}
+
 export function getRunListVisibilityMessage(visibility, selectedRunId) {
     if (visibility.totalCount === 0) {
         return "";
@@ -295,7 +370,7 @@ export function getRunListVisibilityMessage(visibility, selectedRunId) {
     if (visibility.runType !== "all") {
         const result = visibility.visibleCount === 0
             ? RUN_SEARCH_NO_MATCH_MESSAGE
-            : `필터 결과 ${visibility.visibleCount}건 / 조회된 Run ${visibility.totalCount}건`;
+            : `필터 결과 ${visibility.visibleCount}건 / 조회된 분석 ${visibility.totalCount}건`;
         return `${result} · 유형 ${visibility.runType} · 조회된 최대 20건 범위`
             + (visibility.selectedHidden ? ` · 선택 유지: ${selectedRunId} (필터 결과 밖)` : "");
     }
@@ -305,7 +380,7 @@ export function getRunListVisibilityMessage(visibility, selectedRunId) {
     }
     const result = visibility.visibleCount === 0
         ? RUN_SEARCH_NO_MATCH_MESSAGE
-        : `검색 결과 ${visibility.visibleCount}건 / 조회된 Run ${visibility.totalCount}건`;
+        : `검색 결과 ${visibility.visibleCount}건 / 조회된 분석 ${visibility.totalCount}건`;
     return result
         + (visibility.selectedHidden ? ` · 선택 유지: ${selectedRunId} (검색 결과 밖)` : "");
 }
@@ -387,7 +462,7 @@ export function resolveRuntimeSummaryQueryState(previousState, result) {
     throw new RangeError(`Unknown Runtime Summary query result kind: ${result.kind}`);
 }
 
-export function buildPipelineStagePresentation(runtime, telemetryAvailable) {
+export function buildPipelineStagePresentation(runtime, telemetryAvailable, stageRecords = null) {
     if (runtime !== null && (typeof runtime !== "object" || Array.isArray(runtime))) {
         throw new TypeError("Selected Runtime must be an object or null");
     }
@@ -397,9 +472,8 @@ export function buildPipelineStagePresentation(runtime, telemetryAvailable) {
 
     return PIPELINE_STAGE_ORDER.map((stage) => {
         let state = "unknown";
-        if (runtime?.status === "completed") {
-            state = "completed";
-        } else if (runtime?.status === "failed" && runtime.failed_stage === stage) {
+        const measured = stageRecords?.findLast((record) => record.stage === stage);
+        if (runtime?.status === "failed" && runtime.failed_stage === stage) {
             state = "failed";
         } else if (runtime?.status === "running" && runtime.current_stage === stage) {
             if (!telemetryAvailable) {
@@ -407,14 +481,44 @@ export function buildPipelineStagePresentation(runtime, telemetryAvailable) {
             } else {
                 state = runtime.is_stale ? "stale" : "current";
             }
+        } else if (runtime !== null && measured !== undefined) {
+            state = measured.outcome === "failed" ? "failed"
+                : measured.outcome === "completed" ? "completed" : "unknown";
         }
         return {
             stage,
-            stageLabel: getStageLabel(stage),
+            stageLabel: stage === "fusion" ? "증거 누적 분석"
+                : stage === "fast_handoff" ? "즉시 분석 인계" : getStageLabel(stage),
             state,
             stateLabel: PIPELINE_STAGE_STATE_LABELS.get(state),
         };
     });
+}
+
+/**
+ * One-line system status for the stage cell, with a tone for its status mark. Counts only stored report
+ * states; a missing report or an unknown stage is never shown as completed, failed or not executed, and
+ * no denominator is implied because Standalone and First Cycle executions report different operation sets.
+ * Tones: neutral (loading), none (nothing to show), reported, warning (stale), error (query or stage failure).
+ */
+export function summarizePipelineStages(stages, { hasRuntime, queryState = "success", readFailed = false, unconfirmed = false }) {
+    if (queryState === "loading") return { text: "확인 중", tone: "neutral" };
+    if (queryState === "not_ready") return { text: "조회 미지원", tone: "none" };
+    if (queryState === "error") return { text: "조회 실패", tone: "error" };
+    if (readFailed) return { text: "단계 계측 조회 실패", tone: "error" };
+    // A report outside the queried range (or without an Entity) may exist; it is not "no report".
+    if (unconfirmed) return { text: "단계 보고 확인 불가", tone: "none" };
+    if (!hasRuntime) return { text: "처리 단계 기록 없음", tone: "none" };
+    const count = (state) => stages.filter((stage) => stage.state === state).length;
+    const parts = [];
+    if (count("completed") > 0) parts.push(`완료 보고 ${count("completed")}단계`);
+    if (count("failed") > 0) parts.push(`실패 보고 ${count("failed")}단계`);
+    if (count("stale") > 0) parts.push("마지막 보고 오래됨");
+    else if (count("current") > 0) parts.push("진행 단계 보고");
+    if (parts.length === 0) return { text: "완료 보고 없음", tone: "none" };
+    if (count("unknown") > 0) parts.push("일부 단계 보고 없음");
+    const tone = count("failed") > 0 ? "error" : count("stale") > 0 ? "warning" : "reported";
+    return { text: parts.join(" · "), tone };
 }
 
 export function getStoppingTraceAvailability(stoppingTrace) {
@@ -703,7 +807,7 @@ export function getSelectedRuntimeOutsideQueryLabel(tracking) {
         return null;
     }
     return tracking.queryFailed
-        ? "Runtime API 조회 실패 · 조회 범위 밖 항목의 현재 상태 확인 불가"
+        ? "실행 보고 API 조회 실패 · 조회 범위 밖 항목의 현재 상태 확인 불가"
         : "최근 5건 조회 범위 밖 · 현재 상태 확인 불가 (완료/실패로 추정하지 않음)";
 }
 
@@ -714,13 +818,13 @@ export function getSelectedRuntimeRecheckMessage(tracking) {
     }
     if (tracking.queryFailed) {
         return (
-            "Runtime API 조회에 실패해 조회 범위를 벗어난 선택 Runtime의 상태를 확인할 수 없습니다. "
-            + "저장 결과 재확인은 Runtime 조회가 복구되면 이어서 진행합니다."
+            "실행 보고 API 조회에 실패해 조회 범위를 벗어난 선택 실행 보고의 상태를 확인할 수 없습니다. "
+            + "저장 결과 재확인은 실행 보고 조회가 복구되면 이어서 진행합니다."
         );
     }
     const limit = SELECTED_RUNTIME_RECHECK_POLL_THRESHOLDS.length;
     const outsideMessage = (
-        "선택한 Runtime이 최근 5건 조회 범위를 벗어나 현재 상태를 확인할 수 없습니다."
+        "선택한 실행 보고이 최근 5건 조회 범위를 벗어나 현재 상태를 확인할 수 없습니다."
     );
     return tracking.recheckAttempts >= limit
         ? `${outsideMessage} 저장 결과 재확인 ${limit}회를 마쳤지만 아직 결과가 없습니다. `
@@ -757,22 +861,22 @@ export function getSelectedAnalysisScope(
     if (selectedRunId === null) {
         return {
             scope: "none",
-            message: "Runtime 또는 Run 목록에서 항목을 선택하면 조회 범위를 표시합니다.",
+            message: "실행 보고 또는 분석 목록에서 항목을 선택하면 조회 범위를 표시합니다.",
         };
     }
     if (selectedEntityId === null) {
         return {
             scope: "run",
             message: analysisTargetHost === null
-                ? "Run 목록 선택: run_id 범위입니다. 저장 분석은 RunMetadata.target_host 기준입니다."
-                : "Run 목록 선택: run_id 범위입니다. 저장 분석 대상은 "
+                ? "분석 목록 선택: run_id 범위입니다. 저장 분석은 RunMetadata.target_host 기준입니다."
+                : "분석 목록 선택: run_id 범위입니다. 저장 분석 대상은 "
                     + `RunMetadata.target_host ${analysisTargetHost}입니다.`,
         };
     }
     if (analysisTargetHost === null) {
         return {
             scope: "runtime_entity_unconfirmed",
-            message: `Runtime 선택: Entity ${selectedEntityId}. 저장 분석은 run_id 기준 `
+            message: `실행 보고 선택: Entity ${selectedEntityId}. 저장 분석은 run_id 기준 `
                 + "RunMetadata.target_host 결과이며 대상 Host를 확인하지 못해 "
                 + `${selectedEntityId} 결과로 간주하지 않습니다.`,
         };
@@ -780,13 +884,13 @@ export function getSelectedAnalysisScope(
     if (analysisTargetHost === selectedEntityId) {
         return {
             scope: "runtime_entity_match",
-            message: `Runtime 선택: Entity ${selectedEntityId}. 저장 분석 대상 `
+            message: `실행 보고 선택: Entity ${selectedEntityId}. 저장 분석 대상 `
                 + `RunMetadata.target_host도 ${analysisTargetHost}입니다.`,
         };
     }
     return {
         scope: "runtime_entity_mismatch",
-        message: `Runtime 선택: Entity ${selectedEntityId}. 아래 저장 분석은 `
+        message: `실행 보고 선택: Entity ${selectedEntityId}. 아래 저장 분석은 `
             + `RunMetadata.target_host ${analysisTargetHost} 결과이며 `
             + `${selectedEntityId} 결과가 아닙니다.`,
     };
@@ -837,6 +941,15 @@ function getSelectedRunStatusTransition(
     );
     const next = findSelectedRuntime(nextRuntimeItems, selectedRunId, selectedEntityId);
     return previous?.status === "running" ? next?.status ?? null : null;
+}
+
+// A completed execution may first appear between polls. Reconcile the stored Run index
+// once for that terminal identity, independently of the current selection.
+export function shouldRefreshStoredRunIndex(previousItems, nextItems) {
+    return nextItems.some((next) => next.status === "completed"
+        && !previousItems.some((previous) => previous.status === "completed"
+            && previous.run_id === next.run_id && previous.entity_id === next.entity_id
+            && previous.execution_id === next.execution_id));
 }
 
 export function shouldRefreshSelectedRunAnalysis(
@@ -926,4 +1039,11 @@ export function getSelectedAnalysisState(
         return runtimeStatus === "running" ? "waiting" : "missing";
     }
     return "available";
+}
+
+// One formal-case scope for row, quick view and header; runtime execution scope remains separate.
+export function getStoredCaseScope(runId, runItems, analysisEntityId = null, runtimeEntityId = null) {
+    if (!runId) return null;
+    const run = runItems.find(item => item.run_id === runId && (item.kind == null || item.kind === "formal_run"));
+    return { kind: "formal_run", runId, entityId: run?.target_host ?? analysisEntityId ?? runtimeEntityId ?? null };
 }

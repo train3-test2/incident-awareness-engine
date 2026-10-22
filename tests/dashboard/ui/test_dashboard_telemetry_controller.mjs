@@ -113,6 +113,86 @@ function fakeTimers() {
     };
 }
 
+test("Main cards keep one visible legend and move observation detail without losing accessibility", async () => {
+    // Given: a minimal main-only DOM. Standalone documents continue using the original fake DOM.
+    class MainNode extends FakeNode {
+        get childNodes() { return this.children; }
+        append(...nodes) { super.append(...nodes); for (const node of nodes) node.parent = this; }
+        replaceChildren(...nodes) { super.replaceChildren(...nodes); for (const node of nodes) node.parent = this; }
+        remove() { if (this.parent) this.parent.children = this.parent.children.filter(node => node !== this); }
+        querySelector(selector) {
+            const parts = selector.split(" ");
+            if (parts.length > 1) return this.querySelector(parts[0])?.querySelector(parts.slice(1).join(" ")) ?? null;
+            const match = node => selector.startsWith(".")
+                ? node.classes.has(selector.slice(1)) || (node.getAttribute("class") ?? "").split(" ").includes(selector.slice(1))
+                : node.tagName === selector;
+            for (const child of this.children) {
+                if (match(child)) return child;
+                const found = child.querySelector(selector);
+                if (found) return found;
+            }
+            return null;
+        }
+    }
+    const doc = makeDocument();
+    for (const id of elementIds) doc.elements.set(id, new MainNode("div"));
+    doc.elements.set("dashboard-view", new MainNode("main"));
+    doc.createElement = name => new MainNode(name);
+    doc.createElementNS = (_, name) => new MainNode(name);
+    doc.createTextNode = text => { const node = new MainNode("text"); node.textContent = text; return node; };
+    const summaries = [];
+    for (const kind of ["throughput", "latency"]) {
+        const disclosure = new MainNode("details"), summary = new MainNode("summary");
+        disclosure.append(summary); summaries.push(summary);
+        doc.elements.get(`telemetry-${kind}-details`).closest = () => disclosure;
+        doc.elements.get(`telemetry-${kind}-chart`).clientWidth = kind === "throughput" ? 700 : 350;
+    }
+    let fail = false;
+    let response = payload();
+    const timers = fakeTimers();
+    const controller = createDashboardTelemetryController(doc, { ...timers,
+        fetchImpl: async () => fail ? { ok: false } : { ok: true, json: async () => response },
+    });
+    // When
+    await controller.start();
+    await controller.poll();
+    // Then
+    assert.ok(summaries.every(summary => summary.children.length === 1));
+    assert.ok(summaries.every(summary => summary.children[0].getAttribute("role") === "list"));
+    const frame = doc.elements.get("telemetry-throughput-chart");
+    assert.equal(frame.querySelector(".dashboard-telemetry-chart__observation"), null);
+    assert.match(frame.querySelector("desc").textContent, /관측 버킷/);
+    assert.match(doc.elements.get("telemetry-throughput-details").textContent, /관측 버킷/);
+    assert.match(doc.elements.get("telemetry-latency-chart").querySelector("svg").getAttribute("viewBox"), /78$/);
+    const mean = doc.elements.get("telemetry-latency-summary");
+    assert.equal(mean.textContent, "0.775 ms");
+    assert.match(mean.getAttribute("title"), /0\.775214 ms/);
+    const totals = doc.elements.get("telemetry-throughput-summary");
+    assert.deepEqual(totals.children.filter(node => node.classes.has("dashboard-throughput-total-row"))
+        .map(node => node.getAttribute("aria-label")), ["최근 60초 입력 수락 2건", "최근 60초 처리 완료 2건"]);
+    assert.equal(totals.textContent, "입력 2건 / 처리 2건");
+    response.points[0].processing_latency_mean_ms = 0.000000123;
+    response.recent_60s_summary.processing_latency_mean_ms = 0.000000123;
+    await controller.poll();
+    assert.equal(mean.textContent, "1.2e-7 ms");
+    assert.match(mean.getAttribute("aria-label"), /1\.23e-7 ms/);
+    response.points[0].processing_latency_mean_ms = 0;
+    response.recent_60s_summary.processing_latency_mean_ms = 0;
+    await controller.poll();
+    assert.equal(mean.textContent, "0 ms");
+    response = withoutCurrentSamples(payload());
+    await controller.poll();
+    assert.equal(mean.textContent, "미관측");
+    assert.equal(mean.getAttribute("title"), null);
+    assert.equal(totals.textContent, "입력 미관측 / 처리 미관측");
+    // When / Then: a failed query removes the visible legend and stale measurements.
+    fail = true;
+    await controller.poll();
+    assert.ok(summaries.every(summary => summary.children.length === 0));
+    assert.equal(doc.elements.get("telemetry-throughput-summary").textContent, "조회 실패");
+    controller.stop();
+});
+
 function payload() {
     return {
         schema_version: "pipeline_telemetry_read_v1",
@@ -144,6 +224,34 @@ function payload() {
     };
 }
 
+test("Operator compact metrics distinguish no observations, real zero and returning samples", async () => {
+    // Given
+    const doc = makeDocument();
+    let response = withoutCurrentSamples(payload());
+    const controller = createDashboardTelemetryController(doc, {
+        ...fakeTimers(), fetchImpl: async () => ({ok: true, json: async () => response}),
+    });
+    // When / Then: missing is compact, never a zero-valued chart.
+    await controller.start();
+    assert.equal(doc.elements.get("telemetry-throughput-chart").getAttribute("data-empty"), "true");
+    assert.equal(doc.elements.get("telemetry-latency-chart").getAttribute("data-empty"), "true");
+    // When / Then: genuine measured zero remains an observed chart.
+    response = payload();
+    response.points[0].input_accepted_count = 1;
+    response.points[0].processing_completed_count = 0;
+    response.points[0].processing_latency_sample_count = 0;
+    response.points[0].processing_latency_mean_ms = null;
+    Object.assign(response.recent_60s_summary, {input_accepted_count:1,processing_completed_count:0,processing_latency_sample_count:0,processing_latency_mean_ms:null});
+    await controller.poll();
+    assert.equal(doc.elements.get("telemetry-throughput-chart").getAttribute("data-empty"), "false");
+    assert.equal(doc.elements.get("telemetry-latency-chart").getAttribute("data-empty"), "true");
+    assert.match(doc.elements.get("telemetry-throughput-summary").textContent, /처리 0건/);
+    response = payload();
+    await controller.poll();
+    assert.equal(doc.elements.get("telemetry-latency-chart").getAttribute("data-empty"), "false");
+    controller.stop();
+});
+
 function descendants(node, tagName) {
     return node.children.flatMap((child) => [
         ...(child.tagName === tagName ? [child] : []),
@@ -168,13 +276,13 @@ function withoutCurrentSamples(response, { last = null, quality = "no_samples", 
 for (const [name, alter, label, tone] of [
     ["recent", () => {}, "최근 관측", "observed"],
     ["stale", (p) => { p.freshness.status = "stale"; }, "오래된 관측", "warning"],
-    ["no history", (p) => withoutCurrentSamples(p), "관측 이력 없음", "neutral"],
+    ["no history", (p) => withoutCurrentSamples(p), "조회 구간 미관측", "neutral"],
     ["partial", (p) => { p.observation_quality.status = "partial"; }, "부분 관측 · 최근", "warning"],
     ["partial stale", (p) => { p.observation_quality.status = "partial"; p.freshness.status = "stale"; }, "부분 관측 · 오래됨", "warning"],
     ["unknown", (p) => { p.freshness.status = "unknown"; }, "최근성 불명", "neutral"],
     ["partial without samples", (p) => withoutCurrentSamples(p, { quality: "partial" }), "부분 관측 · 최근성 불명", "warning"],
     ["historical outside the window", (p) => withoutCurrentSamples(p, { last: "2026-10-15T04:00:00.000Z", freshness: "stale" }), "구간 미관측 · 오래됨", "warning"],
-    ["observed quality without buckets", (p) => withoutCurrentSamples(p, { quality: "observed" }), "관측 이력 없음", "neutral"],
+    ["observed quality without buckets", (p) => withoutCurrentSamples(p, { quality: "observed" }), "조회 구간 미관측", "neutral"],
 ]) {
     test(`Processing observation Insight distinguishes ${name} using the chart response`, async () => {
         // Given
@@ -222,7 +330,7 @@ test("Processing observation preserves measured zero, null recent summary, and e
     assert.equal(doc.elements.get("processing-observation-state").textContent, "최근 관측");
     assert.match(doc.elements.get("processing-observation-details").textContent, /입력 0건 \/ 처리 2건/);
     const time = doc.elements.get("processing-observation-time");
-    assert.equal(time.textContent, "2026-10-15 05:23:17 UTC");
+    assert.equal(time.textContent, "2026.10.15 14:23:17.642 KST");
     assert.equal(time.getAttribute("title"), "2026-10-15T05:23:17.642Z");
     assert.equal(time.getAttribute("datetime"), "2026-10-15T05:23:17.642Z");
     response.points[0].processing_completed_count = 0;
@@ -240,7 +348,7 @@ test("Processing observation preserves measured zero, null recent summary, and e
     response = withoutCurrentSamples(payload(), { last: "2026-10-15T04:00:00.000Z", freshness: "stale" });
     await controller.poll();
     assert.match(doc.elements.get("processing-observation-details").textContent, /입력 미관측 \/ 처리 미관측/);
-    assert.equal(time.textContent, "2026-10-15 04:00:00 UTC");
+    assert.equal(time.textContent, "2026.10.15 13:00:00 KST");
     assert.match(doc.elements.get("processing-observation-state").textContent, /구간 미관측/);
     controller.stop();
 });
@@ -264,7 +372,8 @@ test("Processing observation clears old values on API failure and loading, and r
 
     // Then
     assert.equal(doc.elements.get("processing-observation-state").textContent, "조회 실패");
-    assert.equal(doc.elements.get("processing-observation-time").textContent, "관측 시각 확인 불가");
+    assert.equal(doc.elements.get("processing-observation-time").textContent, "");
+    assert.equal(doc.elements.get("processing-observation-time").hidden, true);
     assert.equal(doc.elements.get("processing-observation-time").getAttribute("datetime"), null);
     assert.equal(doc.elements.get("processing-observation-time").getAttribute("title"), null);
     assert.doesNotMatch(doc.elements.get("processing-observation-details").textContent, /2026-10-15/);
@@ -699,9 +808,11 @@ test("Partial observations and stale timestamps are labeled without asserting wo
     // Then
     assert.equal(doc.elements.get("telemetry-throughput-note").textContent, "부분 관측 · 관측 지연");
     assert.match(doc.elements.get("telemetry-latency-status").textContent, /Worker 장애로 단정하지/);
-    assert.ok(doc.elements.get("telemetry-latency-details").textContent.includes(
+    // Status sentences stay in the live region only; the disclosure keeps coverage and time.
+    assert.equal(doc.elements.get("telemetry-latency-details").textContent.includes(
         doc.elements.get("telemetry-latency-status").textContent,
-    ));
+    ), false);
+    assert.match(doc.elements.get("telemetry-latency-details").textContent, /^최근 60초 관측 \d+초 · 미관측 \d+초 · 마지막 관측/);
     assert.equal(doc.elements.get("telemetry-latency-summary").textContent, "0.775214 ms");
     controller.stop();
 });
@@ -733,7 +844,8 @@ test("Telemetry live messages announce changed no_samples and error states witho
     for (const kind of ["throughput", "latency"]) {
         const status = doc.elements.get(`telemetry-${kind}-status`);
         assert.match(status.textContent, /관측된 데이터가 없습니다.*최근 관측 여부/);
-        assert.ok(doc.elements.get(`telemetry-${kind}-details`).textContent.includes(status.textContent));
+        assert.equal(doc.elements.get(`telemetry-${kind}-details`).textContent.includes(status.textContent), false);
+        assert.doesNotMatch(doc.elements.get(`telemetry-${kind}-details`).textContent, /관측된 데이터가 없습니다|지연 샘플/);
     }
     const status = doc.elements.get("telemetry-throughput-status");
     let writes = status.textContentWrites;
@@ -851,4 +963,46 @@ test("Telemetry restart after pagehide starts a new request while the old fetch 
 
     controller.stop();
     assert.equal(timers.timers.size, 0);
+});
+
+
+test("Controlled admitted records grow, expire from recent totals, and never survive a failed read", async () => {
+    // Given: real zero processing within an observed input bucket.
+    const doc = makeDocument({insight: true});
+    let value = payload(), failed = false;
+    const calls = [];
+    value.points[0].processing_completed_count = 0;
+    value.points[0].processing_latency_sample_count = 0;
+    value.points[0].processing_latency_mean_ms = null;
+    Object.assign(value.recent_60s_summary, {processing_completed_count: 0,
+        processing_latency_sample_count: 0, processing_latency_mean_ms: null});
+    const controller = createDashboardTelemetryController(doc, {...fakeTimers(), fetchImpl: async url => {
+        calls.push(url); return failed ? {ok: false, status: 503} : {ok: true, json: async () => value};
+    }});
+    // When / Then
+    await controller.start();
+    assert.equal(doc.elements.get("telemetry-throughput-summary").textContent, "입력 2건 / 처리 0건");
+    assert.equal(doc.elements.get("telemetry-latency-summary").textContent, "미관측");
+    value = payload();
+    value.points[0].input_accepted_count = 9;
+    value.recent_60s_summary.input_accepted_count = 9;
+    await controller.poll();
+    assert.equal(doc.elements.get("telemetry-throughput-summary").textContent, "입력 9건 / 처리 2건");
+    // When: retained history remains in the five-minute graph but leaves the recent window.
+    value.range_end = "2026-10-15T05:24:20.000Z";
+    value.range_start = "2026-10-15T05:19:20.000Z";
+    value.recent_60s_summary = {...withoutCurrentSamples(payload()).recent_60s_summary};
+    value.freshness.status = "stale";
+    await controller.poll();
+    assert.equal(doc.elements.get("telemetry-throughput-summary").textContent, "입력 미관측 / 처리 미관측");
+    assert.equal(doc.elements.get("telemetry-throughput-chart").getAttribute("data-empty"), "false");
+    assert.match(doc.elements.get("telemetry-throughput-details").textContent, /최근 60초 관측 0초 · 미관측 60초/);
+    assert.match(doc.elements.get("telemetry-throughput-status").textContent, /최근 60초 미관측/);
+    failed = true;
+    await controller.poll();
+    assert.equal(doc.elements.get("telemetry-throughput-summary").textContent, "조회 실패");
+    assert.equal(doc.elements.get("telemetry-throughput-chart").getAttribute("data-empty"), "true");
+    assert.equal(doc.elements.get("processing-observation-time").getAttribute("datetime"), null);
+    assert.ok(calls.every(url => url === TELEMETRY_ENDPOINT));
+    controller.stop();
 });

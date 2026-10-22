@@ -4,6 +4,7 @@ import {
     classifyStageTimingFailure,
     formatStageDuration,
 } from "./dashboard-stage-timing-contract.mjs";
+import { formatOperatorTimestamp, formatOperatorProse } from "./dashboard-contract.mjs";
 import { getStageLabel } from "./operations-contract.mjs";
 
 const updateText = (element, text) => {
@@ -13,15 +14,17 @@ const updateText = (element, text) => {
 export function createDashboardStageTimingController(doc, {
     fetchImpl = globalThis.fetch, setTimeoutImpl = globalThis.setTimeout,
     clearTimeoutImpl = globalThis.clearTimeout,
+    onResult = null,
 } = {}) {
     const nodes = Object.fromEntries(["state", "caption", "scope", "records", "refresh"].map((key) => (
         [key, doc.getElementById(`insight-bottleneck-${key}`)]
     )));
-    if (Object.values(nodes).some((node) => node === null)) {
+    // The per-invocation record list and manual re-query button are optional; the summary cell is not.
+    if ([nodes.state, nodes.caption, nodes.scope].some((node) => node === null)) {
         return { select() {}, refresh() {}, stop() {}, start() {} };
     }
     let enabled = true;
-    let selection = { target: null, reason: "Runtime Execution을 선택하세요." };
+    let selection = { target: null, reason: "실행 보고 Execution을 선택하세요." };
     let key = null;
     let version = 0;
     let request = null;
@@ -29,11 +32,12 @@ export function createDashboardStageTimingController(doc, {
     let pending = null;
     const render = (label, caption, scope, tone = "neutral") => {
         updateText(nodes.state, label);
-        updateText(nodes.caption, caption);
+        updateText(nodes.caption, doc.getElementById("operator-demo-badge")
+            ? caption.replace(/(?: · )?Execution .*/, "").replaceAll("Execution", "실행 보고").replaceAll("Entity", "대상").trim() || "선택 실행 계측" : caption);
         nodes.caption.title = caption;
-        updateText(nodes.scope, scope);
+        updateText(nodes.scope, formatOperatorProse(scope));
         const detail = doc.getElementById("insight-bottleneck-detail");
-        if (detail) updateText(detail, scope);
+        if (detail) updateText(detail, formatOperatorProse(scope));
         nodes.state.title = label;
         nodes.state.dataset.timingTone = tone;
     };
@@ -47,7 +51,8 @@ export function createDashboardStageTimingController(doc, {
     }
     function clear(label, caption, scope, tone) {
         render(label, caption, scope, tone);
-        nodes.records.replaceChildren();
+        nodes.records?.replaceChildren();
+        onResult?.(null);
     }
     const clearUnselected = (next) => clear("비교 대상 없음", next.caption ?? next.reason, next.reason, "neutral");
     function refresh() {
@@ -58,7 +63,7 @@ export function createDashboardStageTimingController(doc, {
         const abort = new AbortController();
         request = abort;
         clear("계측 조회 중", `Execution ${target.executionId}`, `Execution ${target.executionId}의 단계 계측을 조회하고 있습니다.`, "neutral");
-        nodes.refresh.disabled = false; // Repeated activation coalesces; keyboard focus stays here.
+        if (nodes.refresh) nodes.refresh.disabled = false; // Repeated activation coalesces; keyboard focus stays here.
         let timeout;
         const cancelled = new Promise((_, reject) => {
             cancelRequest = () => reject(new Error("Stage Timing cancelled"));
@@ -96,14 +101,16 @@ export function createDashboardStageTimingController(doc, {
                 render(model.label, model.caption, model.scope, model.longest.length ? "observed" : "neutral");
                 const rows = model.records.map((record) => {
                     const row = doc.createElement("li");
+                    row.title = `시작 원본 ${record.started_at ?? "없음"} · 종료 원본 ${record.ended_at ?? "없음"}`;
                     row.textContent = `#${record.invocation_index} ${getStageLabel(record.stage)} · `
                         + `${record.outcome === "failed" ? "실패 operation" : "operation 반환"} · `
                         + `${record.duration_ns === null ? "경과시간 미관측" : `${formatStageDuration(record.duration_ns)} (${record.duration_ns} ns)`} · `
-                        + `${record.started_at ?? "시작 시각 없음"} → ${record.ended_at ?? "종료 시각 없음"} · UTC · `
+                        + `${formatOperatorTimestamp(record.started_at, {missing: "시작 시각 없음"})} → ${formatOperatorTimestamp(record.ended_at, {missing: "종료 시각 없음"})} · `
                         + `이슈: ${record.issues.join(", ") || "없음"}`;
                     return row;
                 });
-                nodes.records.replaceChildren(...rows);
+                nodes.records?.replaceChildren(...rows);
+                onResult?.({ target, records: model.records });
             } catch {
                 if (enabled && current === version) {
                     const failure = classifyStageTimingFailure(0, null, target.executionId);
@@ -127,7 +134,7 @@ export function createDashboardStageTimingController(doc, {
         }
         key = nextKey;
         cancel();
-        nodes.refresh.disabled = !next.target;
+        if (nodes.refresh) nodes.refresh.disabled = !next.target;
         if (!enabled) return Promise.resolve();
         if (!next.target) {
             clearUnselected(next);
@@ -135,7 +142,7 @@ export function createDashboardStageTimingController(doc, {
         }
         return refresh();
     }
-    nodes.refresh.addEventListener("click", () => { void refresh(); });
+    nodes.refresh?.addEventListener("click", () => { void refresh(); });
     return {
         select, refresh,
         stop() { enabled = false; cancel(); clear("조회 중지", "화면 이탈", "화면 이탈 · 다시 표시할 때 재조회합니다.", "neutral"); },

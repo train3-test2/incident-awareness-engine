@@ -47,7 +47,7 @@ function createDetailField(label, value) {
 function renderSummary(runId, payload, pagination) {
     const position = getEventTimelinePagePosition(payload);
     eventTimelineSummary.replaceChildren(
-        createDetailField("Run ID", runId),
+        createDetailField("분석 ID", runId),
         createDetailField("전체 Event 수", payload.total),
         createDetailField(
             "현재 표시 범위",
@@ -81,7 +81,11 @@ function createEventCard(runId, event) {
     const precision = document.createElement("small");
     precision.classList.add("event-timeline-timestamp");
     precision.textContent = event.timestamp;
-    timestamp.children[1].replaceChildren(time, precision);
+    const original = document.createElement("details");
+    const originalTitle = document.createElement("summary");
+    originalTitle.textContent = "시각 원문·UTC";
+    original.append(originalTitle, precision);
+    timestamp.children[1].replaceChildren(time, original);
     fields.append(
         timestamp,
         createDetailField("Host ID", event.host_id),
@@ -235,7 +239,7 @@ function renderTimelineState(state, runId) {
 function renderRunDetailBackNavigation(runId) {
     const link = document.createElement("a");
     link.href = buildRunDetailViewPath(runId);
-    link.textContent = "Run Detail로 돌아가기";
+    link.textContent = "분석 상세로 돌아가기";
     runDetailBackNavigation.replaceChildren(link);
 }
 
