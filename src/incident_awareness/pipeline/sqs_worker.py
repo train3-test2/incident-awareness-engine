@@ -27,12 +27,17 @@ from incident_awareness.common.models.pipeline_runtime import (
     PipelineRuntimeState,
     PipelineRuntimeStatus,
 )
+from incident_awareness.pipeline.experiment_input import (
+    experiment_declaration_context,
+    verified_declaration,
+)
 from incident_awareness.pipeline.r1_production import (
     R1ArchiveConflictError,
     R1ArchiveUploadError,
     load_r1_production_config,
     publish_r1_archive,
 )
+from incident_awareness.pipeline.raw_retention import verify_or_repair_mirror
 from incident_awareness.pipeline.runtime_telemetry import (
     PipelineRuntimeObserver,
     PostgresPipelineRuntimeObserver,
@@ -43,6 +48,14 @@ from incident_awareness.pipeline.standalone import StandaloneExecution, run_stan
 from incident_awareness.pipeline.telemetry_input import s3_telemetry_input_context
 from incident_awareness.pipeline.timeseries_observer import telemetry_observer_context
 from incident_awareness.storage.config import DatabaseConfig
+from incident_awareness.storage.raw_archive import (
+    RawArchiveError,
+    RawCollectionIdentity,
+    collection_identity,
+    is_content_conflict,
+    raw_collection_context,
+    retention_enabled,
+)
 from incident_awareness.storage.repositories.pipeline_runtime_repository import (
     PipelineRuntimeStatusRepository,
 )
@@ -50,6 +63,7 @@ from incident_awareness.storage.repositories.r1_archive_publication_repository i
     R1ArchivePublication,
     R1ArchivePublicationRepository,
 )
+from incident_awareness.storage.repositories.raw_archive_repository import RawArchiveRepository
 from incident_awareness.storage.repositories.s3_object_receipt_repository import (
     S3ObjectReceiptRepository,
 )
@@ -121,19 +135,58 @@ class _PostgresSuccessfulReceiptStore:
     def __init__(self, connection: psycopg.Connection[tuple[object, ...]]) -> None:
         self._connection = connection
         self._repository = S3ObjectReceiptRepository(connection)
+        self._active_input = None
+
+    def _raw(self, input_object, run_id, *, replay):
+        repository = RawArchiveRepository(self._connection)
+        identity = _raw_identity(input_object)
+        try:
+            archive = repository.get(run_id)
+            if archive is None:
+                if not replay:
+                    raise RawArchiveError("receipt_without_raw_archive")
+                # With retention on, a Receipt commits only with its append-only archive,
+                # so this Receipt predates retention. Skip as before; never backfill it.
+                repository.audit(
+                    "degraded",
+                    run_id=run_id,
+                    collection=identity,
+                    reason="receipt_without_raw_archive",
+                )
+                return None
+            if archive.collection != identity:
+                raise RawArchiveError("receipt_raw_identity_mismatch")
+            repaired = verify_or_repair_mirror(archive, repair=replay)
+        except RawArchiveError as error:
+            if is_content_conflict(error):
+                raise PermanentWorkerError("Retained Raw archive conflicts") from error
+            raise RetryableWorkerError("Raw archive verification incomplete") from error
+        repository.audit(
+            "repaired" if repaired else "verified",
+            run_id=run_id,
+            collection=identity,
+            content_sha256=archive.content_sha256,
+        )
+        return archive
 
     def acquire_execution(self, input_object: S3SysmonInput) -> str | None:
+        self._active_input = input_object
         self._connection.execute(
             _ACQUIRE_S3_OBJECT_RECEIPT_LOCK,
             (_receipt_lock_key(input_object),),
         )
-        return self._repository.get_successful_run_id(
+        prior = self._repository.get_successful_run_id(
             bucket=input_object.bucket,
             object_key=input_object.key,
             e_tag=input_object.e_tag,
         )
+        if prior is not None and retention_enabled():
+            self._raw(input_object, prior, replay=True)
+        return prior
 
     def save_success(self, input_object: S3SysmonInput, *, run_id: str) -> None:
+        if retention_enabled():
+            self._raw(input_object, run_id, replay=False)
         self._repository.save_success(
             bucket=input_object.bucket,
             object_key=input_object.key,
@@ -141,12 +194,58 @@ class _PostgresSuccessfulReceiptStore:
             run_id=run_id,
         )
         self._connection.commit()
+        self._active_input = None
 
     def release_execution(self) -> None:
         self._connection.commit()
+        self._active_input = None
 
     def rollback(self) -> None:
         self._connection.rollback()
+        active, self._active_input = self._active_input, None
+        if retention_enabled() and active is not None:
+            try:
+                RawArchiveRepository(self._connection).audit(
+                    "failed",
+                    collection=_raw_identity(active),
+                    reason="worker_attempt_rolled_back",
+                )
+                self._connection.commit()  # Only the failure audit after the business rollback.
+            except (psycopg.Error, RawArchiveError):
+                self._connection.rollback()
+                _LOGGER.warning("Raw archive failure audit unavailable")
+
+    def verify_replay(self, input_object, s3_client, run_id):
+        try:
+            archive = RawArchiveRepository(self._connection).get(run_id)
+        except RawArchiveError as error:
+            raise PermanentWorkerError("Retained Raw archive conflicts") from error
+        if archive is None:
+            return  # Pre-retention Receipt: audited as degraded, never relabeled.
+        try:
+            response = s3_client.get_object(
+                Bucket=input_object.bucket, Key=input_object.key, IfMatch=input_object.e_tag
+            )
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") in {
+                "NoSuchKey",
+                "404",
+                "PreconditionFailed",
+                "412",
+            }:
+                # The stored immutable copy is the historical object; never relabel new bytes.
+                return
+            raise RetryableWorkerError("Replay source verification unavailable") from error
+        with response["Body"] as body:
+            data = body.read(len(archive.content) + 1)
+        if data != archive.content:
+            raise PermanentWorkerError("S3 object identity conflicts with retained Raw bytes")
+
+
+def _raw_identity(input_object):
+    return RawCollectionIdentity(
+        input_object.ingest_id, input_object.bucket, input_object.key, input_object.e_tag
+    )
 
 
 class _PostgresR1ArchivePublicationStore:
@@ -251,6 +350,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     namespace = build_parser().parse_args(argv)
     database_config = DatabaseConfig.from_environment()
     r1_production_config = load_r1_production_config(os.environ)
+    s3_client = boto3.client("s3")
     with psycopg.connect(database_config.url, autocommit=False) as connection:
 
         def run_standalone(
@@ -258,16 +358,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_root: Path,
             runtime_observer: PipelineRuntimeObserver | None,
         ) -> StandaloneExecution:
+            identity = collection_identity()
+            metadata = s3_client.head_object(
+                Bucket=identity.bucket,
+                Key=identity.object_key,
+                IfMatch=identity.e_tag,
+            ).get("Metadata", {})
+            declaration, proof = verified_declaration(metadata, sysmon_jsonl_path.read_bytes())
             # Attempt metrics end at stage return, independently of Receipt/publication.
             # The existing transaction owner still finalizes Runtime and SQS afterwards.
             with (
                 telemetry_observer_context() as telemetry_observer,
                 stage_timing_storage_context() as stage_timing_collector,
+                experiment_declaration_context(proof),
             ):
                 return run_standalone_sysmon_jsonl(
                     sysmon_jsonl_path=sysmon_jsonl_path,
                     output_root=output_root,
                     connection=connection,
+                    run_type=declaration.run_type,
                     r1_production_config=r1_production_config,
                     runtime_observer=runtime_observer,
                     telemetry_observer=telemetry_observer,
@@ -278,7 +387,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             queue_url=_required_environment(_QUEUE_URL_ENV),
             expected_bucket=_required_environment(_INPUT_BUCKET_ENV),
             sqs_client=boto3.client("sqs"),
-            s3_client=boto3.client("s3"),
+            s3_client=s3_client,
             run_standalone=run_standalone,
             receipt_store=_PostgresSuccessfulReceiptStore(connection),
             publication_store=(
@@ -391,6 +500,10 @@ def _process_message(
                 receipt_store.acquire_execution(input_object) if receipt_store is not None else None
             )
             if prior_run_id is not None:
+                if retention_enabled():
+                    if not hasattr(receipt_store, "verify_replay"):
+                        raise RetryableWorkerError("Raw retention requires a durable Receipt store")
+                    receipt_store.verify_replay(input_object, s3_client, prior_run_id)
                 if publication_store is not None:
                     publication = publication_store.get(prior_run_id)
                     if publication is not None:
@@ -421,14 +534,21 @@ def _process_message(
                     receipt_committed = False
                     try:
                         try:
-                            with s3_telemetry_input_context(
-                                input_object.bucket, input_object.key, input_object.e_tag
+                            with (
+                                s3_telemetry_input_context(
+                                    input_object.bucket, input_object.key, input_object.e_tag
+                                ),
+                                raw_collection_context(_raw_identity(input_object)),
                             ):
                                 execution = run_standalone(
                                     sysmon_jsonl_path,
                                     input_dir / "output",
                                     active_runtime_observer,
                                 )
+                        except RawArchiveError as error:
+                            if is_content_conflict(error):
+                                raise PermanentWorkerError("Raw identity conflict") from error
+                            raise RetryableWorkerError("Raw preservation incomplete") from error
                         except ValueError as error:
                             raise PermanentWorkerError(str(error)) from error
                         except (OperationalError, OSError) as error:

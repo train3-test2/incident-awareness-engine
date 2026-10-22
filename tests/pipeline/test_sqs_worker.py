@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from botocore.exceptions import ClientError
@@ -28,6 +29,7 @@ from incident_awareness.pipeline.sqs_worker import (
     run_worker,
 )
 from incident_awareness.pipeline.standalone import StandaloneExecution
+from incident_awareness.storage.raw_archive import RawCollectionIdentity
 from incident_awareness.storage.repositories.r1_archive_publication_repository import (
     R1ArchivePublication,
 )
@@ -899,6 +901,113 @@ def test_postgres_receipt_store_acquires_an_object_lock_before_lookup() -> None:
     assert "\x00" not in expected_lock_key
     assert "FROM s3_object_receipts" in connection.queries[1][0]
     assert connection.commits == 1
+
+
+def _sysmon_input() -> S3SysmonInput:
+    return S3SysmonInput(
+        bucket=_BUCKET, key=_KEY, ingest_id=_INGEST_ID, e_tag="opaque-etag", sequencer="001"
+    )
+
+
+class _FakeRawArchiveRepository:
+    archives: ClassVar[dict[str, object]] = {}
+    audits: ClassVar[list[tuple[str, str | None, str | None]]] = []
+
+    def __init__(self, connection: object) -> None:
+        pass
+
+    def get(self, run_id: str) -> object:
+        return self.archives.get(run_id)
+
+    def audit(self, action: str, **fields: object) -> None:
+        self.audits.append((action, fields.get("run_id"), fields.get("reason")))
+
+
+@pytest.fixture
+def raw_repository(monkeypatch: pytest.MonkeyPatch) -> type[_FakeRawArchiveRepository]:
+    from incident_awareness.pipeline import sqs_worker
+
+    monkeypatch.setenv("IAE_RAW_RETENTION_ENABLED", "1")
+    monkeypatch.setattr(_FakeRawArchiveRepository, "archives", {})
+    monkeypatch.setattr(_FakeRawArchiveRepository, "audits", [])
+    monkeypatch.setattr(sqs_worker, "RawArchiveRepository", _FakeRawArchiveRepository)
+    return _FakeRawArchiveRepository
+
+
+class _NoS3:
+    def get_object(self, **_: object) -> None:
+        raise AssertionError("a pre-retention Receipt has no retained bytes to compare")
+
+
+def test_retention_skips_a_pre_retention_receipt_as_degraded(raw_repository) -> None:
+    connection = _ReceiptConnection(rows=[None, ("RUN-20261019-007",)])
+    store = _PostgresSuccessfulReceiptStore(connection)  # type: ignore[arg-type]
+
+    assert store.acquire_execution(_sysmon_input()) == "RUN-20261019-007"
+    store.verify_replay(_sysmon_input(), _NoS3(), "RUN-20261019-007")
+    store.release_execution()
+
+    assert raw_repository.audits == [
+        ("degraded", "RUN-20261019-007", "receipt_without_raw_archive")
+    ]
+
+
+def test_retention_never_commits_a_new_receipt_without_its_archive(raw_repository) -> None:
+    connection = _ReceiptConnection(rows=[])
+    store = _PostgresSuccessfulReceiptStore(connection)  # type: ignore[arg-type]
+
+    with pytest.raises(RetryableWorkerError):
+        store.save_success(_sysmon_input(), run_id="RUN-20261021-001")
+
+    assert connection.queries == [] and connection.commits == 0
+
+
+def test_retained_archive_of_another_object_is_a_permanent_conflict(raw_repository) -> None:
+    other = RawCollectionIdentity(_INGEST_ID, _BUCKET, _KEY, "other-etag")
+    raw_repository.archives["RUN-20261021-001"] = type("Archive", (), {"collection": other})()
+    connection = _ReceiptConnection(rows=[None, ("RUN-20261021-001",)])
+    store = _PostgresSuccessfulReceiptStore(connection)  # type: ignore[arg-type]
+
+    with pytest.raises(PermanentWorkerError):
+        store.acquire_execution(_sysmon_input())
+
+
+def test_failure_audit_names_only_the_active_attempt_once(raw_repository) -> None:
+    connection = _ReceiptConnection(rows=[None, None, None, None])
+    store = _PostgresSuccessfulReceiptStore(connection)  # type: ignore[arg-type]
+
+    store.acquire_execution(_sysmon_input())
+    store.release_execution()
+    store.rollback()  # e.g. the next message failed before acquiring any object
+    assert raw_repository.audits == []
+
+    store.acquire_execution(_sysmon_input())
+    store.rollback()
+    store.rollback()
+    assert raw_repository.audits == [("failed", None, "worker_attempt_rolled_back")]
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("upload_content_sha256_mismatch", PermanentWorkerError),
+        ("raw_content_hash_collision", PermanentWorkerError),
+        ("archive_mirror_write_failed", RetryableWorkerError),
+    ],
+)
+def test_raw_preservation_failures_are_classified_without_success(code, expected) -> None:
+    from incident_awareness.storage.raw_archive import RawArchiveError
+
+    def run_standalone(*_: object) -> StandaloneExecution:
+        raise RawArchiveError(code)
+
+    with pytest.raises(expected):
+        _process_message(
+            {"Body": json.dumps(_s3_event())},
+            expected_bucket=_BUCKET,
+            s3_client=_FakeS3(),  # type: ignore[arg-type]
+            run_standalone=run_standalone,
+        )
 
 
 def test_postgres_publication_store_completes_running_runtime_with_published_state(
