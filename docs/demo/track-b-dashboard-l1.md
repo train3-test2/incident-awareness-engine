@@ -6,10 +6,11 @@
 
 - Dashboard: VMware VMnet1 `192.168.34.1/24`.
 - R1-CTRL: `192.168.34.10`, 독립 읽기 전용 서비스 후보 `http://192.168.34.10:8817`.
-- 2026-10-23 사용자 확인: VM은 모두 종료, 실행 중인 detector 없음.
-- 실제 촬영 Normal/Attack Run ID: 미발급. 충돌 검색과 append-only 발급 기록 후 사용자가 전달한다.
+- 실제 촬영 Run ID 발급 확정: Normal `RUN-20301231-012`, Attack `RUN-20301231-013`.
+- 두 Run은 각각 별도 VM baseline에서 실행하므로 한 번에 하나만 등록하며, Snapshot 동시 존재를 가정하지 않는다.
+- 4번 담당자 전달 결과: 기존 배포 ZIP 해시 37/37 PASS, 기존 Python 3.13 패키지 버전 일치, wheelhouse 없이 offline_check PASS. 본 문서 정정 후 실제 VM 재실행·LAN bind·L1 연결은 NOT TESTED다.
 - `RUN-20301231-009`, `RUN-20301231-010`은 회귀 Fixture로만 사용한다. 실제 배치 목록에 넣지 않는다.
-- 실제 배치 Run 목록은 현재 비워 둔다. 이 구현은 코드에 Run ID를 고정하지 않는다.
+- 실제 설정은 Normal 단계에는012 하나, Attack 단계에는013 하나다. 제품 코드는 Run ID를 고정하지 않는다. 기존 8816의 활성 설정은 변경하지 않았다.
 - 등록 ID 형식은 `RUN-YYYYMMDD-숫자 3~6자리`이다. 미등록·중복·경로 문자를 포함한 ID는 거부한다.
 
 신규 관측은 `demo_only`이며 정식 Fast/Fusion/Decision, Workflow, AI/KISA 신고서, 평가 탐지 결과로 변환·저장하지 않는다. 원본 Snapshot과 detector 생산 코드는 변경하지 않는다.
@@ -62,30 +63,37 @@
 
 ## 배치 전 준비 — 아직 실행/변경하지 않음
 
-1. 사용자가 VM 기동·새 Run ID 발급을 별도로 승인·수행한다. 아래 `<NEW_NORMAL_ID>`, `<NEW_ATTACK_ID>`는 전달받은 새 값으로만 채운다. 미확정 동안 목록은 비어 있고 Dashboard enabled는 0이다.
-2. 실제 R1 저장소 위치·Python 3.13 환경과 원천 모델 버전을 확인한다. 이번 세 서비스 파일과 필요한 기존 원천 모델이 동일 버전인지 변경 파일 manifest로 확인한다. Snapshot 파일을 Dashboard PC로 복사하지 않는다.
-3. R1-CTRL 전용 코드에는 `dashboard/track_b_observations.py`, `demo/r1_snapshot_service.py` 및 기존 `demo/r1_live_signal.py`의 의존 패키지가 필요하다. 전용 서비스는 `dashboard.api` 패키지를 import하지 않아 Dashboard 전체 앱을 로드하지 않는다. `dashboard/api/observations.py`와 기존 앱의 라우트 등록은 Dashboard 호스트용이다. 기존 detector와 충돌하지 않는 프로세스/환경으로 실행한다. FastAPI·uvicorn·Pydantic이 없으면 임의 설치하지 말고 승인받는다.
+1. 촬영 ID는012·013으로 발급됐다. Normal baseline에는012, Attack baseline에는013 하나만 등록한다. VM 실행·8817 LAN 서비스·필요한 방화벽·기존 8816 재시작은 별도 승인 사항이다. 아래 설정 예시는 기존 8816에 적용하지 않았다.
+2. API 배포 경로는 `C:\R1\track-b-readonly-deployment`, 기존 오프라인 런타임은 `C:\R1\track-b-demo\r1-python313`이다. 배포 소스와 기존 site 패키지 경로를 함께 지정한다. 원천 모델 버전은 배포 manifest로 확인하며 Snapshot을 Dashboard PC로 복사하지 않는다.
+3. R1-CTRL 전용 코드에는 `dashboard/track_b_observations.py`, `demo/r1_snapshot_service.py` 및 기존 `demo/r1_live_signal.py`의 의존 패키지가 필요하다. 전용 서비스는 `dashboard.api` 패키지를 import하지 않아 Dashboard 전체 앱을 로드하지 않는다. `dashboard/api/observations.py`와 기존 앱의 라우트 등록은 Dashboard 호스트용이다. 기존 detector와 충돌하지 않는 프로세스/환경으로 실행한다. 담당자는 기존 런타임으로 패키지 버전 일치와 offline_check PASS를 확인했다. `fastapi` 모듈 누락 시 먼저 PYTHONPATH의 runtime site 경로를 확인하며, 임의 설치하지 않는다.
 4. 8817의 기존 listener·소유 프로세스를 확인한다. 다른 R1 Controller가 쓰고 있으면 중단/교체하거나 포트를 바꾸지 말고 충돌을 보고한다.
 5. Run별 파일 위치는 `C:\R1\track-b-demo\operations-observations\<등록 Run ID>\demo-state.json`. 루트·상위 디렉터리·Run 디렉터리·파일의 symbolic link/junction과 경로 이탈은 거부한다. 전용 서비스 계정은 Snapshot 읽기와 프로그램 실행만 허용하고 detector 기록 폴더 쓰기 권한은 부여하지 않는 구성을 검토한다.
 6. `TRACK_B_READ_TOKEN`은 두 서버에 동일한 충분히 긴 비밀값(최소 32자)을 안전하게 주입한다. 코드·브라우저·영상·명령 출력·저장소에 토큰을 남기지 않는다. 예시 token을 실제로 사용하지 않는다. HTTP의 token 보호는 Host-only 사설망 신뢰에 의존한다. IP 제한과 방화벽을 함께 적용하며 비신뢰 네트워크라면 승인된 TLS 종단 구성을 먼저 마련한다.
 
 ### R1-CTRL 설정 및 check-only
 
-아래는 승인 후 담당자가 해당 VM의 기존 저장소 디렉터리에서 실행할 명령이다. 아직 실제 VM에서 실행하지 않았다.
+아래는 실제 R1-CTRL 디렉터리 구조에 맞춘 명령이다. 담당자의 기존 런타임 offline_check PASS는 전달받았으나, **수정된 명령의 실제 VM 재실행은 이번 세션에서 하지 않았다.** 서비스 시작·LAN bind는 별도 승인 후 진행한다.
 
 ```powershell
-# R1-CTRL의 기존 저장소 루트에서 현재 세션에만 지정
-$env:PYTHONPATH = Join-Path (Get-Location).Path 'src'
-# 새 ID가 미확정인 현재의 준비 상태
-$env:TRACK_B_RUN_IDS = ""
-# 아래 두 값은 새 ID 확정 후에만 설정한다.
-# $env:TRACK_B_RUN_IDS = "<NEW_NORMAL_ID>,<NEW_ATTACK_ID>"
+$deploymentRoot = 'C:\R1\track-b-readonly-deployment'
+$runtimeRoot = 'C:\R1\track-b-demo\r1-python313'
+$apiPython = "$runtimeRoot\python\python.exe"
+$env:PYTHONPATH = "$deploymentRoot\src;$runtimeRoot\site"
+$env:PYTHONDONTWRITEBYTECODE = '1'
+& $apiPython "$deploymentRoot\offline_check.py" --source-root "$deploymentRoot\src" --manifest "$deploymentRoot\source-manifest.json" --output "$deploymentRoot\r1-import-check.json"
+
+# Normal baseline에서 하나만 등록한다.
+$env:TRACK_B_RUN_IDS = 'RUN-20301231-012'
+# Attack baseline 복원 후에는 위 한 줄을 아래 값으로 교체한다. 두 값을 합치지 않는다.
+# $env:TRACK_B_RUN_IDS = 'RUN-20301231-013'
 $env:TRACK_B_SNAPSHOT_ROOT = 'C:\R1\track-b-demo\operations-observations'
 $env:TRACK_B_ALLOWED_CLIENTS = '192.168.34.1'
-# TRACK_B_READ_TOKEN: 별도 안전한 전달 경로로 현재 프로세스에 주입
+# TRACK_B_READ_TOKEN: 별도 안전한 전달 경로로 현재 프로세스에 주입 (최소32자)
 
-.venv\Scripts\python.exe -m incident_awareness.demo.r1_snapshot_service --host 192.168.34.10 --port 8817 --check-only
+& $apiPython -m incident_awareness.demo.r1_snapshot_service --host 192.168.34.10 --port 8817 --check-only
 ```
+
+`$deploymentRoot\src`만 지정하면 `ModuleNotFoundError: fastapi`가 발생한다. `$runtimeRoot\site`가 기존 패키지 경로이므로 PYTHONPATH에서 누락하지 않는다. 기존 detector·런타임·site를 수정하거나 wheelhouse로 다시 설치할 필요는 없다(담당자 전달 결과 기준).
 
 Run 목록·토큰·허용 client가 비어 있으면 check-only는 실패하는 것이 정상이다. 부적절한 임시 ID나 이전 Fixture를 넣어 통과시키지 않는다. check-only는 소켓을 바인딩하거나 파일·DB를 쓰지 않는다. 설정 형식 검사이므로 실제 파일 가용성·네트워크 검증을 대신하지 않는다.
 
@@ -93,7 +101,7 @@ Run 목록·토큰·허용 client가 비어 있으면 check-only는 실패하는
 
 ```powershell
 # 기존 listener가 없음을 확인하고, 서비스 실행 승인을 받은 뒤에만 실행
-.venv\Scripts\python.exe -m incident_awareness.demo.r1_snapshot_service --host 192.168.34.10 --port 8817
+& $apiPython -m incident_awareness.demo.r1_snapshot_service --host 192.168.34.10 --port 8817
 ```
 
 프로세스는 전경 실행이며 `Ctrl+C`로 이 새 서비스만 종료할 수 있다. detector를 종료하거나 기존 8817/8816 프로세스를 건드리지 않는다. `proxy_headers=False`, 문서/OpenAPI·Dashboard 전체 라우트 없음, GET 외 405, peer IP와 Bearer token 동시 검사, CORS 개방 없음, access log 미출력이다.
@@ -108,9 +116,9 @@ Run 목록·토큰·허용 client가 비어 있으면 check-only는 실패하는
 # 기존 8816 환경에는 아직 적용하지 않은 준비 값
 $env:TRACK_B_OBSERVATIONS_ENABLED = '0'
 $env:TRACK_B_OBSERVATIONS_ORIGIN = 'http://192.168.34.10:8817'
-$env:TRACK_B_RUN_IDS = ''
-# 새 Run ID·토큰·읽기 서비스·네트워크 검증 후, 승인된 재실행 환경에만:
-# $env:TRACK_B_RUN_IDS = '<NEW_NORMAL_ID>,<NEW_ATTACK_ID>'
+$env:TRACK_B_RUN_IDS = 'RUN-20301231-012'
+# Attack baseline에서는 위 값을 'RUN-20301231-013'으로 교체한다. 하나만 등록한다.
+# 토큰·읽기 서비스·네트워크 검증 후, 승인된 재실행 환경에만:
 # $env:TRACK_B_OBSERVATIONS_ENABLED = '1'
 # TRACK_B_READ_TOKEN은 서버 환경에만 주입
 ```
