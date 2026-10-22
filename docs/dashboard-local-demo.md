@@ -1,7 +1,69 @@
 # 운영 Dashboard 로컬 시연
 
-기존 Python 환경과 로컬 PostgreSQL을 사용한다. 패키지 추가나 AWS 배포는 필요 없다.
+기존 Python 환경과 로컬 PostgreSQL을 사용한다. AWS 배포는 필요 없다.
 운영 화면에는 실제 Read API 응답만 표시하며, 합성 데이터로 채우지 않는다.
+
+## 기존 LocalStack First Cycle에 업로드 연결
+
+이미 실행 중인 LocalStack Worktree의 `.env.localstack`을 읽어 별도 프로세스를 실행한다.
+Worker·Compose·DB migration은 실행하거나 변경하지 않는다. 의존성은 `uv sync --locked`로
+동기화한다 (`python-multipart` 추가). 저장소 루트의 PowerShell:
+
+```powershell
+$env:PYTHONPATH = Join-Path (Get-Location) 'src'
+.\.venv\Scripts\python.exe scripts/dev/run_localstack_dashboard.py `
+  --env-file D:\Dev\incident-awareness-localstack\.env.localstack --port 8794
+```
+
+촬영 URL: `http://127.0.0.1:8794/dashboard`. 포트가 사용 중이면 실행을 거부하며 기존 서버를
+종료하지 않는다. 비밀번호는 지정한 gitignored 환경 파일에서 읽어 프로세스 환경변수로만
+주입하고 출력하지 않는다. PostgreSQL은 `127.0.0.1:54330`, S3는 고정된
+`http://127.0.0.1:4566`과 로컬 테스트 자격증명만 사용한다. 다른 AWS endpoint·프로파일·프록시로
+업로드하지 않는다.
+
+일반 Read API 서버에서는 업로드가 기본 비활성화된다. 위 실행기가 로컬 프로세스에만 다음을 설정한다.
+
+- `INCIDENT_AWARENESS_LOCAL_DEMO=1`
+- `INCIDENT_AWARENESS_S3_INPUT_BUCKET`: 기존 `LOCAL_FIRST_CYCLE_BUCKET`
+- `INCIDENT_AWARENESS_LOCAL_INGEST_LEDGER`: 저장소의 `build/localstack-dashboard/ingest.sqlite3`
+- `INCIDENT_AWARENESS_EVENT_TYPES_PATH`: 기존 `configs/event_types_v0.2.yaml`
+- `INCIDENT_AWARENESS_DATABASE_URL`: 지정한 로컬 PostgreSQL
+
+새 API:
+
+| API | 의미 |
+| --- | --- |
+| `GET /ingest/sysmon/config` | 로컬 업로드 활성화 여부와 최대 파일 크기. 비활성 시 404 |
+| `POST /ingest/sysmon` | `multipart/form-data`의 `file` 한 개. S3 업로드 접수 시 202 |
+| `GET /ingest/sysmon/{ingest_id}` | 저장된 객체 identity와 정확히 일치하는 receipt 및 실제 Run 조회 |
+
+파일은 최대 10 MiB, 전체 multipart 요청은 추가 64 KiB까지 제한한다. chunked 요청도 누적
+크기를 확인하고 임시 파일로 spool한다. 기존 Standalone 입력 검증기와 Normalizer를 재사용해
+UTF-8 JSONL, Event ID 1·3, 단일 Computer, 시간과 정규화 필드를 검사한다. 빈 파일·잘못된 입력은
+422, 잘못된 multipart는 400/422, 크기 초과는 413, 연결·설정 오류는 503으로 응답한다.
+기존 검증기의 레코드 적재도 10 MiB 입력 제한 안에서 이루어진다.
+
+S3 key는 서버에서 생성한 UUID v4로만 구성한다:
+`incoming/first-cycle/sysmon/ING-<uuidv4>/sysmon.jsonl`. 원래 파일명을 key에 사용하지 않는다.
+업로드 접수 응답은 `upload_status=uploaded`, `processing_status=unconfirmed`, `run_id=null`이다.
+S3 접수 성공을 분석 완료로 표시하지 않는다.
+
+영속 인계 기록에는 ingest ID·bucket·key·ETag·업로드 접수 여부만 저장한다. 단일 PUT의 내용 MD5
+ETag를 PUT 전에 기록하고 조건부 생성으로 덮어쓰기를 막는다. 응답 손실·서버 중단 시에도 동일
+identity를 추적하며, 불확실한 PUT은 S3 HEAD의 ETag와 ingest metadata로 확인한다. 이후에는 S3가
+일시 불가하더라도 영속 receipt와 Run을 조회할 수 있다. Worker의 성공 receipt 계약과 멱등성은
+수정하지 않는다. `build/localstack-dashboard/ingest.sqlite3`은 추적을 유지하는 동안 보존한다.
+
+운영 View에는 선택 파일명·크기·접수 상태·ingest ID·완료 Run을 표시한다. 5초마다 상태를 조회하고
+성공 receipt와 실제 Run이 모두 확인될 때만 완료 링크를 제공한다. 기존 Run 선택을 바꾸지 않으며
+사용자가 **운영 View에서 결과 보기**를 누르면 기존 Replay·Evidence·Decision 조회로 연결한다.
+**사건 상세 보기**는 기존 Run Detail 화면으로 이동한다. 브라우저 탭 새로고침 시에는
+sessionStorage의 마지막 ingest ID로 추적을 재개하며, 서버 재시작 시에는 SQLite 기록을 재사용한다.
+
+진행률·실행 중·예상 완료 시간·입력별 실패를 추측하지 않는다. 현재 Worker의 영속 실패 기록이
+없으므로 성공 receipt가 없는 입력은 분석 완료 여부 미확인으로 남는다. LocalStack 자체를
+재시작하면 S3/SQS 상태는 기존 Compose 설정상 보존되지 않을 수 있다. 영속 성공 receipt와 Run은
+DB에서 조회하지만 아직 처리하지 않은 S3 객체의 복구는 이 기능에 포함되지 않는다.
 
 ## 전체 Dashboard
 
