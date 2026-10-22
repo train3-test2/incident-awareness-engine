@@ -87,6 +87,7 @@ def test_inspects_new_events_against_the_latest_durable_watermark_before_writes(
             None,
             None,
             None,
+            None,
             _accepted_watermark_row(watermark),
             [(1,)],
         ]
@@ -111,7 +112,9 @@ def test_inspects_new_events_against_the_latest_durable_watermark_before_writes(
 
 def test_defers_a_watermark_until_its_covered_chunks_are_durable() -> None:
     watermark = _watermark(covered_through_chunk_sequence=1)
-    connection = _Connection(rows=[None, None, None, None, _accepted_watermark_row(watermark), []])
+    connection = _Connection(
+        rows=[None, None, None, None, None, _accepted_watermark_row(watermark), []]
+    )
 
     admission = R1StreamDeliveryRepository(connection).inspect_chunk_admission(
         partition=_partition(),
@@ -122,6 +125,69 @@ def test_defers_a_watermark_until_its_covered_chunks_are_durable() -> None:
     )
 
     assert admission.latest_watermark is None
+
+
+def test_rejects_an_in_bound_event_after_a_position_close() -> None:
+    partition = _partition()
+    connection = _Connection(
+        rows=[
+            None,
+            None,
+            None,
+            (partition.host_id, partition.source, partition.source_channel, 100, 200),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="not strictly after the RecordId frontier"):
+        R1StreamDeliveryRepository(connection).inspect_chunk_admission(
+            partition=partition,
+            chunk_id="CHK-002",
+            sequence=2,
+            content_sha256="b" * 64,
+            event_content_sha256s=(("evt-200", "c" * 64),),
+            event_source_record_ids=(("evt-200", "200"),),
+        )
+
+
+def test_allows_a_post_bound_event_after_a_position_close() -> None:
+    partition = _partition()
+    connection = _Connection(
+        rows=[
+            None,
+            None,
+            None,
+            (partition.host_id, partition.source, partition.source_channel, 100, 200),
+            None,
+            None,
+        ]
+    )
+
+    admission = R1StreamDeliveryRepository(connection).inspect_chunk_admission(
+        partition=partition,
+        chunk_id="CHK-002",
+        sequence=2,
+        content_sha256="b" * 64,
+        event_content_sha256s=(("evt-201", "c" * 64),),
+        event_source_record_ids=(("evt-201", "201"),),
+    )
+
+    assert admission.new_event_ids == ("evt-201",)
+
+
+def test_exact_chunk_replay_remains_allowed_after_a_position_close() -> None:
+    connection = _Connection(rows=[None, ("CHK-001", 1, "a" * 64)])
+
+    admission = R1StreamDeliveryRepository(connection).inspect_chunk_admission(
+        partition=_partition(),
+        chunk_id="CHK-001",
+        sequence=1,
+        content_sha256="a" * 64,
+        event_content_sha256s=(("evt-100", "b" * 64),),
+        event_source_record_ids=(("evt-100", "100"),),
+    )
+
+    assert admission.is_exact_chunk_replay
+    assert not any("FROM r1_stream_position_closes" in query for query, _ in connection.statements)
 
 
 def test_rejects_a_new_chunk_after_its_run_is_closed() -> None:

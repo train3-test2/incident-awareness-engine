@@ -64,12 +64,16 @@ class R1StreamIngress:
         event_content_sha256s = tuple(
             (event.event_id, _canonical_event_sha256(event)) for event in chunk.events
         )
+        event_source_record_ids = tuple(
+            (event.event_id, event.raw_ref.source_record_id) for event in chunk.events
+        )
         admission = self._ledger.inspect_chunk_admission(
             partition=chunk.partition,
             chunk_id=chunk.chunk_id,
             sequence=chunk.chunk_sequence,
             content_sha256=content_sha256,
             event_content_sha256s=event_content_sha256s,
+            event_source_record_ids=event_source_record_ids,
         )
         if admission.is_exact_chunk_replay:
             return _result(False)
@@ -153,6 +157,14 @@ def _canonical_sha256(message: R1EventChunk | R1SourceWatermark | R1RunClosed) -
     return _canonical_payload_sha256(payload)
 
 
+def r1_stream_message_sha256(
+    message: R1EventChunk | R1SourceWatermark | R1RunClosed,
+) -> str:
+    """Return the canonical content digest used by the durable Role3 ledger."""
+
+    return _canonical_sha256(message)
+
+
 def _canonical_event_sha256(event: NormalizedEvent) -> str:
     return _canonical_payload_sha256(event.model_dump(mode="json", by_alias=True))
 
@@ -168,4 +180,9 @@ def _utc_milliseconds(value: datetime) -> datetime:
     return value.astimezone(UTC).replace(microsecond=value.microsecond // 1000 * 1000)
 
 
-__all__ = ["R1StreamDeliveryDisposition", "R1StreamDeliveryResult", "R1StreamIngress"]
+__all__ = [
+    "R1StreamDeliveryDisposition",
+    "R1StreamDeliveryResult",
+    "R1StreamIngress",
+    "r1_stream_message_sha256",
+]

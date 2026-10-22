@@ -79,8 +79,18 @@ class _Ledger:
         self.events: dict[tuple[R1StreamPartition, str], str] = {}
 
     def inspect_chunk_admission(
-        self, *, partition, chunk_id, sequence, content_sha256, event_content_sha256s
+        self,
+        *,
+        partition,
+        chunk_id,
+        sequence,
+        content_sha256,
+        event_content_sha256s,
+        event_source_record_ids,
     ) -> R1ChunkAdmission:
+        assert tuple(item[0] for item in event_source_record_ids) == tuple(
+            item[0] for item in event_content_sha256s
+        )
         previous = self.chunks.get((partition, chunk_id))
         if previous is not None:
             if previous != (sequence, content_sha256):

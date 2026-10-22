@@ -42,7 +42,11 @@
            and its launch step, the boot-to-end raw window, the readiness
            record a run is given instead of connecting from the target, the
            collection provenance and its context records, and that a run of
-           the session entry is planned, launched and exported as before.
+           the session entry is planned, launched and exported as before,
+       11. a run through WMI with -PositionFinality: the freeze request after
+           the observation boundary, the wait for the producer's ack, the
+           RecordId-bounded export next to the unchanged time-window export,
+           run-finalized last, and the failures that leave no completed run.
 
         The repository has no PowerShell test harness, so this script is a plain
         runner: it prints one line per case and exits non-zero when any case fails.
@@ -2591,14 +2595,18 @@ function Invoke-FakeCollectionRun {
     param(
         [string]$RunType = "normal", [string]$RunId = "RUN-20300101-001", [string]$ScenarioPath,
         [string]$DataRoot, [AllowNull()][AllowEmptyString()][string]$ReadinessRecordPath,
-        [AllowNull()][hashtable]$Transport, [int]$ObservationSec = 780, [switch]$Rehearsal, [switch]$DryRun
+        [AllowNull()][hashtable]$Transport, [int]$ObservationSec = 780, [switch]$Rehearsal, [switch]$DryRun,
+        [string]$IncrementalStreamControlRoot = "", [switch]$PositionFinality, [int]$PositionFreezeAckTimeoutSec = 900,
+        [scriptblock]$Sleeper = $script:FakeSleeper
     )
     return (Invoke-R1PilotRun -RunType $RunType -RunId $RunId -ScenarioJsonPath $ScenarioPath `
         -DataRoot $DataRoot -WorkDir $TEST_WORK -ObservationSec $ObservationSec -VmSnapshot "synthetic-snapshot" `
         -TargetSysmonBinary "C:\synthetic\Sysmon64.exe" -TargetSysmonConfigPath "C:\synthetic\sysmonconfig.xml" `
         -ReadinessRecordPath $ReadinessRecordPath `
         -Connection @{ address = "synthetic"; port = 5985 } -Transport $Transport `
-        -NowProvider $script:FakeNowProvider -Sleeper $script:FakeSleeper `
+        -NowProvider $script:FakeNowProvider -Sleeper $Sleeper `
+        -IncrementalStreamControlRoot $IncrementalStreamControlRoot -PositionFinality:$PositionFinality `
+        -PositionFreezeAckTimeoutSec $PositionFreezeAckTimeoutSec `
         -Rehearsal:$Rehearsal -DryRun:$DryRun)
 }
 
@@ -4842,6 +4850,331 @@ Reset-Fakes
 $policyDry = Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $wmiScenarioPath -DataRoot (New-TempRoot) -DryRun
 Assert-True "a dry run of a scenario that carries its policies still shows its plan" (
     $policyDry.mode -eq "dry_run" -and $script:FakeCalls.Count -eq 0)
+
+ # --- RecordId position finality: a whole run through WMI with -PositionFinality ----------------
+ # The producer is a fake that answers the freeze request from the sleeper, the
+ # way the real sidecar answers it between two polls. The RecordId-bounded export
+ # is a fake remote step; scenarios\R1\tests\Test-R1PositionFinalityPath.ps1
+ # checks the step itself.
+
+$POSITION_CHANNEL = "Microsoft-Windows-Sysmon/Operational"
+$POSITION_IDENTITY = "d" * 64
+$POSITION_CREATED = "2029-12-31T23:40:00.000Z"
+# What the fake fetch writes, hashed here and not by the code under test.
+$positionSha = [System.Security.Cryptography.SHA256]::Create()
+$POSITION_EVTX_SHA = ([BitConverter]::ToString($positionSha.ComputeHash(
+    (New-Object System.Text.UTF8Encoding($false)).GetBytes("synthetic evtx placeholder")))).Replace("-", "").ToLower()
+$positionSha.Dispose()
+
+$script:PositionControlDir = $null
+$script:PositionProducerWrites = $true
+$script:PositionAckHost = $TEST_HOST
+$script:PositionExportSet = @{}
+$script:PositionProducerFails = ""
+$script:PositionFailureRequestSha = ""
+
+function Get-PositionFileSha256([string]$Path) {
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLower()
+}
+
+function Write-FakeProducerBinding {
+    <# What the producer writes at its start: its Run, host, partition and contract. #>
+    param([string]$ControlRoot, [string]$RunId, [string]$BindingHost = $TEST_HOST,
+        [string]$ContractHost = $TEST_HOST)
+    $contractPath = Join-Path (Join-Path $ControlRoot "contracts") ($RunId + "-required-partitions.json")
+    New-Item -ItemType Directory -Path (Split-Path $contractPath -Parent) -Force | Out-Null
+    $contract = [ordered]@{ schema = "r1-required-partitions"; contract_version = "v0.1"; target_host = $ContractHost
+        required_partitions = @([ordered]@{ source = "sysmon"; source_channel = $POSITION_CHANNEL }) }
+    [System.IO.File]::WriteAllText($contractPath, ($contract | ConvertTo-Json -Depth 4))
+    $binding = [ordered]@{
+        schema = "r1-sysmon-collection-producer-binding"; contract_version = "v0.1"; run_id = $RunId; host_id = $BindingHost
+        partition = [ordered]@{ run_id = $RunId; host_id = $BindingHost; source = "sysmon"; source_channel = $POSITION_CHANNEL }
+        required_partition_contract = [ordered]@{
+            path = $contractPath; sha256 = (Get-PositionFileSha256 $contractPath); target_host = $BindingHost }
+        context_start_utc = $WMI_BOOT_UTC
+    }
+    $controlDir = Join-Path $ControlRoot $RunId
+    New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $controlDir "collection-producer-binding.json"), ($binding | ConvertTo-Json -Depth 4))
+    return $contractPath
+}
+
+$positionSleeper = {
+    param($Seconds)
+    & $script:FakeSleeper $Seconds
+    $requestPath = Join-Path $script:PositionControlDir "collection-freeze-requested.json"
+    $ackPath = Join-Path $script:PositionControlDir "collection-freeze-ack.json"
+    if (-not $script:PositionProducerWrites -or -not (Test-Path -LiteralPath $requestPath) -or
+        (Test-Path -LiteralPath $ackPath)) { return }
+    $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $now = Get-UtcStamp $script:FakeNow
+    if (-not [string]::IsNullOrEmpty($script:PositionProducerFails)) {
+        # The producer gave up: its failure, bound to the request bytes it read.
+        $failurePath = Join-Path $script:PositionControlDir "collection-freeze-failed.json"
+        if (Test-Path -LiteralPath $failurePath) { return }
+        $requestSha = $script:PositionFailureRequestSha
+        if ([string]::IsNullOrEmpty($requestSha)) { $requestSha = Get-PositionFileSha256 $requestPath }
+        $failure = [ordered]@{
+            schema = "r1-sysmon-collection-freeze-failure"; contract_version = "v0.1"
+            run_id = $request.partition.run_id; host_id = $TEST_HOST; request_id = $request.request_id
+            request_sha256 = $requestSha
+            partition = [ordered]@{ run_id = $request.partition.run_id; host_id = $TEST_HOST; source = "sysmon"
+                source_channel = $POSITION_CHANNEL }
+            failed_at = $now; reason_code = $script:PositionProducerFails; snapshot_failures = @("view_mismatch")
+        }
+        [System.IO.File]::WriteAllText($failurePath, ($failure | ConvertTo-Json -Depth 6))
+        return
+    }
+    $partition = [ordered]@{ run_id = $request.partition.run_id; host_id = $script:PositionAckHost
+        source = "sysmon"; source_channel = $POSITION_CHANNEL }
+    $generation = [ordered]@{
+        schema = "r1-sysmon-channel-generation-observation"; contract_version = "v0.1"; phase = "freeze_ack"
+        request_id = $request.request_id; partition = $partition
+        source_lower_record_id = 1001; source_upper_record_id = 1006
+        lower_anchor_raw_xml_sha256 = ("1" * 64); upper_anchor_raw_xml_sha256 = ("2" * 64)
+        oldest_record_number = 900; log_creation_time_utc = $POSITION_CREATED; observed_at = $now
+    }
+    $ack = [ordered]@{
+        schema = "r1-sysmon-collection-freeze-ack"; contract_version = "v0.1"; request_id = $request.request_id
+        partition = $partition; source_lower_record_id = 1001; source_upper_record_id = 1006
+        target_event_ids = @(1, 3); target_event_count = 3; target_identity_sha256 = $POSITION_IDENTITY
+        covered_through_chunk_sequence = 2; allowed_lateness_ms = 2000; raw_segment_inventory_sha256 = ("b" * 64)
+        acked_at = $now
+    }
+    [System.IO.File]::WriteAllText((Join-Path $script:PositionControlDir "collection-freeze-generation.json"),
+        ($generation | ConvertTo-Json -Depth 6))
+    [System.IO.File]::WriteAllText($ackPath, ($ack | ConvertTo-Json -Depth 6))
+}
+
+function New-PositionFakeTransport {
+    $transport = New-CollectionFakeTransport
+    $script:CollectionFakeInvoke = $transport.invoke
+    $script:CollectionFakeConvert = $transport.convert
+    $transport.invoke = {
+        param($Session, $Step, $Arguments)
+        if ($Step -ne "export_record_bounded") { return (& $script:CollectionFakeInvoke $Session $Step $Arguments) }
+        $script:FakeCalls.Add("invoke:" + $Step)
+        $script:FakeArguments[$Step] = $Arguments
+        $answer = @{
+            utc = (Get-UtcStamp $script:FakeNow); evtx_path = [string]$Arguments.export_path
+            evtx_sha256 = $POSITION_EVTX_SHA; event_count = 3; identity_sha256 = $POSITION_IDENTITY
+            record_keys = @("1001:1", "1002:1", "1004:3"); host_channel_bound = $true
+            lower_anchor_raw_xml_sha256 = ("1" * 64); upper_anchor_raw_xml_sha256 = ("2" * 64)
+            oldest_record_number = 900; log_creation_time_utc = $POSITION_CREATED
+        }
+        foreach ($key in $script:PositionExportSet.Keys) { $answer[$key] = $script:PositionExportSet[$key] }
+        return $answer
+    }
+    $transport.convert = {
+        param($EvtxPath, $JsonlPath)
+        if ($EvtxPath -notlike "*\position-finality\*") { return (& $script:CollectionFakeConvert $EvtxPath $JsonlPath) }
+        $script:FakeCalls.Add("convert:snapshot")
+        $lines = @(@(@(1001, 1), @(1002, 1), @(1004, 3)) | ForEach-Object {
+                ([ordered]@{ RecordId = $_[0]; EventId = $_[1]; TimeCreated = "2030-01-01T00:00:00.000Z"
+                    Channel = $POSITION_CHANNEL; Computer = $TEST_HOST; Provider = "Microsoft-Windows-Sysmon"
+                    EventData = @{ Image = "C:\Windows\System32\cmd.exe" } } | ConvertTo-Json -Compress) })
+        [System.IO.File]::WriteAllLines($JsonlPath, [string[]]$lines, (New-Object System.Text.UTF8Encoding($false)))
+        return $lines.Count
+    }
+    return $transport
+}
+
+function Invoke-PositionRun {
+    param([string]$RunId, [string]$DataRoot, [string]$ControlRoot, [int]$TimeoutSec = 900, [switch]$NoBinding)
+    $script:PositionControlDir = Join-Path $ControlRoot $RunId
+    if (-not $NoBinding) { Write-FakeProducerBinding -ControlRoot $ControlRoot -RunId $RunId | Out-Null }
+    return (Invoke-FakeCollectionRun -RunType "attack" -RunId $RunId -ScenarioPath $wmiScenarioPath -DataRoot $DataRoot `
+        -ReadinessRecordPath $readinessPath -Transport (New-PositionFakeTransport) `
+        -IncrementalStreamControlRoot $ControlRoot -PositionFinality -PositionFreezeAckTimeoutSec $TimeoutSec `
+        -Sleeper $positionSleeper)
+}
+
+function Read-PositionJson {
+    param([string]$ControlRoot, [string]$RunId, [string]$Name)
+    return (Get-Content -LiteralPath (Join-Path (Join-Path $ControlRoot $RunId) $Name) -Raw -Encoding UTF8 | ConvertFrom-Json)
+}
+
+Reset-Fakes
+$script:PositionProducerWrites = $true
+$script:PositionAckHost = $TEST_HOST
+$script:PositionExportSet = @{}
+$positionRoot = New-TempRoot
+$positionControl = New-TempRoot
+$positionRunId = "RUN-20300101-031"
+$positionRun = Invoke-PositionRun -RunId $positionRunId -DataRoot $positionRoot -ControlRoot $positionControl
+$positionCalls = $script:FakeCalls -join ","
+$positionDir = Join-Path $positionControl $positionRunId
+
+Assert-True "position: the run completes with its lineage and a run-finalized" (
+    $positionRun.mode -eq "collection" -and $positionRun.lineage.status -eq "matched" -and
+    (Test-Path -LiteralPath $positionRun.position_finality.run_finalized) -and
+    $positionRun.position_finality.lower_record_id -eq 1001 -and $positionRun.position_finality.upper_record_id -eq 1006)
+Assert-True "position: the RecordId-bounded export follows the time-window export in the same collection session" (
+    $positionCalls.Contains("open,invoke:export,fetch,invoke:export_record_bounded,fetch,invoke:cleanup,close") -and
+    (Get-CallCount "invoke:export_record_bounded") -eq 1 -and $positionCalls.Contains("convert:snapshot"))
+$boundedArguments = $script:FakeArguments["export_record_bounded"]
+$windowArguments = $script:FakeArguments["export"]
+Assert-True "position: the snapshot is exported through the acked bound and the window export is unchanged" (
+    [long]$boundedArguments.lower -eq 1001 -and [long]$boundedArguments.upper -eq 1006 -and
+    [string]$boundedArguments.expected_host -ceq $TEST_HOST -and
+    [string]$boundedArguments.export_path -ceq ($TEST_WORK + "\r1_sysmon_record_bounded.evtx") -and
+    (@($windowArguments.Keys | Sort-Object) -join ",") -ceq "event_ids,export_path,log_name,margin_ms,start_utc" -and
+    @($script:FakeArguments["cleanup"].paths) -contains ($TEST_WORK + "\r1_sysmon_record_bounded.evtx"))
+$positionRequest = Read-PositionJson $positionControl $positionRunId "collection-freeze-requested.json"
+$positionBoundary = Read-PositionJson $positionControl $positionRunId "candidate-boundary-completed.json"
+Assert-True "position: the request carries the A04 completion and the observation boundary of the run" (
+    $positionRequest.candidate_boundary_at -ceq $positionBoundary.candidate_boundary_at -and
+    $positionRequest.observation_boundary_at -ceq "2030-01-01T00:13:00.000Z" -and
+    [string]$positionRequest.requested_at -ge [string]$positionRequest.observation_boundary_at -and
+    $positionRequest.partition.host_id -ceq $TEST_HOST -and $positionRequest.partition.run_id -ceq $positionRunId)
+$positionFinalized = Read-PositionJson $positionControl $positionRunId "run-finalized.json"
+$positionExportGeneration = Read-PositionJson $positionControl $positionRunId "canonical-export-generation.json"
+$positionAck = Read-PositionJson $positionControl $positionRunId "collection-freeze-ack.json"
+$snapshotDir = Join-Path $positionDir "position-finality"
+Assert-True "position: run-finalized binds the snapshot files and follows the ack and the export generation" (
+    $positionFinalized.canonical_event_count -eq 3 -and $positionFinalized.canonical_identity_sha256 -ceq $POSITION_IDENTITY -and
+    $positionFinalized.canonical_evtx_sha256 -ceq (Get-FileSha256 (Join-Path $snapshotDir "telemetry\sysmon-0001.evtx")) -and
+    $positionFinalized.canonical_jsonl_sha256 -ceq (Get-FileSha256 (Join-Path $snapshotDir "telemetry\sysmon-0001.jsonl")) -and
+    $positionFinalized.manifest_sha256 -ceq (Get-FileSha256 (Join-Path $snapshotDir "manifest.json")) -and
+    [string]$positionAck.acked_at -le [string]$positionExportGeneration.observed_at -and
+    [string]$positionExportGeneration.observed_at -le [string]$positionFinalized.finalized_at)
+$positionAttestation = Get-Content -LiteralPath (Join-Path $snapshotDir "candidate-boundary-attestation.json") -Raw `
+    -Encoding UTF8 | ConvertFrom-Json
+$positionContext = Get-Content -LiteralPath (Join-Path $positionRoot ("operator_trace\" + $positionRunId +
+    "\r1_wmi_collection_context.json")) -Raw -Encoding UTF8 | ConvertFrom-Json
+$contextGuid = @{}
+foreach ($record in @($positionContext.lineage.records)) { $contextGuid[[string]$record.role] = [string]$record.process_guid }
+Assert-True "position: the A04 run_end result is attested with the lineage of the run and the request boundary" (
+    $positionAttestation.action_id -ceq "A04" -and $positionAttestation.step -ceq "run_end" -and
+    $positionAttestation.completed_at -ceq $positionRequest.candidate_boundary_at -and
+    $positionAttestation.no_actions_after_boundary -eq $true -and
+    (@($positionAttestation.owned_processes | ForEach-Object { $_.role + "=" + $_.terminal_state }) -join ",") -ceq
+        "intermediate=stopped,final_tool=stopped" -and
+    $positionAttestation.owned_processes[0].process_guid -ceq $contextGuid["intermediate"] -and
+    $positionAttestation.owned_processes[1].process_guid -ceq $contextGuid["final_tool"] -and
+    $positionAttestation.owned_processes[0].image -ceq "cmd.exe" -and
+    $positionAttestation.owned_processes[1].image -ceq "powershell.exe" -and
+    (@($positionAttestation.PSObject.Properties.Name) -join ",") -ceq
+        "action_id,step,action_type,completed_at,no_actions_after_boundary,owned_processes")
+$positionManifest = Get-Content -LiteralPath (Join-Path $positionRoot "raw\$positionRunId\manifest.json") -Raw -Encoding UTF8 |
+    ConvertFrom-Json
+Assert-True "position: the manifest of the Run lists its own window export and not the snapshot" (
+    @($positionManifest.items).Count -eq 2 -and
+    @($positionManifest.items | Where-Object { [string]$_.path -like "*position-finality*" }).Count -eq 0)
+
+Reset-Fakes
+$script:PositionProducerWrites = $false
+$silentRoot = New-TempRoot
+$silentControl = New-TempRoot
+Assert-Throws "position: no freeze ack within the timeout fails the run" {
+    Invoke-PositionRun -RunId "RUN-20300101-032" -DataRoot $silentRoot -ControlRoot $silentControl -TimeoutSec 30
+} "*no collection freeze ack within 30 s*"
+Assert-True "  ... before anything is exported, without the files of a valid run and with run-failed" (
+    (Get-CallCount "invoke:export") -eq 0 -and (Get-CallCount "invoke:export_record_bounded") -eq 0 -and
+    (Test-SuccessArtifactsAbsent -Root $silentRoot -RunId "RUN-20300101-032") -and
+    -not (Test-Path -LiteralPath (Join-Path $silentControl "RUN-20300101-032\run-finalized.json")) -and
+    (Read-PositionJson $silentControl "RUN-20300101-032" "run-failed.json").stage -ceq "collection_freeze")
+$script:PositionProducerWrites = $true
+
+foreach ($case in @(
+        @{ name = "an export with another Event set"; id = "RUN-20300101-033"; set = @{ identity_sha256 = ("e" * 64) }
+           like = "*canonical export drift*"; stage = "record_bounded_snapshot" },
+        @{ name = "an export after the channel generation changed"; id = "RUN-20300101-034"
+           set = @{ upper_anchor_raw_xml_sha256 = ("3" * 64) }; like = "*generation changed*"; stage = "record_bounded_snapshot" },
+        @{ name = "an ack of another host"; id = "RUN-20300101-035"; set = @{}; ackHost = "TARGET-B"
+           like = "*another request, Run, host*"; stage = "collection_freeze" })) {
+    Reset-Fakes
+    $script:PositionExportSet = $case.set
+    $script:PositionAckHost = $TEST_HOST
+    if ($case.ContainsKey("ackHost")) { $script:PositionAckHost = $case.ackHost }
+    $caseRoot = New-TempRoot
+    $caseControl = New-TempRoot
+    Assert-Throws ("position: " + $case.name + " fails the run") {
+        Invoke-PositionRun -RunId $case.id -DataRoot $caseRoot -ControlRoot $caseControl
+    } $case.like
+    Assert-True ("  ... without the files of a valid run or run-finalized (" + $case.name + ")") (
+        (Test-SuccessArtifactsAbsent -Root $caseRoot -RunId $case.id) -and
+        -not (Test-Path -LiteralPath (Join-Path $caseControl ($case.id + "\run-finalized.json"))) -and
+        (Read-PositionJson $caseControl $case.id "run-failed.json").stage -ceq $case.stage)
+}
+$script:PositionExportSet = @{}
+$script:PositionAckHost = $TEST_HOST
+
+ # --- the producer binding before the first action ---------------------------------------
+
+foreach ($case in @(
+        @{ name = "without a producer binding"; id = "RUN-20300101-041"; noBinding = $true; like = "*no producer binding*" },
+        @{ name = "whose producer collects another host"; id = "RUN-20300101-042"; bindingHost = "TARGET-B"
+           like = "*collects another Run, host or partition*" },
+        @{ name = "whose contract binds another host"; id = "RUN-20300101-043"; contractHost = "TARGET-B"
+           like = "*does not bind exactly the Sysmon partition*" },
+        @{ name = "whose contract changed after the producer started"; id = "RUN-20300101-044"; changeContract = $true
+           like = "*not the one the producer was started with*" })) {
+    Reset-Fakes
+    $caseRoot = New-TempRoot
+    $caseControl = New-TempRoot
+    if (-not $case.ContainsKey("noBinding")) {
+        $bindingHost = $TEST_HOST; if ($case.ContainsKey("bindingHost")) { $bindingHost = $case.bindingHost }
+        $contractHost = $TEST_HOST; if ($case.ContainsKey("contractHost")) { $contractHost = $case.contractHost }
+        $contractPath = Write-FakeProducerBinding -ControlRoot $caseControl -RunId $case.id -BindingHost $bindingHost `
+            -ContractHost $contractHost
+        if ($case.ContainsKey("contractHost")) {
+            # The binding names the file as it is; only its host is not the runner's.
+            $bindingPath = Join-Path (Join-Path $caseControl $case.id) "collection-producer-binding.json"
+            $binding = Get-Content -LiteralPath $bindingPath -Raw | ConvertFrom-Json
+            $binding.required_partition_contract.target_host = $TEST_HOST
+            [System.IO.File]::WriteAllText($bindingPath, ($binding | ConvertTo-Json -Depth 4))
+        }
+        if ($case.ContainsKey("changeContract")) { [System.IO.File]::AppendAllText($contractPath, " ") }
+    }
+    Assert-Throws ("position: a run " + $case.name + " is refused") {
+        Invoke-PositionRun -RunId $case.id -DataRoot $caseRoot -ControlRoot $caseControl -NoBinding
+    } $case.like
+    Assert-True ("  ... before its first action, with run-failed at the preflight (" + $case.name + ")") (
+        (Get-CallCount "invoke:prepare") -eq 0 -and (Get-CallCount "invoke:launch_wmi") -eq 0 -and
+        (Read-PositionJson $caseControl $case.id "run-failed.json").stage -ceq "position_preflight" -and
+        -not (Test-Path -LiteralPath (Join-Path $caseControl ($case.id + "\collection-freeze-requested.json"))))
+}
+
+ # --- the producer's failure ends the wait ---------------------------------------------------
+
+Reset-Fakes
+$script:PositionProducerFails = "freeze_snapshot_rejected"
+$failRoot = New-TempRoot
+$failControl = New-TempRoot
+Assert-Throws "position: the producer's failure fails the run at once with its reason code" {
+    Invoke-PositionRun -RunId "RUN-20300101-045" -DataRoot $failRoot -ControlRoot $failControl
+} "*collection freeze failure: freeze_snapshot_rejected (view_mismatch)*"
+Assert-True "  ... after one poll of the ack, before anything is exported, and with run-failed" (
+    @($script:SleepCalls | Where-Object { $_ -eq 5 }).Count -eq 1 -and
+    (Get-CallCount "invoke:export") -eq 0 -and (Get-CallCount "invoke:export_record_bounded") -eq 0 -and
+    (Test-SuccessArtifactsAbsent -Root $failRoot -RunId "RUN-20300101-045") -and
+    (Read-PositionJson $failControl "RUN-20300101-045" "run-failed.json").stage -ceq "collection_freeze")
+Reset-Fakes
+$script:PositionFailureRequestSha = "e" * 64
+$staleRoot = New-TempRoot
+$staleControl = New-TempRoot
+Assert-Throws "position: a failure bound to other request bytes is not consumed as this run's failure" {
+    Invoke-PositionRun -RunId "RUN-20300101-046" -DataRoot $staleRoot -ControlRoot $staleControl
+} "*a collection freeze failure of another Run, request, host or partition*"
+$script:PositionProducerFails = ""
+$script:PositionFailureRequestSha = ""
+
+Reset-Fakes
+Assert-Throws "position: position finality without a control root is refused before any session" {
+    Invoke-FakeCollectionRun -RunType "attack" -ScenarioPath $wmiScenarioPath -DataRoot (New-TempRoot) `
+        -ReadinessRecordPath $readinessPath -Transport (New-PositionFakeTransport) -PositionFinality
+} "*PositionFinality needs IncrementalStreamControlRoot*"
+Assert-True "  ... and it opens no session" ($script:FakeCalls.Count -eq 0)
+
+Reset-Fakes
+$usedControl = New-TempRoot
+New-Item -ItemType Directory -Path (Join-Path $usedControl "RUN-20300101-036") | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $usedControl "RUN-20300101-036\collection-freeze-requested.json"), "{}")
+Assert-Throws "position: a run whose freeze artifacts already exist is refused" {
+    Invoke-PositionRun -RunId "RUN-20300101-036" -DataRoot (New-TempRoot) -ControlRoot $usedControl
+} "*position-finality artifact of this run already exists*"
+Assert-True "  ... before its first action" ((Get-CallCount "invoke:launch_wmi") -eq 0 -and (Get-CallCount "invoke:prepare") -eq 0)
 
 Write-Host ""
 if ($script:Failures -eq 0) {

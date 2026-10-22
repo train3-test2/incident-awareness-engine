@@ -93,6 +93,12 @@ jobs:
         shell: powershell
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scenarios\R1\tests\Test-R1RunGuards.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scenarios\R1\tests\Test-R1IncrementalSysmonProducer.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scenarios\R1\tests\Test-R1RecordBoundedFinalityContract.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scenarios\R1\tests\Test-R1PositionFinalityPath.ps1
           exit $LASTEXITCODE
       - name: S0 run guards
         shell: powershell

@@ -11,6 +11,7 @@ venv/
 
 # Environment
 .env
+.env.localstack
 
 # Pytest
 .pytest_cache/

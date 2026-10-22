@@ -64,6 +64,16 @@
     .PARAMETER Credential
         The account both runs use. Prompted for by the operator; never stored.
 
+    .PARAMETER PositionFinality
+        Write the RecordId position-finality snapshot of the run under
+        IncrementalStreamControlRoot: the freeze request after the observation
+        boundary, the RecordId-bounded export of the bound the producer acked
+        (r1-incremental-sysmon-producer.ps1 -PositionFinality) and run-finalized.
+        WMI collection path only. It issues no watermark and no close.
+
+    .PARAMETER PositionFreezeAckTimeoutSec
+        How long the run waits for the producer's freeze ack before it fails.
+
     .PARAMETER ReadinessRecordPath
         The record of the readiness check made from outside the target. Needed
         only by a scenario that states collection.readiness_method; such a run
@@ -90,6 +100,9 @@ param(
     [string]$TargetSysmonConfigPath,
     [string]$ExpectedSysmonConfigSha256,
     [string]$ReadinessRecordPath,
+    [string]$IncrementalStreamControlRoot,
+    [switch]$PositionFinality,
+    [int]$PositionFreezeAckTimeoutSec = 900,
     [switch]$Rehearsal,
     [switch]$DryRun
 )
@@ -123,5 +136,7 @@ Invoke-R1PilotRun -RunType "attack" -RunId $RunId -ScenarioJsonPath $ScenarioJso
     -TargetSysmonConfigPath $TargetSysmonConfigPath `
     -ExpectedSysmonConfigSha256 $ExpectedSysmonConfigSha256 `
     -ReadinessRecordPath $ReadinessRecordPath `
+    -IncrementalStreamControlRoot $IncrementalStreamControlRoot `
+    -PositionFinality:$PositionFinality -PositionFreezeAckTimeoutSec $PositionFreezeAckTimeoutSec `
     -Connection $connection -Transport $transport `
     -Rehearsal:$Rehearsal -DryRun:$DryRun | Out-Null

@@ -464,3 +464,28 @@ transport recovery를 소유한다. Role4는 candidate-generation seal의 schema
 identity를 소유한다. Role2는 유효한 Event chunk를 소비해 selector 상태를 누적할 수 있으나,
 이 문서만으로 Evidence를 최종 확정하지 않는다. Evidence 확정에는 Role3 telemetry close와
 Role4 candidate-generation seal의 결속 검증이 모두 필요하다.
+
+## 15. Sysmon RecordId-bounded snapshot delivery verification
+
+WMI live producer가 사용하는 Sysmon source의 final watermark는 timeout, Event 최댓값, 빈 조회,
+`candidate_boundary_completed` 또는 RecordId-bounded snapshot exact-set 일치만으로 발급하지
+않는다.
+
+[R1 Sysmon RecordId-bounded snapshot delivery verification v0.1](r1-sysmon-record-bounded-finality-v0.md)은
+accepted canonical snapshot 안에서 collector가 전달한 raw/chunk와 canonical export의 일치만
+검증한다. provider queue drain이나 snapshot 밖 raw-source completeness를 보장하지 않으므로
+`observation_boundary_at`을 이 계약의 `source_watermark.watermark_at`으로 사용할 수 없다.
+
+실제 `source_watermark`와 `run_closed`를 발급하려면 다음 중 하나를 별도 versioned 계약으로
+승인해야 한다.
+
+- Sysmon source quiescence 또는 provider final-drain을 검증하는 근거
+- event-time watermark와 혼동되지 않는 RecordId position frontier 및 전용 close
+- late Event에 대한 correction/retraction을 포함한 candidate-scoped partial close
+
+그 전까지 current Sysmon producer는 watermark, close, accepted-close, seal과 proof를 발급하지
+않으며 기존 `r1-incremental-stream/v0.1`의 event-time completeness 의미를 완화하지 않는다.
+
+두 번째 근거의 계약은 [R1 Sysmon RecordId position finality v0.1](r1-sysmon-record-position-finality-v0.md)이다
+(development, 리뷰 승인 전). 이 계약의 `record_position_close`는 별도 schema·ledger·seal·proof를 쓰며,
+이 문서의 `source_watermark`·`run_closed`·accepted-close로 표현하거나 그 형식을 가장하지 않는다.

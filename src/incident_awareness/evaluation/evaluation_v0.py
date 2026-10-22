@@ -123,6 +123,17 @@ def evaluate(
     ):
         raise ValueError("evaluation_horizon must be a non-negative pd.Timedelta")
 
+    if "evaluation_horizon_sec" in df.columns:
+        for value in df["evaluation_horizon_sec"]:
+            if isinstance(value, bool) or pd.isna(value):
+                raise ValueError("evaluation_horizon_sec must match evaluation_horizon")
+            try:
+                pinned_horizon = pd.Timedelta(seconds=value)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise ValueError("invalid evaluation_horizon_sec") from error
+            if pinned_horizon != evaluation_horizon:
+                raise ValueError("evaluation_horizon_sec must match evaluation_horizon")
+
     df = df.copy()
     for column in ("run_start", "run_end", "reference_time", "timestamp"):
         if column not in df.columns:

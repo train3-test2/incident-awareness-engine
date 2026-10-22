@@ -22,6 +22,7 @@ from incident_awareness.pipeline.sqs_worker import (
     PermanentWorkerError,
     RetryableWorkerError,
     S3SysmonInput,
+    _aws_client,
     _PostgresR1ArchivePublicationStore,
     _PostgresSuccessfulReceiptStore,
     _process_message,
@@ -71,6 +72,27 @@ def test_parses_url_encoded_s3_sysmon_object_key() -> None:
     assert inputs[0].ingest_id == _INGEST_ID
     assert inputs[0].e_tag == "opaque-etag"
     assert inputs[0].sequencer == "001"
+
+
+def test_aws_client_uses_the_configured_local_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    expected_client = object()
+
+    def fake_client(service_name: str, **kwargs: object) -> object:
+        captured["service_name"] = service_name
+        captured["kwargs"] = kwargs
+        return expected_client
+
+    monkeypatch.setenv("INCIDENT_AWARENESS_AWS_ENDPOINT_URL", "http://localstack:4566")
+    monkeypatch.setattr("incident_awareness.pipeline.sqs_worker.boto3.client", fake_client)
+
+    assert _aws_client("s3") is expected_client
+    assert captured == {
+        "service_name": "s3",
+        "kwargs": {"endpoint_url": "http://localstack:4566"},
+    }
 
 
 def test_parses_every_record_in_a_batched_s3_event() -> None:
@@ -169,6 +191,31 @@ def test_worker_downloads_and_deletes_a_successful_message(
             "status": "succeeded",
         },
     ]
+
+
+def test_worker_ignores_and_deletes_an_s3_test_event() -> None:
+    sqs = _FakeSqs(
+        [
+            {
+                "Body": json.dumps({"Service": "Amazon S3", "Event": "s3:TestEvent"}),
+                "ReceiptHandle": "receipt-1",
+            }
+        ]
+    )
+    s3 = _FakeS3()
+
+    result = run_worker(
+        queue_url="https://example.test/queue",
+        expected_bucket=_BUCKET,
+        sqs_client=sqs,
+        s3_client=s3,
+        run_standalone=_successful_standalone([]),
+        once=True,
+    )
+
+    assert result == 0
+    assert s3.downloads == []
+    assert sqs.deleted_receipts == ["receipt-1"]
 
 
 def test_worker_logs_failed_status_and_retains_message_when_standalone_execution_fails(

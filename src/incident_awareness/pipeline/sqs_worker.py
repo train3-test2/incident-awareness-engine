@@ -76,6 +76,7 @@ _AUTOMATED_INPUT_KEY_PATTERN = re.compile(
 )
 _QUEUE_URL_ENV = "INCIDENT_AWARENESS_SQS_QUEUE_URL"
 _INPUT_BUCKET_ENV = "INCIDENT_AWARENESS_S3_INPUT_BUCKET"
+_AWS_ENDPOINT_URL_ENV = "INCIDENT_AWARENESS_AWS_ENDPOINT_URL"
 _WORKER_VISIBILITY_TIMEOUT_SECONDS = 3600
 _WORKER_LONG_POLL_SECONDS = 20
 
@@ -330,6 +331,15 @@ def parse_s3_sysmon_inputs(message_body: str, *, expected_bucket: str) -> tuple[
     return tuple(_parse_s3_record(record, expected_bucket=expected_bucket) for record in records)
 
 
+def _is_s3_test_event(message_body: str) -> bool:
+    """Return whether a message is S3's infrastructure test notification."""
+    try:
+        payload = json.loads(message_body)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(payload, Mapping) and payload.get("Event") == "s3:TestEvent"
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the SQS Worker command-line contract."""
     parser = argparse.ArgumentParser(
@@ -350,7 +360,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     namespace = build_parser().parse_args(argv)
     database_config = DatabaseConfig.from_environment()
     r1_production_config = load_r1_production_config(os.environ)
-    s3_client = boto3.client("s3")
+    s3_client = _aws_client("s3")
     with psycopg.connect(database_config.url, autocommit=False) as connection:
 
         def run_standalone(
@@ -386,7 +396,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_worker(
             queue_url=_required_environment(_QUEUE_URL_ENV),
             expected_bucket=_required_environment(_INPUT_BUCKET_ENV),
-            sqs_client=boto3.client("sqs"),
+            sqs_client=_aws_client("sqs"),
             s3_client=s3_client,
             run_standalone=run_standalone,
             receipt_store=_PostgresSuccessfulReceiptStore(connection),
@@ -398,6 +408,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime_observer_factory=PostgresPipelineRuntimeObserver,
             once=namespace.once,
         )
+
+
+def _aws_client(service_name: str) -> BaseClient:
+    """Create an AWS client, optionally against a local emulation endpoint."""
+    endpoint_url = os.environ.get(_AWS_ENDPOINT_URL_ENV, "").strip()
+    if endpoint_url:
+        return boto3.client(service_name, endpoint_url=endpoint_url)
+    return boto3.client(service_name)
 
 
 def run_worker(
@@ -486,10 +504,12 @@ def _process_message(
 ) -> None:
     if not isinstance(message, Mapping):
         raise ValueError("SQS message must be a JSON object")  # noqa: TRY004
+    message_body = _message_string(message, "Body")
+    if _is_s3_test_event(message_body):
+        _LOGGER.info("Ignoring S3 test event notification")
+        return
     try:
-        inputs = parse_s3_sysmon_inputs(
-            _message_string(message, "Body"), expected_bucket=expected_bucket
-        )
+        inputs = parse_s3_sysmon_inputs(message_body, expected_bucket=expected_bucket)
     except ValueError as error:
         raise PermanentWorkerError(str(error)) from error
 

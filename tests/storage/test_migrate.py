@@ -27,9 +27,12 @@ MIGRATION_IDS = (
     "011_pipeline_telemetry_timeseries",
     "012_pipeline_telemetry_input_identity",
     "013_pipeline_stage_timings",
+    "013_r1_stream_position_close_ledger",
     "014_human_workflow",
     "015_raw_artifact_retention",
 )
+_INPUT_IDENTITY_MIGRATION = "012_pipeline_telemetry_input_identity"
+_POSITION_CLOSE_MIGRATION = "013_r1_stream_position_close_ledger"
 
 
 class _Cursor:
@@ -47,16 +50,20 @@ class _Connection:
         applied_migrations: set[str] | None = None,
         existing_tables: set[str] | None = None,
         input_identity_artifacts: tuple[bool, ...] = (False,) * 6,
+        position_close_artifacts: tuple[bool, ...] = (False,) * 6,
     ) -> None:
         self.applied_migrations = set(applied_migrations or set())
         self.existing_tables = set(existing_tables or set())
         self.input_identity_artifacts = input_identity_artifacts
+        self.position_close_artifacts = position_close_artifacts
         self.queries: list[tuple[str, tuple[object, ...]]] = []
 
     def execute(self, query: str, params: tuple[object, ...] = ()) -> _Cursor:
         self.queries.append((query, params))
         if query == migrate._INPUT_IDENTITY_BASELINE_SQL:
             return _Cursor(self.input_identity_artifacts)
+        if query == migrate._POSITION_CLOSE_BASELINE_SQL:
+            return _Cursor(self.position_close_artifacts)
         if "CREATE FUNCTION guard_pipeline_telemetry_input_identity" in query:
             self.input_identity_artifacts = (True,) * 6
 
@@ -97,6 +104,10 @@ class _Connection:
         if "CREATE TABLE r1_stream_events" in query:
             self.existing_tables.add("r1_stream_events")
 
+        if "CREATE TABLE r1_stream_position_closes" in query:
+            self.existing_tables.add("r1_stream_position_closes")
+            self.position_close_artifacts = (True,) * 6
+
         if "CREATE TABLE pipeline_telemetry_executions" in query:
             self.existing_tables.update(
                 {"pipeline_telemetry_executions", "pipeline_telemetry_buckets"}
@@ -124,7 +135,7 @@ class _ContextConnection(_Connection):
 def test_baselines_complete_input_identity_ddl_without_repeating_alter() -> None:
     # Given
     connection = _Connection(
-        applied_migrations=set(MIGRATION_IDS) - {"012_pipeline_telemetry_input_identity"},
+        applied_migrations=set(MIGRATION_IDS) - {_INPUT_IDENTITY_MIGRATION},
         input_identity_artifacts=(True,) * 6,
     )
 
@@ -145,7 +156,7 @@ def test_partial_input_identity_schema_is_not_recorded_as_applied(missing: int) 
     # Given
     artifacts = tuple(index != missing for index in range(6))
     connection = _Connection(
-        applied_migrations=set(MIGRATION_IDS) - {"012_pipeline_telemetry_input_identity"},
+        applied_migrations=set(MIGRATION_IDS) - {_INPUT_IDENTITY_MIGRATION},
         input_identity_artifacts=artifacts,
     )
 
@@ -550,3 +561,47 @@ def _assert_migration_lock_precedes_history_table(connection: _Connection) -> No
         (migrate._MIGRATION_ADVISORY_LOCK_KEY,),
     )
     assert "CREATE TABLE IF NOT EXISTS schema_migrations" in connection.queries[1][0]
+
+
+def test_applies_the_position_close_ledger_after_the_event_time_ledger() -> None:
+    # Given
+    connection = _Connection(applied_migrations=set(MIGRATION_IDS) - {_POSITION_CLOSE_MIGRATION})
+
+    # When
+    applied = apply_migrations(connection)
+
+    # Then
+    assert applied == ("013_r1_stream_position_close_ledger",)
+    assert any("CREATE TABLE r1_stream_position_closes" in query for query, _ in connection.queries)
+    assert apply_migrations(connection) == ()
+
+
+def test_baselines_an_existing_position_close_ledger_without_repeating_ddl() -> None:
+    # Given
+    connection = _Connection(
+        applied_migrations=set(MIGRATION_IDS) - {_POSITION_CLOSE_MIGRATION},
+        position_close_artifacts=(True,) * 6,
+    )
+
+    # When
+    applied = apply_migrations(connection)
+
+    # Then
+    assert applied == ("013_r1_stream_position_close_ledger",)
+    assert not any(
+        "CREATE TABLE r1_stream_position_closes" in query for query, _ in connection.queries
+    )
+
+
+@pytest.mark.parametrize("missing", range(6))
+def test_partial_position_close_schema_is_not_recorded_as_applied(missing: int) -> None:
+    artifacts = tuple(index != missing for index in range(6))
+    connection = _Connection(
+        applied_migrations=set(MIGRATION_IDS) - {_POSITION_CLOSE_MIGRATION},
+        position_close_artifacts=artifacts,
+    )
+
+    with pytest.raises(RuntimeError, match="partial 013"):
+        apply_migrations(connection)
+
+    assert _POSITION_CLOSE_MIGRATION not in connection.applied_migrations
