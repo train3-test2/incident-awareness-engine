@@ -363,14 +363,91 @@ def _lineage(
         lineage.append(current)
 
 
+# Six replace attempts, at most five requested sleeps totalling 155 milliseconds.
+# Keep this well below the default one-second watch interval.
+_SNAPSHOT_RETRY_DELAYS = (0.005, 0.01, 0.02, 0.04, 0.08)
+
+
+class DemoSignalPublicationError(PermissionError):
+    """Bounded publication failed; retain the original exception without printing paths."""
+
+    def __init__(self, attempts: int, original_error: PermissionError) -> None:
+        winerror = getattr(original_error, "winerror", None)
+        super().__init__(
+            original_error.errno,
+            f"Snapshot atomic publication failed after {attempts} attempts (winerror={winerror})",
+        )
+        self.attempts = attempts
+        self.winerror = winerror
+        self.original_error = original_error
+
+
+def _windows_replace_access_allows_retry(path: Path) -> bool:
+    """Recognize sharing, including a lock already released, without retrying ACL denial."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    attributes = kernel.GetFileAttributesW
+    attributes.argtypes = [wintypes.LPCWSTR]
+    attributes.restype = wintypes.DWORD
+    flags = attributes(str(path))
+    if flags == 0xFFFFFFFF or flags & (1 | 16):  # Missing, read-only, or a directory.
+        return False
+    create = kernel.CreateFileW
+    create.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    # DELETE, FILE_SHARE_READ|WRITE|DELETE, OPEN_EXISTING. No DELETE_ON_CLOSE flag.
+    handle = create(str(path), 0x00010000, 7, None, 3, 0, None)
+    if handle == wintypes.HANDLE(-1).value:
+        return ctypes.get_last_error() in {32, 33}
+    close(handle)
+    # A short reader may have closed between os.replace's failure and this probe.
+    # DELETE access is now allowed; retry that recovered race rather than stopping watch.
+    return True
+
+
+def _is_windows_sharing_violation(error: PermissionError, path: Path) -> bool:
+    code = getattr(error, "winerror", None)
+    if code in {32, 33}:
+        return True
+    # MoveFileEx/os.replace can report ACCESS_DENIED for an open destination.
+    # Require native sharing or restored DELETE access, excluding read-only/ACL denial.
+    return code == 5 and os.name == "nt" and _windows_replace_access_allows_retry(path)
+
+
 def write_demo_signal(path: Path, signal: R1LocalDemoSignal) -> None:
-    """Atomically replace the mutable demo-only display state."""
+    """Atomically publish once, retrying only bounded Windows sharing conflicts."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = signal.model_dump_json(by_alias=True, exclude_none=False).encode("utf-8") + b"\n"
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_bytes(payload)
-    os.replace(temporary, path)
+    try:
+        temporary.write_bytes(payload)
+        for attempt in range(len(_SNAPSHOT_RETRY_DELAYS) + 1):
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError as error:
+                if not _is_windows_sharing_violation(error, path):
+                    raise
+                if attempt == len(_SNAPSHOT_RETRY_DELAYS):
+                    # Keep the original exception for inspection, but suppress its path in logs.
+                    raise DemoSignalPublicationError(attempt + 1, error) from None
+                time.sleep(_SNAPSHOT_RETRY_DELAYS[attempt])
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _policy_identity(policy: ApprovedLineagePolicy) -> DemoPolicyIdentity:
@@ -448,6 +525,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "DemoSignalInputError",
+    "DemoSignalPublicationError",
     "R1LocalDemoSignal",
     "build_demo_signal",
     "write_demo_signal",
