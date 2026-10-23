@@ -1,10 +1,15 @@
 import hashlib
 import json
+import os
+import sys
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+import incident_awareness.demo.r1_live_signal as demo_signal
 from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.common.models.r1_stream import R1EventChunk
 from incident_awareness.demo.r1_live_signal import (
@@ -456,3 +461,238 @@ def test_accepted_chunk_outside_demo_host_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(DemoSignalInputError, match="outside the Sysmon demo partition"):
         _build(spool)
+
+
+def _sharing_error(code: int = 32) -> PermissionError:
+    error = PermissionError(13, "fixture sharing conflict")
+    error.winerror = code
+    return error
+
+
+@pytest.mark.parametrize("failures", [1, 3, 5])
+def test_atomic_replace_retries_same_complete_payload_then_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failures: int
+) -> None:
+    # Given
+    output = tmp_path / "demo-state.json"
+    signal = _build(_accepted_spool(tmp_path / "spool", _events("cmd.exe")))
+    replace = os.replace
+    calls, sleeps = [], []
+
+    def conflict_then_replace(source: Path, target: Path) -> None:
+        calls.append((source, target, source.read_bytes()))
+        assert json.loads(calls[-1][2])["state"] == "demo_rule_match"
+        if len(calls) <= failures:
+            raise _sharing_error()
+        replace(source, target)
+
+    monkeypatch.setattr(demo_signal.os, "replace", conflict_then_replace)
+    monkeypatch.setattr(demo_signal.time, "sleep", sleeps.append)
+    # When
+    write_demo_signal(output, signal)
+    # Then
+    assert len(calls) == failures + 1
+    assert len({call[0] for call in calls}) == 1
+    assert len({call[2] for call in calls}) == 1
+    assert sleeps == list(demo_signal._SNAPSHOT_RETRY_DELAYS[:failures])
+    assert R1LocalDemoSignal.model_validate_json(output.read_bytes()) == signal
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_atomic_replace_exhaustion_preserves_previous_snapshot_and_original_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given
+    output = tmp_path / "demo-state.json"
+    old = _build(_accepted_spool(tmp_path / "normal", _events("wscript.exe")))
+    new = _build(_accepted_spool(tmp_path / "attack", _events("cmd.exe")))
+    write_demo_signal(output, old)
+    before = output.read_bytes()
+    errors, sleeps = [], []
+
+    def conflict(_source: Path, _target: Path) -> None:
+        error = _sharing_error()
+        error.filename = str(tmp_path / "private-source")
+        errors.append(error)
+        raise error
+
+    monkeypatch.setattr(demo_signal.os, "replace", conflict)
+    monkeypatch.setattr(demo_signal.time, "sleep", sleeps.append)
+    # When
+    with pytest.raises(demo_signal.DemoSignalPublicationError) as raised:
+        write_demo_signal(output, new)
+    # Then
+    assert raised.value.attempts == len(errors) == 6
+    assert raised.value.original_error is errors[-1]
+    assert raised.value.winerror == 32 and raised.value.__suppress_context__
+    assert str(tmp_path) not in str(raised.value)
+    assert sleeps == list(demo_signal._SNAPSHOT_RETRY_DELAYS)
+    assert sum(sleeps) == pytest.approx(0.155)
+    assert output.read_bytes() == before
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize("error", [PermissionError(13, "denied"), OSError(28, "full")])
+def test_other_publication_errors_are_not_retried_and_leave_no_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: OSError
+) -> None:
+    # Given
+    output = tmp_path / "demo-state.json"
+    signal = _build(_accepted_spool(tmp_path / "spool", _events("cmd.exe")))
+    calls = []
+
+    def fail(_source: Path, _target: Path) -> None:
+        calls.append(1)
+        raise error
+
+    monkeypatch.setattr(demo_signal.os, "replace", fail)
+    # When
+    with pytest.raises(type(error)) as raised:
+        write_demo_signal(output, signal)
+    # Then
+    assert raised.value is error and calls == [1]
+    assert not output.exists() and not list(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Native Windows access denial classification")
+def test_permanent_windows_access_denial_is_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given
+    signal = _build(_accepted_spool(tmp_path / "spool", _events("cmd.exe")))
+    calls = []
+    error = _sharing_error(5)
+
+    def fail(_source: Path, _target: Path) -> None:
+        calls.append(1)
+        raise error
+
+    monkeypatch.setattr(demo_signal.os, "replace", fail)
+    monkeypatch.setattr(demo_signal, "_windows_replace_access_allows_retry", lambda _path: False)
+    # When
+    with pytest.raises(PermissionError) as raised:
+        write_demo_signal(tmp_path / "demo-state.json", signal)
+    # Then
+    assert raised.value is error and calls == [1]
+
+
+@pytest.mark.parametrize(
+    "middle,state", [("cmd.exe", "demo_rule_match"), ("wscript.exe", "condition_not_met")]
+)
+def test_repeated_heartbeat_publication_preserves_state_and_contract(
+    tmp_path: Path, middle: str, state: str
+) -> None:
+    # Given
+    spool = _accepted_spool(tmp_path / "spool", _events(middle))
+    output = tmp_path / "demo-state.json"
+    original = _build(spool)
+    # When
+    payloads = []
+    for index in range(10):
+        current = original.model_copy(update={"generated_at": T0 + timedelta(seconds=index + 10)})
+        write_demo_signal(output, current)
+        payloads.append(R1LocalDemoSignal.model_validate_json(output.read_bytes()))
+    # Then
+    for payload in payloads:
+        assert payload.state == state and payload.run_id == original.run_id
+        assert payload.model_dump(exclude={"generated_at"}) == original.model_dump(
+            exclude={"generated_at"}
+        )
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Actual Win32 file sharing handles required")
+def test_native_windows_reader_conflict_resolves_without_partial_publication(
+    tmp_path: Path,
+) -> None:
+    # Given: a real file handle which deliberately does not permit delete sharing.
+    import ctypes
+    from ctypes import wintypes
+
+    output = tmp_path / "demo-state.json"
+    original = _build(_accepted_spool(tmp_path / "spool", _events("cmd.exe")))
+    write_demo_signal(output, original)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    published = []
+    # When: each release comes from another thread after the first replace fails.
+    for index in range(10):
+        handle = create(str(output), 0x80000000, 3, None, 3, 0, None)
+        assert handle != wintypes.HANDLE(-1).value
+        release = threading.Thread(target=lambda held=handle: (time.sleep(0.012), close(held)))
+        release.start()
+        try:
+            current = original.model_copy(
+                update={"generated_at": T0 + timedelta(seconds=index + 10)}
+            )
+            write_demo_signal(output, current)
+        finally:
+            release.join(timeout=1)
+        published.append(R1LocalDemoSignal.model_validate_json(output.read_bytes()))
+    # Then
+    assert len(published) == 10 and all(item.state == "demo_rule_match" for item in published)
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Actual Windows DELETE access probe required")
+def test_windows_short_read_conflict_already_released_before_probe_is_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given: an ACCESS_DENIED from a reader that has already released its handle.
+    output = tmp_path / "demo-state.json"
+    signal = _build(_accepted_spool(tmp_path / "spool", _events("cmd.exe")))
+    write_demo_signal(output, signal)
+    replace = os.replace
+    attempts = []
+
+    def released_reader(source: Path, target: Path) -> None:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise _sharing_error(5)
+        replace(source, target)
+
+    monkeypatch.setattr(demo_signal.os, "replace", released_reader)
+    # When
+    write_demo_signal(output, signal)
+    # Then
+    assert attempts == [1, 1]
+    assert R1LocalDemoSignal.model_validate_json(output.read_bytes()) == signal
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Actual Windows read-only file required")
+def test_native_read_only_destination_is_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given
+    import stat
+
+    output = tmp_path / "demo-state.json"
+    signal = _build(_accepted_spool(tmp_path / "spool", _events("cmd.exe")))
+    write_demo_signal(output, signal)
+    before = output.read_bytes()
+    output.chmod(stat.S_IREAD)
+    monkeypatch.setattr(
+        demo_signal.time, "sleep", lambda _delay: pytest.fail("Permanent error retried")
+    )
+    # When
+    try:
+        with pytest.raises(PermissionError):
+            write_demo_signal(output, signal)
+    finally:
+        output.chmod(stat.S_IWRITE)
+    # Then
+    assert output.read_bytes() == before
+    assert not list(tmp_path.glob(".*.tmp"))
