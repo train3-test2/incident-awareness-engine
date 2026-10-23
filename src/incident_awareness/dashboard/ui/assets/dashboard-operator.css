@@ -761,3 +761,48 @@
 .dashboard-page .runs-table tr[data-kind="live_observation"] { background: var(--soc-subtle); border-left: 3px solid var(--soc-border); }
 .dashboard-page .runs-table tr[data-kind="live_observation"][data-current-match="true"] { border-left-color: var(--soc-warning); }
 .dashboard-page #live-technical-json { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+
+
+/* Track-B L1: scope separators to the run list and the Live detail only. */
+.dashboard-page .runs-table :is(th, td) + :is(th, td) {
+    border-inline-start: 1px solid var(--soc-border-subtle);
+}
+.dashboard-page #live-detail-content .dashboard-analysis-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0;
+    border-block-start: 1px solid var(--soc-border-subtle);
+    border-inline-start: 1px solid var(--soc-border-subtle);
+}
+.dashboard-page #live-detail-content .dashboard-analysis-summary > div {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 14px;
+    border-inline-end: 1px solid var(--soc-border-subtle);
+    border-block-end: 1px solid var(--soc-border-subtle);
+}
+.dashboard-page #live-detail-content dt {
+    margin: 0;
+    color: var(--soc-muted);
+    font-size: 14px;
+    line-height: 1.5;
+}
+.dashboard-page #live-detail-content dd {
+    margin: 0;
+    color: var(--soc-title);
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+}
+@media (max-width: 1000px) {
+    .dashboard-page #live-detail-content .dashboard-analysis-summary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+@media (max-width: 560px) {
+    .dashboard-page #live-detail-content .dashboard-analysis-summary {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
