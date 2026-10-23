@@ -3,7 +3,7 @@
 const QUERY_MESSAGES = new Map([
     ["loading", "Fusion Engine 정보를 불러오는 중입니다."],
     ["success", "Fusion Engine 정보를 불러왔습니다."],
-    ["not_found", "Run을 찾을 수 없습니다."],
+    ["not_found", "분석을 찾을 수 없습니다."],
     ["error", "Fusion Engine 정보를 불러오지 못했습니다."],
 ]);
 
@@ -175,13 +175,13 @@ export function buildScoreTrajectoryModel(trace, runtimeConfig, dimensions) {
         thresholds = [
             {
                 kind: "on",
-                label: "T_on",
+                label: "진입 기준",
                 value: thresholdOn,
                 y: plot.top + (1 - thresholdOn) * plot.height,
             },
             {
                 kind: "off",
-                label: "T_off",
+                label: "해제 기준",
                 value: thresholdOff,
                 y: plot.top + (1 - thresholdOff) * plot.height,
             },
@@ -194,6 +194,9 @@ export function buildScoreTrajectoryModel(trace, runtimeConfig, dimensions) {
         plot,
         points,
         thresholds,
+        persistenceK: Number.isInteger(runtimeConfig?.stopping?.persistence_k)
+            && runtimeConfig.stopping.persistence_k > 0
+            ? runtimeConfig.stopping.persistence_k : null,
         xTicks: buildTimestampTicks(timestamps, plot),
         yTicks: [
             { value: 1, label: "1.0", y: plot.top },

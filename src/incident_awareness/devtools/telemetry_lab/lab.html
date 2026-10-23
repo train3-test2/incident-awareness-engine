@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>격리 DB Telemetry 실험실 · 운영 실측 아님</title>
+    <link rel="stylesheet" href="/lab/assets/lab.css">
+    <script type="module" src="/lab/assets/lab.mjs"></script>
+</head>
+<body>
+    <header class="lab-controls">
+        <strong class="lab-warning">테스트 전용 격리 DB · fixture 반복 처리 · 운영 실측 아님</strong>
+        <p>실제 Normalization + Evidence 함수의 처리시간을 측정합니다. 전체 Pipeline·SLA가 아닙니다.
+            아래 그래프는 DB Read API와 기존 5초 Polling을 사용합니다.</p>
+        <div class="lab-actions" role="group" aria-label="격리 DB 입력 제어">
+            <button id="lab-start" type="button" disabled>시작</button>
+            <button id="lab-pause" type="button" disabled>일시정지</button>
+            <button id="lab-resume" type="button" disabled>재개</button>
+            <button id="lab-reset" type="button" aria-describedby="lab-reset-warning" disabled>초기화</button>
+            <label for="lab-speed">입력 속도</label>
+            <select id="lab-speed" disabled>
+                <option value="low">저속 · 배치 간 2초 대기</option>
+                <option value="normal">보통 · 배치 간 1초 대기</option>
+                <option value="high">고속 · 배치 간 0.25초 대기</option>
+            </select>
+            <a href="/dashboard" target="_blank" rel="noopener">Dashboard 단독 보기</a>
+        </div>
+        <p id="lab-state" role="status" aria-live="polite" aria-atomic="true">격리 환경 확인 중</p>
+        <div class="lab-counters" aria-label="격리 DB에 실제 저장된 누적 관측">
+            <span>누적 입력 <strong id="lab-accepted">—</strong>건</span>
+            <span>누적 처리 <strong id="lab-completed">—</strong>건</span>
+            <span>실패 <strong id="lab-failed">—</strong>건</span>
+            <span>저장 Execution <strong id="lab-executions">—</strong>개</span>
+            <span>실행 시간 <strong id="lab-elapsed">—</strong> / 180초</span>
+        </div>
+        <details>
+            <summary>데이터 출처·범위·초기화 안내</summary>
+            <p id="lab-database">DB 식별자 확인 중</p>
+            <p>기존 S0 유효 Sysmon fixture 2건을 반복 정규화·추출합니다(run_type=attack인 테스트 자료이며 정상 운영 트래픽이 아닙니다).
+                명령어를 실행하지 않으며 Run/Event/Decision/Evidence 결과는 저장하지 않습니다.
+                원본 Event 시각은 바꾸지 않고 처리 관측은 현재 UTC로 기록합니다.</p>
+            <p>각 배치의 Execution은 새 identity입니다. 저장 재전송은 절대 카운터/revision 계약으로 멱등 처리합니다.
+                최대 활성 180초·720배치·1,440건. 기본 저속입니다. 중단 후 보고가 오래됨/미관측으로 바뀌는 것이 정상입니다.</p>
+            <p>첫 배치는 수락 후 다음 실제 초에 처리합니다. 이 입력 대기와 DB I/O는 처리시간 측정 밖입니다.
+                수락만/완료만 있는 실제 관측 0과, 아무 보고 없는 null 구간을 비교할 수 있습니다.</p>
+            <p id="lab-reset-warning">초기화는 이 격리 DB의 Telemetry 기록만 지웁니다. 기존 개발/S0 DB는 건드리지 않습니다.
+                새 실험은 시작을 다시 누르세요. 실험 종료 후 DB 삭제 명령은 SETUP.md를 참고하세요.</p>
+        </details>
+    </header>
+    <iframe src="/dashboard" title="격리 DB 기반 운영 View · 운영 실측 아님"></iframe>
+</body>
+</html>

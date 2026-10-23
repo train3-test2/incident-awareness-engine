@@ -41,6 +41,7 @@ from incident_awareness.pipeline.r1_production import (
     R1ProductionConfig,
     generate_r1_production_archive,
 )
+from incident_awareness.pipeline.raw_retention import retain_generation
 from incident_awareness.pipeline.reporting import PipelineExecutionSummary, build_execution_summary
 from incident_awareness.pipeline.runner import (
     _bootstrap_runtime_tracker,
@@ -53,12 +54,19 @@ from incident_awareness.pipeline.runtime_telemetry import (
     PostgresPipelineRuntimeObserver,
 )
 from incident_awareness.pipeline.s0_artifacts import S0PipelineArtifacts, load_s0_pipeline_artifacts
+from incident_awareness.pipeline.stage_timing import (
+    PipelineStageTimingCollector,
+    observe_stage_timing,
+    start_stage_timing,
+)
+from incident_awareness.pipeline.stage_timing_storage import stage_timing_storage_context
 from incident_awareness.pipeline.timeseries_observer import (
     PipelineTelemetryObserver,
     telemetry_observer_context,
     telemetry_session_context,
 )
 from incident_awareness.storage.config import DatabaseConfig
+from incident_awareness.storage.raw_archive import retention_enabled
 
 _STANDALONE_MANIFEST_ROOT = "raw"
 _SYSMON_JSONL_FILENAME = "sysmon-0001.jsonl"
@@ -278,6 +286,7 @@ def run_prepared_standalone_run(
     commit: bool = True,
     runtime_observer: PipelineRuntimeObserver | None = None,
     telemetry_observer: PipelineTelemetryObserver | None = None,
+    stage_timing_collector: PipelineStageTimingCollector | None = None,
 ) -> PipelineExecutionSummary:
     """Run standalone stages while preserving the existing Summary return contract.
 
@@ -291,6 +300,7 @@ def run_prepared_standalone_run(
         commit=commit,
         runtime_observer=runtime_observer,
         telemetry_observer=telemetry_observer,
+        stage_timing_collector=stage_timing_collector,
     )
     if commit and runtime_tracker is not None:
         runtime_tracker.complete()
@@ -304,15 +314,18 @@ def _run_prepared_standalone_stages(
     commit: bool,
     runtime_observer: PipelineRuntimeObserver | None,
     telemetry_observer: PipelineTelemetryObserver | None = None,
+    stage_timing_collector: PipelineStageTimingCollector | None = None,
 ) -> tuple[
     PipelineExecutionSummary,
     PipelineRuntimeTracker | None,
     R1GeneratedArchive | None,
 ]:
+    timing = start_stage_timing(stage_timing_collector)
     started_at = _capture_runtime_started_at()
     artifacts = _run_stage(
         PipelineStage.ARTIFACT_VALIDATION,
         lambda: _load_ordered_standalone_artifacts(prepared),
+        stage_timing=timing,
     )
     runtime_tracker = _bootstrap_runtime_tracker(
         run_id=artifacts.run_metadata.run_id,
@@ -320,6 +333,14 @@ def _run_prepared_standalone_stages(
         input_total=len(artifacts.sysmon_records),
         started_at=started_at,
         observer=runtime_observer,
+    )
+    observe_stage_timing(
+        timing,
+        lambda: timing.bind(
+            execution_id=runtime_tracker.execution_id if runtime_tracker is not None else None,
+            run_id=artifacts.run_metadata.run_id,
+            entity_id=prepared.inputs.entity_id,
+        ),
     )
     with telemetry_session_context(
         runtime_tracker,
@@ -344,6 +365,7 @@ def _run_prepared_standalone_stages(
             ),
             runtime_tracker=runtime_tracker,
             telemetry_session=telemetry_session,
+            stage_timing=timing,
         )
         r1_archive = None
         if getattr(prepared, "r1_production_config", None) is not None:
@@ -357,6 +379,7 @@ def _run_prepared_standalone_stages(
             lambda: run_s0_fusion_with_trace(prepared.inputs, artifacts, normalized_artifacts),
             runtime_tracker=runtime_tracker,
             telemetry_session=telemetry_session,
+            stage_timing=timing,
         )
         fast_result, decision_result = _run_stage(
             PipelineStage.HYBRID,
@@ -367,10 +390,12 @@ def _run_prepared_standalone_stages(
             ),
             runtime_tracker=runtime_tracker,
             telemetry_session=telemetry_session,
+            stage_timing=timing,
         )
         _run_stage(
             PipelineStage.PERSISTENCE,
-            lambda: persist_s0_results(
+            lambda: _persist_with_raw(
+                prepared,
                 artifacts,
                 normalized_artifacts,
                 fusion_output.fusion_result,
@@ -383,6 +408,7 @@ def _run_prepared_standalone_stages(
             ),
             runtime_tracker=runtime_tracker,
             telemetry_session=telemetry_session,
+            stage_timing=timing,
         )
         try:
             summary = build_execution_summary(
@@ -402,6 +428,31 @@ def _run_prepared_standalone_stages(
                     runtime_tracker.fail(PipelineStage.PERSISTENCE)
             raise
         return summary, runtime_tracker, r1_archive
+
+
+def _persist_with_raw(
+    prepared, artifacts, normalized, fusion, trace, config, fast, decision, *, connection, commit
+):
+    enabled = retention_enabled()
+    persist_s0_results(
+        artifacts,
+        normalized,
+        fusion,
+        trace,
+        config,
+        fast,
+        decision,
+        connection=connection,
+        commit=commit and not enabled,
+    )
+    if enabled:
+        try:
+            retain_generation(connection, prepared, artifacts, normalized)
+            if commit:
+                connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
 
 def _generate_r1_archive_if_configured(
@@ -467,12 +518,17 @@ def run_standalone_sysmon_jsonl(
     r1_production_config: R1ProductionConfig | None = None,
     runtime_observer: PipelineRuntimeObserver | None = None,
     telemetry_observer: PipelineTelemetryObserver | None = None,
+    stage_timing_collector: PipelineStageTimingCollector | None = None,
 ) -> StandaloneExecution:
     """Run one standalone Sysmon JSONL execution in the caller's transaction.
 
     The caller owns the transaction and may atomically commit the First Cycle
     results with another record.  On failure, this function removes only the
     output directory it reserved for this execution.
+
+    The default run_type remains for legacy Python callers. SQS uploads must supply
+    a validated, content-bound experiment declaration and pass its type explicitly;
+    a detector result or filename is never a label source.
     """
     reservation = _allocate_identifiers(connection, output_root)
     try:
@@ -495,6 +551,7 @@ def run_standalone_sysmon_jsonl(
             commit=False,
             runtime_observer=runtime_observer,
             telemetry_observer=telemetry_observer,
+            stage_timing_collector=stage_timing_collector,
         )
     except Exception:
         shutil.rmtree(reservation.output_dir, ignore_errors=True)
@@ -539,6 +596,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     with (
         PostgresPipelineRuntimeObserver() as runtime_observer,
         telemetry_observer_context() as telemetry_observer,
+        stage_timing_storage_context() as stage_timing_collector,
     ):
         execution: StandaloneExecution | None = None
         try:
@@ -554,6 +612,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     fusion_config_path=namespace.fusion_config,
                     runtime_observer=runtime_observer,
                     telemetry_observer=telemetry_observer,
+                    stage_timing_collector=stage_timing_collector,
                 )
         except Exception:
             if execution is not None:

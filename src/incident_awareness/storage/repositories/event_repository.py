@@ -82,10 +82,25 @@ WHERE runs.run_id = %s
 """
 
 
+_SELECT_EVENT_PROVENANCE = """
+SELECT event_id, run_id, host_id
+FROM events
+WHERE event_id = ANY(%s)
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class EventLookupResult:
     run_exists: bool
     event: NormalizedEvent | None
+
+
+@dataclass(frozen=True, slots=True)
+class EventProvenance:
+    """Stored owner of one event_id; payloads are not loaded."""
+
+    run_id: str
+    host_id: str
 
 
 class EventRepository:
@@ -184,6 +199,38 @@ class EventRepository:
             run_exists=True,
             event=NormalizedEvent.model_validate(payload),
         )
+
+    def get_provenance(self, event_ids: tuple[str, ...]) -> dict[str, EventProvenance]:
+        """Return the stored Run and host of each event_id; absent IDs are omitted."""
+        if not event_ids:
+            return {}
+        requested = set(event_ids)
+        rows = self._connection.execute(_SELECT_EVENT_PROVENANCE, (list(event_ids),)).fetchall()
+        provenance: dict[str, EventProvenance] = {}
+        for row in rows:
+            event_id, run_id, host_id = _provenance_values_from_row(row)
+            if event_id not in requested or event_id in provenance:
+                raise TypeError("Event provenance query returned an unexpected event_id")
+            provenance[event_id] = EventProvenance(run_id=run_id, host_id=host_id)
+        return provenance
+
+
+def _provenance_values_from_row(
+    row: tuple[object, ...] | Mapping[str, object],
+) -> tuple[str, str, str]:
+    try:
+        if isinstance(row, tuple):
+            event_id, run_id, host_id = row
+        else:
+            event_id = row["event_id"]
+            run_id = row["run_id"]
+            host_id = row["host_id"]
+    except (KeyError, ValueError) as error:
+        raise TypeError("Event provenance query returned an invalid row") from error
+    for value in (event_id, run_id, host_id):
+        if not isinstance(value, str) or not value:
+            raise TypeError("Event provenance values must be non-empty strings")
+    return event_id, run_id, host_id
 
 
 def _timeline_values_from_row(

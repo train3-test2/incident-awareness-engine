@@ -62,8 +62,9 @@ def get_decision_detail_view(decision_id: str) -> FileResponse:
 def mount_dashboard_assets(application: FastAPI) -> None:
     """Serve CSS/JS assets, not the HTML shell, under a prefix that cannot shadow APIs."""
     # Browsers execute module scripts only with a JavaScript MIME type, and some Windows
-    # registries map .mjs to text/plain, so register the standard type explicitly.
-    mimetypes.add_type("text/javascript", ".mjs")
+    # registries override both .js and .mjs, so use a consistent standard type.
+    for extension in (".js", ".mjs"):
+        mimetypes.add_type("text/javascript", extension)
     application.mount(
         _DASHBOARD_ASSETS_PATH,
         StaticFiles(directory=_ASSETS_DIRECTORY),

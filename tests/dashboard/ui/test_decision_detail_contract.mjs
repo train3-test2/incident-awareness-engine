@@ -99,17 +99,17 @@ test("Historical Decision loading, not-found, and error states are distinct", ()
     assert.deepEqual(loading, {
         queryState: "loading",
         payload: null,
-        message: "Historical Decision을 불러오는 중입니다.",
+        message: "과거 분석 결정을 불러오는 중입니다.",
     });
     assert.deepEqual(notFound, {
         queryState: "not_found",
         payload: null,
-        message: "Decision을 찾을 수 없습니다.",
+        message: "분석 결정을 찾을 수 없습니다.",
     });
     assert.deepEqual(error, {
         queryState: "error",
         payload: null,
-        message: "Historical Decision을 불러오지 못했습니다.",
+        message: "과거 분석 결정을 불러오지 못했습니다.",
     });
 });
 

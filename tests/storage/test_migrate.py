@@ -26,7 +26,10 @@ MIGRATION_IDS = (
     "010_r1_stream_event_delivery_ledger",
     "011_pipeline_telemetry_timeseries",
     "012_pipeline_telemetry_input_identity",
+    "013_pipeline_stage_timings",
     "013_r1_stream_position_close_ledger",
+    "014_human_workflow",
+    "015_raw_artifact_retention",
 )
 _INPUT_IDENTITY_MIGRATION = "012_pipeline_telemetry_input_identity"
 _POSITION_CLOSE_MIGRATION = "013_r1_stream_position_close_ledger"
@@ -413,17 +416,13 @@ def test_baselines_complete_docker_initdb_schema_without_reapplying_migrations()
 
 def test_applies_telemetry_after_all_existing_migrations() -> None:
     # Given
-    connection = _Connection(applied_migrations=set(MIGRATION_IDS[:-3]))
+    connection = _Connection(applied_migrations=set(MIGRATION_IDS[:10]))
 
     # When
     applied = apply_migrations(connection)
 
     # Then
-    assert applied == (
-        "011_pipeline_telemetry_timeseries",
-        "012_pipeline_telemetry_input_identity",
-        "013_r1_stream_position_close_ledger",
-    )
+    assert applied == MIGRATION_IDS[10:]
     assert any(
         "CREATE TABLE pipeline_telemetry_executions" in query for query, _ in connection.queries
     )
@@ -436,7 +435,7 @@ def test_applies_telemetry_after_all_existing_migrations() -> None:
 def test_baselines_both_telemetry_tables_without_repeating_ddl() -> None:
     # Given
     connection = _Connection(
-        applied_migrations=set(MIGRATION_IDS[:-3]),
+        applied_migrations=set(MIGRATION_IDS[:10]),
         existing_tables={"pipeline_telemetry_executions", "pipeline_telemetry_buckets"},
     )
 
@@ -444,11 +443,7 @@ def test_baselines_both_telemetry_tables_without_repeating_ddl() -> None:
     applied = apply_migrations(connection)
 
     # Then
-    assert applied == (
-        "011_pipeline_telemetry_timeseries",
-        "012_pipeline_telemetry_input_identity",
-        "013_r1_stream_position_close_ledger",
-    )
+    assert applied == MIGRATION_IDS[10:]
     assert not any(
         "CREATE TABLE pipeline_telemetry_executions" in query for query, _ in connection.queries
     )
@@ -458,7 +453,7 @@ def test_baselines_both_telemetry_tables_without_repeating_ddl() -> None:
 @pytest.mark.parametrize("table", ["pipeline_telemetry_executions", "pipeline_telemetry_buckets"])
 def test_rejects_partial_telemetry_schema(table: str) -> None:
     # Given
-    connection = _Connection(applied_migrations=set(MIGRATION_IDS[:-3]), existing_tables={table})
+    connection = _Connection(applied_migrations=set(MIGRATION_IDS[:10]), existing_tables={table})
 
     # When
     with pytest.raises(RuntimeError, match="partial 011_pipeline_telemetry_timeseries schema"):
@@ -570,7 +565,7 @@ def _assert_migration_lock_precedes_history_table(connection: _Connection) -> No
 
 def test_applies_the_position_close_ledger_after_the_event_time_ledger() -> None:
     # Given
-    connection = _Connection(applied_migrations=set(MIGRATION_IDS[:-1]))
+    connection = _Connection(applied_migrations=set(MIGRATION_IDS) - {_POSITION_CLOSE_MIGRATION})
 
     # When
     applied = apply_migrations(connection)
@@ -584,7 +579,7 @@ def test_applies_the_position_close_ledger_after_the_event_time_ledger() -> None
 def test_baselines_an_existing_position_close_ledger_without_repeating_ddl() -> None:
     # Given
     connection = _Connection(
-        applied_migrations=set(MIGRATION_IDS[:-1]),
+        applied_migrations=set(MIGRATION_IDS) - {_POSITION_CLOSE_MIGRATION},
         position_close_artifacts=(True,) * 6,
     )
 
@@ -602,7 +597,7 @@ def test_baselines_an_existing_position_close_ledger_without_repeating_ddl() -> 
 def test_partial_position_close_schema_is_not_recorded_as_applied(missing: int) -> None:
     artifacts = tuple(index != missing for index in range(6))
     connection = _Connection(
-        applied_migrations=set(MIGRATION_IDS[:-1]),
+        applied_migrations=set(MIGRATION_IDS) - {_POSITION_CLOSE_MIGRATION},
         position_close_artifacts=artifacts,
     )
 

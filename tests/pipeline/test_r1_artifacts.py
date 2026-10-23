@@ -19,6 +19,7 @@ from incident_awareness.pipeline.r1_artifacts import (
     load_r1_evidence_artifacts,
     load_r1_extraction_summary,
     run_and_write_r1_evidence_artifacts,
+    verify_r1_evidence_archive_content,
 )
 from incident_awareness.pipeline.r1_evidence import R1LineageInput
 
@@ -1412,3 +1413,62 @@ def test_rejects_evidence_extractor_version_mismatch(tmp_path: Path) -> None:
 
     # Then
     assert "extractor_version" in str(error_info.value)
+
+
+def test_verifies_durable_archive_bytes_like_the_local_loader(tmp_path: Path) -> None:
+    # Given
+    written = run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=tmp_path,
+        lineage_inputs=[_lineage_input()],
+    )
+
+    # When
+    verified = verify_r1_evidence_archive_content(
+        written.evidence_path.read_bytes(),
+        written.summary_path.read_bytes(),
+    )
+
+    # Then
+    loaded = load_r1_evidence_artifacts(tmp_path)
+    assert verified.evidences == loaded.evidences == written.evidences
+    assert verified.summary == loaded.summary
+
+
+def test_durable_archive_verification_rejects_failed_or_unbound_content(tmp_path: Path) -> None:
+    # Given
+    completed = tmp_path / "completed"
+    completed.mkdir()
+    written = run_and_write_r1_evidence_artifacts(
+        _events(),
+        run_id=_RUN_ID,
+        output_directory=completed,
+        lineage_inputs=[_lineage_input()],
+    )
+    evidence = written.evidence_path.read_bytes()
+    summary = written.summary_path.read_bytes()
+    failed = tmp_path / "failed"
+    failed.mkdir()
+    with pytest.raises(ValueError):
+        run_and_write_r1_evidence_artifacts(
+            _events(),
+            run_id=_RUN_ID,
+            output_directory=failed,
+            lineage_inputs=[
+                R1LineageInput(
+                    anchor_event_id="evt-missing-anchor",
+                    terminal_event_id="evt-terminal",
+                    approved_policy=_policy(),
+                )
+            ],
+        )
+    failed_summary = (failed / R1_EXTRACTION_SUMMARY_FILENAME).read_bytes()
+
+    # When / Then
+    with pytest.raises(ValueError, match="failed R1 extraction artifact"):
+        verify_r1_evidence_archive_content(b"", failed_summary)
+    with pytest.raises(ValueError, match="SHA-256"):
+        verify_r1_evidence_archive_content(evidence + b"\n", summary)
+    with pytest.raises(ValueError, match="not valid JSON"):
+        verify_r1_evidence_archive_content(evidence, b"{")

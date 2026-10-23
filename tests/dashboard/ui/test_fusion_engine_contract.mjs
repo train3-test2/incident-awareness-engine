@@ -15,6 +15,8 @@ import {
     formatRunTimestamp,
 } from "../../../src/incident_awareness/dashboard/ui/assets/dashboard-contract.mjs";
 
+import { scoreTimestampDetails } from "../../../src/incident_awareness/dashboard/ui/assets/fusion-score-chart.mjs";
+
 const CHART_DIMENSIONS = {
     width: 100,
     height: 100,
@@ -97,6 +99,7 @@ function createFakeElement(tagName) {
         tagName: tagName.toUpperCase(),
         children: [],
         attributes: new Map(),
+        addEventListener() {},
         classList: {
             values: new Set(),
             add(...values) {
@@ -243,7 +246,7 @@ test("Fusion Engine not-found and error states expose distinct messages", () => 
     assert.deepEqual(notFound, {
         queryState: "not_found",
         payload: null,
-        message: "Run을 찾을 수 없습니다.",
+        message: "분석을 찾을 수 없습니다.",
     });
     assert.deepEqual(error, {
         queryState: "error",
@@ -524,12 +527,33 @@ test("Score trajectory maps stored threshold geometry without classifying points
     assert.deepEqual(
         model.thresholds.map(({ kind, label, value }) => ({ kind, label, value })),
         [
-            { kind: "on", label: "T_on", value: 0.8 },
-            { kind: "off", label: "T_off", value: 0.4 },
+            { kind: "on", label: "진입 기준", value: 0.8 },
+            { kind: "off", label: "해제 기준", value: 0.4 },
         ],
     );
     assert.ok(Math.abs(model.thresholds[0].y - 26) < Number.EPSILON * 100);
     assert.ok(Math.abs(model.thresholds[1].y - 58) < Number.EPSILON * 100);
+});
+
+test("Score criteria text follows the stored stopping config and never invents persistence", async () => {
+    // Given
+    const { scoreCriteriaText } = await import("../../../src/incident_awareness/dashboard/ui/assets/fusion-score-chart.mjs");
+    const trace = makeTrace();
+    const config = (stopping) => ({ ...makeRuntimeConfig(), stopping: { ...makeRuntimeConfig().stopping, ...stopping } });
+
+    // When
+    const texts = [
+        config({ threshold_on: 0.75, threshold_off: 0.35, persistence_k: 3 }),
+        config({ persistence_k: undefined }),
+        config({ persistence_k: 0 }),
+        config({ persistence_k: 1.5 }),
+        null,
+    ].map((runtimeConfig) => scoreCriteriaText(buildScoreTrajectoryModel(trace, runtimeConfig, CHART_DIMENSIONS)));
+
+    // Then
+    assert.equal(texts[0], "진입 기준 0.75 이상 · 3회 연속 / 해제 기준 0.35 미만");
+    assert.deepEqual(texts.slice(1, 4), Array(3).fill("진입 기준 0.80 이상 · 연속 충족 횟수 미확인 / 해제 기준 0.40 미만"));
+    assert.equal(texts[4], "저장된 설정 없음 · 진입·해제 기준 미확인");
 });
 
 test("Score trajectory omits thresholds when Runtime Config is absent", () => {
@@ -608,7 +632,7 @@ test("Fusion Point table is collapsed without dropping stored point rows", async
     assert.match(tableSource, /document\.createElement\("details"\)/);
     assert.match(tableSource, /document\.createElement\("summary"\)/);
     assert.match(tableSource, /for \(const point of points\)/);
-    assert.match(tableSource, /전체 Point \$\{points\.length\}개 보기/);
+    assert.match(tableSource, /점수 기록 \$\{points\.length\}개/);
     assert.match(tableSource, /details\.append\(summary, wrapper\)/);
 });
 
@@ -639,15 +663,15 @@ test("Fusion details DOM starts closed and contains all 67 synthetic rows", asyn
         // Then
         assert.equal(details.tagName, "DETAILS");
         assert.equal(details.attributes.has("open"), false);
-        assert.equal(summary.textContent, "전체 Point 67개 보기");
+        assert.equal(summary.textContent, "점수 기록 67개");
         assert.equal(rows.length, 67);
         assert.deepEqual(
             rows.map((row) => row.children[1].textContent),
             points.map((point) => String(point.score)),
         );
-        assert.equal(rows[40].children[2].textContent, "Policy OFF");
+        assert.equal(rows[40].children[2].textContent, "탐지 구간 비활성");
         assert.equal(rows[40].children[3].textContent, "1");
-        assert.equal(rows[41].children[2].textContent, "Policy ON");
+        assert.equal(rows[41].children[2].textContent, "탐지 구간 활성");
         assert.equal(rows[41].children[3].textContent, "2");
     } finally {
         if (originalDocument === undefined) {
@@ -682,7 +706,7 @@ test("Score trajectory renderer draws bounded accessible timestamp labels", asyn
 
         // When
         const chart = createScoreTrajectoryChart(model);
-        const svg = chart.children[0];
+        const svg = chart.children.find(element => element.tagName === "SVG");
         const tickLines = findFakeElements(
             svg,
             (element) => element.attributes.get("class") === "fusion-score-chart__x-tick",
@@ -695,12 +719,12 @@ test("Score trajectory renderer draws bounded accessible timestamp labels", asyn
         );
 
         // Then
-        assert.equal(svg.attributes.get("role"), "img");
+        assert.equal(svg.attributes.get("role"), "group");
         assert.equal(tickLines.length, 3);
         assert.equal(tickLabels.length, 3);
         assert.deepEqual(
             tickLabels.map((label) => label.textContent),
-            model.xTicks.map((tick) => formatRunTimestamp(tick.timestamp)),
+            model.xTicks.map((tick) => scoreTimestampDetails(tick.timestamp).time),
         );
         assert.deepEqual(
             tickLabels.map((label) => label.attributes.get("text-anchor")),
@@ -729,7 +753,7 @@ test("Score trajectory renderer draws bounded accessible timestamp labels", asyn
             CHART_DIMENSIONS,
         );
         const shortLabels = findFakeElements(
-            createScoreTrajectoryChart(shortModel).children[0],
+            createScoreTrajectoryChart(shortModel).children.find(element => element.tagName === "SVG"),
             (element) => element.attributes.get("class")?.includes(
                 "fusion-score-chart__axis-label--x",
             ) === true,
@@ -737,8 +761,8 @@ test("Score trajectory renderer draws bounded accessible timestamp labels", asyn
         assert.equal(shortLabels.length, 3);
         assert.equal(new Set(shortLabels.map((label) => label.textContent)).size, 3);
         assert.deepEqual(
-            shortLabels.map((label) => label.textContent.match(/\d{3} ms$/)?.[0]),
-            ["000 ms", "001 ms", "002 ms"],
+            shortLabels.map((label) => label.textContent.match(/\.\d{3}$/)?.[0]),
+            [".000", ".001", ".002"],
         );
     } finally {
         if (originalDocument === undefined) {
@@ -785,7 +809,7 @@ test("Score trajectory description matches zero, one, and multiple visible ticks
 
         // When
         const rendered = models.map((model) => {
-            const svg = createScoreTrajectoryChart(model).children[0];
+            const svg = createScoreTrajectoryChart(model).children.find(element => element.tagName === "SVG");
             const [description] = findFakeElements(
                 svg,
                 (element) => (
@@ -803,8 +827,8 @@ test("Score trajectory description matches zero, one, and multiple visible ticks
 
         // Then
         for (const result of rendered) {
-            assert.match(result.description, /FusionStoppingTrace score/);
-            assert.match(result.description, /Runtime Config threshold/);
+            assert.match(result.description, /FusionStoppingTrace의 증거 누적 점수/);
+            assert.match(result.description, /저장 설정의 기준선/);
             assert.equal(
                 result.labels.every((label) => result.description.includes(label.textContent)),
                 true,
@@ -819,22 +843,22 @@ test("Score trajectory description matches zero, one, and multiple visible ticks
         assert.match(rendered[1].description, /시간축 눈금 1개:/);
         assert.equal(
             rendered[1].labels[0].textContent,
-            formatRunTimestamp(models[1].xTicks[0].timestamp),
+            scoreTimestampDetails(models[1].xTicks[0].timestamp).time,
         );
 
         assert.equal(rendered[2].labels.length, 3);
         assert.match(rendered[2].description, /시간축 눈금 3개:/);
         assert.deepEqual(
             rendered[2].labels.map((label) => label.textContent),
-            models[2].xTicks.map((tick) => formatRunTimestamp(tick.timestamp)),
+            models[2].xTicks.map((tick) => scoreTimestampDetails(tick.timestamp).time),
         );
 
         assert.equal(rendered[3].labels.length, 3);
         assert.deepEqual(
             rendered[3].labels.map(
-                (label) => label.textContent.match(/\d{3} ms$/)?.[0],
+                (label) => label.textContent.match(/\.\d{3}$/)?.[0],
             ),
-            ["000 ms", "001 ms", "002 ms"],
+            [".000", ".001", ".002"],
         );
     } finally {
         if (originalDocument === undefined) {

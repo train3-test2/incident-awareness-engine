@@ -1,0 +1,29 @@
+침해사고 신고 검토 초안 · 개발용 · 제출 전 담당자 검토 필요
+{% if synthetic %}합성·비식별 테스트 데이터입니다. 실제 운영 사고가 아닙니다.
+{% else %}저장 분석 기반 로컬 개발 초안입니다. 기존 S0 개발 Run을 실제 운영 사고로 확정하지 않습니다.
+{% endif %}법적 신고의무: UNDETERMINED · 외부 제출 없음
+{% for field in fields %}
+{{ labels[field.report_field_id] }}: {{ field.value }}{% if field.evidence_ids %} [근거: {{ field.evidence_ids | join(', ') }}]{% endif %}
+{% endfor %}
+유출 여부: UNKNOWN / 조사 중
+확인되지 않은 원인·피해 규모·개인정보 유출 여부를 추정하지 않았습니다.
+{% if analysis %}
+확인된 기술적 탐지 사실 (저장된 분석 snapshot)
+Run: {{ analysis.run_metadata.run_id }} / 시나리오: {{ analysis.run_metadata.scenario_id }} / 개발용 시나리오
+정규화 이벤트: {{ analysis.event_statistics.normalized_event_count }}건
+유형별 건수: {{ analysis.event_statistics.by_type }}
+Fusion 상태: {{ analysis.fusion.fusion_status }} / 판단 시 Score: {{ analysis.fusion.score_at_decision }}
+Hybrid 상태: {{ analysis.hybrid_status }} / t_e: {{ analysis.detection.t_e | default('UNKNOWN', true) }}
+기술적 탐지시각: {{ analysis.times.technical_detection_at }}
+알림 발행시각: {{ analysis.times.alert_issued_at }}
+조직 내부 인지시각: {{ analysis.times.t_h | default('UNKNOWN',true) }}
+실제 사고 발생시각: UNKNOWN
+{% for episode in analysis.fusion.fusion_episodes %}Episode {{ episode.episode_id }}: {{ episode.start_time }} ~ {{ episode.end_time }} / Peak {{ episode.peak_score }}
+{% endfor %}{% for evidence in analysis.evidence %}Evidence 참조: {{ evidence.evidence_id }} / 원문 연결 {{ evidence.verification }}
+{% endfor %}{{ analysis.evidence_link_note }}
+{% if analysis.verified_observations is defined %}{% for observation in analysis.verified_observations %}
+검증된 관측: {{ observation.behavior_summary }} [Evidence: {{ observation.evidence_id }} / {{ observation.observation_id }}]
+{% else %}상세 행위 미확인: 원본 검증이 완료된 관측 사실이 없습니다.
+{% endfor %}{% endif %}
+담당자 기록: {{ analysis.human_history | length }}건 / 신고 진행 결정: {{ analysis.human_state.report_choice }}
+{% endif %}

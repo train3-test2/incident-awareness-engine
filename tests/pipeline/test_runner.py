@@ -11,6 +11,7 @@ from incident_awareness.pipeline.cli import PipelineInputs
 from incident_awareness.pipeline.fusion import S0FusionPipelineResult
 from incident_awareness.pipeline.reporting import PipelineExecutionSummary
 from incident_awareness.pipeline.runner import run_first_cycle_pipeline
+from incident_awareness.pipeline.stage_timing import PipelineStageTimingCollector
 from incident_awareness.storage.repositories.result_repository import DecisionIntegrityError
 
 
@@ -596,6 +597,7 @@ def test_pipeline_shares_execution_and_flushes_short_batch(monkeypatch) -> None:
     expected = _configure_completed_pipeline(monkeypatch)
     runtime, telemetry = [], []
     generated = []
+    timing = PipelineStageTimingCollector()
     monkeypatch.setattr(
         runner, "generate_execution_id", lambda: generated.append("shared") or "shared"
     )
@@ -605,12 +607,15 @@ def test_pipeline_shares_execution_and_flushes_short_batch(monkeypatch) -> None:
         _inputs(),
         runtime_observer=runtime.append,
         telemetry_observer=telemetry.append,
+        stage_timing_collector=timing,
     )
 
     # Then
     assert actual == expected
     assert generated == ["shared"]
     assert {item.execution_id for item in runtime + telemetry} == {"shared"}
+    assert timing.snapshot().execution_id == "shared"
+    assert [record.stage for record in timing.snapshot().records] == list(runner.PipelineStage)
     latest = telemetry[-1]
     assert sum(bucket.input_accepted_count for bucket in latest.buckets) == 2
     assert sum(bucket.processing_completed_count for bucket in latest.buckets) == 2
@@ -682,6 +687,149 @@ def test_disabled_runtime_tracker_does_not_disable_timeseries(monkeypatch) -> No
     assert actual == expected
     assert sum(bucket.processing_completed_count for bucket in telemetry[-1].buckets) == 2
     assert telemetry[-1].observation_status == "observed"
+
+
+def test_stage_timing_records_all_six_operations_without_changing_runtime_or_summary(
+    monkeypatch,
+) -> None:
+    # Given
+    from itertools import count
+
+    expected = _configure_completed_pipeline(monkeypatch)
+    runtime, published = [], []
+    ticks = count(0, 123)
+    timing = PipelineStageTimingCollector(
+        monotonic_clock=lambda: next(ticks), observer=published.append
+    )
+
+    # When
+    result = run_first_cycle_pipeline(
+        _inputs(), runtime_observer=runtime.append, stage_timing_collector=timing
+    )
+    snapshot = timing.snapshot()
+
+    # Then
+    assert result is expected
+    assert [record.stage for record in snapshot.records] == list(runner.PipelineStage)
+    assert [record.duration_ns for record in snapshot.records] == [123] * 6
+    assert [record.invocation_index for record in snapshot.records] == list(range(1, 7))
+    assert snapshot.run_id == expected.run_id and snapshot.entity_id == expected.entity_id
+    assert snapshot.execution_id == runtime[-1].execution_id
+    assert published[0].run_id is None and published[0].execution_id is None
+    assert published[1].execution_id == snapshot.execution_id
+    assert published[0].records == published[1].records
+    assert runtime[-1].status is PipelineRuntimeState.COMPLETED
+
+
+@pytest.mark.parametrize("stage", list(runner.PipelineStage))
+def test_stage_timing_preserves_previous_success_and_failure_and_never_runs_later_stages(
+    monkeypatch, stage
+) -> None:
+    # Given
+    error = ValueError("fixture stage failed")
+    _configure_successful_stages(monkeypatch, runner, failing_stage=stage.value, error=error)
+    timing = PipelineStageTimingCollector()
+    runtime = []
+
+    # When
+    with pytest.raises(ValueError) as caught:
+        run_first_cycle_pipeline(
+            _inputs(), runtime_observer=runtime.append, stage_timing_collector=timing
+        )
+    snapshot = timing.snapshot()
+
+    # Then
+    assert caught.value is error
+    expected = list(runner.PipelineStage)[: list(runner.PipelineStage).index(stage) + 1]
+    assert [record.stage for record in snapshot.records] == expected
+    assert [record.outcome for record in snapshot.records] == ["completed"] * (
+        len(expected) - 1
+    ) + ["failed"]
+    assert all(record.duration_ns >= 0 for record in snapshot.records)
+    assert snapshot.active_stage is None
+    if stage is runner.PipelineStage.ARTIFACT_VALIDATION:
+        assert runtime == []
+        assert (
+            snapshot.run_id is None and snapshot.entity_id is None and snapshot.execution_id is None
+        )
+    else:
+        assert runtime[-1].failed_stage is stage
+        assert snapshot.execution_id == runtime[-1].execution_id
+
+
+def test_stage_timing_separates_same_run_executions_and_refuses_collector_reuse(
+    monkeypatch,
+) -> None:
+    # Given
+    expected = _configure_completed_pipeline(monkeypatch)
+    first, second = PipelineStageTimingCollector(), PipelineStageTimingCollector()
+
+    # When
+    assert run_first_cycle_pipeline(_inputs(), stage_timing_collector=first) == expected
+    first_snapshot = first.snapshot()
+    assert run_first_cycle_pipeline(_inputs(), stage_timing_collector=second) == expected
+    assert run_first_cycle_pipeline(_inputs(), stage_timing_collector=first) == expected
+
+    # Then
+    assert first.snapshot() == first_snapshot
+    assert first.snapshot().run_id == second.snapshot().run_id
+    assert first.snapshot().execution_id != second.snapshot().execution_id
+    assert first.snapshot().attempt_id != second.snapshot().attempt_id
+    assert len(first.snapshot().records) == len(second.snapshot().records) == 6
+
+
+@pytest.mark.parametrize("fault", ["bootstrap", "begin", "finish", "bind", "observer"])
+@pytest.mark.parametrize("business_fails", [False, True])
+def test_stage_instrumentation_errors_never_replace_summary_or_original_exception(
+    monkeypatch, fault, business_fails
+) -> None:
+    # Given
+    error = ValueError("original pipeline failure")
+    expected = _configure_completed_pipeline(monkeypatch)
+    if business_fails:
+        _configure_successful_stages(monkeypatch, runner, failing_stage="fusion", error=error)
+    timing = PipelineStageTimingCollector()
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("fixture instrumentation failure")
+
+    if fault == "bootstrap":
+        monkeypatch.setattr(runner, "PipelineStageTimingCollector", broken)
+        from incident_awareness.pipeline import stage_timing
+
+        monkeypatch.setattr(stage_timing, "PipelineStageTimingCollector", broken)
+        timing = None
+    elif fault == "observer":
+        timing = PipelineStageTimingCollector(observer=broken)
+    else:
+        monkeypatch.setattr(timing, fault, broken)
+
+    # When / Then
+    if business_fails:
+        with pytest.raises(ValueError) as caught:
+            run_first_cycle_pipeline(_inputs(), stage_timing_collector=timing)
+        assert caught.value is error
+    else:
+        assert run_first_cycle_pipeline(_inputs(), stage_timing_collector=timing) is expected
+
+
+def test_timing_survives_runtime_bootstrap_failure_without_inventing_execution_join(
+    monkeypatch,
+) -> None:
+    # Given
+    expected = _configure_completed_pipeline(monkeypatch)
+    timing = PipelineStageTimingCollector()
+    monkeypatch.setattr(runner, "_capture_runtime_started_at", lambda: None)
+
+    # When
+    result = run_first_cycle_pipeline(_inputs(), stage_timing_collector=timing)
+
+    # Then
+    assert result is expected
+    assert len(timing.snapshot().records) == 6
+    assert timing.snapshot().execution_id is None
+    assert timing.snapshot().run_id == expected.run_id
+    assert timing.snapshot().attempt_id
 
 
 def _raise_or_return(

@@ -176,7 +176,7 @@ test("snapshot summary projects only stored Snapshot and Plan fields", () => {
     // Then
     assert.deepEqual(summary, [
         { label: "Snapshot ID", value: "snapshot-1" },
-        { label: "Scenario ID", value: "S0" },
+        { label: "시나리오 ID", value: "S0" },
         { label: "Purpose", value: "smoke" },
         { label: "Evaluation Horizon", value: "120 sec" },
         { label: "Decision Config Version", value: "decision-v1" },
@@ -215,7 +215,7 @@ test("performance purpose remains descriptive without readiness claims", () => {
     assert.deepEqual(presentation, {
         label: "performance",
         title: "Performance Evaluation",
-        description: "성능 평가 목적으로 저장된 Evaluation Snapshot 결과입니다.",
+        description: "성능 평가용 저장 결과입니다.",
         modifier: "performance",
     });
     assert.doesNotMatch(presentation.description, /production ready|validated|superior/i);
@@ -279,8 +279,8 @@ test("three comparison states remain independent", () => {
 
     // Then
     assert.deepEqual(statuses.map(({ label, statusLabel }) => [label, statusLabel]), [
-        ["Method Comparison", "Incomplete"],
-        ["Normal Alert Burden", "Ready"],
+        ["분석 방식 비교", "Incomplete"],
+        ["정상 입력의 알림 부담", "Ready"],
         ["Paired Timing", "Incomplete"],
     ]);
 });
@@ -586,8 +586,8 @@ test("query states distinguish loading, success, and sanitized errors", () => {
     // Then
     assert.equal(loading.message, "평가 정보를 불러오는 중입니다.");
     assert.strictEqual(success.payload, payload);
-    assert.equal(unavailable.message, "Evaluation Snapshot을 사용할 수 없습니다.");
-    assert.equal(invalid.message, "저장된 Evaluation Snapshot이 유효하지 않습니다.");
+    assert.equal(unavailable.message, "평가 결과를 사용할 수 없습니다.");
+    assert.equal(invalid.message, "저장된 평가 결과가 유효하지 않습니다.");
     assert.equal(generic, "평가 정보를 불러오지 못했습니다.");
 });
 

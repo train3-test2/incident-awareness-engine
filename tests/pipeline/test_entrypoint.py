@@ -8,7 +8,8 @@ def test_main_parses_inputs_and_runs_first_cycle_pipeline(monkeypatch) -> None:
     inputs = object()
     runtime_observer = object()
     telemetry_observer = object()
-    received: list[tuple[object, object, object]] = []
+    timing_collector = object()
+    received: list[tuple[object, object, object, object]] = []
     lifecycle: list[str] = []
 
     class ObserverContext:
@@ -25,10 +26,13 @@ def test_main_parses_inputs_and_runs_first_cycle_pipeline(monkeypatch) -> None:
         entrypoint, "telemetry_observer_context", lambda: nullcontext(telemetry_observer)
     )
     monkeypatch.setattr(
+        entrypoint, "stage_timing_storage_context", lambda: nullcontext(timing_collector)
+    )
+    monkeypatch.setattr(
         entrypoint,
         "run_first_cycle_pipeline",
-        lambda value, *, runtime_observer, telemetry_observer: received.append(
-            (value, runtime_observer, telemetry_observer)
+        lambda value, *, runtime_observer, telemetry_observer, stage_timing_collector: (
+            received.append((value, runtime_observer, telemetry_observer, stage_timing_collector))
         ),
     )
 
@@ -37,5 +41,5 @@ def test_main_parses_inputs_and_runs_first_cycle_pipeline(monkeypatch) -> None:
 
     # Then
     assert exit_code == 0
-    assert received == [(inputs, runtime_observer, telemetry_observer)]
+    assert received == [(inputs, runtime_observer, telemetry_observer, timing_collector)]
     assert lifecycle == ["enter", "exit"]

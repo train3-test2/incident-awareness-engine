@@ -3,8 +3,8 @@
 const QUERY_MESSAGES = new Map([
     ["loading", "Event Timeline을 불러오는 중입니다."],
     ["success", "Event Timeline을 불러왔습니다."],
-    ["empty", "이 Run에 저장된 Event가 없습니다."],
-    ["run_not_found", "Run을 찾을 수 없습니다."],
+    ["empty", "이 분석에 저장된 Event가 없습니다."],
+    ["run_not_found", "분석을 찾을 수 없습니다."],
     ["error", "Event Timeline을 불러오지 못했습니다."],
 ]);
 
@@ -118,7 +118,24 @@ export function getEventTimelinePagination(payload) {
         previousOffset: Math.max(0, validPayload.offset - validPayload.limit),
         nextOffset: validPayload.offset + itemCount,
         displayStart: itemCount === 0 ? 0 : validPayload.offset + 1,
-        displayEnd: validPayload.offset + itemCount,
+        displayEnd: itemCount === 0 ? 0 : validPayload.offset + itemCount,
+    };
+}
+
+// Local filtering of one fetched page only; totals/offsets still describe the API page.
+export function filterEventTimelinePage(items, eventType = "all") {
+    if (!Array.isArray(items) || typeof eventType !== "string" || eventType === "") {
+        throw new TypeError("Event page items and type filter are invalid");
+    }
+    return items.filter((event) => eventType === "all" || event.event_type === eventType);
+}
+
+export function getEventTimelinePagePosition(payload) {
+    const pagination = getEventTimelinePagination(payload);
+    return {
+        ...pagination,
+        currentPage: payload.items.length === 0 ? 0 : Math.floor(payload.offset / payload.limit) + 1,
+        totalPages: Math.ceil(payload.total / payload.limit),
     };
 }
 

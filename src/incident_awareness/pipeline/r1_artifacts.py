@@ -344,12 +344,7 @@ def load_r1_evidence_artifacts(output_directory: Path) -> R1EvidenceArtifactRun:
     if summary.status != "completed":
         raise ValueError("failed R1 extraction artifact cannot be loaded as Evidence")
 
-    evidence_content = _read_evidence_content(evidence_path)
-    if _sha256(evidence_content) != summary.evidence_artifact_sha256:
-        raise ValueError("R1 Evidence JSONL SHA-256 does not match the extraction summary")
-
-    evidences = _read_evidences(evidence_content)
-    _validate_completed_artifacts(evidences, summary)
+    evidences = _verified_completed_evidences(_read_evidence_content(evidence_path), summary)
     return R1EvidenceArtifactRun(
         evidences=evidences,
         summary=summary,
@@ -357,6 +352,40 @@ def load_r1_evidence_artifacts(output_directory: Path) -> R1EvidenceArtifactRun:
         summary_path=summary_path,
         summary_artifact_sha256=summary_artifact_sha256,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class R1VerifiedEvidenceArchive:
+    """Durable archive bytes that passed the same checks as local artifact loading."""
+
+    evidences: tuple[Evidence, ...]
+    summary: R1ExtractionSummary
+
+
+def verify_r1_evidence_archive_content(
+    evidence_content: bytes,
+    summary_content: bytes,
+) -> R1VerifiedEvidenceArchive:
+    """Durable outbox bytes를 load_r1_evidence_artifacts와 같은 writer 계약으로 검증한다."""
+    summary = _parse_summary_content(summary_content, source="durable archive summary")
+    if summary.status != "completed":
+        raise ValueError("failed R1 extraction artifact cannot be loaded as Evidence")
+    return R1VerifiedEvidenceArchive(
+        evidences=_verified_completed_evidences(evidence_content, summary),
+        summary=summary,
+    )
+
+
+def _verified_completed_evidences(
+    evidence_content: bytes,
+    summary: R1ExtractionSummary,
+) -> tuple[Evidence, ...]:
+    if _sha256(evidence_content) != summary.evidence_artifact_sha256:
+        raise ValueError("R1 Evidence JSONL SHA-256 does not match the extraction summary")
+
+    evidences = _read_evidences(evidence_content)
+    _validate_completed_artifacts(evidences, summary)
+    return evidences
 
 
 def load_r1_extraction_summary(output_directory: Path) -> R1ExtractionSummary:
@@ -611,9 +640,16 @@ def _serialize_collection_provenance(provenance: R1CollectionProvenance) -> byte
 def _read_summary_artifact(path: Path) -> tuple[R1ExtractionSummary, str]:
     try:
         content = path.read_bytes()
-        payload = json.loads(content.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except OSError as error:
         raise ValueError(f"R1 extraction summary is not valid JSON: {path}") from error
+    return _parse_summary_content(content, source=str(path)), _sha256(content)
+
+
+def _parse_summary_content(content: bytes, *, source: str) -> R1ExtractionSummary:
+    try:
+        payload = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"R1 extraction summary is not valid JSON: {source}") from error
 
     try:
         _validate_summary_payload(payload)
@@ -621,7 +657,7 @@ def _read_summary_artifact(path: Path) -> tuple[R1ExtractionSummary, str]:
         _validate_summary_contract(summary)
     except (TypeError, ValueError) as error:
         raise ValueError("R1 extraction summary does not match the writer contract") from error
-    return summary, _sha256(content)
+    return summary
 
 
 def _validate_summary_payload(payload: object) -> None:
@@ -907,10 +943,12 @@ __all__ = [
     "R1ExtractionSummary",
     "R1LineageInputProvenance",
     "R1SelectorProvenance",
+    "R1VerifiedEvidenceArchive",
     "build_r1_collection_provenance",
     "load_r1_collection_provenance",
     "load_r1_evidence_artifacts",
     "load_r1_extraction_summary",
     "run_and_write_r1_evidence_artifacts",
+    "verify_r1_evidence_archive_content",
     "write_r1_collection_provenance",
 ]

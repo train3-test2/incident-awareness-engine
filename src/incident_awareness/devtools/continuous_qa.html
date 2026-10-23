@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>연속 Batch E2E QA</title>
+<style>
+body{font:16px/1.5 system-ui,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;color:#17263c;background:#f5f7fa}
+main{background:white;border:1px solid #ced8e5;border-radius:12px;padding:20px}button,select{font:inherit;padding:8px;margin:4px}button:disabled{opacity:.5}
+:focus-visible{outline:3px solid #075bbb;outline-offset:3px}pre{overflow:auto;max-height:32rem;white-space:pre-wrap;overflow-wrap:anywhere}dt{font-weight:600}dd{margin-bottom:8px}
+</style><main>
+<h1>연속 Batch E2E QA</h1>
+<p>격리 테스트 DB · 검증된 Sysmon fixture 반복 · 운영 실측/신규 EDR 수집 아님</p>
+<p>매 Batch는 별도 Run/Execution으로 실제 전체 Standalone Pipeline을 실행합니다. 단일 Run 증분 스트리밍이 아닙니다.
+Fast 미평가 · t_e/Decision Path 미생성 · R1 게시 없음 · Human Workflow 미연동.</p>
+<p><a href="/dashboard" target="continuous-dashboard">동일 격리 DB의 운영 Dashboard 열기</a></p>
+<label for="pattern">입력 패턴</label><select id="pattern"><option value="low">저부하 · 3/6/9건 · 4–7초 간격</option><option value="random">일반 랜덤 · 30–240건 · 2–5초 간격</option><option value="burst">버스트 포함 랜덤 · 30–600건 · 1–4초 간격</option></select>
+<button id="start" type="button">Start</button><button id="stop" type="button">Stop · 현재 Batch 정상 종료</button>
+<p id="message" role="status" aria-live="polite"></p>
+<dl><dt>상태 / 중단 사유</dt><dd id="phase">조회 중</dd><dt>현재 Batch / Run</dt><dd id="current">없음</dd>
+<dt>누적 입력 수락 / 처리 완료</dt><dd id="counts">미관측</dd><dt>마지막 오류</dt><dd id="error">없음</dd><dt>격리 DB</dt><dd id="database"></dd></dl>
+<p>누적값은 완료 후 검증된 실제 Telemetry snapshot의 처리 시도 건수입니다. 실행 중 부분 관측은 Dashboard에서 확인하세요.
+동일 원본의 반복량이며 고유 외부 이벤트 수가 아닙니다. Run 200개 / 입력 예약 120,000건 / Batch 600건 / Artifact 100MiB / DB 256MiB 상한.
+180초 자동 종료 없음. 안전 상한은 재시작해도 초기화되지 않습니다. Stop은 신규 예약만 중단합니다.</p>
+<details><summary>최근 20개 Batch: 입력·관측·측정 지연·실제 분석 결과</summary><pre id="jobs"></pre></details>
+</main><script type="module">
+const token=__CONTROL_TOKEN__;
+const node=id=>document.getElementById(id);
+let pending=false,lastMessage='';
+function message(text){if(text!==lastMessage){node('message').textContent=text;lastMessage=text;}}
+function render(s){
+ node('phase').textContent=s.phase+' / '+(s.reason??'진행 중');node('current').textContent=s.current_run_id??'없음';
+ node('counts').textContent=`입력 ${s.input_accepted_count??'미관측'} / 처리 ${s.processing_completed_count??'미관측'} · ${s.batch_count} Batch 예약`;
+ node('error').textContent=s.last_error??'없음';node('database').textContent=s.database;
+ node('start').disabled=pending||!['stopped','failed','limited'].includes(s.phase);node('pattern').disabled=node('start').disabled;
+ node('stop').disabled=pending||['stopped','failed','limited'].includes(s.phase);
+ node('jobs').textContent=JSON.stringify(s.jobs.map(j=>({run_id:j.run_id,execution_id:j.execution_id,kind:j.kind,records:j.records,phase:j.phase,observations:j.observations,summary:j.summary,error_type:j.error_type})),null,2);
+ message(s.phase==='failed'?'안전 중단 · '+(s.last_error??s.reason):s.phase==='limited'?'안전 상한 도달 · '+s.reason:s.phase==='draining'?'새 입력 예약 중단 · 현재 Batch 정상 종료 대기':s.phase==='stopped'?'입력 중지 상태':'연속 Batch 입력 중');
+}
+async function status(){const r=await fetch('/qa/status',{cache:'no-store'});if(!r.ok)throw Error('상태 조회 실패');render(await r.json());}
+async function control(action){if(pending)return;pending=true;node('start').disabled=true;node('stop').disabled=true;
+ try{const r=await fetch('/qa/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-QA-Token':token},body:action==='start'?JSON.stringify({pattern:node('pattern').value}):'{}'});if(!r.ok)throw Error('제어 요청 실패 ('+r.status+')');pending=false;render(await r.json());}catch(e){message(e.message);}finally{pending=false;}}
+node('start').addEventListener('click',()=>control('start'));node('stop').addEventListener('click',()=>control('stop'));
+async function poll(){try{await status();}catch{message('QA 연결 실패 · 입력 중지 여부를 서버에서 확인하세요.');}setTimeout(poll,2000);}void poll();
+</script></html>

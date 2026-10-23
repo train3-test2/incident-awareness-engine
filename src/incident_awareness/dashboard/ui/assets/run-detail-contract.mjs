@@ -8,6 +8,23 @@ import {
 
 export { displayValue, formatRunTimestamp, getRunTypeLabel };
 
+export function getFusionStatusLabel(status) {
+    return status === "miss" ? "기준 미충족 (miss)" : getStatusLabel(status);
+}
+
+export function getHybridDecisionNotice(decision) {
+    // Interpret only the saved v0.2 parallel contract, never a Run label or absent data.
+    const statuses = [decision?.fast_status, decision?.fusion_status];
+    if (decision?.t_e !== null || decision?.decision_path !== null
+        || decision?.winning_path !== null || decision?.config_version !== "parallel-v0.2"
+        || decision?.decision_reason !== "Required parallel evaluation was not completed"
+        || !statuses.every(status => ["detected", "miss", "not_evaluated"].includes(status))
+        || !statuses.includes("not_evaluated")) return null;
+    const paths = [decision.fast_status === "not_evaluated" && "즉시 규칙 분석",
+        decision.fusion_status === "not_evaluated" && "증거 누적 분석"].filter(Boolean);
+    return `종합 판단 미완료 · ${paths.join("·")} 미평가`;
+}
+
 const STATUS_LABELS = new Map([
     ["detected", "탐지"],
     ["miss", "미탐"],
@@ -26,10 +43,10 @@ const WINNING_PATH_LABELS = new Map([
     ["none", "없음"],
 ]);
 const QUERY_MESSAGES = new Map([
-    ["loading", "Run Detail을 불러오는 중입니다."],
-    ["success", "Run Detail을 불러왔습니다."],
-    ["not_found", "Run을 찾을 수 없습니다."],
-    ["error", "Run Detail을 불러오지 못했습니다."],
+    ["loading", "분석 상세을 불러오는 중입니다."],
+    ["success", "분석 상세을 불러왔습니다."],
+    ["not_found", "분석을 찾을 수 없습니다."],
+    ["error", "분석 상세을 불러오지 못했습니다."],
 ]);
 
 function requireIdentifier(value, name) {

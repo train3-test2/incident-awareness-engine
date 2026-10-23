@@ -193,7 +193,7 @@ function renderEvaluationCoverage(payload) {
 
     const items = projectExclusions(payload);
     if (items.length === 0) {
-        exclusions.replaceChildren(createEmptyMessage("평가 제외 Run 없음"));
+        exclusions.replaceChildren(createEmptyMessage("평가 제외 분석 없음"));
         return;
     }
     exclusions.replaceChildren(...items.map((item) => createExclusionCard(item)));
@@ -223,7 +223,7 @@ function renderMethodComparison(payload) {
 
     const note = document.createElement("p");
     note.classList.add("evaluation-interpretation-note");
-    note.textContent = "TTSD는 검출된 Attack Run 기준이며 Run Recall과 함께 해석해야 합니다.";
+    note.textContent = "TTSD는 검출된 Attack 분석 기준이며 분석 Recall과 함께 해석해야 합니다.";
     methodComparison.replaceChildren(grid, note);
 }
 
@@ -236,7 +236,7 @@ function createBurdenCard(burden) {
     heading.textContent = burden.method;
 
     const columns = [
-        { key: "runId", label: "Run ID", identifier: true },
+        { key: "runId", label: "분석 ID", identifier: true },
         { key: "entityId", label: "Entity", identifier: true },
         { key: "familyId", label: "Family", identifier: true },
         { key: "variationId", label: "Variation", identifier: true },
@@ -247,7 +247,7 @@ function createBurdenCard(burden) {
     card.append(
         heading,
         createFieldList(burden.fields),
-        createTable(`${burden.method} Normal Run Details`, columns, burden.rows, "대상 Run 없음"),
+        createTable(`${burden.method} Normal Run Details`, columns, burden.rows, "대상 분석 없음"),
     );
     return card;
 }
@@ -259,7 +259,7 @@ function renderNormalAlertBurden(payload) {
     grid.append(...cards);
     const note = document.createElement("p");
     note.classList.add("evaluation-interpretation-note");
-    note.textContent = "FA/BH는 관측된 Benign Run 시간과 함께 해석해야 합니다.";
+    note.textContent = "FA/BH는 관측된 Benign 분석 시간과 함께 해석해야 합니다.";
     normalAlertBurden.replaceChildren(grid, note);
 }
 
@@ -277,7 +277,7 @@ function renderPairedTiming(payload) {
     const summary = buildPairedTimingSummary(payload);
     const explanation = document.createElement("p");
     explanation.classList.add("evaluation-interpretation-note");
-    explanation.textContent = `${summary.deltaExplanation} Earlier Eligible Path는 Runtime의 최종 경로 선택과는 별개입니다.`;
+    explanation.textContent = `${summary.deltaExplanation} Earlier Eligible Path는 실행 보고의 최종 경로 선택과는 별개입니다.`;
     pairedTiming.replaceChildren(
         createSummaryGroup("Outcome Counts", summary.counts),
         createSummaryGroup("Both-detected Summary", summary.bothDetected),
@@ -287,7 +287,7 @@ function renderPairedTiming(payload) {
 
 function renderRunLevelPairedTiming(payload) {
     const columns = [
-        { key: "runId", label: "Run ID", identifier: true },
+        { key: "runId", label: "분석 ID", identifier: true },
         { key: "fastStatus", label: "Fast Status" },
         { key: "fastEligibleTime", label: "Fast Eligible Time", identifier: true },
         { key: "fastTtsd", label: "Fast TTSD" },
@@ -303,7 +303,7 @@ function renderRunLevelPairedTiming(payload) {
             "Run-level Paired Timing",
             columns,
             buildPairedTimingRows(payload),
-            "대상 Run 없음",
+            "대상 분석 없음",
         ),
     );
 }
