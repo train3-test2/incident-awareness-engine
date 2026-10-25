@@ -5366,7 +5366,7 @@ test("Task 5 actual Dashboard list batches summaries without changing selection 
     assert.equal(h.requestCount(buildRunDetailApiPath("RUN-B")), before);
     assert.match(recentRunRow(h, "RUN-B").textContent, /미완료/);
     assert.doesNotMatch(recentRunRow(h, "RUN-B").textContent, /즉시 규칙 분석 미평가/, "The list shows completion only");
-    assert.match(recentRunRow(h, "RUN-B").textContent, /처리 기록 없음/);
+    assert.match(recentRunRow(h, "RUN-B").textContent, /기록 없음/);
     assert.doesNotMatch(recentRunRow(h, "RUN-A").textContent, /입력 출처 미확인/, "The input-source label was removed on request");
 });
 

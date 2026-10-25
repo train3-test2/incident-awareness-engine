@@ -61,7 +61,11 @@ test("Selecting Live only performs observation GETs; two Runs and repeated heart
     assert.equal(h.controller.selectedIdentity,first);
     assert.equal(h.controller.items.length,2);
     h.controller.choose(h.controller.items[1]);assert.notEqual(h.controller.selectedIdentity,first);
-    assert.equal(h.controller.rows().length,2);
+    const rows=h.controller.rows();
+    assert.equal(rows.length,2);
+    assert.equal(rows[0].children[4].textContent,"대상 아님");
+    assert.equal(rows[0].children[4].dataset.label,"담당자 확인");
+    assert.ok(rows[0].children.every(cell=>typeof cell.dataset.label==="string"&&cell.dataset.label.length>0));
     assert.ok(h.calls.every(call=>call.path==="/operations/observations"&&!call.options.method&&!call.options.body));
     h.controller.clearSelection();assert.equal(h.controller.isSelected,false);h.controller.stop();
     assert.equal(h.timers.size,0);

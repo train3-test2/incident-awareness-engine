@@ -1,7 +1,7 @@
 import { createLiveObservationController } from "./dashboard-live-observations.mjs";
 import { createPipelineIcon } from "./dashboard-icons.mjs";
-import { rawVerificationLabel, normalizeRawVerificationScope, sameRawVerificationScope, analysisStatusLabel, analysisDecisionPresentation, workflowRowLabel, observationDisplayText } from "./dashboard-operator-contract.mjs";
-import { createListSummaryController, runInputRange, runRowAnalysis, runRowWorkflow, runRowObservation, EVENT_TYPE_NAMES } from "./dashboard-analysis-list.mjs";
+import { rawVerificationLabel, normalizeRawVerificationScope, sameRawVerificationScope, analysisStatusLabel, analysisDecisionPresentation, workflowRowLabel, workflowAcknowledgementLabel, observationDisplayText } from "./dashboard-operator-contract.mjs";
+import { createListSummaryController, runInputRange, runRowAnalysis, runRowWorkflow, runRowObservation, labelRunListRow, EVENT_TYPE_NAMES } from "./dashboard-analysis-list.mjs";
 import { createDecisionRecord, createWorkflowRecord } from "./dashboard-records.mjs";
 import { restoreRowFocus } from "./dashboard-detail-rows.mjs";
 import { createHumanWorkflowController } from "./dashboard-workflow-controller.mjs";
@@ -437,7 +437,7 @@ function createStackedCell(primary, secondary = null, className = null) {
 
 function selectedWorkflowRowLabel(runId) {
     return selectedWorkflowProgress?.runId === runId && runId === selectedRunId && selectedWorkflowProgress.alerts !== null
-        ? workflowRowLabel(selectedWorkflowProgress.alerts.filter(alert => alert.entity_id === selectedRunListItem()?.target_host)) : null;
+        ? workflowAcknowledgementLabel(selectedWorkflowProgress.alerts.filter(alert => alert.entity_id === selectedRunListItem()?.target_host)) : null;
 }
 
 // Operator-facing row: where, what and how far; internal identifiers stay available in the last column.
@@ -504,6 +504,8 @@ function createRunRow(run) {
         createTableCell(selectedWorkflowRowLabel(run.run_id) ?? runRowWorkflow(listSummaryController.state.workflow, run.run_id, run.target_host)),
         createTableCell(identifier, "dashboard-table__identity"),
     );
+    labelRunListRow(row);
+    row.children[4].title = "저장된 알림의 담당자 확인 기록 기준입니다. 조회 불가는 미확인과 다릅니다. 처리 단계는 담당자 처리에서 확인합니다.";
     return row;
 }
 

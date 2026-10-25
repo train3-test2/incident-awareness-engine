@@ -1,10 +1,17 @@
 // Observation/analysis list: one bounded read per data kind for the rows already listed.
 // Presentation only; stored results are shown as they are and never merged into a new state.
-import { analysisDecisionPresentation, analysisTimestampLabel, workflowRowLabel } from "./dashboard-operator-contract.mjs";
+import { analysisDecisionPresentation, analysisTimestampLabel, workflowAcknowledgementLabel } from "./dashboard-operator-contract.mjs";
 
 export const MAX_LIST_SUMMARY_RUNS = 20;
 export const ANALYSIS_SUMMARIES_PATH = "/analysis-summaries";
 export const ALERT_SUMMARIES_PATH = "/human-workflow/alert-summaries";
+export const RUN_LIST_COLUMN_LABELS = Object.freeze([
+    "입력 이벤트 범위", "대상 시스템", "관측·분석 요약", "분석 상태", "담당자 확인", "식별·상세",
+]);
+
+export function labelRunListRow(row) {
+    [...row.children].forEach((cell, index) => { cell.dataset.label = RUN_LIST_COLUMN_LABELS[index]; });
+}
 
 export function buildListSummaryPath(path, runIds) {
     const params = new URLSearchParams();
@@ -68,11 +75,11 @@ export function runRowObservation(state, runId, entityId) {
 }
 
 export function runRowWorkflow(state, runId, entityId = null) {
-    const unavailable = { loading: "조회 중", unsupported: "선택하면 확인", forbidden: "확인 불가 · 로컬 담당자 아님",
+    const unavailable = { loading: "조회 중", unsupported: "조회 미지원", forbidden: "조회 불가",
         error: "조회 실패" }[state?.queryState];
     if (unavailable) return unavailable;
     const entry = state?.items?.get(runId);
-    return entry ? workflowRowLabel(entityId === null ? entry.alerts : entry.alerts.filter(alert => alert.entity_id === entityId)) : "확인 불가";
+    return entry ? workflowAcknowledgementLabel(entityId === null ? entry.alerts : entry.alerts.filter(alert => alert.entity_id === entityId)) : "확인 불가";
 }
 
 function validateAnalysis(payload, runIds) {

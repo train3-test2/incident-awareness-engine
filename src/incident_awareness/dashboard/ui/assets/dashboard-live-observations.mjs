@@ -1,4 +1,5 @@
 // Track-B is a separate read-only identity. This module never calls a canonical API.
+import { labelRunListRow } from "./dashboard-analysis-list.mjs";
 import { formatOperatorTimestamp } from "./dashboard-contract.mjs";
 
 const STATES = new Set(["observing", "condition_not_met", "demo_rule_match", "input_error"]);
@@ -151,8 +152,10 @@ export function createLiveObservationController(doc, {fetchImpl = (...args) => f
                 button.setAttribute("aria-pressed",String(liveIdentity(item)===selected));button.addEventListener("click",()=>choose(item));
                 const values=[`Live 보고 ${formatOperatorTimestamp(item.generated_at,{missing:"미확인"})}`,button,
                     `시연 관측 · ${item.accepted_event_count===null?"수락량 미확인":`수락 이벤트 ${item.accepted_event_count}건 (detector 보고)`}`,
-                    label(item),"Workflow·AI 사용 불가",`${item.run_id} · demo_only`];
+                    label(item),"대상 아님",`${item.run_id} · demo_only`];
                 for(const value of values){const td=doc.createElement("td");if(typeof value==="string")td.textContent=value;else td.append(value);tr.append(td);}
+                labelRunListRow(tr);
+                tr.children[4].title="Live 관측은 담당자 확인·Workflow·AI 신고서 대상이 아닙니다.";
                 return tr;
             });
         },

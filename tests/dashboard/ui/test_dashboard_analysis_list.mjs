@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
     createListSummaryController, buildListSummaryPath, runInputRange, runRowAnalysis, runRowWorkflow, runRowObservation,
+    RUN_LIST_COLUMN_LABELS, labelRunListRow,
 } from "../../../src/incident_awareness/dashboard/ui/assets/dashboard-analysis-list.mjs";
 import { resolveAdjacentRuns } from "../../../src/incident_awareness/dashboard/ui/assets/dashboard-contract.mjs";
 
@@ -15,6 +16,16 @@ const analysis = (ids = ["R"]) => ({ schema_version: "dashboard_analysis_summari
 const alerts = (ids = ["R"]) => ({ schema_version: "human_workflow_alert_summaries_v1",
     items: ids.map(run_id => ({ run_id, alerts: [] })) });
 const reply = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+
+test("Narrow list rows retain all column names matching the accessible HTML table headers", async () => {
+    const {readFile} = await import("node:fs/promises");
+    const html = await readFile(new URL("../../../src/incident_awareness/dashboard/ui/dashboard.html", import.meta.url), "utf8");
+    const table = html.slice(html.indexOf('class="dashboard-table runs-table"')).split("</thead>")[0];
+    assert.deepEqual([...table.matchAll(/<th scope="col"[^>]*>([^<]+)<\/th>/g)].map(match => match[1]), [...RUN_LIST_COLUMN_LABELS]);
+    const row = {children: RUN_LIST_COLUMN_LABELS.map(() => ({dataset: {}}))};
+    labelRunListRow(row);
+    assert.deepEqual(row.children.map(cell => cell.dataset.label), [...RUN_LIST_COLUMN_LABELS]);
+});
 
 function harness() {
     const requests = [], timers = new Map();
@@ -174,9 +185,26 @@ test("Task 5 staff summaries are scoped to the target Entity and do not create r
     const state = { queryState: "success", items: new Map([["R", { alerts: [{
         run_id: "R", entity_id: "OTHER", state: { version: 0, analyst_ack_time: null },
     }] }]]) };
-    assert.equal(runRowWorkflow(state, "R", "HOST"), "처리 기록 없음");
-    assert.equal(runRowWorkflow(state, "R", "OTHER"), "알림 대기");
+    assert.equal(runRowWorkflow(state, "R", "HOST"), "기록 없음");
+    assert.equal(runRowWorkflow(state, "R", "OTHER"), "미확인");
     assert.equal(runRowWorkflow({ queryState: "error" }, "R"), "조회 실패");
+});
+
+test("Compact staff status distinguishes permission failures, query failures and stored confirmation", () => {
+    assert.equal(runRowWorkflow({queryState: "forbidden"}, "R", "HOST"), "조회 불가");
+    assert.equal(runRowWorkflow({queryState: "unsupported"}, "R", "HOST"), "조회 미지원");
+    assert.equal(runRowWorkflow({queryState: "loading"}, "R", "HOST"), "조회 중");
+    assert.equal(runRowWorkflow({queryState: "error"}, "R", "HOST"), "조회 실패");
+    const alerts = [
+        {run_id: "R", entity_id: "HOST", state: {analyst_ack_time: "2026-10-23T00:00:00Z"}},
+        {run_id: "R", entity_id: "OTHER", state: {analyst_ack_time: null}},
+    ];
+    const state = {queryState: "success", items: new Map([["R", {alerts}]])};
+    assert.equal(runRowWorkflow(state, "R", "HOST"), "확인");
+    assert.equal(runRowWorkflow(state, "R", "OTHER"), "미확인");
+    assert.equal(runRowWorkflow(state, "R"), "일부 확인");
+    assert.equal(runRowWorkflow(state, "R", "ABSENT"), "기록 없음");
+    assert.equal(alerts[1].state.analyst_ack_time, null);
 });
 
 test("Task 5 previous/next use the searched and typed list without choosing an excluded item", () => {

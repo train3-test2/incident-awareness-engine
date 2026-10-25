@@ -144,6 +144,17 @@ export function workflowRowLabel(alerts) {
     return ROW_CHOICES[alerts[0].state.report_choice] ?? "신고 검토 확인 필요";
 }
 
+// Acknowledgement only. Unknown reads and malformed records are not unacknowledged alerts.
+export function workflowAcknowledgementLabel(alerts) {
+    if (!Array.isArray(alerts)) return "확인 불가";
+    if (!alerts.length) return "기록 없음";
+    if (alerts.some(alert => !alert?.state || !Object.hasOwn(alert.state, "analyst_ack_time")
+        || (alert.state.analyst_ack_time !== null && (typeof alert.state.analyst_ack_time !== "string"
+            || !Number.isFinite(Date.parse(alert.state.analyst_ack_time)))))) return "확인 불가";
+    const acknowledged = alerts.filter(alert => alert.state.analyst_ack_time !== null).length;
+    return acknowledged === alerts.length ? "확인" : acknowledged === 0 ? "미확인" : "일부 확인";
+}
+
 export function workflowTimeLabel(value, precise = false) {
     if (!value) return "미기록";
     return formatOperatorTimestamp(value, { missing: "미기록", precise });

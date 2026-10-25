@@ -1,11 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
-import {draftPresentation, awarenessRecordStatus, workflowSteps, rawVerificationLabel, workflowTimeLabel, workflowTimeDetail,
+import {draftPresentation, awarenessRecordStatus, workflowSteps, workflowAcknowledgementLabel, rawVerificationLabel, workflowTimeLabel, workflowTimeDetail,
     analysisStatusLabel, analysisPathLabel, analysisDecisionPresentation, analysisTimestampLabel, classificationReason, snapshotEligibility, reportSummaryRows, readinessSummary,
     generationOutcome, normalizeRawVerificationScope, sameRawVerificationScope, buildRawVerificationSummary} from "../../../src/incident_awareness/dashboard/ui/assets/dashboard-operator-contract.mjs";
 
 const PHRASES = ["PowerShell 인코딩 명령 옵션 사용", "스크립트 인터프리터의 외부 주소 연결"];
+test("List acknowledgement uses recorded acknowledgements, not downstream workflow completion", () => {
+    const pending = {state: {analyst_ack_time: null, report_choice: "proceed"}};
+    const acknowledged = {state: {analyst_ack_time: "2026-10-23T01:02:03Z", report_choice: null}};
+    assert.equal(workflowAcknowledgementLabel([pending]), "미확인");
+    assert.equal(workflowAcknowledgementLabel([acknowledged]), "확인");
+    assert.equal(workflowAcknowledgementLabel([acknowledged, pending]), "일부 확인");
+    assert.equal(workflowAcknowledgementLabel([acknowledged, acknowledged]), "확인");
+    assert.equal(workflowAcknowledgementLabel([pending, pending]), "미확인");
+    assert.equal(pending.state.analyst_ack_time, null);
+    assert.equal(acknowledged.state.report_choice, null);
+});
+
+test("Missing or invalid acknowledgement data never becomes an unconfirmed alert", () => {
+    assert.equal(workflowAcknowledgementLabel([]), "기록 없음");
+    for (const alerts of [null, undefined, [{}], [{state: {}}], [{state: {analyst_ack_time: "invalid"}}],
+        [{state: {analyst_ack_time: false}}]]) {
+        assert.equal(workflowAcknowledgementLabel(alerts), "확인 불가");
+    }
+});
 const preview = (overrides = {}) => ({ snapshot_sha256: "a".repeat(64), workflow_version: 4, external_transmission: "not_sent",
     request: { messages: [{ content: JSON.stringify({ observations: PHRASES.map((fact_phrase, i) => ({ reference: `O${i + 1}`, fact_phrase })) }) }] },
     word_reuse: null, ...overrides });

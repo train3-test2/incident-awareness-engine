@@ -806,3 +806,86 @@
         grid-template-columns: minmax(0, 1fr);
     }
 }
+
+
+/* Header controls and stable run-list columns. */
+.dashboard-page .dashboard-header-meta { align-items: center; }
+.dashboard-page .dashboard-header-meta .dashboard-manual-refresh {
+    flex: 0 0 40px;
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    min-height: 40px;
+    margin: 0;
+    padding: 0;
+}
+.dashboard-page .dashboard-header-meta .dashboard-manual-refresh .dashboard-icon {
+    flex: none;
+    width: 20px;
+    height: 20px;
+}
+.dashboard-page .dashboard-header-meta > .dashboard-time-note {
+    padding: 0;
+    border: 1px solid var(--soc-control-border);
+}
+.dashboard-page .dashboard-time-note > summary {
+    box-sizing: border-box;
+    min-height: 38px;
+    padding: 8px 12px;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 22px;
+}
+
+/* All columns fit the list. Time segments wrap without dropping source precision. */
+.dashboard-page .dashboard-workspace .runs-table {
+    min-width: 0;
+    width: 100%;
+    table-layout: fixed;
+}
+.dashboard-page .dashboard-workspace .runs-table :is(th, td):nth-child(n) { min-width: 0; }
+.dashboard-page .dashboard-workspace .runs-table :is(th, td):nth-child(1) { width: 22%; }
+.dashboard-page .dashboard-workspace .runs-table :is(th, td):nth-child(2) { width: 12%; }
+.dashboard-page .dashboard-workspace .runs-table :is(th, td):nth-child(3) { width: 28%; }
+.dashboard-page .dashboard-workspace .runs-table :is(th, td):nth-child(4) { width: 11%; }
+.dashboard-page .dashboard-workspace .runs-table :is(th, td):nth-child(5) { width: 11%; }
+.dashboard-page .dashboard-workspace .runs-table :is(th, td):nth-child(6) { width: 16%; }
+.dashboard-page .runs-table .dashboard-run-selector { word-break: keep-all; }
+
+.dashboard-page .runs-table .dashboard-run-identity { min-width: 0; }
+.dashboard-page .runs-table .dashboard-run-range { display: grid; gap: 2px; }
+.dashboard-page .runs-table .dashboard-run-range > :is(time, span) {
+    display: block;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+@media (max-width: 100rem) {
+    .dashboard-page .dashboard-workspace { grid-template-columns: minmax(0, 1fr); }
+}
+/* At small viewports retain every field as labelled rows, using vertical scrolling. */
+@media (max-width: 760px) {
+    .dashboard-page .dashboard-workspace .runs-table { display: block; }
+    .dashboard-page .runs-table thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+    }
+    .dashboard-page .runs-table tbody { display: block; }
+    .dashboard-page .runs-table tbody tr { display: block; border-bottom: 2px solid var(--soc-border); }
+    .dashboard-page .dashboard-workspace .runs-table tbody td:nth-child(n) {
+        display: grid;
+        grid-template-columns: 7rem minmax(0, 1fr);
+        gap: 12px;
+        width: auto;
+        height: auto;
+        min-width: 0;
+        border-inline-start: 0;
+    }
+    .dashboard-page .runs-table tbody td::before {
+        content: attr(data-label);
+        color: var(--soc-title);
+        font-weight: 700;
+    }
+}
