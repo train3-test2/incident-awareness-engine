@@ -191,3 +191,42 @@ def test_real_r1_persistence_refuses_unregistered_run(
     assert _count(connection, "runs") == 0
     assert _count(connection, "fusion_results") == 0
     assert _count(connection, "decisions") == 0
+
+
+def test_real_unpersisted_handoff_is_stored_on_retry_with_a_connection(
+    connection: psycopg.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given: the first Role1 run wrote files only, with no database connection.
+    harness = _Harness(tmp_path, monkeypatch, connection=connection)
+    harness.consume_all_chunks()
+    RunRepository(connection).save(fixture._run_metadata())
+    connection.commit()
+    close_ledger = _Ledger()
+    monkeypatch.setattr(wiring, "R1StreamDeliveryRepository", lambda _conn: close_ledger)
+    export = harness.publish_close_through_role3()
+    monkeypatch.setattr(wiring, "R1StreamDeliveryRepository", R1StreamDeliveryRepository)
+    harness.finalize(tmp_path, export)
+    arguments = {
+        "output_directory": harness.fusion_output,
+        "run_metadata": fixture._run_metadata(),
+        "trust": harness.handoff_trust(export),
+        "config": fixture._config(),
+        "availability_clock": harness.clock,
+    }
+    first = consume_published_r1_evidence(harness.state_root, **arguments)
+    assert _count(connection, "decisions") == 0
+
+    # When
+    second = consume_published_r1_evidence(harness.state_root, connection=connection, **arguments)
+    third = consume_published_r1_evidence(harness.state_root, connection=connection, **arguments)
+
+    # Then
+    assert first.persisted_to_database is False
+    assert second.persisted_to_database is third.persisted_to_database is True
+    stored = DecisionRepository(connection).get(first.decision_result.decision_id)
+    assert stored == first.decision_result
+    assert FusionResultRepository(connection).get(fixture._RUN_ID, fixture._HOST_ID) == (
+        first.fusion_result
+    )
+    assert _count(connection, "decisions") == 1
+    assert _count(connection, "decision_runtime_snapshots") == 1

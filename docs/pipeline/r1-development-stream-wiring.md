@@ -166,6 +166,22 @@ causal Fusion. Role1 appends `handoff_accepted`, `fusion_processing_started`,
 digests. These are wall-clock observations and are distinct from `fusion_time`. A Fast path
 that did not run stays `not_evaluated`, so `decision_complete` stays false.
 
+`consume` and `finalize` may run as separate processes over the same `<state-root>`.
+Each step holds an exclusive OS lock on `<state-root>/.r1_operational.lock`, and a
+consumer reloads its state whenever another process changed the checkpoint, so a running
+sidecar never overwrites a finalized checkpoint. The OS drops the lock when its holder
+exits. `consume` reports a finalized or failed-closed checkpoint as terminal without
+restoring it, so the sidecar does not need the finalize trust bindings. The Fusion handoff
+holds the same lock on its output directory.
+
+One Fusion output directory holds one execution identity: the published envelope, the full
+Fusion config, the Fast input, and the Decision config version. A retry with the same
+identity reuses the recorded Fusion result, stopping trace and Decision only after their
+digests match the trace. A retry with a different identity is refused with
+`R1FusionHandoffIdentityConflict` before Fusion runs; use a new output directory. When a
+connection is supplied, the retry stores the recorded result or confirms that the database
+already holds the same Decision; the trace flag alone is not trusted.
+
 Neither command generates a historical time. Replaying archived chunks produces
 current-time trace observations, not operational detection times.
 
@@ -182,7 +198,8 @@ only the Run bounds and host from `RunMetadata`.
 | Producer → Role3 commit and ack → Role2 consumer | Separate processes. The producer only runs Role3 `consume`; it does not start the Role2 consumer. Exercised with test fixtures and archived Pair-009 chunks, not in a live Run. |
 | Role2 replay against the real Role3 ledger | Real PostgreSQL 18.6 test schema with synthetic chunks |
 | Evidence finalization, publication and Role1 Fusion | Synthetic v0.2 fixture only. No actual WMI Run has an event-time close or proof, so no actual Run reached Fusion. |
-| R1 result persistence | Real PostgreSQL 18.6 test schema with synthetic results |
+| R1 result persistence, including an unpersisted run stored on retry | Real PostgreSQL 18.6 test schema with synthetic results |
+| State-root lock | Cross-process test with a second Python process: held lock times out, a killed holder releases it |
 | Live Windows producer and consumer together, VM restart recovery, Dashboard view | Not validated |
 
 A synthetic Fusion result is a contract check. It is not evidence that real-time WMI Fusion

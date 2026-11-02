@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,6 +29,7 @@ from incident_awareness.common.models.fusion import (
     FusionStoppingTrace,
     FusionStoppingTracePoint,
 )
+from incident_awareness.common.models.fusion_runtime_config import FusionRuntimeConfigSnapshot
 from incident_awareness.common.models.result import DecisionResult, DetectorStatus
 from incident_awareness.common.models.run import RunMetadata
 from incident_awareness.decision.fusion.config import FusionConfig, load_fusion_config
@@ -85,6 +87,10 @@ from incident_awareness.pipeline.r1_operational_trace import (
     R1OperationalTrace,
     R1OperationalTraceRecord,
 )
+from incident_awareness.pipeline.r1_process_lock import (
+    DEFAULT_R1_LOCK_TIMEOUT_SEC,
+    r1_directory_lock,
+)
 from incident_awareness.pipeline.r1_stream_wiring import load_close_export
 from incident_awareness.storage.config import DatabaseConfig
 from incident_awareness.storage.repositories.r1_stream_delivery_repository import (
@@ -100,6 +106,10 @@ DEFAULT_R1_DECISION_CONFIG_VERSION = "parallel-v0.2"
 
 class R1FusionHandoffRejected(ValueError):
     """Published input failed the Role1 receive boundary; Fusion did not run."""
+
+
+class R1FusionHandoffIdentityConflict(ValueError):
+    """The output directory already belongs to a different execution identity."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,8 +145,43 @@ def consume_published_r1_evidence(
     connection: Any | None = None,
     availability_clock: Callable[[], datetime] | None = None,
     trace_clock: Callable[[], datetime] | None = None,
+    lock_timeout_sec: float = DEFAULT_R1_LOCK_TIMEOUT_SEC,
 ) -> R1FusionHandoffResult:
-    """Validate one published set, run causal Fusion, and record the outcome."""
+    """Validate one published set, run causal Fusion, and record the outcome.
+
+    One output directory holds one execution identity: the published input, the
+    Fusion config, the Fast input, and the Decision config version. A retry with
+    that identity reuses the recorded outputs after checking their hashes; any
+    other identity is refused before Fusion runs.
+    """
+    with r1_directory_lock(output_directory, timeout_sec=lock_timeout_sec):
+        return _consume_locked(
+            published_directory,
+            output_directory=output_directory,
+            run_metadata=run_metadata,
+            trust=trust,
+            config=config,
+            fast_result=fast_result,
+            decision_config_version=decision_config_version,
+            connection=connection,
+            availability_clock=availability_clock,
+            trace_clock=trace_clock,
+        )
+
+
+def _consume_locked(
+    published_directory: Path,
+    *,
+    output_directory: Path,
+    run_metadata: RunMetadata,
+    trust: R1FusionHandoffTrust,
+    config: FusionConfig,
+    fast_result: FastDetectionAdapterResult | None,
+    decision_config_version: str,
+    connection: Any | None,
+    availability_clock: Callable[[], datetime] | None,
+    trace_clock: Callable[[], datetime] | None,
+) -> R1FusionHandoffResult:
     trace = R1OperationalTrace(
         output_directory / R1_FUSION_TRACE_FILENAME,
         clock=trace_clock or utc_now,
@@ -157,14 +202,45 @@ def consume_published_r1_evidence(
         )
         raise R1FusionHandoffRejected(str(error)) from error
 
-    existing = _load_completed_handoff(trace, output_directory, validated.input_identity)
+    fast = fast_result or build_not_evaluated_detection_result(
+        run_id=run_id,
+        entity_id=run_metadata.target_host,
+    )
+    runtime_config = build_fusion_runtime_config_snapshot(
+        config=config,
+        run_id=run_id,
+        entity_id=run_metadata.target_host,
+    )
+    execution = _execution_identity(
+        validated.input_identity,
+        config=config,
+        fast=fast,
+        decision_config_version=decision_config_version,
+    )
+    identity_sha256 = _canonical_sha256(execution)
+    _require_single_execution_identity(trace, run_id=run_id, identity_sha256=identity_sha256)
+    existing = _load_completed_handoff(trace, output_directory, identity_sha256)
     if existing is not None:
-        return existing
+        if connection is None:
+            return existing.result
+        return _persist_recorded_handoff(
+            existing,
+            trace=trace,
+            run_metadata=run_metadata,
+            events=validated.events,
+            runtime_config=runtime_config,
+            fast=fast,
+            connection=connection,
+        )
 
     handoff = trace.append(
         "handoff_accepted",
         run_id=run_id,
-        details=validated.input_identity,
+        details={
+            **validated.input_identity,
+            "execution_identity": execution,
+            "execution_identity_sha256": identity_sha256,
+        },
     )
     started = trace.append(
         "fusion_processing_started",
@@ -227,13 +303,8 @@ def consume_published_r1_evidence(
         },
     )
 
-    fast = fast_result or build_not_evaluated_detection_result(
-        run_id=run_id,
-        entity_id=run_metadata.target_host,
-    )
-    decision_id = (
-        f"DEC-R1-{uuid5(NAMESPACE_URL, f'{run_id}|{hashlib.sha256(result_bytes).hexdigest()}')}"
-    )
+    result_sha256 = hashlib.sha256(result_bytes).hexdigest()
+    decision_id = f"DEC-R1-{uuid5(NAMESPACE_URL, f'{run_id}|{identity_sha256}|{result_sha256}')}"
     supersedes = None
     if connection is not None:
         supersedes = resolve_expected_supersedes_decision_id(
@@ -258,11 +329,7 @@ def consume_published_r1_evidence(
             validated.events,
             fusion_result,
             stopping_trace,
-            build_fusion_runtime_config_snapshot(
-                config=config,
-                run_id=run_id,
-                entity_id=run_metadata.target_host,
-            ),
+            runtime_config,
             fast,
             decision,
             connection=connection,
@@ -279,7 +346,9 @@ def consume_published_r1_evidence(
             "fast_status": fast.detection_result.detector_status.value,
             "persisted_to_database": connection is not None,
             "fusion_result_sha256": completed.details["fusion_result_sha256"],
+            "stopping_trace_sha256": completed.details["stopping_trace_sha256"],
             "input_envelope_sha256": validated.input_identity["envelope_sha256"],
+            "execution_identity_sha256": identity_sha256,
         },
     )
     return R1FusionHandoffResult(
@@ -364,32 +433,160 @@ def _validate_published_input(
     return _ValidatedPublishedInput(replay_input.scheduled_evidences, events, identity)
 
 
+def _execution_identity(
+    input_identity: dict[str, object],
+    *,
+    config: FusionConfig,
+    fast: FastDetectionAdapterResult,
+    decision_config_version: str,
+) -> dict[str, object]:
+    fast_input = {
+        "detection_result": fast.detection_result.model_dump(mode="json"),
+        "source_hit_ids": list(fast.source_hit_ids),
+        "selected_source_hit_id": fast.selected_source_hit_id,
+    }
+    return {
+        "input_envelope_sha256": input_identity["envelope_sha256"],
+        "fusion_config_sha256": _canonical_sha256(config.model_dump(mode="json")),
+        "fast_input_sha256": _canonical_sha256(fast_input),
+        "fast_status": fast.detection_result.detector_status.value,
+        "decision_config_version": decision_config_version,
+    }
+
+
+def _require_single_execution_identity(
+    trace: R1OperationalTrace,
+    *,
+    run_id: str,
+    identity_sha256: str,
+) -> None:
+    recorded = {
+        record.details.get("execution_identity_sha256")
+        for record in trace.records()
+        if record.stage == "handoff_accepted"
+    }
+    if recorded and recorded != {identity_sha256}:
+        reason = (
+            "output directory already holds a handoff for a different execution identity "
+            "(input, Fusion config, Fast input, or Decision config); use a new output directory"
+        )
+        trace.append(
+            "handoff_rejected",
+            run_id=run_id,
+            details={
+                "reason": reason,
+                "execution_identity_sha256": identity_sha256,
+                "fusion_invoked": False,
+            },
+        )
+        raise R1FusionHandoffIdentityConflict(reason)
+
+
+@dataclass(frozen=True, slots=True)
+class _RecordedHandoff:
+    result: R1FusionHandoffResult
+    stopping_trace: FusionStoppingTrace
+    record: R1OperationalTraceRecord
+
+
 def _load_completed_handoff(
     trace: R1OperationalTrace,
     output_directory: Path,
-    identity: dict[str, object],
-) -> R1FusionHandoffResult | None:
+    identity_sha256: str,
+) -> _RecordedHandoff | None:
     records = trace.records()
     completed = [
         record
         for record in records
         if record.stage == "decision_recorded"
-        and record.details.get("input_envelope_sha256") == identity["envelope_sha256"]
+        and record.details.get("execution_identity_sha256") == identity_sha256
     ]
     if not completed:
         return None
     last = completed[-1]
-    result_bytes = (output_directory / R1_FUSION_RESULT_FILENAME).read_bytes()
-    if hashlib.sha256(result_bytes).hexdigest() != last.details["fusion_result_sha256"]:
-        raise ValueError("recorded Fusion output differs from the operational trace")
-    decision_bytes = (output_directory / R1_DECISION_RESULT_FILENAME).read_bytes()
-    if hashlib.sha256(decision_bytes).hexdigest() != last.details["decision_sha256"]:
-        raise ValueError("recorded Decision differs from the operational trace")
+    result_bytes = _recorded_bytes(
+        output_directory / R1_FUSION_RESULT_FILENAME,
+        last,
+        "fusion_result_sha256",
+        "Fusion output",
+    )
+    trace_bytes = _recorded_bytes(
+        output_directory / R1_FUSION_STOPPING_TRACE_FILENAME,
+        last,
+        "stopping_trace_sha256",
+        "Fusion stopping trace",
+    )
+    decision_bytes = _recorded_bytes(
+        output_directory / R1_DECISION_RESULT_FILENAME,
+        last,
+        "decision_sha256",
+        "Decision",
+    )
+    return _RecordedHandoff(
+        result=R1FusionHandoffResult(
+            fusion_result=FusionResult.model_validate_json(result_bytes),
+            decision_result=DecisionResult.model_validate_json(decision_bytes),
+            decision_complete=bool(last.details["decision_complete"]),
+            persisted_to_database=bool(last.details["persisted_to_database"]),
+            trace=records,
+            already_consumed=True,
+        ),
+        stopping_trace=FusionStoppingTrace.model_validate_json(trace_bytes),
+        record=last,
+    )
+
+
+def _recorded_bytes(
+    path: Path,
+    record: R1OperationalTraceRecord,
+    key: str,
+    label: str,
+) -> bytes:
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != record.details.get(key):
+        raise ValueError(f"recorded {label} differs from the operational trace")
+    return content
+
+
+def _persist_recorded_handoff(
+    recorded: _RecordedHandoff,
+    *,
+    trace: R1OperationalTrace,
+    run_metadata: RunMetadata,
+    events: tuple,
+    runtime_config: FusionRuntimeConfigSnapshot,
+    fast: FastDetectionAdapterResult,
+    connection: Any,
+) -> R1FusionHandoffResult:
+    """Store the recorded result, or confirm the database already holds it.
+
+    The trace flag is not trusted on its own: persistence is idempotent for an
+    identical Decision and fails closed on a different one or a moved head.
+    """
+    previous = recorded.result
+    persist_r1_results(
+        run_metadata,
+        events,
+        previous.fusion_result,
+        recorded.stopping_trace,
+        runtime_config,
+        fast,
+        previous.decision_result,
+        connection=connection,
+    )
+    records = previous.trace
+    if not previous.persisted_to_database:
+        trace.append(
+            "decision_recorded",
+            run_id=run_metadata.run_id,
+            details={**recorded.record.details, "persisted_to_database": True},
+        )
+        records = trace.records()
     return R1FusionHandoffResult(
-        fusion_result=FusionResult.model_validate_json(result_bytes),
-        decision_result=DecisionResult.model_validate_json(decision_bytes),
-        decision_complete=bool(last.details["decision_complete"]),
-        persisted_to_database=bool(last.details["persisted_to_database"]),
+        fusion_result=previous.fusion_result,
+        decision_result=previous.decision_result,
+        decision_complete=previous.decision_complete,
+        persisted_to_database=True,
         trace=records,
         already_consumed=True,
     )
@@ -401,6 +598,11 @@ def _result_fusion_time(fusion_result: FusionResult) -> str | None:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _canonical_sha256(payload: object) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -460,6 +662,7 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "R1FusionHandoffIdentityConflict",
     "R1FusionHandoffRejected",
     "R1FusionHandoffResult",
     "R1FusionHandoffTrust",

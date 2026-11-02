@@ -17,8 +17,12 @@ from incident_awareness.collection.r1_role2_verified_close_proof import (
     write_r1_role2_verified_close_proof,
 )
 from incident_awareness.common.models.r1_stream import R1SourceWatermark
-from incident_awareness.common.models.result import DecisionResult
+from incident_awareness.common.models.result import DecisionResult, DetectorStatus
 from incident_awareness.decision.fusion.temporal_replay import TemporalReplayRunner
+from incident_awareness.integration.fast_hit_handoff import (
+    FastDetectionAdapterResult,
+    build_not_evaluated_detection_result,
+)
 from incident_awareness.pipeline import r1_incremental_consumer as consumer_module
 from incident_awareness.pipeline import r1_incremental_evidence as incremental_evidence_module
 from incident_awareness.pipeline import r1_stream_wiring as wiring
@@ -26,12 +30,16 @@ from incident_awareness.pipeline.r1_artifact_io import utc_now
 from incident_awareness.pipeline.r1_fusion_handoff import (
     R1_DECISION_RESULT_FILENAME,
     R1_FUSION_RESULT_FILENAME,
+    R1_FUSION_STOPPING_TRACE_FILENAME,
+    R1FusionHandoffIdentityConflict,
     R1FusionHandoffRejected,
     R1FusionHandoffTrust,
     consume_published_r1_evidence,
 )
 from incident_awareness.pipeline.r1_incremental_consumer import (
+    R1_INCREMENTAL_CHECKPOINT_FILENAME,
     R1_INCREMENTAL_REPLAY_VALIDATION_FILENAME,
+    R1_ROLE2_TRACE_FILENAME,
     R1CommittedChunkIngress,
     R1FinalizationBlockedError,
     R1FinalizationTrust,
@@ -40,6 +48,7 @@ from incident_awareness.pipeline.r1_incremental_consumer import (
     R1IncrementalConsumerError,
 )
 from incident_awareness.pipeline.r1_operational_trace import R1OperationalTrace
+from incident_awareness.pipeline.r1_process_lock import R1DirectoryLockTimeout, r1_directory_lock
 from incident_awareness.pipeline.r1_stream_ingress import r1_stream_message_sha256
 from incident_awareness.storage.repositories.r1_stream_delivery_repository import (
     R1AcceptedRunCloseReceipt,
@@ -224,7 +233,12 @@ class _Harness:
             ),
         )
 
-    def consumer(self, *, trust: R1FinalizationTrust | None = None) -> R1IncrementalChunkConsumer:
+    def consumer(
+        self,
+        *,
+        trust: R1FinalizationTrust | None = None,
+        lock_timeout_sec: float = 30.0,
+    ) -> R1IncrementalChunkConsumer:
         return R1IncrementalChunkConsumer(
             R1IncrementalConsumerConfig(
                 run_id=_RUN_ID,
@@ -241,6 +255,7 @@ class _Harness:
             transaction=self.connection,
             finalization_trust=trust,
             clock=self.clock,
+            lock_timeout_sec=lock_timeout_sec,
         )
 
     def handoff_trust(self, export_path: Path) -> R1FusionHandoffTrust:
@@ -331,7 +346,8 @@ def test_consumer_waits_for_authoritative_run_start_instead_of_inventing_it(
 
     # Then
     assert result.status == "waiting_run_start"
-    assert not harness.state_root.exists()
+    assert not (harness.state_root / R1_INCREMENTAL_CHECKPOINT_FILENAME).exists()
+    assert not (harness.state_root / R1_ROLE2_TRACE_FILENAME).exists()
 
 
 def test_restart_restores_state_and_duplicate_chunks_do_not_reapply(harness: _Harness) -> None:
@@ -806,3 +822,204 @@ def test_consume_cli_binds_real_repository_and_commits_through_connection(
     # Then
     assert result.applied_chunk_ids == ("CHK-001",)
     assert built.checkpoint_path.exists()
+
+
+def test_consume_without_finalize_trust_reports_verified_finalized_state_as_terminal(
+    harness: _Harness, tmp_path: Path
+) -> None:
+    # Given: the finalize command already published verified-proof Evidence.
+    harness.consume_all_chunks()
+    export = harness.publish_close_through_role3()
+    harness.finalize(tmp_path, export)
+    checkpoint = (harness.state_root / R1_INCREMENTAL_CHECKPOINT_FILENAME).read_bytes()
+
+    # When: the consume sidecar restarts without the finalize trust bindings.
+    result = harness.consumer().consume_available()
+
+    # Then
+    assert result.status == "terminal"
+    assert result.state_status == "finalized"
+    assert (harness.state_root / R1_INCREMENTAL_CHECKPOINT_FILENAME).read_bytes() == checkpoint
+
+
+def test_stale_consume_sidecar_does_not_overwrite_a_finalized_checkpoint(
+    harness: _Harness, tmp_path: Path
+) -> None:
+    # Given: a long-running sidecar holds provisional state in memory.
+    harness.consume_all_chunks()
+    sidecar = harness.consumer()
+    sidecar.consume_available()
+    export = harness.publish_close_through_role3()
+
+    # When: another process finalizes, then the sidecar polls again.
+    harness.finalize(tmp_path, export)
+    finalized = (harness.state_root / R1_INCREMENTAL_CHECKPOINT_FILENAME).read_bytes()
+    result = sidecar.consume_available()
+
+    # Then
+    assert result.status == "terminal"
+    assert (harness.state_root / R1_INCREMENTAL_CHECKPOINT_FILENAME).read_bytes() == finalized
+
+
+def test_consumer_reloads_a_checkpoint_advanced_by_another_process(harness: _Harness) -> None:
+    # Given: two consumer instances over one state root.
+    harness.write_run_started()
+    harness.publish_chunk(harness.chunks[0])
+    harness.role3_consume()
+    stale = harness.consumer()
+    stale.consume_available()
+    harness.publish_chunk(harness.chunks[1])
+    harness.role3_consume()
+    harness.consumer().consume_available()
+
+    # When
+    result = stale.consume_available()
+
+    # Then: the stale instance sees CHK-002 as consumed instead of re-applying it.
+    assert result.applied_chunk_ids == ()
+    assert result.already_consumed_chunks == 2
+    checkpoint = stale._read_checkpoint()
+    assert [chunk.chunk_id for chunk in checkpoint.accepted_chunks] == ["CHK-001", "CHK-002"]
+    assert R1OperationalTrace(harness.state_root / R1_ROLE2_TRACE_FILENAME).records()
+
+
+def test_consume_waits_for_the_state_root_lock_and_writes_nothing(harness: _Harness) -> None:
+    # Given
+    harness.write_run_started()
+    harness.publish_chunk(harness.chunks[0])
+    harness.role3_consume()
+    consumer = harness.consumer(lock_timeout_sec=0.2)
+
+    # When / Then
+    with r1_directory_lock(harness.state_root), pytest.raises(R1DirectoryLockTimeout):
+        consumer.consume_available()
+    assert not (harness.state_root / R1_INCREMENTAL_CHECKPOINT_FILENAME).exists()
+    assert not (harness.state_root / R1_ROLE2_TRACE_FILENAME).exists()
+
+
+def _published(harness: _Harness, tmp_path: Path) -> Path:
+    harness.consume_all_chunks()
+    export = harness.publish_close_through_role3()
+    harness.finalize(tmp_path, export)
+    return export
+
+
+def _handoff(harness: _Harness, export: Path, **overrides):
+    arguments = {
+        "output_directory": harness.fusion_output,
+        "run_metadata": fixture._run_metadata(),
+        "trust": harness.handoff_trust(export),
+        "config": fixture._config(),
+        "availability_clock": harness.clock,
+        **overrides,
+    }
+    return consume_published_r1_evidence(harness.state_root, **arguments)
+
+
+def _miss_fast() -> FastDetectionAdapterResult:
+    not_evaluated = build_not_evaluated_detection_result(run_id=_RUN_ID, entity_id=_HOST_ID)
+    return FastDetectionAdapterResult(
+        detection_result=not_evaluated.detection_result.model_copy(
+            update={"detector_status": DetectorStatus.MISS}
+        ),
+        source_hit_ids=(),
+        selected_source_hit_id=None,
+    )
+
+
+def _output_bytes(harness: _Harness) -> dict[str, bytes]:
+    return {
+        name: (harness.fusion_output / name).read_bytes()
+        for name in (
+            R1_FUSION_RESULT_FILENAME,
+            R1_FUSION_STOPPING_TRACE_FILENAME,
+            R1_DECISION_RESULT_FILENAME,
+        )
+    }
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param(
+            {"config": fixture._config().model_copy(update={"config_version": "other-config"})},
+            id="fusion-config",
+        ),
+        pytest.param({"fast_result": _miss_fast()}, id="fast-input"),
+        pytest.param({"decision_config_version": "parallel-v9"}, id="decision-config"),
+    ],
+)
+def test_retry_with_a_different_execution_identity_is_refused_before_fusion(
+    harness: _Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict
+) -> None:
+    # Given
+    export = _published(harness, tmp_path)
+    first = _handoff(harness, export)
+    outputs = _output_bytes(harness)
+    monkeypatch.setattr(
+        TemporalReplayRunner, "run_causal", lambda *a, **k: pytest.fail("Fusion must not run")
+    )
+
+    # When / Then
+    with pytest.raises(R1FusionHandoffIdentityConflict, match="different execution identity"):
+        _handoff(harness, export, **overrides)
+    assert _output_bytes(harness) == outputs
+    trace = R1OperationalTrace(harness.fusion_output / "r1_fusion_execution_trace.jsonl")
+    records = trace.records()
+    assert records[: len(first.trace)] == first.trace
+    assert records[-1].stage == "handoff_rejected"
+    assert records[-1].details["fusion_invoked"] is False
+
+
+def test_unpersisted_handoff_is_stored_when_retried_with_a_connection(
+    harness: _Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given: the first run had no database connection.
+    export = _published(harness, tmp_path)
+    first = _handoff(harness, export)
+    monkeypatch.setattr(
+        TemporalReplayRunner, "run_causal", lambda *a, **k: pytest.fail("Fusion must not run")
+    )
+    database = _ScriptedDatabase(registered_run=fixture._run_metadata())
+
+    # When
+    second = _handoff(harness, export, connection=database)
+
+    # Then
+    assert first.persisted_to_database is False
+    assert second.already_consumed is True
+    assert second.persisted_to_database is True
+    assert second.decision_result == first.decision_result
+    assert database.commits == 1
+    assert any("INSERT INTO fusion_results" in query for query, _ in database.statements)
+    assert any("INSERT INTO decisions" in query for query, _ in database.statements)
+    recorded = [record for record in second.trace if record.stage == "decision_recorded"]
+    assert [record.details["persisted_to_database"] for record in recorded] == [False, True]
+
+
+def test_recorded_persistence_flag_is_rechecked_against_the_database(
+    harness: _Harness, tmp_path: Path
+) -> None:
+    # Given: the trace says persisted, but this database has no stored Decision.
+    export = _published(harness, tmp_path)
+    _handoff(harness, export, connection=_ScriptedDatabase(registered_run=fixture._run_metadata()))
+    other_database = _ScriptedDatabase(registered_run=fixture._run_metadata())
+
+    # When
+    result = _handoff(harness, export, connection=other_database)
+
+    # Then
+    assert result.already_consumed is True
+    assert any("INSERT INTO decisions" in query for query, _ in other_database.statements)
+
+
+def test_tampered_stopping_trace_is_not_reused(harness: _Harness, tmp_path: Path) -> None:
+    # Given
+    export = _published(harness, tmp_path)
+    _handoff(harness, export)
+    stopping_trace = harness.fusion_output / R1_FUSION_STOPPING_TRACE_FILENAME
+    stopping_trace.write_bytes(stopping_trace.read_bytes().replace(b"}", b" }", 1))
+
+    # When / Then
+    with pytest.raises(ValueError, match="recorded Fusion stopping trace differs"):
+        _handoff(harness, export)

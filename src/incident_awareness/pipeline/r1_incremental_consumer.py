@@ -66,6 +66,10 @@ from incident_awareness.pipeline.r1_incremental_evidence import (
     R1IncrementalEvidenceState,
 )
 from incident_awareness.pipeline.r1_operational_trace import R1OperationalTrace
+from incident_awareness.pipeline.r1_process_lock import (
+    DEFAULT_R1_LOCK_TIMEOUT_SEC,
+    r1_directory_lock,
+)
 from incident_awareness.pipeline.r1_production import (
     R1_SELECTOR_LINEAGE_EVENT_COUNT,
     R1_SELECTOR_POLICY_CONFIG_HASH,
@@ -172,7 +176,12 @@ class _ConsumedChunks:
 
 
 class R1IncrementalChunkConsumer:
-    """Single-writer Role2 consumer of one Run's Role3 spool."""
+    """Role2 consumer of one Run's Role3 spool.
+
+    Every consume and finalize step holds the state-root lock, and in-memory state
+    is reloaded whenever another process changed the checkpoint, so the consume
+    sidecar and the finalize command can run as separate processes.
+    """
 
     def __init__(
         self,
@@ -184,6 +193,7 @@ class R1IncrementalChunkConsumer:
         finalization_trust: R1FinalizationTrust | None = None,
         clock: Callable[[], datetime] | None = None,
         trace_clock: Callable[[], datetime] | None = None,
+        lock_timeout_sec: float = DEFAULT_R1_LOCK_TIMEOUT_SEC,
     ) -> None:
         if not isinstance(ingress, R1CommittedChunkIngress):
             raise TypeError("ingress must be an R1CommittedChunkIngress")
@@ -193,11 +203,13 @@ class R1IncrementalChunkConsumer:
         self._message_loader = message_loader
         self._finalization_trust = finalization_trust
         self._clock = clock or utc_now
+        self._lock_timeout_sec = lock_timeout_sec
         self._trace = R1OperationalTrace(
             config.state_root / R1_ROLE2_TRACE_FILENAME,
             clock=trace_clock or utc_now,
         )
         self._state: R1IncrementalEvidenceState | None = None
+        self._checkpoint_digest: str | None = None
         self._consumed = _ConsumedChunks()
 
     @property
@@ -214,6 +226,28 @@ class R1IncrementalChunkConsumer:
 
     def consume_available(self) -> R1IncrementalConsumeResult:
         """Apply newly acked chunks in sequence; stop at the first unacked chunk."""
+        with r1_directory_lock(self._config.state_root, timeout_sec=self._lock_timeout_sec):
+            return self._consume_available_locked()
+
+    def finalize_and_publish(
+        self,
+        proof_path: Path,
+        *,
+        run_metadata: RunMetadata,
+    ) -> R1PublishedEvidence:
+        """Finalize with an event-time proof and publish the v0.2 artifact set."""
+        with r1_directory_lock(self._config.state_root, timeout_sec=self._lock_timeout_sec):
+            return self._finalize_and_publish_locked(proof_path, run_metadata=run_metadata)
+
+    def _consume_available_locked(self) -> R1IncrementalConsumeResult:
+        checkpoint = self._read_checkpoint()
+        if checkpoint is not None and checkpoint.status in {"finalized", "failed_closed"}:
+            # A terminal state accepts no chunk, so it is reported without a restore;
+            # restoring a verified-proof checkpoint would need the finalize trust.
+            return R1IncrementalConsumeResult(
+                status="terminal" if checkpoint.status == "finalized" else "failed_closed",
+                state_status=checkpoint.status,
+            )
         state = self._load_state()
         if state is None:
             return R1IncrementalConsumeResult(status="waiting_run_start")
@@ -266,13 +300,12 @@ class R1IncrementalChunkConsumer:
             finalization_blocked_reason=blocked,
         )
 
-    def finalize_and_publish(
+    def _finalize_and_publish_locked(
         self,
         proof_path: Path,
         *,
         run_metadata: RunMetadata,
     ) -> R1PublishedEvidence:
-        """Finalize with an event-time proof and publish the v0.2 artifact set."""
         trust = self._finalization_trust
         if trust is None:
             raise self._blocked("verified_close_trust_not_supplied")
@@ -311,7 +344,7 @@ class R1IncrementalChunkConsumer:
             )
 
         checkpoint = state.export_checkpoint()
-        write_r1_incremental_checkpoint(self.checkpoint_path, checkpoint)
+        self._write_checkpoint(checkpoint)
         self._trace.append(
             "evidence_finalized",
             run_id=self._config.run_id,
@@ -356,8 +389,13 @@ class R1IncrementalChunkConsumer:
         return R1PublishedEvidence(snapshot, self.checkpoint_path, envelope_path, receipt_out)
 
     def _load_state(self) -> R1IncrementalEvidenceState | None:
-        if self._state is not None:
+        digest = self._current_checkpoint_digest()
+        if self._state is not None and digest == self._checkpoint_digest:
             return self._state
+        # Another process changed the checkpoint since this one last saw it.
+        self._state = None
+        self._consumed = _ConsumedChunks()
+        self._checkpoint_digest = digest
         checkpoint = self._read_checkpoint()
         if checkpoint is not None:
             self._state = self._restore(checkpoint)
@@ -387,6 +425,15 @@ class R1IncrementalChunkConsumer:
         if not self.checkpoint_path.exists():
             return None
         return load_r1_incremental_checkpoint(self.checkpoint_path)
+
+    def _current_checkpoint_digest(self) -> str | None:
+        if not self.checkpoint_path.exists():
+            return None
+        return _file_sha256(self.checkpoint_path)
+
+    def _write_checkpoint(self, checkpoint: R1IncrementalEvidenceCheckpoint) -> None:
+        write_r1_incremental_checkpoint(self.checkpoint_path, checkpoint)
+        self._checkpoint_digest = self._current_checkpoint_digest()
 
     def _restore(self, checkpoint: R1IncrementalEvidenceCheckpoint) -> R1IncrementalEvidenceState:
         trust = self._finalization_trust
@@ -491,7 +538,7 @@ class R1IncrementalChunkConsumer:
             },
         )
         checkpoint = state.export_checkpoint()
-        write_r1_incremental_checkpoint(self.checkpoint_path, checkpoint)
+        self._write_checkpoint(checkpoint)
         self._commit()
         self._consumed.by_id[chunk.chunk_id] = chunk.chunk_content_sha256
         self._consumed.next_sequence = chunk.chunk_sequence + 1
@@ -536,7 +583,7 @@ class R1IncrementalChunkConsumer:
                 state.accept_run_closed(message)
             except (TypeError, ValueError) as error:
                 self._reject(path, f"incremental state rejected run_closed: {error}")
-            write_r1_incremental_checkpoint(self.checkpoint_path, state.export_checkpoint())
+            self._write_checkpoint(state.export_checkpoint())
 
     def _record_finalization_status(self, state: R1IncrementalEvidenceState) -> str | None:
         if state.snapshot.status in {"finalized", "failed_closed"}:
@@ -587,7 +634,7 @@ class R1IncrementalChunkConsumer:
             details={"reason": reason, "evidence_issued": False},
         )
         if state.snapshot.status == "failed_closed":
-            write_r1_incremental_checkpoint(self.checkpoint_path, state.export_checkpoint())
+            self._write_checkpoint(state.export_checkpoint())
 
     def _blocked(self, reason: str) -> R1FinalizationBlockedError:
         self._trace.append(
