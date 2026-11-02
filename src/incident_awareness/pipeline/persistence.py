@@ -6,9 +6,11 @@ from typing import Protocol
 
 import psycopg
 
+from incident_awareness.common.models.event import NormalizedEvent
 from incident_awareness.common.models.fusion import FusionResult, FusionStoppingTrace
 from incident_awareness.common.models.fusion_runtime_config import FusionRuntimeConfigSnapshot
 from incident_awareness.common.models.result import DecisionResult
+from incident_awareness.common.models.run import RunMetadata
 from incident_awareness.common.models.runtime_snapshot import build_decision_runtime_snapshot
 from incident_awareness.integration.fast_hit_handoff import FastDetectionAdapterResult
 from incident_awareness.pipeline.event_evidence import NormalizedEvidenceArtifacts
@@ -41,6 +43,10 @@ SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))
 
 class DecisionConflictError(RuntimeError):
     """Decision head가 사전 조회 이후 변경되어 저장할 수 없다."""
+
+
+class R1RunRegistrationError(ValueError):
+    """R1 결과를 저장할 Run이 소유자에 의해 등록되지 않았거나 실행 경계가 다르다."""
 
 
 class DatabaseCursor(Protocol):
@@ -80,8 +86,8 @@ def persist_s0_results(
     """
     try:
         _validate_result_scope(
-            artifacts,
-            normalized_artifacts,
+            artifacts.run_metadata,
+            normalized_artifacts.events,
             fusion_result,
             stopping_trace,
             runtime_config_snapshot,
@@ -101,8 +107,8 @@ def persist_s0_results(
     if connection is not None:
         _persist(
             connection,
-            artifacts,
-            normalized_artifacts,
+            artifacts.run_metadata,
+            normalized_artifacts.events,
             fusion_result,
             stopping_trace,
             runtime_config_snapshot,
@@ -117,8 +123,8 @@ def persist_s0_results(
         _validate_decision_transaction_contract(database_connection)
         _persist(
             database_connection,
-            artifacts,
-            normalized_artifacts,
+            artifacts.run_metadata,
+            normalized_artifacts.events,
             fusion_result,
             stopping_trace,
             runtime_config_snapshot,
@@ -126,6 +132,68 @@ def persist_s0_results(
             decision_result,
             commit=True,
         )
+
+
+def persist_r1_results(
+    run_metadata: RunMetadata,
+    events: tuple[NormalizedEvent, ...],
+    fusion_result: FusionResult,
+    stopping_trace: FusionStoppingTrace,
+    runtime_config_snapshot: FusionRuntimeConfigSnapshot,
+    fast_result: FastDetectionAdapterResult,
+    decision_result: DecisionResult,
+    *,
+    connection: DatabaseConnection,
+) -> None:
+    """Atomically save verified R1 Fusion output through the existing repositories.
+
+    The R1 runtime never writes the ``runs`` row: it carries ``run_type`` and
+    ``reference_*`` Ground Truth that the Dashboard exposes. The Run must already be
+    registered by its owner with the same host and Run bounds. A Fast path that was
+    not run stays ``not_evaluated``; the existing combiner then records an incomplete
+    parallel Decision instead of a miss.
+    """
+    try:
+        _require_registered_r1_run(connection, run_metadata)
+        _validate_result_scope(
+            run_metadata,
+            events,
+            fusion_result,
+            stopping_trace,
+            runtime_config_snapshot,
+            fast_result,
+            decision_result,
+        )
+        _validate_decision_transaction_contract(connection)
+    except Exception:
+        try:
+            connection.rollback()
+        except Exception:
+            _LOGGER.exception("R1 pre-persistence validation rollback failed")
+        raise
+    _persist(
+        connection,
+        run_metadata,
+        events,
+        fusion_result,
+        stopping_trace,
+        runtime_config_snapshot,
+        fast_result,
+        decision_result,
+        commit=True,
+        save_run=False,
+    )
+
+
+def _require_registered_r1_run(connection: DatabaseConnection, run_metadata: RunMetadata) -> None:
+    registered = RunRepository(connection).get(run_metadata.run_id)
+    if registered is None:
+        raise R1RunRegistrationError(
+            f"R1 results require a Run registered by its owner: {run_metadata.run_id!r}"
+        )
+    bounds = ("target_host", "start_time", "end_time")
+    if any(getattr(registered, name) != getattr(run_metadata, name) for name in bounds):
+        raise R1RunRegistrationError("registered Run host or bounds differ from the R1 input")
 
 
 def resolve_expected_supersedes_decision_id(
@@ -186,8 +254,8 @@ def _resolve_expected_supersedes_decision_id(
 
 def _persist(
     connection: DatabaseConnection,
-    artifacts: S0PipelineArtifacts,
-    normalized_artifacts: NormalizedEvidenceArtifacts,
+    run_metadata: RunMetadata,
+    events: tuple[NormalizedEvent, ...],
     fusion_result: FusionResult,
     stopping_trace: FusionStoppingTrace,
     runtime_config_snapshot: FusionRuntimeConfigSnapshot,
@@ -195,6 +263,7 @@ def _persist(
     decision_result: DecisionResult,
     *,
     commit: bool,
+    save_run: bool = True,
 ) -> None:
     try:
         connection.execute(
@@ -242,9 +311,10 @@ def _persist(
             fusion_runtime_config_snapshot=runtime_config_snapshot,
         )
 
-        RunRepository(connection).save(artifacts.run_metadata)
+        if save_run:
+            RunRepository(connection).save(run_metadata)
         event_repository = EventRepository(connection)
-        for event in normalized_artifacts.events:
+        for event in events:
             event_repository.save(event)
         FusionResultRepository(connection).save(fusion_result)
         FusionStoppingTraceRepository(connection).save(stopping_trace)
@@ -290,19 +360,19 @@ def _validate_existing_decision_scope(
 
 
 def _validate_result_scope(
-    artifacts: S0PipelineArtifacts,
-    normalized_artifacts: NormalizedEvidenceArtifacts,
+    run_metadata: RunMetadata,
+    events: tuple[NormalizedEvent, ...],
     fusion_result: FusionResult,
     stopping_trace: FusionStoppingTrace,
     runtime_config_snapshot: FusionRuntimeConfigSnapshot,
     fast_result: FastDetectionAdapterResult,
     decision_result: DecisionResult,
 ) -> None:
-    run_id = artifacts.run_metadata.run_id
-    if any(event.run_id != run_id for event in normalized_artifacts.events):
+    run_id = run_metadata.run_id
+    if any(event.run_id != run_id for event in events):
         raise ValueError("NormalizedEvent run_id must match RunMetadata before persistence")
-    target_host = artifacts.run_metadata.target_host
-    if any(event.host_id != target_host for event in normalized_artifacts.events):
+    target_host = run_metadata.target_host
+    if any(event.host_id != target_host for event in events):
         raise ValueError("NormalizedEvent host_id must match RunMetadata target_host")
 
     results = (
@@ -368,6 +438,8 @@ def _validate_result_scope(
 
 __all__ = [
     "DecisionConflictError",
+    "R1RunRegistrationError",
+    "persist_r1_results",
     "persist_s0_results",
     "resolve_expected_supersedes_decision_id",
 ]

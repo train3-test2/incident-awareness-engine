@@ -28,6 +28,8 @@ from incident_awareness.pipeline.persistence import (
     _ACQUIRE_DECISION_SCOPE_LOCK,
     _SHOW_TRANSACTION_ISOLATION,
     DecisionConflictError,
+    R1RunRegistrationError,
+    persist_r1_results,
     persist_s0_results,
     resolve_expected_supersedes_decision_id,
 )
@@ -39,6 +41,7 @@ from incident_awareness.storage.repositories.result_repository import (
     _UPSERT_FUSION_RUNTIME_CONFIG_SNAPSHOT,
     DecisionIntegrityError,
 )
+from incident_awareness.storage.repositories.run_repository import _SELECT_RUN_METADATA
 
 RUN_ID = "RUN-20260920-001"
 ENTITY_ID = "WIN-01"
@@ -73,6 +76,7 @@ class _Connection:
         decision_in_scope: bool | None = None,
         autocommit: bool = False,
         transaction_isolation: str = "read committed",
+        registered_run: RunMetadata | None = None,
     ) -> None:
         self.statements: list[tuple[str, tuple[object, ...]]] = []
         self.commits = 0
@@ -85,6 +89,7 @@ class _Connection:
         self._decision_in_scope = decision_in_scope
         self.autocommit = autocommit
         self._transaction_isolation = transaction_isolation
+        self._registered_run = registered_run
 
     def execute(self, query: str, params: tuple[object, ...]) -> _Cursor:
         self.statements.append((query, params))
@@ -97,6 +102,8 @@ class _Connection:
 
         if query == _SHOW_TRANSACTION_ISOLATION:
             return _Cursor(row=(self._transaction_isolation,))
+        if query == _SELECT_RUN_METADATA and self._registered_run is not None:
+            return _Cursor(row=(self._registered_run.model_dump(mode="json"),))
         if query == _SELECT_DECISION_PAYLOAD:
             if (
                 self._existing_decision is not None
@@ -1041,6 +1048,115 @@ def test_rejects_event_for_a_host_other_than_the_run_target() -> None:
             decision_result,
             connection=_Connection(),
         )
+
+
+def _persist_r1(connection: _Connection, run: RunMetadata | None = None) -> DecisionResult:
+    fusion_result, fast_result, decision = _results()
+    persist_r1_results(
+        run or _artifacts().run_metadata,
+        (_event(),),
+        fusion_result,
+        _stopping_trace(),
+        _runtime_config_snapshot(),
+        fast_result,
+        decision,
+        connection=connection,
+    )
+    return decision
+
+
+def _registered_connection(**kwargs) -> _Connection:
+    return _Connection(registered_run=_artifacts().run_metadata, **kwargs)
+
+
+def test_persists_r1_results_without_writing_ground_truth_run_row() -> None:
+    # Given
+    connection = _registered_connection()
+
+    # When
+    _persist_r1(connection)
+
+    # Then
+    queries = [query for query, _ in connection.statements]
+    assert connection.commits == 1
+    assert connection.rollbacks == 0
+    assert not any("INSERT INTO runs" in query for query in queries)
+    assert any("INSERT INTO fusion_results" in query for query in queries)
+    assert any("INSERT INTO decisions" in query for query in queries)
+    assert _INSERT_DECISION_RUNTIME_SNAPSHOT in queries
+
+
+def test_r1_results_require_a_run_registered_by_its_owner() -> None:
+    # Given
+    connection = _Connection()
+
+    # When / Then
+    with pytest.raises(R1RunRegistrationError, match="registered by its owner"):
+        _persist_r1(connection)
+    assert [query for query, _ in connection.statements] == [_SELECT_RUN_METADATA]
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
+def test_r1_results_reject_registered_run_with_different_bounds() -> None:
+    # Given
+    registered = _artifacts().run_metadata
+    connection = _Connection(registered_run=registered)
+    shifted = registered.model_copy(update={"start_time": registered.start_time.replace(year=2025)})
+
+    # When / Then
+    with pytest.raises(R1RunRegistrationError, match="host or bounds"):
+        _persist_r1(connection, shifted)
+    assert not any("INSERT" in query for query, _ in connection.statements)
+
+
+def test_r1_retry_with_identical_decision_does_not_rewrite_results() -> None:
+    # Given
+    _, _, decision = _results()
+    connection = _registered_connection(existing_decision=decision)
+
+    # When
+    _persist_r1(connection)
+
+    # Then
+    queries = [query for query, _ in connection.statements]
+    assert connection.commits == 1
+    assert not any("INSERT INTO fusion_results" in query for query in queries)
+
+
+def test_r1_decision_id_reuse_with_different_content_rolls_back() -> None:
+    # Given
+    _, _, decision = _results()
+    conflicting = decision.model_copy(update={"config_version": "other-config"})
+    connection = _registered_connection(existing_decision=conflicting)
+
+    # When / Then
+    with pytest.raises(DecisionIntegrityError):
+        _persist_r1(connection)
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
+def test_r1_results_reject_a_foreign_event_before_any_write() -> None:
+    # Given
+    fusion_result, fast_result, decision = _results()
+    foreign = _event().model_copy(update={"host_id": "OTHER-HOST"})
+    connection = _registered_connection()
+
+    # When / Then
+    with pytest.raises(ValueError, match="target_host"):
+        persist_r1_results(
+            _artifacts().run_metadata,
+            (foreign,),
+            fusion_result,
+            _stopping_trace(),
+            _runtime_config_snapshot(),
+            fast_result,
+            decision,
+            connection=connection,
+        )
+    assert not any("INSERT" in query for query, _ in connection.statements)
+    assert connection.rollbacks == 1
 
 
 def _artifacts() -> S0PipelineArtifacts:
