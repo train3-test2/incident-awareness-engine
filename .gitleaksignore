@@ -1,0 +1,3 @@
+# Historical false positive: synthetic Track-B test bearer token.
+# Ignore only the finding introduced by commit b386c24.
+b386c24fdf22f4d5b1dfcca19de2917a63662683:tests/dashboard/test_track_b_observations.py:generic-api-key:28
