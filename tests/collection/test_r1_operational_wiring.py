@@ -1023,3 +1023,38 @@ def test_tampered_stopping_trace_is_not_reused(harness: _Harness, tmp_path: Path
     # When / Then
     with pytest.raises(ValueError, match="recorded Fusion stopping trace differs"):
         _handoff(harness, export)
+
+
+@pytest.mark.parametrize(
+    "revalidated_at",
+    [
+        pytest.param(fixture._RUN_END - timedelta(seconds=1), id="later-inside-run"),
+        pytest.param(fixture._RUN_END + timedelta(seconds=1), id="after-run-end"),
+    ],
+)
+def test_same_envelope_revalidated_at_another_time_is_not_reused(
+    harness: _Harness,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    revalidated_at: datetime,
+) -> None:
+    # Given: a completed handoff, then the validation record is removed and the same
+    # envelope is validated again at a different time.
+    export = _published(harness, tmp_path)
+    first = _handoff(harness, export)
+    outputs = _output_bytes(harness)
+    (harness.state_root / R1_INCREMENTAL_REPLAY_VALIDATION_FILENAME).unlink()
+    calls: list[object] = []
+    monkeypatch.setattr(TemporalReplayRunner, "run_causal", lambda *a, **k: calls.append(a))
+
+    # When / Then
+    with pytest.raises(R1FusionHandoffIdentityConflict, match="different execution identity"):
+        _handoff(harness, export, availability_clock=lambda: revalidated_at)
+    assert calls == []
+    assert _output_bytes(harness) == outputs
+    records = R1OperationalTrace(
+        harness.fusion_output / "r1_fusion_execution_trace.jsonl"
+    ).records()
+    assert records[: len(first.trace)] == first.trace
+    assert records[-1].stage == "handoff_rejected"
+    assert "decision_recorded" not in [record.stage for record in records[len(first.trace) :]]

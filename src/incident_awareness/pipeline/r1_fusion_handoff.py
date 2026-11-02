@@ -429,6 +429,14 @@ def _validate_published_input(
         "publication_receipt_sha256": _sha256(receipt_path),
         "validation_record_sha256": _sha256(directory / R1_INCREMENTAL_REPLAY_VALIDATION_FILENAME),
         "inputs_validated_at": validation.inputs_validated_at.isoformat().replace("+00:00", "Z"),
+        "scheduled_availability": [
+            {
+                "evidence_id": item.evidence.evidence_id,
+                "evidence_sha256": incremental_evidence_sha256(item.evidence),
+                "available_at": item.available_at.isoformat().replace("+00:00", "Z"),
+            }
+            for item in replay_input.scheduled_evidences
+        ],
     }
     return _ValidatedPublishedInput(replay_input.scheduled_evidences, events, identity)
 
@@ -445,8 +453,16 @@ def _execution_identity(
         "source_hit_ids": list(fast.source_hit_ids),
         "selected_source_hit_id": fast.selected_source_hit_id,
     }
+    # The same envelope can be revalidated at another time; the validation record and
+    # the resulting Evidence availability change the causal trajectory, so both bind.
     return {
         "input_envelope_sha256": input_identity["envelope_sha256"],
+        "publication_receipt_sha256": input_identity["publication_receipt_sha256"],
+        "validation_record_sha256": input_identity["validation_record_sha256"],
+        "inputs_validated_at": input_identity["inputs_validated_at"],
+        "scheduled_availability_sha256": _canonical_sha256(
+            input_identity["scheduled_availability"]
+        ),
         "fusion_config_sha256": _canonical_sha256(config.model_dump(mode="json")),
         "fast_input_sha256": _canonical_sha256(fast_input),
         "fast_status": fast.detection_result.detector_status.value,
@@ -468,7 +484,8 @@ def _require_single_execution_identity(
     if recorded and recorded != {identity_sha256}:
         reason = (
             "output directory already holds a handoff for a different execution identity "
-            "(input, Fusion config, Fast input, or Decision config); use a new output directory"
+            "(input, availability validation, Fusion config, Fast input, or Decision config); "
+            "use a new output directory"
         )
         trace.append(
             "handoff_rejected",

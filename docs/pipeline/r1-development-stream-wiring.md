@@ -174,8 +174,10 @@ exits. `consume` reports a finalized or failed-closed checkpoint as terminal wit
 restoring it, so the sidecar does not need the finalize trust bindings. The Fusion handoff
 holds the same lock on its output directory.
 
-One Fusion output directory holds one execution identity: the published envelope, the full
-Fusion config, the Fast input, and the Decision config version. A retry with the same
+One Fusion output directory holds one execution identity: the published envelope and
+publication receipt, the replay-input validation record with its `inputs_validated_at`, the
+resulting Evidence availability, the full Fusion config, the Fast input, and the Decision
+config version. Revalidating the same envelope at another time is a different identity. A retry with the same
 identity reuses the recorded Fusion result, stopping trace and Decision only after their
 digests match the trace. A retry with a different identity is refused with
 `R1FusionHandoffIdentityConflict` before Fusion runs; use a new output directory. When a
