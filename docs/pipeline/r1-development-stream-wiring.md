@@ -134,6 +134,79 @@ run_closed, accepted_close_receipt = load_close_export(Path(close_export_path))
 # Role4: pass run_closed and accepted_close_receipt to the existing seal/proof API.
 ```
 
+## Role2 consumer and Role1 Fusion handoff
+
+Run the Role2 consumer as a separate sidecar next to the producer. It reads
+`<control-root>/<run_id>/run-started.json` and waits until that authoritative start
+exists. It consumes only acked chunks, in sequence, and requires each one to be an
+exact replay of a committed ledger entry.
+
+```powershell
+uv run python -m incident_awareness.pipeline.r1_incremental_consumer consume `
+  --run-id $RunId --target-host $TargetHost `
+  --spool-root "$SpoolRoot\$RunId" --control-root $ControlRoot `
+  --state-root $StateRoot `
+  --required-partition-contract "$SpoolRoot\contracts\$RunId-required-partitions.json" `
+  --follow-interval-sec 5
+```
+
+`<state-root>` holds `r1_incremental_checkpoint.json` and the hash-chained
+`r1_role2_operational_trace.jsonl`. A `provisional_candidate` stage is a selector
+state, not Evidence, and never reaches Fusion. Without an accepted `run_closed` the
+trace records `finalization_blocked`; this is the expected state for current Sysmon
+Runs because no source watermark or close is issued. A position close, position proof,
+ack, RecordId, quiet period and `run_end` do not satisfy this requirement.
+
+With an accepted event-time close export and a verified close proof,
+`r1_incremental_consumer finalize` publishes the existing v0.2 artifact set, and
+`python -m incident_awareness.pipeline.r1_fusion_handoff` validates that set and runs
+causal Fusion. Role1 appends `handoff_accepted`, `fusion_processing_started`,
+`fusion_processing_completed` and `decision_recorded` to
+`r1_fusion_execution_trace.jsonl` with the Evidence, envelope, Fusion result and Decision
+digests. These are wall-clock observations and are distinct from `fusion_time`. A Fast path
+that did not run stays `not_evaluated`, so `decision_complete` stays false.
+
+Neither command generates a historical time. Replaying archived chunks produces
+current-time trace observations, not operational detection times.
+
+The Fusion handoff does not write the `runs` row. That row carries `run_type` and
+`reference_*` Ground Truth that the Dashboard exposes, so R1 results are stored only when
+the Run owner has already registered the Run with the same host, start and end. Otherwise
+`persist_r1_results` raises `R1RunRegistrationError` before any write. The handoff reads
+only the Run bounds and host from `RunMetadata`.
+
+### Validation status
+
+| Path | Status |
+| --- | --- |
+| Producer → Role3 commit and ack → Role2 consumer | Separate processes. The producer only runs Role3 `consume`; it does not start the Role2 consumer. Exercised with test fixtures and archived Pair-009 chunks, not in a live Run. |
+| Role2 replay against the real Role3 ledger | Real PostgreSQL 18.6 test schema with synthetic chunks |
+| Evidence finalization, publication and Role1 Fusion | Synthetic v0.2 fixture only. No actual WMI Run has an event-time close or proof, so no actual Run reached Fusion. |
+| R1 result persistence | Real PostgreSQL 18.6 test schema with synthetic results |
+| Live Windows producer and consumer together, VM restart recovery, Dashboard view | Not validated |
+
+A synthetic Fusion result is a contract check. It is not evidence that real-time WMI Fusion
+works.
+
+### Known Role3 defect: source watermark lock
+
+`R1StreamDeliveryRepository.save_watermark` runs `_LOCK_WATERMARK_PARTITION`:
+
+```sql
+SELECT pg_advisory_xact_lock(
+    hashtextextended(concat_ws(E'\\x1f', %s, %s, %s, %s), 0)
+)
+```
+
+`concat_ws` is variadic `"any"`, so PostgreSQL 18.6 cannot type the bound parameters and
+fails with `psycopg.errors.IndeterminateDatatype: could not determine data type of
+parameter $1`. A real database therefore cannot accept a `source_watermark`, and an
+`R1RunClosed` cannot be accepted after it. The current producer emits neither message, so
+live Runs have not hit this path. `test_real_role3_watermark_save` in
+`tests/collection/test_r1_operational_wiring_postgres.py` reproduces the failure as a strict
+xfail. Once the Role3 repository is fixed, that test reports XPASS and fails the run, so
+the marker must be removed with the fix.
+
 ## Rehearsal and remaining operational validation
 
 `tests/pipeline/test_r1_stream_wiring.py` is the reproducible, non-official
