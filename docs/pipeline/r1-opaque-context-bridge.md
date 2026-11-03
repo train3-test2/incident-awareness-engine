@@ -13,8 +13,13 @@ WMI offline preliminary 평가 전용이며 Evidence·Feature 계산은 바꾸�
 
 두 형식은 같은 schema ID를 쓰지만 구조가 다르다. bridge는 두 계약을 바꾸지 않고
 Role4 형식을 별도 모델로 검증한 뒤 `CONVERSION_RULES`의 필드만 옮긴다.
-`timezone`, `time_domain`, `approved_policy.config_hash/lifecycle`, receipt는 변환하지 않고
-config·receipt와 대조해 bridge manifest에 기록한다.
+`timezone`, `time_domain`, `approved_policy.config_hash/lifecycle`, receipt는 어댑터 context로
+옮기지 않고 config·receipt와 대조한다. bridge manifest에는 다음만 기록한다.
+
+- `timezone`, `time_domain`
+- `policy`: approved policy ID, version, config_hash, lifecycle
+- `provenance`: item별 `receipt_id`, `source_chain_commitment_sha256`, `proof_model`
+  (receipt 원문의 verification·disclosure 필드는 검증만 하고 복사하지 않는다)
 
 ## 입력과 검증
 
@@ -28,14 +33,17 @@ uv run python -m incident_awareness.pipeline.r1_opaque_context_bridge \
 
 - supplement: ZIP SHA, 정확한 member 집합, 내부 SHA256SUMS, 정의 외 필드 거부
 - 평가 패키지: 호출자가 준 SHA와 context·receipt 선언값 대조, 검증한 바이트에서만 읽기,
-  중복 member와 위험한 경로 거부, `consumer-index.json`과 telemetry member만 접근
+  중복 member와 위험한 경로를 모든 항목에서 거부, `consumer-index.json`과 telemetry member만 접근
+- 크기 상한: member 수 10,000, 선언된 전체 해제 크기 256 MiB, member당 실제 읽기 64 MiB
 - expected item: `consumer-index.json`의 `opaque_id` 목록. canonical JSON SHA를 context와 대조하고
   context·receipt·index 집합의 중복·누락·추가를 모두 실패로 기록한다.
-  index item에 label·run_type·run/pair ID 키가 있으면 거부한다.
+  index의 최상위와 중첩 구조 어디에든 label·class·run_type·run/pair ID·reference·ground_truth
+  키가 있으면 거부한다.
 - item: WMI family, `UTC`와 `private_deterministic_offset`, policy ID·version·config_hash·lifecycle,
-  `RAW-002`, host·source·channel, 경계 순서, receipt ID·raw_log_id 결속
+  공식 `RAW-002`(config 값과 별개로 고정), host·source·channel, 경계 순서, receipt ID·raw_log_id 결속
 
 하나라도 실패하면 어댑터를 호출하지 않고 `bridge-manifest.json`에 실패만 남긴다.
+telemetry member 누락·읽기 실패도 출력 디렉터리를 만들기 전에 item ID와 함께 실패로 기록한다.
 통과하면 `adapter-context.json`을 쓰고 기존 어댑터를 호출한다. 어댑터 실패도 묶음 전체를 막는다.
 
 ## 신뢰 경계
