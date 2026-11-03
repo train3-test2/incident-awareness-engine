@@ -481,9 +481,15 @@ def test_duplicate_missing_and_unexpected_items_block_bundle(tmp_path: Path) -> 
     ],
 )
 def test_config_rejects_masqueraded_policy_and_schema(changes: dict, match: str) -> None:
-    # Given / When / Then
-    with pytest.raises(ValueError, match=match):
-        _config(**changes)
+    # Given: 관리 정책·vocabulary와 다른 config 값
+    config_changes = dict(changes)
+
+    # When
+    with pytest.raises(ValueError) as raised:
+        _config(**config_changes)
+
+    # Then
+    assert match in str(raised.value)
 
 
 def _cli_args(config: Path, context: Path, telemetry: Path, out: Path) -> list[str]:
@@ -666,24 +672,37 @@ def test_presence_equivalence_edge_cases() -> None:
 
 
 @pytest.mark.parametrize(
-    "evidences",
+    ("evidences", "reason"),
     [
-        [_evidence(0, NAMES[2]), _evidence(0, NAMES[3])],
-        [_evidence(0, NAMES[2], run_id="RUN-20300101-002")],
+        ([_evidence(0, NAMES[2]), _evidence(0, NAMES[3])], "conflicting records"),
+        ([_evidence(0, NAMES[2], run_id="RUN-20300101-002")], "must belong to the requested"),
     ],
 )
-def test_presence_rejects_the_same_inputs_as_static_features(evidences) -> None:
-    # Given / When / Then
-    with pytest.raises(ValueError):
-        extract_static_features(evidences, feature_names=NAMES, run_id=EQ_RUN, entity_id=HOST)
-    with pytest.raises(ValueError):
-        opaque._presence_values(evidences, feature_names=NAMES, scope_id=EQ_RUN, entity_id=HOST)
+def test_presence_rejects_the_same_inputs_as_static_features(evidences, reason: str) -> None:
+    # Given: 같은 evidence_id의 다른 내용, 또는 다른 scope의 Evidence
+    rows = list(evidences)
+
+    # When
+    with pytest.raises(ValueError) as reference:
+        extract_static_features(rows, feature_names=NAMES, run_id=EQ_RUN, entity_id=HOST)
+    with pytest.raises(ValueError) as ours:
+        opaque._presence_values(rows, feature_names=NAMES, scope_id=EQ_RUN, entity_id=HOST)
+
+    # Then: 두 계산이 같은 입력을 같은 사유로 거부한다
+    assert reason in str(reference.value)
+    assert reason in str(ours.value)
 
 
 def test_static_features_still_rejects_opaque_scope() -> None:
-    # Given / When / Then: 기존 RUN ID 계약은 완화하지 않는다
-    with pytest.raises(ValueError):
-        extract_static_features([], feature_names=NAMES, run_id=ITEM_A, entity_id=HOST)
+    # Given: RUN ID 형식이 아닌 opaque scope
+    scope = ITEM_A
+
+    # When
+    with pytest.raises(ValueError) as raised:
+        extract_static_features([], feature_names=NAMES, run_id=scope, entity_id=HOST)
+
+    # Then: 기존 RUN ID 계약은 완화하지 않는다
+    assert "run_id" in str(raised.value)
 
 
 def test_rows_validate_against_role5_opaque_contract(tmp_path: Path) -> None:
