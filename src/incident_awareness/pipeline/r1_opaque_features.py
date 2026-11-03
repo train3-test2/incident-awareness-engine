@@ -15,10 +15,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import tempfile
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
 
@@ -84,7 +85,8 @@ class R1OpaqueExtractionConfig(_Frozen):
     feature_config_version: Identifier
     feature_names: tuple[Identifier, ...] = Field(min_length=1)
     vocabulary_sha256: Digest
-    family_id: Identifier
+    # Role5 결정에 따라 WMI 후보만 변환한다. 다른 family 정책은 config에서 거부한다.
+    family_id: Literal["wmi_management"]
     approved_policy_id: Identifier
     approved_policy_version: Identifier
     approved_policy_config_hash: Digest
@@ -118,10 +120,11 @@ class R1OpaqueItemContext(_Frozen):
 
     @field_validator("authoritative_observation_start", "authoritative_observation_end")
     @classmethod
-    def aware(cls, value: datetime) -> datetime:
+    def utc(cls, value: datetime) -> datetime:
+        # selector는 UTC run_start만 받으므로 같은 시각의 UTC 값으로 정규화한다.
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("observation boundary must include a timezone")
-        return value
+        return value.astimezone(UTC)
 
     @field_validator("telemetry_member")
     @classmethod
@@ -268,17 +271,11 @@ def _extract_item(
     if context.authoritative_observation_start >= context.authoritative_observation_end:
         raise _ItemFailed("boundary", "observation start must precede observation end")
 
-    telemetry = telemetry_root / context.telemetry_member
-    try:
-        content = telemetry.read_bytes()
-    except OSError as error:
-        raise _ItemFailed(
-            "input_integrity", f"telemetry unreadable: {type(error).__name__}"
-        ) from error
+    content = _read_member(telemetry_root, context.telemetry_member)
     if hashlib.sha256(content).hexdigest() != context.telemetry_sha256:
         raise _ItemFailed("input_integrity", "telemetry SHA-256 mismatch")
 
-    events = _normalize(context, telemetry)
+    events = _normalize(context, content)
     if len(events) != context.canonical_event_count:
         raise _ItemFailed("input_integrity", "canonical event count mismatch")
     if any(event.host_id != context.host_id for event in events):
@@ -291,17 +288,20 @@ def _extract_item(
         config.approved_policy_version,
         config_path=DEFAULT_R1_FAMILY_BOUND_APPROVED_LINEAGE_POLICIES_PATH,
     )
-    result = run_r1_evidence_pipeline_with_selector(
-        events,
-        selector_policy=R1SelectorPolicy(
-            policy_id=config.selector_policy_id,
-            version=config.selector_policy_version,
-            config_hash=config.selector_policy_config_hash,
-            lineage_event_count=config.selector_lineage_event_count,
-        ),
-        approved_policy=approved,
-        run_start=context.authoritative_observation_start,
-    )
+    try:
+        result = run_r1_evidence_pipeline_with_selector(
+            events,
+            selector_policy=R1SelectorPolicy(
+                policy_id=config.selector_policy_id,
+                version=config.selector_policy_version,
+                config_hash=config.selector_policy_config_hash,
+                lineage_event_count=config.selector_lineage_event_count,
+            ),
+            approved_policy=approved,
+            run_start=context.authoritative_observation_start,
+        )
+    except (TypeError, ValueError) as error:
+        raise _ItemFailed("selector", str(error)) from error
     selection = result.selector_result.selection
     if selection is None:
         reasons = ",".join(str(d) for d in result.selector_result.diagnostics) or "unknown"
@@ -332,13 +332,44 @@ def _extract_item(
     )
 
 
-def _normalize(context: R1OpaqueItemContext, telemetry: Path) -> tuple[NormalizedEvent, ...]:
+def _read_member(telemetry_root: Path, member: str) -> bytes:
+    """심볼릭 링크를 해석한 실제 경로가 telemetry root 안일 때만 읽는다."""
+    try:
+        root = telemetry_root.resolve(strict=True)
+        path = (telemetry_root / member).resolve(strict=True)
+    except OSError as error:
+        raise _ItemFailed(
+            "input_integrity", f"telemetry unreadable: {type(error).__name__}"
+        ) from error
+    if not path.is_relative_to(root) or not path.is_file():
+        raise _ItemFailed("input_integrity", "telemetry resolves outside the telemetry root")
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise _ItemFailed(
+            "input_integrity", f"telemetry unreadable: {type(error).__name__}"
+        ) from error
+
+
+def _normalize(context: R1OpaqueItemContext, content: bytes) -> tuple[NormalizedEvent, ...]:
+    """SHA-256을 검증한 바이트만 기존 reader와 정규화기로 처리한다.
+
+    reader는 경로만 받으므로 검증한 바이트를 비공개 임시 파일에 써서 넘긴다.
+    원본 파일이 검증 뒤 바뀌어도 결과에 영향을 주지 않는다.
+    """
     normalization = SysmonNormalizationContext(
         run_id=context.item_id, raw_log_id=context.raw_log_id, segment_no=1
     )
     events = []
+    with tempfile.TemporaryDirectory(prefix="r1-opaque-") as private:
+        verified = Path(private) / "telemetry.jsonl"
+        verified.write_bytes(content)
+        try:
+            records = tuple(read_sysmon_jsonl(verified))
+        except (SysmonJsonlReadError, UnicodeDecodeError) as error:
+            raise _ItemFailed("normalization", str(error)) from error
     try:
-        for record in read_sysmon_jsonl(telemetry):
+        for record in records:
             if record.data.get("Channel") != context.source_channel:
                 raise _ItemFailed("partition", f"record {record.record_no} channel differs")
             event_id = record.data.get("EventId")
@@ -348,7 +379,7 @@ def _normalize(context: R1OpaqueItemContext, telemetry: Path) -> tuple[Normalize
                 events.append(normalize_sysmon_network_connection(record, context=normalization))
             else:
                 raise _ItemFailed("normalization", f"unsupported EventId {event_id!r}")
-    except (SysmonJsonlReadError, TypeError, ValueError) as error:
+    except (TypeError, ValueError) as error:
         raise _ItemFailed("normalization", str(error)) from error
     return tuple(events)
 
@@ -415,6 +446,8 @@ class _OpaqueIdCheck(_Frozen):
 
 
 def _raw_item_label(raw: object, index: int) -> str:
+    if isinstance(raw, R1OpaqueItemContext):
+        return raw.item_id
     if isinstance(raw, Mapping) and isinstance(raw.get("item_id"), str):
         return raw["item_id"]
     return f"<context index {index}>"
@@ -426,7 +459,7 @@ def _first_error(error: ValidationError) -> str:
     return f"{location}: {first['msg']}"
 
 
-def _read_json(path: Path) -> object:
+def _read_json(content: bytes) -> object:
     def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in items:
@@ -438,9 +471,7 @@ def _read_json(path: Path) -> object:
     def constant(value: str) -> object:
         raise ValueError(f"nonfinite JSON constant: {value}")
 
-    return json.loads(
-        path.read_text(encoding="utf-8"), object_pairs_hook=pairs, parse_constant=constant
-    )
+    return json.loads(content.decode("utf-8"), object_pairs_hook=pairs, parse_constant=constant)
 
 
 def write_r1_opaque_feature_bundle(
@@ -450,10 +481,17 @@ def write_r1_opaque_feature_bundle(
     telemetry_root: Path,
     output_dir: Path,
 ) -> R1OpaqueBundleResult:
-    """새 출력 디렉터리에 rows(검증 성공 시)와 묶음 manifest를 쓴다."""
-    output_dir.mkdir(parents=True, exist_ok=False)
-    config = load_r1_opaque_extraction_config(_read_json(config_path))
-    document = _read_json(context_path)
+    """새 출력 디렉터리에 rows(검증 성공 시)와 묶음 manifest를 쓴다.
+
+    입력 검증과 묶음 생성이 끝난 뒤에 출력 디렉터리를 만들어, 입력 오류가 빈
+    디렉터리를 남기지 않는다. 기록하는 파일 SHA는 파싱한 바이트의 값이다.
+    """
+    if output_dir.exists():
+        raise FileExistsError(f"output directory already exists: {output_dir}")
+    config_bytes = config_path.read_bytes()
+    context_bytes = context_path.read_bytes()
+    config = load_r1_opaque_extraction_config(_read_json(config_bytes))
+    document = _read_json(context_bytes)
     if not isinstance(document, dict) or document.get("schema_version") != R1_OPAQUE_CONTEXT_SCHEMA:
         raise ValueError(f"context document must declare {R1_OPAQUE_CONTEXT_SCHEMA}")
     if set(document) != {"schema_version", "expected_item_ids", "items"}:
@@ -472,8 +510,8 @@ def write_r1_opaque_feature_bundle(
         "status": result.status,
         "purpose": "offline_preliminary_development",
         "extraction_config": config.model_dump(mode="json"),
-        "extraction_config_file_sha256": _file_sha256(config_path),
-        "context_file_sha256": _file_sha256(context_path),
+        "extraction_config_file_sha256": hashlib.sha256(config_bytes).hexdigest(),
+        "context_file_sha256": hashlib.sha256(context_bytes).hexdigest(),
         "expected_item_count": len(expected),
         "items": [
             {
@@ -491,22 +529,20 @@ def write_r1_opaque_feature_bundle(
             for f in result.failures
         ],
     }
+    output_dir.mkdir(parents=True, exist_ok=False)
     if result.status == "validated":
-        rows_path = output_dir / R1_OPAQUE_ROWS_FILENAME
-        _write_new(rows_path, list(result.rows))
-        manifest["rows_file_sha256"] = _file_sha256(rows_path)
+        rows_bytes = _write_new(output_dir / R1_OPAQUE_ROWS_FILENAME, list(result.rows))
+        manifest["rows_file_sha256"] = hashlib.sha256(rows_bytes).hexdigest()
         manifest["feature_rows_sha256"] = opaque_feature_rows_digest(result.rows)
     _write_new(output_dir / R1_OPAQUE_MANIFEST_FILENAME, manifest)
     return result
 
 
-def _write_new(path: Path, value: object) -> None:
-    with path.open("x", encoding="utf-8") as stream:
-        stream.write(json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
-
-
-def _file_sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _write_new(path: Path, value: object) -> bytes:
+    content = (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
+    with path.open("xb") as stream:
+        stream.write(content)
+    return content
 
 
 def main(argv: Sequence[str] | None = None) -> int:

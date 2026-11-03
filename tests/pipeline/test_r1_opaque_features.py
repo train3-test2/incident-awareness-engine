@@ -2,7 +2,7 @@ import hashlib
 import itertools
 import json
 import random
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -188,11 +188,24 @@ def _build(tmp_path, contexts, expected=None, config=None):
     )
 
 
+def _failures(result) -> set[tuple[str, str, str]]:
+    return {(f.item_id, f.stage, f.reason) for f in result.failures}
+
+
+def _assert_blocked(result) -> None:
+    assert result.status == "blocked"
+    assert result.rows == ()
+    assert result.items == ()
+
+
 def test_synthetic_items_produce_training_equivalent_rows(tmp_path: Path) -> None:
+    # Given: 승인 계보 item과 deviation 계보 item
     contexts = _bundle(tmp_path, {ITEM_A: {}, ITEM_B: {"middle": CSCRIPT}})
 
+    # When
     result = _build(tmp_path, contexts)
 
+    # Then
     assert result.status == "validated" and result.failures == ()
     assert [(r["item_id"], r["values"]) for r in result.rows] == [
         (ITEM_A, [0, 0, 0, 1]),
@@ -206,38 +219,126 @@ def test_synthetic_items_produce_training_equivalent_rows(tmp_path: Path) -> Non
 
 
 def test_rows_are_independent_of_context_order(tmp_path: Path) -> None:
+    # Given
     contexts = _bundle(tmp_path, {ITEM_A: {}, ITEM_B: {"middle": CSCRIPT}})
 
+    # When
     forward = _build(tmp_path, contexts)
     backward = _build(tmp_path, list(reversed(contexts)), expected=[ITEM_B, ITEM_A])
 
+    # Then
     assert forward.rows == backward.rows
     assert opaque.opaque_feature_rows_digest(forward.rows) == opaque.opaque_feature_rows_digest(
         backward.rows
     )
 
 
-def _single_failure(result) -> tuple[str, str]:
-    assert result.status == "blocked" and result.rows == ()
-    return result.failures[0].stage, result.failures[0].reason
+def test_typed_contexts_are_labelled_by_item_id(tmp_path: Path) -> None:
+    # Given: 이미 검증된 R1OpaqueItemContext 인스턴스
+    contexts = [
+        opaque.R1OpaqueItemContext.model_validate(c)
+        for c in _bundle(tmp_path, {ITEM_A: {}, ITEM_B: {"middle": CSCRIPT}})
+    ]
+
+    # When
+    result = opaque.build_r1_opaque_feature_bundle(
+        config=_config(),
+        expected_item_ids=[ITEM_A, ITEM_B],
+        item_contexts=contexts,
+        telemetry_root=tmp_path,
+    )
+
+    # Then
+    assert result.status == "validated"
+    assert [r["item_id"] for r in result.rows] == [ITEM_A, ITEM_B]
+
+
+def test_normalizes_the_verified_bytes_even_if_file_changes_after_hashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given: 해시 검증 직후 파일이 network Event 없는 내용으로 바뀐다
+    contexts = _bundle(tmp_path, {ITEM_A: {}})
+    path = tmp_path / contexts[0]["telemetry_member"]
+    swapped = "".join(json.dumps(r) + "\n" for r in _records(network=False)).encode()
+    original_read = opaque._read_member
+
+    def read_then_swap(root: Path, member: str) -> bytes:
+        content = original_read(root, member)
+        path.write_bytes(swapped)
+        return content
+
+    monkeypatch.setattr(opaque, "_read_member", read_then_swap)
+
+    # When
+    result = _build(tmp_path, contexts)
+
+    # Then: 교체된 내용(no_terminal_candidate)이 아니라 검증한 바이트의 결과다
+    assert path.read_bytes() == swapped
+    assert result.status == "validated"
+    assert result.rows[0]["values"] == [0, 0, 0, 1]
+
+
+def test_offset_boundary_is_normalized_to_utc(tmp_path: Path) -> None:
+    # Given: 같은 시각을 +09:00으로 표기한 경계
+    kst = timezone(timedelta(hours=9))
+    offset = {
+        "authoritative_observation_start": T0.astimezone(kst).isoformat(),
+        "authoritative_observation_end": (T0 + timedelta(minutes=13)).astimezone(kst).isoformat(),
+    }
+    utc_contexts = _bundle(tmp_path / "utc", {ITEM_A: {}})
+    kst_contexts = _bundle(tmp_path / "kst", {ITEM_A: {}}, **{ITEM_A: offset})
+
+    # When
+    utc_result = _build(tmp_path / "utc", utc_contexts)
+    kst_result = _build(tmp_path / "kst", kst_contexts)
+    parsed = opaque.R1OpaqueItemContext.model_validate(kst_contexts[0])
+
+    # Then
+    assert parsed.authoritative_observation_start == T0
+    assert parsed.authoritative_observation_start.utcoffset() == timedelta(0)
+    assert kst_result.status == utc_result.status == "validated"
+    assert kst_result.rows == utc_result.rows
+
+
+def test_naive_boundary_is_recorded_as_failure_in_manifest(tmp_path: Path) -> None:
+    # Given: 시간대가 없는 경계
+    telemetry = tmp_path / "telemetry"
+    contexts = _bundle(
+        telemetry, {ITEM_A: {}}, **{ITEM_A: {"authoritative_observation_start": "2030-01-01T00:10"}}
+    )
+    config_path, context_path = _write_inputs(tmp_path, contexts, [ITEM_A])
+    out = tmp_path / "out"
+
+    # When
+    exit_code = opaque.main(_cli_args(config_path, context_path, telemetry, out))
+    manifest = _manifest(out)
+
+    # Then
+    assert exit_code == 1
+    assert manifest["status"] == "blocked"
+    assert manifest["failures"][0]["item_id"] == ITEM_A
+    assert manifest["failures"][0]["stage"] == "context"
+    assert "authoritative_observation_start" in manifest["failures"][0]["reason"]
+    assert not (out / opaque.R1_OPAQUE_ROWS_FILENAME).exists()
 
 
 @pytest.mark.parametrize(
-    ("spec", "stage", "reason"),
+    ("spec", "reason"),
     [
-        ({"extra_terminal": True}, "selector", "ambiguous_terminal_candidate"),
-        ({"network": False}, "selector", "no_terminal_candidate"),
+        ({"extra_terminal": True}, "ambiguous_terminal_candidate"),
+        ({"network": False}, "no_terminal_candidate"),
     ],
 )
-def test_selector_failure_blocks_bundle_without_zero_vector(tmp_path, spec, stage, reason) -> None:
+def test_selector_failure_blocks_bundle_without_zero_vector(tmp_path, spec, reason) -> None:
+    # Given: 한 item만 selector가 실패한다
     contexts = _bundle(tmp_path, {ITEM_A: {}, ITEM_B: spec})
 
+    # When
     result = _build(tmp_path, contexts)
 
-    assert _single_failure(result) == (stage, reason)
-    assert result.failures[0].item_id == ITEM_B
-    # 성공한 item도 부분 발급하지 않는다.
-    assert result.items == ()
+    # Then: 성공한 item도 부분 발급하지 않는다
+    _assert_blocked(result)
+    assert _failures(result) == {(ITEM_B, "selector", reason)}
 
 
 @pytest.mark.parametrize(
@@ -256,72 +357,133 @@ def test_selector_failure_blocks_bundle_without_zero_vector(tmp_path, spec, stag
         ({"telemetry_sha256": "0" * 64}, "input_integrity"),
         ({"canonical_event_count": 99}, "input_integrity"),
         ({"telemetry_member": "../outside.jsonl"}, "context"),
+        ({"telemetry_member": "missing/sysmon.jsonl"}, "input_integrity"),
         ({"run_type": "attack"}, "context"),
         ({"label": 1}, "context"),
         ({"item_id": "RUN-20301101-934"}, "context"),
     ],
 )
 def test_invalid_context_fails_closed(tmp_path: Path, changes: dict, stage: str) -> None:
+    # Given
     contexts = _bundle(tmp_path, {ITEM_A: {}}, **{ITEM_A: changes})
-    expected = [ITEM_A]
 
-    result = _build(tmp_path, contexts, expected=expected)
+    # When
+    result = _build(tmp_path, contexts, expected=[ITEM_A])
 
-    assert result.status == "blocked" and result.rows == ()
+    # Then
+    _assert_blocked(result)
     assert stage in {failure.stage for failure in result.failures}
 
 
 def test_tampered_telemetry_fails_integrity(tmp_path: Path) -> None:
+    # Given
     contexts = _bundle(tmp_path, {ITEM_A: {}})
     path = tmp_path / contexts[0]["telemetry_member"]
     path.write_bytes(path.read_bytes().replace(b"8443", b"8444"))
 
-    assert _single_failure(_build(tmp_path, contexts)) == (
-        "input_integrity",
-        "telemetry SHA-256 mismatch",
-    )
+    # When
+    result = _build(tmp_path, contexts)
+
+    # Then
+    _assert_blocked(result)
+    assert _failures(result) == {(ITEM_A, "input_integrity", "telemetry SHA-256 mismatch")}
+
+
+def test_symlink_outside_root_fails_integrity(tmp_path: Path) -> None:
+    # Given: root 안의 링크가 root 밖의 동일 내용 파일을 가리킨다
+    root = tmp_path / "root"
+    contexts = _bundle(tmp_path / "outside", {ITEM_A: {}})
+    target = tmp_path / "outside" / contexts[0]["telemetry_member"]
+    link = root / contexts[0]["telemetry_member"]
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlink creation is not permitted on this host")
+
+    # When
+    result = _build(root, contexts)
+
+    # Then
+    _assert_blocked(result)
+    assert _failures(result) == {
+        (ITEM_A, "input_integrity", "telemetry resolves outside the telemetry root")
+    }
+
+
+def test_non_utf8_telemetry_is_recorded_as_normalization_failure(tmp_path: Path) -> None:
+    # Given: 해시는 맞지만 UTF-8이 아닌 telemetry
+    telemetry = tmp_path / "telemetry"
+    path = telemetry / "a" / "sysmon.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xff\xfe\n")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    contexts = [_context(ITEM_A, "a/sysmon.jsonl", digest, 1)]
+    config_path, context_path = _write_inputs(tmp_path, contexts, [ITEM_A])
+    out = tmp_path / "out"
+
+    # When
+    exit_code = opaque.main(_cli_args(config_path, context_path, telemetry, out))
+    manifest = _manifest(out)
+
+    # Then: 예외로 중단되지 않고 blocked manifest에 실패를 남긴다
+    assert exit_code == 1
+    assert manifest["status"] == "blocked"
+    assert [(f["item_id"], f["stage"]) for f in manifest["failures"]] == [(ITEM_A, "normalization")]
+    assert not (out / opaque.R1_OPAQUE_ROWS_FILENAME).exists()
 
 
 def test_mixed_channel_record_fails_partition(tmp_path: Path) -> None:
+    # Given
     records = _records()
     records[1] = _process(2, 30, 11, WSCRIPT, 10, WMI, channel="Security")
     digest = _write(tmp_path, "a/sysmon.jsonl", records)
     contexts = [_context(ITEM_A, "a/sysmon.jsonl", digest, len(records))]
 
-    assert _single_failure(_build(tmp_path, contexts))[0] == "partition"
+    # When
+    result = _build(tmp_path, contexts)
+
+    # Then
+    _assert_blocked(result)
+    assert {f.stage for f in result.failures} == {"partition"}
 
 
 def test_duplicate_missing_and_unexpected_items_block_bundle(tmp_path: Path) -> None:
+    # Given
     contexts = _bundle(tmp_path, {ITEM_A: {}, ITEM_B: {}})
 
+    # When
     duplicate = _build(tmp_path, [*contexts, contexts[0]], expected=[ITEM_A, ITEM_B])
     missing = _build(tmp_path, contexts[:1], expected=[ITEM_A, ITEM_B])
     unexpected = _build(tmp_path, contexts, expected=[ITEM_A])
     repeated_expected = _build(tmp_path, contexts, expected=[ITEM_A, ITEM_A, ITEM_B])
     empty = _build(tmp_path, [], expected=[])
 
-    assert ("bundle", "duplicate item context") in {(f.stage, f.reason) for f in duplicate.failures}
-    assert [(f.item_id, f.reason) for f in missing.failures] == [(ITEM_B, "expected item missing")]
-    assert [(f.item_id, f.reason) for f in unexpected.failures] == [
-        (ITEM_B, "item not in expected list")
-    ]
-    assert "duplicate expected item" in {f.reason for f in repeated_expected.failures}
-    assert "expected item list is empty" in {f.reason for f in empty.failures}
+    # Then
+    assert (ITEM_A, "bundle", "duplicate item context") in _failures(duplicate)
+    assert _failures(missing) == {(ITEM_B, "bundle", "expected item missing")}
+    assert _failures(unexpected) == {(ITEM_B, "bundle", "item not in expected list")}
+    assert (ITEM_A, "bundle", "duplicate expected item") in _failures(repeated_expected)
+    assert ("*", "bundle", "expected item list is empty") in _failures(empty)
     for result in (duplicate, missing, unexpected, repeated_expected, empty):
-        assert result.status == "blocked" and result.rows == ()
+        _assert_blocked(result)
 
 
-def test_config_rejects_masqueraded_policy_and_schema(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="lifecycle"):
-        _config(approved_policy_lifecycle="frozen")
-    with pytest.raises(ValueError, match="config_hash"):
-        _config(approved_policy_config_hash="0" * 64)
-    with pytest.raises(ValueError, match="vocabulary"):
-        _config(vocabulary_sha256="0" * 64)
-    with pytest.raises(ValueError, match="unique"):
-        _config(feature_names=[NAMES[0], NAMES[0]])
-    with pytest.raises(ValueError, match="unmanaged"):
-        _config(feature_names=["not_managed"])
+@pytest.mark.parametrize(
+    ("changes", "match"),
+    [
+        ({"approved_policy_lifecycle": "frozen"}, "lifecycle"),
+        ({"approved_policy_config_hash": "0" * 64}, "config_hash"),
+        ({"vocabulary_sha256": "0" * 64}, "vocabulary"),
+        ({"feature_names": [NAMES[0], NAMES[0]]}, "unique"),
+        ({"feature_names": ["not_managed"]}, "unmanaged"),
+        ({"family_id": "remote_management"}, "wmi_management"),
+    ],
+)
+def test_config_rejects_masqueraded_policy_and_schema(changes: dict, match: str) -> None:
+    # Given / When / Then
+    with pytest.raises(ValueError, match=match):
+        _config(**changes)
 
 
 def _cli_args(config: Path, context: Path, telemetry: Path, out: Path) -> list[str]:
@@ -337,40 +499,103 @@ def _cli_args(config: Path, context: Path, telemetry: Path, out: Path) -> list[s
     ]
 
 
-def test_writer_emits_rows_only_for_validated_bundle(tmp_path: Path) -> None:
-    telemetry = tmp_path / "telemetry"
-    contexts = _bundle(telemetry, {ITEM_A: {}, ITEM_B: {"middle": CSCRIPT}})
+def _write_inputs(tmp_path: Path, contexts: list[dict], expected: list[str]) -> tuple[Path, Path]:
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(_config().model_dump(mode="json")), encoding="utf-8")
     context_path = tmp_path / "context.json"
     document = {
         "schema_version": opaque.R1_OPAQUE_CONTEXT_SCHEMA,
-        "expected_item_ids": [ITEM_A, ITEM_B],
+        "expected_item_ids": expected,
         "items": contexts,
     }
     context_path.write_text(json.dumps(document), encoding="utf-8")
+    return config_path, context_path
 
-    out = tmp_path / "ok"
-    assert opaque.main(_cli_args(config_path, context_path, telemetry, out)) == 0
-    rows = json.loads((out / opaque.R1_OPAQUE_ROWS_FILENAME).read_text(encoding="utf-8"))
-    manifest = json.loads((out / opaque.R1_OPAQUE_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+
+def _manifest(out: Path) -> dict:
+    return json.loads((out / opaque.R1_OPAQUE_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+
+
+def test_writer_emits_rows_and_manifest_for_validated_bundle(tmp_path: Path) -> None:
+    # Given
+    telemetry = tmp_path / "telemetry"
+    contexts = _bundle(telemetry, {ITEM_A: {}, ITEM_B: {"middle": CSCRIPT}})
+    config_path, context_path = _write_inputs(tmp_path, contexts, [ITEM_A, ITEM_B])
+    out = tmp_path / "out"
+
+    # When
+    exit_code = opaque.main(_cli_args(config_path, context_path, telemetry, out))
+    rows_bytes = (out / opaque.R1_OPAQUE_ROWS_FILENAME).read_bytes()
+    manifest = _manifest(out)
+
+    # Then
+    assert exit_code == 0
     assert manifest["status"] == "validated"
-    assert manifest["feature_rows_sha256"] == opaque.opaque_feature_rows_digest(rows)
+    assert manifest["rows_file_sha256"] == hashlib.sha256(rows_bytes).hexdigest()
+    assert manifest["feature_rows_sha256"] == opaque.opaque_feature_rows_digest(
+        json.loads(rows_bytes)
+    )
+    assert manifest["context_file_sha256"] == hashlib.sha256(context_path.read_bytes()).hexdigest()
     assert manifest["extraction_config"]["approved_policy_lifecycle"] == "development"
     assert "label" not in json.dumps(manifest)
 
-    document["expected_item_ids"].append("EC-00000000000000c3")
-    context_path.write_text(json.dumps(document), encoding="utf-8")
-    blocked = tmp_path / "blocked"
-    assert opaque.main(_cli_args(config_path, context_path, telemetry, blocked)) == 1
-    assert not (blocked / opaque.R1_OPAQUE_ROWS_FILENAME).exists()
-    blocked_manifest = json.loads(
-        (blocked / opaque.R1_OPAQUE_MANIFEST_FILENAME).read_text(encoding="utf-8")
-    )
-    assert blocked_manifest["status"] == "blocked"
-    assert blocked_manifest["failures"][0]["item_id"] == "EC-00000000000000c3"
-    with pytest.raises(FileExistsError):
+
+def test_writer_blocks_bundle_without_rows(tmp_path: Path) -> None:
+    # Given: 예상 목록에 context가 없는 item이 하나 있다
+    telemetry = tmp_path / "telemetry"
+    contexts = _bundle(telemetry, {ITEM_A: {}, ITEM_B: {"middle": CSCRIPT}})
+    extra = "EC-00000000000000c3"
+    config_path, context_path = _write_inputs(tmp_path, contexts, [ITEM_A, ITEM_B, extra])
+    out = tmp_path / "out"
+
+    # When
+    exit_code = opaque.main(_cli_args(config_path, context_path, telemetry, out))
+    manifest = _manifest(out)
+
+    # Then
+    assert exit_code == 1
+    assert not (out / opaque.R1_OPAQUE_ROWS_FILENAME).exists()
+    assert manifest["status"] == "blocked"
+    assert manifest["items"] == []
+    assert manifest["failures"] == [
+        {"item_id": extra, "stage": "bundle", "reason": "expected item missing", "status": "failed"}
+    ]
+
+
+def test_writer_refuses_existing_output_directory(tmp_path: Path) -> None:
+    # Given
+    telemetry = tmp_path / "telemetry"
+    contexts = _bundle(telemetry, {ITEM_A: {}})
+    config_path, context_path = _write_inputs(tmp_path, contexts, [ITEM_A])
+    out = tmp_path / "out"
+    out.mkdir()
+
+    # When
+    with pytest.raises(FileExistsError) as raised:
         opaque.main(_cli_args(config_path, context_path, telemetry, out))
+
+    # Then
+    assert "already exists" in str(raised.value)
+    assert list(out.iterdir()) == []
+
+
+def test_writer_leaves_no_directory_on_invalid_input(tmp_path: Path) -> None:
+    # Given: context 문서에 허용되지 않은 최상위 필드가 있다
+    telemetry = tmp_path / "telemetry"
+    contexts = _bundle(telemetry, {ITEM_A: {}})
+    config_path, context_path = _write_inputs(tmp_path, contexts, [ITEM_A])
+    document = json.loads(context_path.read_text(encoding="utf-8"))
+    document["labels"] = {}
+    context_path.write_text(json.dumps(document), encoding="utf-8")
+    out = tmp_path / "out"
+
+    # When
+    with pytest.raises(ValueError) as raised:
+        opaque.main(_cli_args(config_path, context_path, telemetry, out))
+
+    # Then: 같은 경로로 다시 시도할 수 있게 출력 디렉터리를 남기지 않는다
+    assert "accepts only" in str(raised.value)
+    assert not out.exists()
 
 
 # --- _presence_values와 extract_static_features 동등성 ---
@@ -405,28 +630,39 @@ def _both(evidences, names=NAMES):
     [s for k in range(len(NAMES) + 1) for s in itertools.combinations(NAMES, k)],
 )
 def test_presence_equals_static_features_for_every_type_combination(subset) -> None:
+    # Given
     evidences = [_evidence(i, name) for i, name in enumerate(subset)]
+
+    # When
     names, values, ours = _both(evidences)
+
+    # Then
     assert names == NAMES
     assert ours == values
 
 
 def test_presence_equivalence_edge_cases() -> None:
+    # Given: 0건, 동일 중복, 순서 변경, diagnostic_only, 열 순서 변경
     base = [_evidence(0, NAMES[2]), _evidence(1, NAMES[3])]
     shuffled = list(base)
     random.Random(7).shuffle(shuffled)
-    for evidences in (
+    cases = (
         [],
         base + [base[0]],
         shuffled,
         list(reversed(base)),
         [_evidence(5, NAMES[0], group="diagnostic_only")],
         base + [_evidence(6, NAMES[0], group="diagnostic_only")],
-    ):
-        _, values, ours = _both(evidences)
+    )
+
+    # When
+    compared = [_both(evidences) for evidences in cases]
+    _, reversed_values, reversed_ours = _both(base, names=tuple(reversed(NAMES)))
+
+    # Then
+    for _, values, ours in compared:
         assert ours == values
-    _, values, ours = _both(base, names=tuple(reversed(NAMES)))
-    assert ours == values == (1, 1, 0, 0)
+    assert reversed_ours == reversed_values == (1, 1, 0, 0)
 
 
 @pytest.mark.parametrize(
@@ -437,6 +673,7 @@ def test_presence_equivalence_edge_cases() -> None:
     ],
 )
 def test_presence_rejects_the_same_inputs_as_static_features(evidences) -> None:
+    # Given / When / Then
     with pytest.raises(ValueError):
         extract_static_features(evidences, feature_names=NAMES, run_id=EQ_RUN, entity_id=HOST)
     with pytest.raises(ValueError):
@@ -444,15 +681,20 @@ def test_presence_rejects_the_same_inputs_as_static_features(evidences) -> None:
 
 
 def test_static_features_still_rejects_opaque_scope() -> None:
-    # 기존 RUN ID 계약은 완화하지 않는다.
+    # Given / When / Then: 기존 RUN ID 계약은 완화하지 않는다
     with pytest.raises(ValueError):
         extract_static_features([], feature_names=NAMES, run_id=ITEM_A, entity_id=HOST)
 
 
 def test_rows_validate_against_role5_opaque_contract(tmp_path: Path) -> None:
+    # Given: Role5 opaque 모듈이 있는 트리에서만 실행된다
     role5 = pytest.importorskip("incident_awareness.evaluation.baselines.opaque")
     contexts = _bundle(tmp_path, {ITEM_A: {}, ITEM_B: {"middle": CSCRIPT}})
+
+    # When
     rows = [role5.OpaqueFeatureRow.model_validate(r) for r in _build(tmp_path, contexts).rows]
+
+    # Then
     assert role5.feature_rows_digest(rows) == opaque.opaque_feature_rows_digest(
         [r.model_dump(mode="json") for r in rows]
     )
