@@ -53,10 +53,25 @@ SUPPLEMENT_MEMBERS = frozenset(
     }
 )
 CONSUMER_INDEX_MEMBER = "consumer-index.json"
+# Role4가 지정한 WMI V01 공식 raw identity. config 값과 별개로 고정한다.
+OFFICIAL_RAW_LOG_ID = "RAW-002"
+# 압축 폭탄 방지 상한. 실제 telemetry는 member당 수백 KB 수준이다.
+MAX_MEMBER_BYTES = 64 * 1024 * 1024
+MAX_ARCHIVE_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 10_000
 _INDEX_ITEM_FIELDS = frozenset({"opaque_id", "telemetry_member", "telemetry_sha256", "event_count"})
 # consumer-index에 이런 키가 있으면 GT·원본 대응 누출로 보고 거부한다.
 _FORBIDDEN_INDEX_KEYS = frozenset(
-    {"label", "class", "run_type", "run_id", "pair_id", "reference_time", "ground_truth"}
+    {
+        "label",
+        "class",
+        "run_type",
+        "run_id",
+        "pair_id",
+        "reference",
+        "reference_time",
+        "ground_truth",
+    }
 )
 CONVERSION_RULES = (
     ("opaque_id", "item_id"),
@@ -235,9 +250,18 @@ def _verified_archive(
         archive = zipfile.ZipFile(io.BytesIO(content))
     except zipfile.BadZipFile as error:
         raise _BridgeBlocked(stage, f"invalid ZIP: {error}") from error
-    names = [info.filename for info in archive.infolist()]
+    infos = archive.infolist()
+    if len(infos) > MAX_ARCHIVE_MEMBERS:
+        raise _BridgeBlocked(stage, "too many ZIP members")
+    names = [info.filename for info in infos]
     if len(names) != len(set(names)):
         raise _BridgeBlocked(stage, "duplicate ZIP member")
+    # 읽지 않는 member도 경로와 선언 크기를 검사한다.
+    for info in infos:
+        if not info.is_dir() and not safe_member_name(info.filename):
+            raise _BridgeBlocked(stage, f"unsafe member path: {info.filename!r}")
+    if sum(info.file_size for info in infos) > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+        raise _BridgeBlocked(stage, "declared uncompressed size exceeds the limit")
     return archive
 
 
@@ -250,10 +274,17 @@ def _member(archive: zipfile.ZipFile, name: str, stage: BridgeStage) -> bytes:
         raise _BridgeBlocked(stage, f"missing member: {name!r}") from error
     if info.is_dir():
         raise _BridgeBlocked(stage, f"member is a directory: {name!r}")
+    if info.file_size > MAX_MEMBER_BYTES:
+        raise _BridgeBlocked(stage, f"member exceeds size limit: {name!r}")
     try:
-        return archive.read(info)
-    except (zipfile.BadZipFile, OSError) as error:
+        # 선언 크기를 믿지 않고 상한까지만 실제로 읽는다.
+        with archive.open(info) as stream:
+            content = stream.read(MAX_MEMBER_BYTES + 1)
+    except (zipfile.BadZipFile, OSError, RuntimeError) as error:
         raise _BridgeBlocked(stage, f"unreadable member {name!r}: {error}") from error
+    if len(content) > MAX_MEMBER_BYTES:
+        raise _BridgeBlocked(stage, f"member exceeds size limit: {name!r}")
+    return content
 
 
 def _load_supplement(
@@ -266,7 +297,11 @@ def _load_supplement(
             "supplement", f"unexpected members: {sorted(names ^ SUPPLEMENT_MEMBERS)}"
         )
     sums: dict[str, str] = {}
-    for line in _member(archive, "SHA256SUMS.txt", "supplement").decode("utf-8").splitlines():
+    try:
+        sums_text = _member(archive, "SHA256SUMS.txt", "supplement").decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise _BridgeBlocked("supplement", f"SHA256SUMS is not UTF-8: {error}") from error
+    for line in sums_text.splitlines():
         if not line.strip():
             continue
         match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
@@ -301,15 +336,29 @@ def _load_index(archive: zipfile.ZipFile) -> tuple[dict, list[dict]]:
         or not index["items"]
     ):
         raise _BridgeBlocked("consumer_index", "consumer-index must contain a non-empty items list")
+    # 최상위와 중첩 구조 전체에서 GT·원본 대응 키를 찾는다.
+    leaked = sorted(_forbidden_keys(index))
+    if leaked:
+        raise _BridgeBlocked("consumer_index", f"forbidden index keys: {leaked}")
     items = []
     for raw in index["items"]:
         if not isinstance(raw, dict) or not _INDEX_ITEM_FIELDS <= set(raw):
             raise _BridgeBlocked("consumer_index", "index item lacks required fields")
-        leaked = _FORBIDDEN_INDEX_KEYS & set(raw)
-        if leaked:
-            raise _BridgeBlocked("consumer_index", f"forbidden index keys: {sorted(leaked)}")
         items.append(raw)
     return index, items
+
+
+def _forbidden_keys(value: object) -> set[str]:
+    found: set[str] = set()
+    stack = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            found.update(key for key in current if key.lower() in _FORBIDDEN_INDEX_KEYS)
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+    return found
 
 
 def bridge_failures_for_items(
@@ -377,6 +426,8 @@ def _item_failures(
     ):
         if actual != expected:
             reasons.append(f"{field_name} differs from the extraction config")
+    if item.raw_log_id != OFFICIAL_RAW_LOG_ID:
+        reasons.append(f"raw_log_id is not the official {OFFICIAL_RAW_LOG_ID}")
     if not safe_member_name(item.canonical_telemetry.relative_path):
         reasons.append("unsafe telemetry relative_path")
     try:
@@ -458,12 +509,12 @@ def run_r1_opaque_context_bridge(
         "evaluation_package_sha256": hashlib.sha256(package_bytes).hexdigest(),
         "independently_verified": [
             "supplement ZIP SHA-256, member set and internal SHA256SUMS",
-            "evaluation package SHA-256 and duplicate/unsafe member rejection",
-            "consumer-index canonical SHA-256 and opaque ID set",
+            "evaluation package SHA-256, duplicate/unsafe member rejection and size limits",
+            "consumer-index canonical SHA-256, opaque ID set and forbidden-key scan at all levels",
             "context, receipt and consumer-index item set equality",
             "telemetry member path, SHA-256 and event count",
             "policy ID/version/config_hash/lifecycle against the managed policy",
-            "receipt ID and raw_log_id binding",
+            "official RAW-002 raw_log_id, receipt ID and raw_log_id binding",
         ],
         "trusted_role4_receipt": [
             "source-chain commitment preimage (sealed)",
@@ -492,10 +543,23 @@ def run_r1_opaque_context_bridge(
     except _BridgeBlocked as blocked:
         failures = [blocked.failure]
 
+    telemetry: dict[str, bytes] = {}
+    if not failures:
+        # 출력 디렉터리를 만들기 전에 모든 telemetry member를 읽어 둔다.
+        for item in context.items:
+            try:
+                telemetry[item.opaque_id] = _member(
+                    archive, item.canonical_telemetry.relative_path, "evaluation_package"
+                )
+            except _BridgeBlocked as blocked:
+                failures.append(
+                    BridgeFailure(item.opaque_id, blocked.failure.stage, blocked.failure.reason)
+                )
     if failures:
         return _finish_blocked(output_dir, manifest, failures)
 
     receipts = {item.opaque_id: item for item in receipt.items}
+    manifest["timezone"] = "UTC"
     manifest["time_domain"] = "private_deterministic_offset"
     manifest["policy"] = {
         "approved_policy_id": config.approved_policy_id,
@@ -527,10 +591,9 @@ def run_r1_opaque_context_bridge(
     with tempfile.TemporaryDirectory(prefix="r1-opaque-bridge-") as private:
         root = Path(private)
         for item in context.items:
-            member = item.canonical_telemetry.relative_path
-            target = root / member
+            target = root / item.canonical_telemetry.relative_path
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(_member(archive, member, "evaluation_package"))
+            target.write_bytes(telemetry[item.opaque_id])
         config_copy = root / "extraction-config.json"
         config_copy.write_bytes(config_bytes)
         result = write_r1_opaque_feature_bundle(
