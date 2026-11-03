@@ -38,7 +38,7 @@ class Synthetic:
 
     def __init__(self, tmp_path: Path, specs: dict[str, dict], shift=timedelta(0)) -> None:
         self.tmp_path = tmp_path
-        self.config = _config()
+        self.config = _config(raw_log_id="RAW-002")
         self.shift = shift
         self.telemetry = {item: _jsonl(_records(**spec), shift) for item, spec in specs.items()}
         self.index_items = [
@@ -216,6 +216,7 @@ def test_bridge_converts_role4_context_and_issues_adapter_rows(tmp_path: Path) -
     assert manifest["input_format"] != manifest["output_format"]
     assert manifest["bridge_version"] == bridge.BRIDGE_VERSION
     assert manifest["time_domain"] == "private_deterministic_offset"
+    assert manifest["timezone"] == "UTC"
     assert manifest["policy"]["approved_policy_lifecycle"] == "development"
     assert [p["receipt_id"] for p in manifest["provenance"]] == [
         "SPR-00000000000000a1",
@@ -496,3 +497,121 @@ def test_existing_output_directory_is_refused(tmp_path: Path) -> None:
 
     # Then
     assert "already exists" in str(raised.value)
+
+
+def test_missing_telemetry_member_is_recorded_before_output(tmp_path: Path) -> None:
+    # Given: index와 context는 있지만 패키지에 telemetry member가 없다
+    synthetic = Synthetic(tmp_path, {ITEM_A: {}, ITEM_B: {"middle": CSCRIPT}})
+    del synthetic.telemetry[ITEM_B]
+
+    # When
+    manifest, out = _run(tmp_path, synthetic)
+
+    # Then: 어댑터 입력을 만들지 않고 item ID와 함께 실패를 남긴다
+    _assert_blocked(manifest, out)
+    assert {(item, stage) for item, stage, _ in _reasons(manifest)} == {
+        (ITEM_B, "evaluation_package")
+    }
+    assert "missing member" in manifest["failures"][0]["reason"]
+    assert not (out / bridge.ADAPTER_CONTEXT_FILENAME).exists()
+    assert not (out / bridge.ADAPTER_OUTPUT_DIRNAME).exists()
+
+
+@pytest.mark.parametrize(
+    "index_extra",
+    [
+        {"ground_truth": {ITEM_A: "attack"}},
+        {"label": "attack"},
+        {"meta": {"mapping": [{"Reference": "x"}]}},
+    ],
+)
+def test_forbidden_keys_anywhere_in_consumer_index_block_bundle(tmp_path, index_extra) -> None:
+    # Given: 해시가 맞는 consumer-index의 최상위·중첩 구조에 GT 계열 키가 있다
+    synthetic = Synthetic(tmp_path, {ITEM_A: {}})
+    synthetic.index_extra = index_extra
+
+    # When
+    manifest, out = _run(tmp_path, synthetic)
+
+    # Then
+    _assert_blocked(manifest, out)
+    assert any(
+        stage == "consumer_index" and "forbidden index keys" in reason
+        for _, stage, reason in _reasons(manifest)
+    )
+
+
+def test_nested_forbidden_key_inside_index_item_blocks_bundle(tmp_path: Path) -> None:
+    # Given
+    synthetic = Synthetic(tmp_path, {ITEM_A: {}})
+    synthetic.index_items[0]["extra"] = {"run_id": "x"}
+
+    # When
+    manifest, out = _run(tmp_path, synthetic)
+
+    # Then
+    _assert_blocked(manifest, out)
+    assert ("*", "consumer_index", "forbidden index keys: ['run_id']") in _reasons(manifest)
+
+
+def test_unused_unsafe_member_blocks_package(tmp_path: Path) -> None:
+    # Given: 읽지 않는 위치에 경로 탈출 member가 있다
+    synthetic = Synthetic(tmp_path, {ITEM_A: {}})
+    synthetic.extra_members.append(("../gt.txt", b"x"))
+
+    # When
+    manifest, out = _run(tmp_path, synthetic)
+
+    # Then
+    _assert_blocked(manifest, out)
+    assert ("*", "evaluation_package", "unsafe member path: '../gt.txt'") in _reasons(manifest)
+
+
+@pytest.mark.parametrize(
+    ("limit", "fragment"),
+    [
+        ("MAX_MEMBER_BYTES", "member exceeds size limit"),
+        ("MAX_ARCHIVE_UNCOMPRESSED_BYTES", "declared uncompressed size exceeds the limit"),
+    ],
+)
+def test_size_limits_block_bundle(tmp_path, monkeypatch, limit, fragment) -> None:
+    # Given: 상한을 합성 telemetry보다 작게 둔다
+    synthetic = Synthetic(tmp_path, {ITEM_A: {}})
+    monkeypatch.setattr(bridge, limit, 64)
+
+    # When
+    manifest, out = _run(tmp_path, synthetic)
+
+    # Then
+    _assert_blocked(manifest, out)
+    assert any(fragment in reason for _, _, reason in _reasons(manifest))
+
+
+def test_non_utf8_sha256sums_is_recorded_as_supplement_failure(tmp_path: Path) -> None:
+    # Given: member 집합은 맞지만 SHA256SUMS가 UTF-8이 아니다
+    synthetic = Synthetic(tmp_path, {ITEM_A: {}})
+
+    def broken_sums(members: dict) -> None:
+        members["SHA256SUMS.txt"] = b"\xff\xfe"
+
+    # When
+    manifest, out = _run(tmp_path, synthetic, tamper=broken_sums)
+
+    # Then
+    _assert_blocked(manifest, out)
+    assert any(
+        stage == "supplement" and "not UTF-8" in reason for _, stage, reason in _reasons(manifest)
+    )
+
+
+def test_raw_log_id_must_be_official_even_if_config_agrees(tmp_path: Path) -> None:
+    # Given: config와 context가 모두 공식이 아닌 raw identity로 일치한다
+    synthetic = Synthetic(tmp_path, {ITEM_A: {}})
+    synthetic.config = _config(raw_log_id="RAW-SYNTHETIC-002")
+
+    # When
+    manifest, out = _run(tmp_path, synthetic)
+
+    # Then
+    _assert_blocked(manifest, out)
+    assert (ITEM_A, "context", "raw_log_id is not the official RAW-002") in _reasons(manifest)
