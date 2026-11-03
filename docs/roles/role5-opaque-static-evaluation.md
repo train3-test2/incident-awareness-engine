@@ -2,7 +2,8 @@
 
 ## 범위 및 역할
 
-기준 develop: 8cb461b. Offline Preliminary development 전용이며 formal
+최초 구현 기준 develop: 8cb461b. PR #318 병합 기준 ca36a2d의 opaque 어댑터와
+통합 검증했다. Offline Preliminary development 전용이며 formal
 validation/test, causal/online, TTSD, FA/BH 적격성을 부여하지 않는다.
 역할2는 승인된 학습 입력으로 Evidence/feature 검증과 모델 학습을 수행한다.
 역할5는 모델·계약 검증, 사전 동결, opaque 추론 및 승인 후 채점을 담당한다.
@@ -90,3 +91,11 @@ code-record/environment-record는 기록 파일 자체를 검증하는 것으로
 실행 중인 소스·설치 환경과 기록의 일치까지 자동 증명하지 않는다.
 승인 기록의 의미·서명·권한 및 사전 동결 순서는 운영 담당자가 확인해야 한다.
 telemetry→opaque feature 변환 및 실제 후보 실행은 여전히 별도 단계다.
+
+## 준비 문서
+
+- [Opaque feature 변환 경계](role5-opaque-feature-boundary.md)
+- [수령·동결·채점 체크리스트](role5-opaque-receipt-freeze-checklist.md)
+
+체크리스트 작성은 실제 수령·동결 완료를 뜻하지 않는다. 후보 소비 전 설정 동결과
+후보 변환 후 feature/예측 해시 고정을 구분한다.
