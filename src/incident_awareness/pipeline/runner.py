@@ -31,6 +31,11 @@ from incident_awareness.pipeline.runtime_telemetry import (
     utc_now_milliseconds,
 )
 from incident_awareness.pipeline.s0_artifacts import load_s0_pipeline_artifacts
+from incident_awareness.pipeline.stage_timing import (
+    PipelineStageTimingCollector,
+    observe_stage_timing,
+    start_stage_timing,
+)
 from incident_awareness.pipeline.timeseries_observer import (
     PipelineTelemetryObserver,
     PipelineTelemetrySession,
@@ -47,12 +52,15 @@ def run_first_cycle_pipeline(
     connection: DatabaseConnection | None = None,
     runtime_observer: PipelineRuntimeObserver | None = None,
     telemetry_observer: PipelineTelemetryObserver | None = None,
+    stage_timing_collector: PipelineStageTimingCollector | None = None,
 ) -> PipelineExecutionSummary:
     """Run the assembled First Cycle stages and report their terminal state."""
+    timing = start_stage_timing(stage_timing_collector)
     started_at = _capture_runtime_started_at()
     artifacts = _run_stage(
         PipelineStage.ARTIFACT_VALIDATION,
         lambda: load_s0_pipeline_artifacts(inputs),
+        stage_timing=timing,
     )
     runtime_tracker = _bootstrap_runtime_tracker(
         run_id=artifacts.run_metadata.run_id,
@@ -60,6 +68,14 @@ def run_first_cycle_pipeline(
         input_total=len(artifacts.sysmon_records),
         started_at=started_at,
         observer=runtime_observer,
+    )
+    observe_stage_timing(
+        timing,
+        lambda: timing.bind(
+            execution_id=runtime_tracker.execution_id if runtime_tracker is not None else None,
+            run_id=artifacts.run_metadata.run_id,
+            entity_id=inputs.entity_id,
+        ),
     )
     with telemetry_session_context(
         runtime_tracker,
@@ -84,12 +100,14 @@ def run_first_cycle_pipeline(
             ),
             runtime_tracker=runtime_tracker,
             telemetry_session=telemetry_session,
+            stage_timing=timing,
         )
         fusion_output = _run_stage(
             PipelineStage.FUSION,
             lambda: run_s0_fusion_with_trace(inputs, artifacts, normalized_artifacts),
             runtime_tracker=runtime_tracker,
             telemetry_session=telemetry_session,
+            stage_timing=timing,
         )
         fusion_result = fusion_output.fusion_result
         stopping_trace = fusion_output.stopping_trace
@@ -99,6 +117,7 @@ def run_first_cycle_pipeline(
             lambda: load_s0_fast_detection(inputs, artifacts),
             runtime_tracker=runtime_tracker,
             telemetry_session=telemetry_session,
+            stage_timing=timing,
         )
         decision_result = _run_stage(
             PipelineStage.HYBRID,
@@ -111,6 +130,7 @@ def run_first_cycle_pipeline(
             ),
             runtime_tracker=runtime_tracker,
             telemetry_session=telemetry_session,
+            stage_timing=timing,
         )
         _run_stage(
             PipelineStage.PERSISTENCE,
@@ -126,6 +146,7 @@ def run_first_cycle_pipeline(
             ),
             runtime_tracker=runtime_tracker,
             telemetry_session=telemetry_session,
+            stage_timing=timing,
         )
         if runtime_tracker is not None:
             runtime_tracker.complete()
@@ -214,11 +235,20 @@ def _run_stage[T](
     *,
     runtime_tracker: PipelineRuntimeTracker | None = None,
     telemetry_session: PipelineTelemetrySession | None = None,
+    stage_timing: PipelineStageTimingCollector | None = None,
 ) -> T:
     if runtime_tracker is not None:
         runtime_tracker.start_stage(stage)
+    token = observe_stage_timing(stage_timing, lambda: stage_timing.begin(stage))
     try:
-        return operation()
+        try:
+            result = operation()
+        except BaseException:
+            observe_stage_timing(stage_timing, lambda: stage_timing.finish(token, failed=True))
+            raise
+        else:
+            observe_stage_timing(stage_timing, lambda: stage_timing.finish(token, failed=False))
+            return result
     except Exception as error:
         if runtime_tracker is not None:
             runtime_tracker.fail(stage)

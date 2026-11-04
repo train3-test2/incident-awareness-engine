@@ -570,3 +570,56 @@ def test_period_without_samples_keeps_known_observed_execution_quality_and_age()
     assert payload["observation_quality"]["observed_executions"] == 1
     assert payload["freshness"]["status"] == "stale"
     assert payload["freshness"]["process_liveness"] == "unknown"
+
+
+def test_operator_recent_window_moves_and_expires_without_fabricating_zero() -> None:
+    # Given: a real admitted batch followed by completed records; no production DB.
+    points = [_point(60, count=0, samples=0, ns=0), _point(1, count=3, samples=3, ns=6_000_000)]
+    points[0]["input_accepted_count"] = 5
+    repository = FakeTelemetryRepository(_data(points))
+    now = [NOW]
+    client = _client(repository, lambda: now[0])
+
+    # When: one second advances the half-open recent window; then the last point expires.
+    initial = client.get("/operations/telemetry").json()
+    now[0] += timedelta(seconds=1)
+    moved = client.get("/operations/telemetry").json()
+    now[0] += timedelta(seconds=60)
+    expired = client.get("/operations/telemetry").json()
+
+    # Then: measured zero remains zero, and the absence of a recent bucket becomes null.
+    assert initial["recent_60s_summary"]["input_accepted_count"] == 5
+    assert initial["recent_60s_summary"]["processing_completed_count"] == 3
+    assert moved["recent_60s_summary"]["input_accepted_count"] == 0
+    assert moved["recent_60s_summary"]["processing_completed_count"] == 3
+    assert moved["recent_60s_summary"]["observed_bucket_count"] == 1
+    assert expired["recent_60s_summary"]["input_accepted_count"] is None
+    assert expired["recent_60s_summary"]["processing_completed_count"] is None
+    assert expired["freshness"]["status"] == "stale"
+    assert len(expired["points"]) == 2  # Still available in the five-minute graph.
+    assert initial["scope"] == moved["scope"] == expired["scope"] == "reported"
+
+
+def test_operator_input_growth_is_visible_in_summary_without_changing_observation_scope() -> None:
+    # Given
+    first = _point(2, count=0, samples=0, ns=0)
+    first["input_accepted_count"] = 2
+    repository = FakeTelemetryRepository(_data([first]))
+    client = _client(repository)
+
+    # When
+    initial = client.get("/operations/telemetry").json()
+    second = _point(1, count=2, samples=2, ns=2_000_000)
+    second["input_accepted_count"] = 7
+    repository.data = _data([first, second])
+    grown = client.get("/operations/telemetry").json()
+
+    # Then
+    assert initial["recent_60s_summary"]["input_accepted_count"] == 2
+    assert initial["recent_60s_summary"]["processing_completed_count"] == 0
+    assert grown["recent_60s_summary"]["input_accepted_count"] == 9
+    assert grown["recent_60s_summary"]["processing_completed_count"] == 2
+    assert grown["recent_60s_summary"]["input_accepted_count"] == sum(
+        p["input_accepted_count"] for p in grown["points"]
+    )
+    assert repository.calls[0] == repository.calls[1]

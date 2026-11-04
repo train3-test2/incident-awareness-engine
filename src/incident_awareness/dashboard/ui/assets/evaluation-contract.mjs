@@ -5,8 +5,8 @@ export const NOT_APPLICABLE = "N/A";
 const DISPLAY_DECIMAL_PLACES = 3;
 const LOADING_MESSAGE = "평가 정보를 불러오는 중입니다.";
 const SUCCESS_MESSAGE = "평가 정보를 불러왔습니다.";
-const UNAVAILABLE_MESSAGE = "Evaluation Snapshot을 사용할 수 없습니다.";
-const INVALID_MESSAGE = "저장된 Evaluation Snapshot이 유효하지 않습니다.";
+const UNAVAILABLE_MESSAGE = "평가 결과를 사용할 수 없습니다.";
+const INVALID_MESSAGE = "저장된 평가 결과가 유효하지 않습니다.";
 const ERROR_MESSAGE = "평가 정보를 불러오지 못했습니다.";
 const METHOD_NAMES = ["Fast", "Fusion", "Hybrid"];
 const BURDEN_METHOD_NAMES = ["Fast", "Fusion"];
@@ -188,7 +188,7 @@ function validateEvaluationPayload(payload) {
     const metrics = requireRecord(value.metrics, "Evaluation metrics");
     const normalAlertBurden = requireRecord(
         value.normal_alert_burden,
-        "Normal Alert Burden",
+        "정상 입력의 알림 부담",
     );
     const burdenMetrics = requireRecord(
         normalAlertBurden.metrics,
@@ -295,7 +295,7 @@ export function getPurposePresentation(purpose) {
         return {
             label: "performance",
             title: "Performance Evaluation",
-            description: "성능 평가 목적으로 저장된 Evaluation Snapshot 결과입니다.",
+            description: "성능 평가용 저장 결과입니다.",
             modifier: "performance",
         };
     }
@@ -306,7 +306,7 @@ export function projectSnapshotSummary(payload) {
     const { plan } = validateEvaluationPayload(payload);
     return [
         { label: "Snapshot ID", value: formatNullable(payload.snapshot_id) },
-        { label: "Scenario ID", value: formatNullable(plan.scenario_id) },
+        { label: "시나리오 ID", value: formatNullable(plan.scenario_id) },
         { label: "Purpose", value: formatNullable(plan.purpose) },
         { label: "Evaluation Horizon", value: formatSeconds(plan.evaluation_horizon_sec) },
         { label: "Decision Config Version", value: formatNullable(plan.decision_config_version) },
@@ -328,13 +328,13 @@ export function getEvaluationStatusPresentations(payload) {
     return [
         {
             key: "method-comparison",
-            label: "Method Comparison",
+            label: "분석 방식 비교",
             complete: payload.comparison_ready,
             statusLabel: payload.comparison_ready ? "Ready" : "Incomplete",
         },
         {
             key: "normal-alert-burden",
-            label: "Normal Alert Burden",
+            label: "정상 입력의 알림 부담",
             complete: normalAlertBurden.comparison_ready,
             statusLabel: normalAlertBurden.comparison_ready ? "Ready" : "Incomplete",
         },

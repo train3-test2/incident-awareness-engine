@@ -3,7 +3,7 @@
 const QUERY_MESSAGES = new Map([
     ["loading", "Event Detail을 불러오는 중입니다."],
     ["success", "Event Detail을 불러왔습니다."],
-    ["not_found", "Run 또는 Event를 찾을 수 없습니다."],
+    ["not_found", "분석 또는 Event를 찾을 수 없습니다."],
     ["error", "Event Detail을 불러오지 못했습니다."],
 ]);
 const SOURCE_LAYER_LABELS = new Map([

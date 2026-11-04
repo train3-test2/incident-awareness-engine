@@ -1,3 +1,4 @@
+@layer screens {
 .fusion-engine-grid {
     min-width: 0;
 }
@@ -43,11 +44,11 @@
 .fusion-score-chart__axis-label,
 .fusion-score-chart__threshold-label {
     fill: var(--shell-color-muted);
-    font-size: 0.75rem;
+    font-size: 13px;
 }
 
 .fusion-score-chart__axis-label--x {
-    font-size: 0.6875rem;
+    font-size: 13px;
     font-variant-numeric: tabular-nums;
 }
 
@@ -187,7 +188,7 @@
 @media (max-width: 30rem) {
     .fusion-score-chart__axis-label--x,
     .fusion-score-chart__threshold-label {
-        font-size: 0.6875rem;
+        font-size: 13px;
     }
 }
 
@@ -200,4 +201,33 @@
         width: 42rem;
         max-width: none;
     }
+}
+
+.fusion-score-chart__clock,
+.fusion-score-chart__criteria,
+.fusion-score-chart__point-detail,
+.fusion-score-chart__explanation {
+    margin: 0.25rem 0;
+    font-size: 0.8125rem;
+    overflow-wrap: anywhere;
+}
+
+.fusion-score-chart__clock {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.fusion-score-chart__threshold-label {
+    paint-order: stroke fill;
+    stroke: var(--shell-color-surface);
+    stroke-width: 3px;
+}
+
+.fusion-score-chart__point:focus {
+    stroke: var(--shell-color-text);
+    stroke-width: 3;
+    outline: 2px solid var(--shell-color-primary);
+    outline-offset: 3px;
+}
+
 }

@@ -4,7 +4,8 @@ import {
     extractRunIdFromPathname,
     formatRunTimestamp,
     getDecisionPathLabel,
-    getRunTypeLabel,
+    getFusionStatusLabel,
+    getHybridDecisionNotice,
     getStatusLabel,
     getWinningPathLabel,
     resolveRunDetailQueryState,
@@ -58,9 +59,9 @@ function formatIdentifierList(values) {
 
 function renderRunMetadata(run) {
     renderFields(runMetadata, [
-        ["Run ID", displayValue(run.run_id)],
-        ["Scenario ID", displayValue(run.scenario_id)],
-        ["Run Type", getRunTypeLabel(run.run_type)],
+        ["분석 ID", displayValue(run.run_id)],
+        ["시나리오 ID", displayValue(run.scenario_id)],
+        ["실행 Metadata 유형 (run_type)", `${displayValue(run.run_type)} · 원본 수집 라벨과 별도`],
         ["Target Host", displayValue(run.target_host)],
         ["Start Time", formatRunTimestamp(run.start_time)],
         ["End Time", formatRunTimestamp(run.end_time)],
@@ -76,10 +77,10 @@ function renderRunMetadata(run) {
 
 function renderDecision(decision) {
     renderFields(currentDecision, [
-        ["Decision ID", displayValue(decision.decision_id)],
+        ["결정 ID", displayValue(decision.decision_id)],
         ["Entity ID", displayValue(decision.entity_id)],
         ["Fast Status", getStatusLabel(decision.fast_status)],
-        ["Fusion Status", getStatusLabel(decision.fusion_status)],
+        ["Fusion Status", getFusionStatusLabel(decision.fusion_status)],
         ["Detector Time", formatRunTimestamp(decision.detector_time)],
         ["Fusion Time", formatRunTimestamp(decision.fusion_time)],
         ["기술적 판정 시각 (t_e)", formatRunTimestamp(decision.t_e)],
@@ -106,7 +107,7 @@ function renderDetectionRuntime(detection) {
 
 function renderFusionRuntime(fusion) {
     renderFields(fusionRuntime, [
-        ["Fusion Status", getStatusLabel(fusion.fusion_status)],
+        ["Fusion Status", getFusionStatusLabel(fusion.fusion_status)],
         ["Fusion Time", formatRunTimestamp(fusion.fusion_time)],
         ["Score at Decision", displayValue(fusion.score_at_decision)],
         ["Scoring Config Version", displayValue(fusion.scoring_config_version)],
@@ -156,11 +157,11 @@ function createDecisionHistoryCard(decision) {
 
 function renderDecisionHistory(history) {
     if (history.length === 0) {
-        decisionHistoryStatus.textContent = "Decision History가 없습니다.";
+        decisionHistoryStatus.textContent = "분석 결정 이력가 없습니다.";
         decisionHistoryList.replaceChildren();
         return;
     }
-    decisionHistoryStatus.textContent = `Decision History ${history.length}건을 불러왔습니다.`;
+    decisionHistoryStatus.textContent = `분석 결정 이력 ${history.length}건을 불러왔습니다.`;
     decisionHistoryList.replaceChildren(
         ...history.map((decision) => createDecisionHistoryCard(decision)),
     );
@@ -198,33 +199,34 @@ function renderSuccess(payload) {
 
     const current = payload.current_decision;
     if (current === null) {
-        currentDecisionStatus.textContent = "Current Decision이 없습니다.";
-        detectionRuntimeStatus.textContent = "저장된 최신 Detection Runtime 결과가 없습니다.";
-        fusionRuntimeStatus.textContent = "저장된 최신 Fusion Runtime 결과가 없습니다.";
+        currentDecisionStatus.textContent = "현재 분석 결정이 없습니다.";
+        detectionRuntimeStatus.textContent = "저장된 최신 Detection 실행 보고 결과가 없습니다.";
+        fusionRuntimeStatus.textContent = "저장된 최신 Fusion 실행 보고 결과가 없습니다.";
         currentDecision.replaceChildren();
         detectionRuntime.replaceChildren();
         fusionRuntime.replaceChildren();
         return;
     }
 
-    currentDecisionStatus.textContent = "Current Decision을 불러왔습니다.";
+    currentDecisionStatus.textContent = getHybridDecisionNotice(current.decision)
+        ?? "현재 분석 결정을 불러왔습니다.";
     renderDecision(current.decision ?? {});
 
     const detection = current.latest_detection_result;
     if (detection === null || detection === undefined) {
-        detectionRuntimeStatus.textContent = "저장된 최신 Detection Runtime 결과가 없습니다.";
+        detectionRuntimeStatus.textContent = "저장된 최신 Detection 실행 보고 결과가 없습니다.";
         detectionRuntime.replaceChildren();
     } else {
-        detectionRuntimeStatus.textContent = "Current Detection Runtime을 불러왔습니다.";
+        detectionRuntimeStatus.textContent = "현재 규칙 분석 결과를 불러왔습니다.";
         renderDetectionRuntime(detection);
     }
 
     const fusion = current.latest_fusion_result;
     if (fusion === null || fusion === undefined) {
-        fusionRuntimeStatus.textContent = "저장된 최신 Fusion Runtime 결과가 없습니다.";
+        fusionRuntimeStatus.textContent = "저장된 최신 Fusion 실행 보고 결과가 없습니다.";
         fusionRuntime.replaceChildren();
     } else {
-        fusionRuntimeStatus.textContent = "Current Fusion Runtime을 불러왔습니다.";
+        fusionRuntimeStatus.textContent = "현재 증거 누적 분석을 불러왔습니다.";
         renderFusionRuntime(fusion);
     }
 }

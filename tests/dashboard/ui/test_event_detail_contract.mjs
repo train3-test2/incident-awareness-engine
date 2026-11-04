@@ -189,7 +189,7 @@ test("Event Detail query states keep loading and failures distinct", () => {
     assert.deepEqual(notFound, {
         queryState: "not_found",
         payload: null,
-        message: "Run 또는 Event를 찾을 수 없습니다.",
+        message: "분석 또는 Event를 찾을 수 없습니다.",
     });
     assert.deepEqual(error, {
         queryState: "error",

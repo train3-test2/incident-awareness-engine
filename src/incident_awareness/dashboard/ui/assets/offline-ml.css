@@ -1,0 +1,36 @@
+@layer screens {
+.offline-case-controls {
+    margin-bottom: var(--shell-space-4);
+}
+
+.offline-case-controls select {
+    max-width: 100%;
+    margin: var(--shell-space-3);
+    padding: var(--shell-space-2);
+}
+
+.offline-features {
+    width: 100%;
+    border-collapse: collapse;
+    overflow-wrap: anywhere;
+}
+
+.offline-features th,
+.offline-features td {
+    padding: var(--shell-space-3);
+    text-align: left;
+    border-bottom: 1px solid var(--shell-color-border);
+}
+
+.offline-hashes {
+    margin-top: var(--shell-space-4);
+    font-size: 0.875rem;
+}
+
+@media (max-width: 40rem) {
+    .offline-hashes {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+}

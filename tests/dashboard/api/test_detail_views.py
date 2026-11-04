@@ -86,8 +86,8 @@ def _assert_common_detail_shell(html: str, script_path: str) -> None:
     assert "Incident Awareness Dashboard" in html
     assert 'class="app-header"' in html
     assert 'class="app-page detail-page"' in html
-    assert 'href="/dashboard" aria-current="page">운영 View</a>' in html
-    assert 'href="/operations">Operations</a>' in html
+    assert 'href="/dashboard" aria-current="page">운영 현황</a>' in html
+    assert 'href="/operations">시스템 운영</a>' in html
     assert html.count("<script") == 1
     assert html.count(f'<script type="module" src="{script_path}">') == 1
     assert "<style" not in html
@@ -108,17 +108,17 @@ def test_run_detail_view_serves_html_shell_without_database_access(
     assert response.headers["content-type"].startswith("text/html")
     html = response.text
     _assert_common_detail_shell(html, "/dashboard-assets/run-detail.js")
-    assert "Run Detail" in html
+    assert "분석 상세" in html
     assert 'href="/dashboard" aria-current="page"' in html
     assert 'href="/operations"' in html
     assert 'href="/dashboard-assets/detail.css"' in html
     assert '<script type="module" src="/dashboard-assets/run-detail.js"></script>' in html
     for section in (
-        "Run Metadata",
-        "Current Decision",
-        "Current Detection Runtime",
-        "Current Fusion Runtime",
-        "Decision History",
+        "분석 Metadata",
+        "현재 분석 결정",
+        "현재 규칙 분석 결과",
+        "현재 증거 누적 분석",
+        "분석 결정 이력",
     ):
         assert section in html
     for container_id in (
@@ -160,11 +160,11 @@ def test_fusion_engine_view_serves_html_shell_without_database_access(
     assert "Fusion Engine" in html
     assert 'href="/dashboard-assets/fusion-engine.css"' in html
     for section in (
-        "Fusion Runtime Summary",
-        "Runtime Configuration",
-        "Stopping Trace Summary",
-        "Score Trajectory",
-        "Decision Timing",
+        "증거 누적 분석 요약",
+        "실행 설정",
+        "점수 기록 Summary",
+        "증거 누적 점수 기록",
+        "판단 시각",
         "Fusion Episodes",
     ):
         assert section in html
@@ -235,16 +235,16 @@ def test_historical_decision_view_serves_html_shell_without_database_access(
     assert response.headers["content-type"].startswith("text/html")
     html = response.text
     _assert_common_detail_shell(html, "/dashboard-assets/decision-detail.js")
-    assert "Historical Decision" in html
+    assert "과거 분석 결정" in html
     assert 'href="/dashboard" aria-current="page"' in html
     assert 'href="/operations"' in html
     assert 'href="/dashboard-assets/detail.css"' in html
     assert '<script type="module" src="/dashboard-assets/decision-detail.js"></script>' in html
     for section in (
-        "Decision",
-        "Historical Runtime Snapshot",
-        "Historical Detection Runtime",
-        "Historical Fusion Runtime",
+        "분석 결정",
+        "당시 실행 보고",
+        "당시 규칙 분석 결과",
+        "당시 증거 누적 분석",
     ):
         assert section in html
     for container_id in (
@@ -260,7 +260,7 @@ def test_historical_decision_view_serves_html_shell_without_database_access(
     ):
         assert f'id="{container_id}"' in html
     assert 'class="decision-status-guide"' in html
-    assert "Snapshot의 Detection과 Fusion 상세 값은 아래 Runtime 카드에 표시됩니다." in html
+    assert "당시 저장된 경로별 분석 결과입니다." in html
     assert database_connection_attempts == []
 
 
@@ -373,7 +373,7 @@ def test_encoded_slash_decision_id_reaches_html_and_json_application_routes(
     # Then
     assert html_response.status_code == 200
     assert html_response.headers["content-type"].startswith("text/html")
-    assert "Historical Decision" in html_response.text
+    assert "과거 분석 결정" in html_response.text
     assert api_response.status_code == 404
     assert api_response.headers["content-type"].startswith("application/json")
     assert api_response.json() == {"detail": "Decision not found"}
@@ -766,9 +766,9 @@ def test_run_detail_assets_use_authoritative_current_data_and_safe_dom_rendering
         "decision.detector_set_version",
     ):
         assert decision_field in script
-    assert "Current Decision이 없습니다." in script
-    assert "저장된 최신 Detection Runtime 결과가 없습니다." in script
-    assert "저장된 최신 Fusion Runtime 결과가 없습니다." in script
+    assert "현재 분석 결정이 없습니다." in script
+    assert "저장된 최신 Detection 실행 보고 결과가 없습니다." in script
+    assert "저장된 최신 Fusion 실행 보고 결과가 없습니다." in script
     for safe_api in (
         "document.createElement(",
         ".textContent =",
@@ -922,23 +922,28 @@ def test_fusion_engine_score_trajectory_is_accessible() -> None:
     assert 'id="fusion-score-trajectory-status"' in html
     assert 'role="status"' in html
     assert 'aria-live="polite"' in html
-    assert 'svg.setAttribute("role", "img")' in chart
+    assert 'svg.setAttribute("role", "group")' in chart
     assert 'svg.setAttribute(\n        "aria-labelledby"' in normalized_chart
     assert 'createSvgElement("title")' in chart
     assert 'createSvgElement("desc")' in chart
     assert 'document.createElement("details")' in chart
     assert 'document.createElement("summary")' in chart
-    assert "`전체 Point ${points.length}개 보기`" in chart
+    assert "`점수 기록 ${points.length}개`" in chart
     assert "details.append(summary, wrapper);" in chart
+    assert 'marker.setAttribute("aria-label", visibleDetails)' in chart
+    assert "markerTitle.textContent = details" in chart
+    assert 'marker.addEventListener("keydown"' in chart
     for label in (
-        "Score",
-        "T_on",
-        "T_off",
-        "Policy ON",
-        "Policy OFF",
-        "Timestamp",
-        "Policy State",
-        "Persistence Count",
+        "증거 누적 점수",
+        "진입 기준",
+        "해제 기준",
+        "탐지 구간 활성",
+        "탐지 구간 비활성",
+        "시각 (KST · 밀리초)",
+        "탐지 구간 상태",
+        "연속 충족 횟수",
+        "UTC 시각",
+        "원본 시각",
     ):
         assert label in script or label in contract or label in chart
 
@@ -995,8 +1000,8 @@ def test_historical_decision_assets_use_safe_dom_and_pure_contract() -> None:
     assert "decision.t_e" in script
     assert "Math.min(" not in script
     assert "Date.parse(decision.t_e" not in script
-    assert "저장된 Historical Runtime Snapshot이 없어" in script
-    assert "Detection과 Fusion 상세 값은 아래 Runtime 카드에서 확인할 수 있습니다." in script
+    assert "저장된 당시 실행 보고이 없어" in script
+    assert "Detection과 Fusion 상세 값은 아래 실행 보고 카드에서 확인할 수 있습니다." in script
     for safe_api in (
         "document.createElement(",
         ".textContent =",

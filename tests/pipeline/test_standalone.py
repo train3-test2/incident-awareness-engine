@@ -651,6 +651,9 @@ def test_standalone_collects_attempt_metrics_without_claiming_caller_commit(monk
     # Given
     prepared, expected = _configure_runtime_stage_stubs(monkeypatch)
     runtime, telemetry = [], []
+    from incident_awareness.pipeline.stage_timing import PipelineStageTimingCollector
+
+    timing = PipelineStageTimingCollector()
 
     # When
     actual = run_prepared_standalone_run(
@@ -659,6 +662,7 @@ def test_standalone_collects_attempt_metrics_without_claiming_caller_commit(monk
         commit=False,
         runtime_observer=runtime.append,
         telemetry_observer=telemetry.append,
+        stage_timing_collector=timing,
     )
 
     # Then
@@ -668,6 +672,40 @@ def test_standalone_collects_attempt_metrics_without_claiming_caller_commit(monk
     assert {item.execution_id for item in runtime + telemetry} == {runtime[-1].execution_id}
     assert sum(bucket.processing_completed_count for bucket in telemetry[-1].buckets) == 1
     assert all(item.current_stage is not PipelineStage.FAST_HANDOFF for item in runtime)
+    assert timing.snapshot().execution_id == runtime[-1].execution_id
+    assert [record.stage for record in timing.snapshot().records] == [
+        PipelineStage.ARTIFACT_VALIDATION,
+        PipelineStage.NORMALIZATION,
+        PipelineStage.FUSION,
+        PipelineStage.HYBRID,
+        PipelineStage.PERSISTENCE,
+    ]
+    assert all(record.outcome == "completed" for record in timing.snapshot().records)
+    # Ended persistence operation is not evidence of the caller's later commit.
+    assert timing.snapshot().active_stage is None
+
+
+@pytest.mark.parametrize("stage", ["normalization", "fusion", "hybrid", "persistence"])
+def test_standalone_stage_timings_preserve_failed_operation_and_prior_results(
+    monkeypatch, stage
+) -> None:
+    # Given
+    from incident_awareness.pipeline.stage_timing import PipelineStageTimingCollector
+
+    error = ValueError("fixture stage failure")
+    prepared, _ = _configure_runtime_stage_stubs(monkeypatch, failing_stage=stage, error=error)
+    timing = PipelineStageTimingCollector()
+
+    # When
+    with pytest.raises(ValueError) as caught:
+        run_prepared_standalone_run(prepared, connection=object(), stage_timing_collector=timing)
+
+    # Then
+    assert caught.value is error
+    records = timing.snapshot().records
+    assert records[-1].stage.value == stage and records[-1].outcome == "failed"
+    assert all(record.outcome == "completed" for record in records[:-1])
+    assert all(record.stage is not PipelineStage.FAST_HANDOFF for record in records)
 
 
 class _RuntimeTrackerSpy:

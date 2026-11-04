@@ -12,9 +12,9 @@ const STAGE_LABELS = new Map([
     ["hybrid", "통합 판단"],
     ["persistence", "결과 저장"],
 ]);
-const LOADING_MESSAGE = "Runtime 정보를 불러오는 중입니다.";
-const EMPTY_MESSAGE = "표시할 Runtime 정보가 없습니다.";
-const ERROR_MESSAGE = "Runtime 정보를 불러오지 못했습니다.";
+const LOADING_MESSAGE = "실행 보고 정보를 불러오는 중입니다.";
+const EMPTY_MESSAGE = "표시할 실행 보고 정보가 없습니다.";
+const ERROR_MESSAGE = "실행 보고 정보를 불러오지 못했습니다.";
 
 export function displayValue(value) {
     if (value === null || value === undefined) {
@@ -102,7 +102,7 @@ export function getRuntimeQueryMessage(state, count) {
         if (!Number.isInteger(count) || count < 0) {
             throw new RangeError(`Runtime item count must be a non-negative integer: ${count}`);
         }
-        return count === 0 ? EMPTY_MESSAGE : `Runtime ${count}건을 불러왔습니다.`;
+        return count === 0 ? EMPTY_MESSAGE : `실행 보고 ${count}건을 불러왔습니다.`;
     }
     throw new RangeError(`Unknown Runtime query state: ${state}`);
 }

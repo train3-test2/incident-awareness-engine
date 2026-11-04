@@ -2,9 +2,11 @@ import json
 import shutil
 from pathlib import Path
 
+from incident_awareness.common.models.pipeline_runtime import PipelineStage
 from incident_awareness.pipeline.cli import parse_cli_args
 from incident_awareness.pipeline.persistence import _SHOW_TRANSACTION_ISOLATION
 from incident_awareness.pipeline.runner import run_first_cycle_pipeline
+from incident_awareness.pipeline.stage_timing import PipelineStageTimingCollector
 from incident_awareness.storage.repositories.result_repository import (
     _SELECT_CURRENT_DECISION_HEADS,
 )
@@ -79,8 +81,9 @@ def test_first_cycle_fixture_runs_through_the_assembled_pipeline(tmp_path: Path)
         ]
     )
     connection = _Connection()
+    timing = PipelineStageTimingCollector()
 
-    summary = run_first_cycle_pipeline(inputs, connection=connection)
+    summary = run_first_cycle_pipeline(inputs, connection=connection, stage_timing_collector=timing)
 
     assert summary.run_id == "RUN-20260920-001"
     assert summary.entity_id == "WIN-01"
@@ -91,6 +94,12 @@ def test_first_cycle_fixture_runs_through_the_assembled_pipeline(tmp_path: Path)
     assert summary.decision_path == "fast_and_fusion"
     assert connection.commits == 1
     assert connection.rollbacks == 0
+    # Real operations/clocks over local fixture artifacts; the DB connection is fake.
+    records = timing.snapshot().records
+    assert [record.stage for record in records] == list(PipelineStage)
+    assert all(record.outcome == "completed" and record.duration_ns >= 0 for record in records)
+    assert timing.snapshot().run_id == summary.run_id
+    assert timing.snapshot().entity_id == summary.entity_id
 
 
 def _rewrite_trace_paths_for_local_fixture(fixture_root: Path) -> None:

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Offline ML 분석 | Detection Hub</title>
+    <link rel="stylesheet" href="/dashboard-assets/dashboard-shell.css">
+    <link rel="stylesheet" href="/dashboard-assets/detail.css">
+    <link rel="stylesheet" href="/dashboard-assets/offline-ml.css">
+    <script type="module" src="/dashboard-assets/offline-ml.js"></script>
+</head>
+<body>
+    <header class="app-header">
+        <div class="app-header__inner">
+            <div class="app-brand">
+                <a class="app-brand__name" href="/dashboard">Detection Hub</a>
+                <span class="app-brand__context">사후 분석 · 역할 5번 전달 결과</span>
+            </div>
+            <nav class="app-navigation" aria-label="주요 화면">
+                <a href="/dashboard">운영 현황</a>
+                <a href="/dashboard/evaluation">성능 평가</a>
+                <a href="/operations">시스템 운영</a>
+                <a href="/dashboard-assets/offline-ml.html" aria-current="page">Offline ML 분석</a>
+            </nav>
+        </div>
+    </header>
+    <main class="app-page detail-page">
+        <header class="page-header">
+            <p class="page-eyebrow">오프라인 모델 분석</p>
+            <h1 class="page-title">Offline ML 분석</h1>
+            <p class="page-description">검증된 전달 패키지의 입력 Feature와 저장된 모델 출력을 읽기 전용으로 조회합니다.</p>
+        </header>
+        <aside class="decision-status-guide" role="note">
+            <strong>보정되지 않은 P(label=1) 출력입니다.</strong>
+            <p>실제 공격 확률, 확정 탐지, 공식 성능평가 또는 TTSD 결과가 아닙니다.</p>
+            <p>원본 수집 자료의 별도 오프라인 분석입니다. 실시간 탐지·종합 판단 점수와 합산하지 않습니다.</p>
+        </aside>
+        <p id="offline-status" class="status-message" role="status" aria-live="polite">전달 결과 검증 상태를 확인하는 중입니다.</p>
+        <div id="offline-content" hidden>
+            <section class="section-card offline-case-controls" aria-labelledby="offline-case-heading">
+                <h2 id="offline-case-heading" class="section-heading">Offline 분석 사례 선택</h2>
+                <label for="offline-case">원본 분석 ID</label>
+                <select id="offline-case" aria-controls="offline-case-fields offline-feature-body"></select>
+                <p id="offline-case-group" class="section-description"></p>
+            </section>
+            <div class="detail-grid">
+                <section class="section-card detail-section" aria-labelledby="offline-output-heading">
+                    <h2 id="offline-output-heading" class="section-heading">저장된 모델 출력</h2>
+                    <dl id="offline-case-fields" class="detail-fields"></dl>
+                </section>
+                <section class="section-card detail-section" aria-labelledby="offline-model-heading">
+                    <h2 id="offline-model-heading" class="section-heading">모델·해석 범위</h2>
+                    <dl id="offline-model-fields" class="detail-fields"></dl>
+                </section>
+                <section class="section-card detail-section detail-section--wide" aria-labelledby="offline-feature-heading">
+                    <h2 id="offline-feature-heading" class="section-heading">입력 Feature</h2>
+                    <p class="section-description">전체 관측 구간에서 특징의 존재 여부를 표시합니다. 시계열 점수와 별개입니다.</p>
+                    <table class="offline-features">
+                        <thead><tr><th scope="col">Feature 이름</th><th scope="col">값</th></tr></thead>
+                        <tbody id="offline-feature-body"></tbody>
+                    </table>
+                </section>
+                <section class="section-card detail-section detail-section--wide" aria-labelledby="offline-provenance-heading">
+                    <h2 id="offline-provenance-heading" class="section-heading">검증·출처 요약</h2>
+                    <p class="section-description">전달 파일의 무결성 확인 결과입니다. 원본 이벤트·증거의 재추출 검증과는 별개입니다.</p>
+                    <details>
+                        <summary>모델·입력·결과 SHA-256 및 학습 분석 확인</summary>
+                        <dl id="offline-provenance-fields" class="detail-fields offline-hashes"></dl>
+                    </details>
+                </section>
+            </div>
+        </div>
+    </main>
+</body>
+</html>

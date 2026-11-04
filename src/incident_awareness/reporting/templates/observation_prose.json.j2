@@ -1,0 +1,3 @@
+{"schema_version":"grounded_observation_prose_v1","sentences":[
+{% for o in observations %}{"observation_id":{{ o.observation_id | tojson }},"evidence_id":{{ o.evidence_id | tojson }},"text":{{ (prefix + o.behavior_summary + ending) | tojson }}}{% if not loop.last %},{% endif %}
+{% endfor %}]}

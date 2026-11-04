@@ -170,7 +170,7 @@ def test_postgres_input_identity_is_immutable_at_repository_and_database_boundar
 
 def _apply_through_011(connection, monkeypatch):
     with monkeypatch.context() as context:
-        context.setattr(migrate, "_migration_paths", lambda: MIGRATIONS[:-1])
+        context.setattr(migrate, "_migration_paths", lambda: MIGRATIONS[:11])
         migrate.apply_migrations(connection)
     connection.commit()
 
@@ -241,7 +241,7 @@ def test_postgres_011_to_012_preserves_legacy_payload_revision_and_buckets(
     restored = PipelineTelemetryRepository(connection).get_execution("legacy")
 
     # Then
-    assert applied == ("012_pipeline_telemetry_input_identity",)
+    assert applied == tuple(path.stem for path in MIGRATIONS[11:])
     assert before == after
     assert restored == snapshot
     assert "input_identity" not in after[0]
@@ -257,7 +257,7 @@ def test_postgres_012_initdb_without_history_baselines_and_preserves_table(
     # Given
     connection = schema_connection
     _apply_through_011(connection, monkeypatch)
-    connection.execute(MIGRATIONS[-1].read_text(encoding="utf-8"))
+    connection.execute(MIGRATIONS[11].read_text(encoding="utf-8"))
     oid = connection.execute("SELECT 'pipeline_telemetry_executions'::regclass::oid").fetchone()
     connection.commit()
 
@@ -266,7 +266,7 @@ def test_postgres_012_initdb_without_history_baselines_and_preserves_table(
     connection.commit()
 
     # Then
-    assert applied == ("012_pipeline_telemetry_input_identity",)
+    assert applied == tuple(path.stem for path in MIGRATIONS[11:])
     assert migrate.apply_migrations(connection) == ()
     assert (
         connection.execute("SELECT 'pipeline_telemetry_executions'::regclass::oid").fetchone()

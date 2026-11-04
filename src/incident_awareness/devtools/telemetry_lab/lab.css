@@ -1,0 +1,15 @@
+:root { font-family: "Malgun Gothic", sans-serif; color: #102849; background: #f6f9fd; }
+* { box-sizing: border-box; }
+body { margin: 0; height: 100dvh; display: flex; flex-direction: column; }
+.lab-controls { flex: 0 0 auto; padding: 8px 18px; border-bottom: 2px solid #b36d00; max-height: 46dvh; overflow: auto; }
+.lab-warning { display: block; padding: 5px 10px; background: #fff0bd; color: #784500; font-size: 15px; }
+p { margin: 6px 0; font-size: 12px; line-height: 1.5; }
+.lab-actions, .lab-counters { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; margin: 6px 0; font-size: 13px; }
+button, select { min-height: 30px; font: inherit; padding: 4px 10px; color: #123456; border: 1px solid #9aabc2; border-radius: 4px; background: #fff; }
+button { cursor: pointer; }
+button:disabled, select:disabled { color: #7e8795; background: #e9edf3; cursor: not-allowed; }
+button:focus-visible, select:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid #0864ff; outline-offset: 2px; }
+strong { font-variant-numeric: tabular-nums; }
+summary { font-size: 12px; cursor: pointer; }
+iframe { flex: 1 1 auto; width: 100%; min-height: 0; border: 0; background: #fff; }
+@media (max-width: 480px) { .lab-controls { padding: 6px; } .lab-warning { font-size: 13px; } }

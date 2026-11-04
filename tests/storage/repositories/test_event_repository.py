@@ -11,6 +11,7 @@ from incident_awareness.storage.repositories.event_repository import (
     _SELECT_EVENT_TIMELINE_WITH_TOTAL_COUNT,
     _UPSERT_EVENT,
     EventLookupResult,
+    EventProvenance,
     EventRepository,
 )
 
@@ -346,3 +347,52 @@ def _event_at(
             "event_time": timestamp,
         }
     )
+
+
+def test_get_provenance_reads_owners_without_payloads() -> None:
+    # Given
+    connection = FakeConnection(
+        rows=[
+            ("evt-1", "RUN-1", "HOST-1"),
+            {"event_id": "evt-2", "run_id": "RUN-2", "host_id": "HOST-2"},
+        ]
+    )
+    repository = EventRepository(connection)
+
+    # When
+    provenance = repository.get_provenance(("evt-1", "evt-2", "evt-missing"))
+
+    # Then
+    query, params = connection.statements[0]
+    assert "payload" not in query
+    assert params == (["evt-1", "evt-2", "evt-missing"],)
+    assert provenance["evt-1"] == EventProvenance(run_id="RUN-1", host_id="HOST-1")
+    assert provenance["evt-2"] == EventProvenance(run_id="RUN-2", host_id="HOST-2")
+    assert "evt-missing" not in provenance
+
+
+def test_get_provenance_skips_the_query_for_no_event_ids() -> None:
+    # Given
+    connection = FakeConnection()
+
+    # When / Then
+    assert EventRepository(connection).get_provenance(()) == {}
+    assert connection.statements == []
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [("evt-other", "RUN-1", "HOST-1")],
+        [("evt-1", "RUN-1", "HOST-1"), ("evt-1", "RUN-1", "HOST-1")],
+        [("evt-1", "RUN-1", "")],
+        [("evt-1", "RUN-1")],
+    ],
+)
+def test_get_provenance_rejects_unexpected_rows(rows: list[tuple[object, ...]]) -> None:
+    # Given
+    repository = EventRepository(FakeConnection(rows=rows))
+
+    # When / Then
+    with pytest.raises(TypeError):
+        repository.get_provenance(("evt-1",))
