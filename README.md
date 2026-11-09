@@ -1,5 +1,6 @@
-# Incident Awareness Engine
+# Incident Awareness Engine (IncidentWeave)
 
+KISIA AI 보안 기술개발 과정 2팀 프로젝트 IncidentWeave의 저장소입니다.
 보안 이벤트와 분석 결과를 연계하여 침해사고 인지 시점 후보와 판단 근거를 생성하기 위한 시스템입니다.
 
 ## Development Environment
