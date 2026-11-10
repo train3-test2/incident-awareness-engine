@@ -1,0 +1,1231 @@
+[
+  {
+    "runs": {
+      "run_id": "RUN-20261019-007",
+      "end_time": "2026-09-27T08:00:38.900000Z",
+      "run_type": "attack",
+      "family_id": null,
+      "repetition": null,
+      "start_time": "2026-09-27T07:49:31.275000Z",
+      "scenario_id": "S0",
+      "target_host": "WIN-01",
+      "vm_snapshot": null,
+      "variation_id": null,
+      "reference_time": null,
+      "schema_versions": {
+        "event": "v0.3",
+        "evidence": "v0.2",
+        "fast_hit": "v0.2",
+        "run_metadata": "v0.2",
+        "fusion_result": "v0.3",
+        "decision_result": "v0.2",
+        "detection_result": "v0.2",
+        "evaluation_input": "v0.1",
+        "execution_record": "v0.1"
+      },
+      "scenario_version": null,
+      "reference_action_id": null,
+      "detector_set_version": null,
+      "sysmon_config_version": null,
+      "reference_policy_version": null,
+      "reference_source_event_id": null
+    },
+    "fusion_results": {
+      "run_id": "RUN-20261019-007",
+      "entity_id": "WIN-01",
+      "fusion_time": "2026-09-27T07:52:01.275Z",
+      "fusion_status": "detected",
+      "model_version": null,
+      "scorer_version": "simple-score-v0.1",
+      "scoring_method": "simple_score",
+      "fusion_episodes": [
+        {
+          "run_id": "RUN-20261019-007",
+          "end_time": "2026-09-27T07:56:51.275Z",
+          "entity_id": "WIN-01",
+          "end_reason": "released",
+          "episode_id": "FEP-001",
+          "peak_score": 1.0,
+          "start_time": "2026-09-27T07:52:01.275Z",
+          "score_at_start": 1.0,
+          "contributing_evidence_ids": [
+            "E-6a240f43-060b-5289-b2a2-3a1dc4398294",
+            "E-9982e967-6fb9-528a-ba3e-32e2e7d3f035"
+          ]
+        }
+      ],
+      "score_at_decision": 1.0,
+      "scoring_profile_id": "s0-profile",
+      "scoring_config_version": "fusion-config-s0-pair-v0.1",
+      "contributing_evidence_ids": [
+        "E-6a240f43-060b-5289-b2a2-3a1dc4398294",
+        "E-9982e967-6fb9-528a-ba3e-32e2e7d3f035"
+      ]
+    },
+    "decisions": {
+      "t_e": null,
+      "run_id": "RUN-20261019-007",
+      "entity_id": "WIN-01",
+      "decision_id": "DEC-RUN-20261019-007",
+      "fast_status": "not_evaluated",
+      "fusion_time": "2026-09-27T07:52:01.275Z",
+      "rule_version": null,
+      "winning_path": null,
+      "decision_path": null,
+      "detector_time": null,
+      "fusion_status": "detected",
+      "model_version": null,
+      "config_version": "parallel-v0.2",
+      "source_hit_ids": [],
+      "decision_reason": "Required parallel evaluation was not completed",
+      "detector_set_version": null,
+      "selected_source_hit_id": null,
+      "supersedes_decision_id": null,
+      "contributing_evidence_ids": [
+        "E-6a240f43-060b-5289-b2a2-3a1dc4398294",
+        "E-9982e967-6fb9-528a-ba3e-32e2e7d3f035"
+      ]
+    },
+    "decision_runtime_snapshots": {
+      "run_id": "RUN-20261019-007",
+      "entity_id": "WIN-01",
+      "decision_id": "DEC-RUN-20261019-007",
+      "fusion_result": {
+        "run_id": "RUN-20261019-007",
+        "entity_id": "WIN-01",
+        "fusion_time": "2026-09-27T07:52:01.275Z",
+        "fusion_status": "detected",
+        "model_version": null,
+        "scorer_version": "simple-score-v0.1",
+        "scoring_method": "simple_score",
+        "fusion_episodes": [
+          {
+            "run_id": "RUN-20261019-007",
+            "end_time": "2026-09-27T07:56:51.275Z",
+            "entity_id": "WIN-01",
+            "end_reason": "released",
+            "episode_id": "FEP-001",
+            "peak_score": 1.0,
+            "start_time": "2026-09-27T07:52:01.275Z",
+            "score_at_start": 1.0,
+            "contributing_evidence_ids": [
+              "E-6a240f43-060b-5289-b2a2-3a1dc4398294",
+              "E-9982e967-6fb9-528a-ba3e-32e2e7d3f035"
+            ]
+          }
+        ],
+        "score_at_decision": 1.0,
+        "scoring_profile_id": "s0-profile",
+        "scoring_config_version": "fusion-config-s0-pair-v0.1",
+        "contributing_evidence_ids": [
+          "E-6a240f43-060b-5289-b2a2-3a1dc4398294",
+          "E-9982e967-6fb9-528a-ba3e-32e2e7d3f035"
+        ]
+      },
+      "detection_result": {
+        "run_id": "RUN-20261019-007",
+        "rule_id": null,
+        "severity": null,
+        "entity_id": "WIN-01",
+        "detector_id": null,
+        "rule_version": null,
+        "detector_time": null,
+        "detector_status": "not_evaluated"
+      },
+      "fusion_stopping_trace": {
+        "points": [
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:49:31.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:49:41.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:49:51.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:50:01.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:50:11.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:50:21.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:50:31.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:50:41.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:50:51.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:51:01.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:51:11.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:51:21.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:51:31.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:51:41.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:51:51.275Z",
+            "policy_state": "off",
+            "persistence_count": 1
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:52:01.275Z",
+            "policy_state": "on",
+            "persistence_count": 2
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:52:11.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:52:21.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:52:31.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:52:41.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:52:51.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:53:01.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:53:11.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:53:21.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:53:31.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:53:41.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:53:51.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:54:01.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:54:11.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:54:21.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:54:31.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 1.0,
+            "timestamp": "2026-09-27T07:54:41.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:54:51.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:55:01.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:55:11.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:55:21.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:55:31.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:55:41.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:55:51.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:56:01.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:56:11.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:56:21.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:56:31.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:56:41.275Z",
+            "policy_state": "on",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:56:51.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:57:01.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:57:11.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:57:21.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:57:31.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:57:41.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:57:51.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:58:01.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:58:11.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:58:21.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:58:31.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:58:41.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:58:51.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:59:01.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:59:11.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:59:21.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:59:31.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:59:41.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:59:51.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T08:00:01.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T08:00:11.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T08:00:21.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T08:00:31.275Z",
+            "policy_state": "off",
+            "persistence_count": null
+          }
+        ],
+        "run_id": "RUN-20261019-007",
+        "entity_id": "WIN-01",
+        "scoring_config_version": "fusion-config-s0-pair-v0.1"
+      },
+      "fusion_runtime_config_snapshot": {
+        "replay": {
+          "step_size_sec": 10.0
+        },
+        "run_id": "RUN-20261019-007",
+        "window": {
+          "window_size_sec": 300.0
+        },
+        "scoring": {
+          "method": "simple_score",
+          "profile_id": "s0-profile",
+          "evidence_types": [
+            "encoded_powershell_command",
+            "script_interpreter_external_connection"
+          ],
+          "scorer_version": "simple-score-v0.1"
+        },
+        "stopping": {
+          "threshold_on": 0.8,
+          "persistence_k": 2,
+          "threshold_off": 0.4
+        },
+        "entity_id": "WIN-01",
+        "model_version": null,
+        "config_version": "fusion-config-s0-pair-v0.1"
+      }
+    }
+  },
+  {
+    "runs": {
+      "run_id": "RUN-20261019-006",
+      "end_time": "2026-09-27T07:34:42.896000Z",
+      "run_type": "attack",
+      "family_id": null,
+      "repetition": null,
+      "start_time": "2026-09-27T07:23:36.516000Z",
+      "scenario_id": "S0",
+      "target_host": "WIN-01",
+      "vm_snapshot": null,
+      "variation_id": null,
+      "reference_time": null,
+      "schema_versions": {
+        "event": "v0.3",
+        "evidence": "v0.2",
+        "fast_hit": "v0.2",
+        "run_metadata": "v0.2",
+        "fusion_result": "v0.3",
+        "decision_result": "v0.2",
+        "detection_result": "v0.2",
+        "evaluation_input": "v0.1",
+        "execution_record": "v0.1"
+      },
+      "scenario_version": null,
+      "reference_action_id": null,
+      "detector_set_version": null,
+      "sysmon_config_version": null,
+      "reference_policy_version": null,
+      "reference_source_event_id": null
+    },
+    "fusion_results": {
+      "run_id": "RUN-20261019-006",
+      "entity_id": "WIN-01",
+      "fusion_time": null,
+      "fusion_status": "miss",
+      "model_version": null,
+      "scorer_version": "simple-score-v0.1",
+      "scoring_method": "simple_score",
+      "fusion_episodes": [],
+      "score_at_decision": null,
+      "scoring_profile_id": "s0-profile",
+      "scoring_config_version": "fusion-config-s0-pair-v0.1",
+      "contributing_evidence_ids": []
+    },
+    "decisions": {
+      "t_e": null,
+      "run_id": "RUN-20261019-006",
+      "entity_id": "WIN-01",
+      "decision_id": "DEC-RUN-20261019-006",
+      "fast_status": "not_evaluated",
+      "fusion_time": null,
+      "rule_version": null,
+      "winning_path": null,
+      "decision_path": null,
+      "detector_time": null,
+      "fusion_status": "miss",
+      "model_version": null,
+      "config_version": "parallel-v0.2",
+      "source_hit_ids": [],
+      "decision_reason": "Required parallel evaluation was not completed",
+      "detector_set_version": null,
+      "selected_source_hit_id": null,
+      "supersedes_decision_id": null,
+      "contributing_evidence_ids": []
+    },
+    "decision_runtime_snapshots": {
+      "run_id": "RUN-20261019-006",
+      "entity_id": "WIN-01",
+      "decision_id": "DEC-RUN-20261019-006",
+      "fusion_result": {
+        "run_id": "RUN-20261019-006",
+        "entity_id": "WIN-01",
+        "fusion_time": null,
+        "fusion_status": "miss",
+        "model_version": null,
+        "scorer_version": "simple-score-v0.1",
+        "scoring_method": "simple_score",
+        "fusion_episodes": [],
+        "score_at_decision": null,
+        "scoring_profile_id": "s0-profile",
+        "scoring_config_version": "fusion-config-s0-pair-v0.1",
+        "contributing_evidence_ids": []
+      },
+      "detection_result": {
+        "run_id": "RUN-20261019-006",
+        "rule_id": null,
+        "severity": null,
+        "entity_id": "WIN-01",
+        "detector_id": null,
+        "rule_version": null,
+        "detector_time": null,
+        "detector_status": "not_evaluated"
+      },
+      "fusion_stopping_trace": {
+        "points": [
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:23:36.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:23:46.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:23:56.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:24:06.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:24:16.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:24:26.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:24:36.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:24:46.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:24:56.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:25:06.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:25:16.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:25:26.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:25:36.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:25:46.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:25:56.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:26:06.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:26:16.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:26:26.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:26:36.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:26:46.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:26:56.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:27:06.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:27:16.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:27:26.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:27:36.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:27:46.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:27:56.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:28:06.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:28:16.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:28:26.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:28:36.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:28:46.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:28:56.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:29:06.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:29:16.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:29:26.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:29:36.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:29:46.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:29:56.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:30:06.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:30:16.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:30:26.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:30:36.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.5,
+            "timestamp": "2026-09-27T07:30:46.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:30:56.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:31:06.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:31:16.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:31:26.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:31:36.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:31:46.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:31:56.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:32:06.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:32:16.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:32:26.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:32:36.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:32:46.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:32:56.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:33:06.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:33:16.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:33:26.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:33:36.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:33:46.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:33:56.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:34:06.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:34:16.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:34:26.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          },
+          {
+            "score": 0.0,
+            "timestamp": "2026-09-27T07:34:36.516Z",
+            "policy_state": "off",
+            "persistence_count": null
+          }
+        ],
+        "run_id": "RUN-20261019-006",
+        "entity_id": "WIN-01",
+        "scoring_config_version": "fusion-config-s0-pair-v0.1"
+      },
+      "fusion_runtime_config_snapshot": {
+        "replay": {
+          "step_size_sec": 10.0
+        },
+        "run_id": "RUN-20261019-006",
+        "window": {
+          "window_size_sec": 300.0
+        },
+        "scoring": {
+          "method": "simple_score",
+          "profile_id": "s0-profile",
+          "evidence_types": [
+            "encoded_powershell_command",
+            "script_interpreter_external_connection"
+          ],
+          "scorer_version": "simple-score-v0.1"
+        },
+        "stopping": {
+          "threshold_on": 0.8,
+          "persistence_k": 2,
+          "threshold_off": 0.4
+        },
+        "entity_id": "WIN-01",
+        "model_version": null,
+        "config_version": "fusion-config-s0-pair-v0.1"
+      }
+    }
+  },
+  {
+    "runs": {
+      "run_id": "RUN-20261019-008",
+      "end_time": "2026-09-08T16:35:35.367000Z",
+      "run_type": "attack",
+      "family_id": null,
+      "repetition": null,
+      "start_time": "2026-09-08T16:35:30.816000Z",
+      "scenario_id": "S0",
+      "target_host": "WIN-01",
+      "vm_snapshot": null,
+      "variation_id": null,
+      "reference_time": null,
+      "schema_versions": {
+        "event": "v0.3",
+        "evidence": "v0.2",
+        "fast_hit": "v0.2",
+        "run_metadata": "v0.2",
+        "fusion_result": "v0.3",
+        "decision_result": "v0.2",
+        "detection_result": "v0.2",
+        "evaluation_input": "v0.1",
+        "execution_record": "v0.1"
+      },
+      "scenario_version": null,
+      "reference_action_id": null,
+      "detector_set_version": null,
+      "sysmon_config_version": null,
+      "reference_policy_version": null,
+      "reference_source_event_id": null
+    },
+    "fusion_results": {
+      "run_id": "RUN-20261019-008",
+      "entity_id": "WIN-01",
+      "fusion_time": null,
+      "fusion_status": "not_evaluated",
+      "model_version": null,
+      "scorer_version": "simple-score-v0.1",
+      "scoring_method": "simple_score",
+      "fusion_episodes": [],
+      "score_at_decision": null,
+      "scoring_profile_id": "s0-profile",
+      "scoring_config_version": "fusion-config-s0-pair-v0.1",
+      "contributing_evidence_ids": []
+    },
+    "decisions": {
+      "t_e": null,
+      "run_id": "RUN-20261019-008",
+      "entity_id": "WIN-01",
+      "decision_id": "DEC-RUN-20261019-008",
+      "fast_status": "not_evaluated",
+      "fusion_time": null,
+      "rule_version": null,
+      "winning_path": null,
+      "decision_path": null,
+      "detector_time": null,
+      "fusion_status": "not_evaluated",
+      "model_version": null,
+      "config_version": "parallel-v0.2",
+      "source_hit_ids": [],
+      "decision_reason": "Required parallel evaluation was not completed",
+      "detector_set_version": null,
+      "selected_source_hit_id": null,
+      "supersedes_decision_id": null,
+      "contributing_evidence_ids": []
+    },
+    "decision_runtime_snapshots": {
+      "run_id": "RUN-20261019-008",
+      "entity_id": "WIN-01",
+      "decision_id": "DEC-RUN-20261019-008",
+      "fusion_result": {
+        "run_id": "RUN-20261019-008",
+        "entity_id": "WIN-01",
+        "fusion_time": null,
+        "fusion_status": "not_evaluated",
+        "model_version": null,
+        "scorer_version": "simple-score-v0.1",
+        "scoring_method": "simple_score",
+        "fusion_episodes": [],
+        "score_at_decision": null,
+        "scoring_profile_id": "s0-profile",
+        "scoring_config_version": "fusion-config-s0-pair-v0.1",
+        "contributing_evidence_ids": []
+      },
+      "detection_result": {
+        "run_id": "RUN-20261019-008",
+        "rule_id": null,
+        "severity": null,
+        "entity_id": "WIN-01",
+        "detector_id": null,
+        "rule_version": null,
+        "detector_time": null,
+        "detector_status": "not_evaluated"
+      },
+      "fusion_stopping_trace": {
+        "points": [],
+        "run_id": "RUN-20261019-008",
+        "entity_id": "WIN-01",
+        "scoring_config_version": "fusion-config-s0-pair-v0.1"
+      },
+      "fusion_runtime_config_snapshot": {
+        "replay": {
+          "step_size_sec": 10.0
+        },
+        "run_id": "RUN-20261019-008",
+        "window": {
+          "window_size_sec": 300.0
+        },
+        "scoring": {
+          "method": "simple_score",
+          "profile_id": "s0-profile",
+          "evidence_types": [
+            "encoded_powershell_command",
+            "script_interpreter_external_connection"
+          ],
+          "scorer_version": "simple-score-v0.1"
+        },
+        "stopping": {
+          "threshold_on": 0.8,
+          "persistence_k": 2,
+          "threshold_off": 0.4
+        },
+        "entity_id": "WIN-01",
+        "model_version": null,
+        "config_version": "fusion-config-s0-pair-v0.1"
+      }
+    }
+  }
+]

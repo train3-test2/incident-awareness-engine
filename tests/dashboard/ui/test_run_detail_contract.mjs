@@ -11,10 +11,34 @@ import {
     buildRunDetailViewPath,
     extractRunIdFromPathname,
     getDecisionPathLabel,
+    getFusionStatusLabel,
+    getHybridDecisionNotice,
     getStatusLabel,
     getWinningPathLabel,
     resolveRunDetailQueryState,
 } from "../../../src/incident_awareness/dashboard/ui/assets/run-detail-contract.mjs";
+
+test("Fusion miss describes the threshold result without changing the stored status", () => {
+    assert.equal(getFusionStatusLabel("miss"), "기준 미충족 (miss)");
+    assert.equal(getFusionStatusLabel("detected"), "탐지");
+    assert.equal(getFusionStatusLabel("not_evaluated"), "평가 안 함");
+    assert.equal(getStatusLabel("miss"), "미탐");
+});
+
+test("Hybrid notice requires the explicit saved parallel reason and keeps null timing unchanged", () => {
+    const decision = { t_e: null, fast_status: "not_evaluated", config_version: "parallel-v0.2",
+        decision_reason: "Required parallel evaluation was not completed", decision_path: null,
+        fusion_status: "detected", winning_path: null };
+    const original = JSON.stringify(decision);
+    assert.equal(getHybridDecisionNotice(decision), "종합 판단 미완료 · 즉시 규칙 분석 미평가");
+    for (const change of [{ t_e: "2026-10-20T00:00:00Z" }, { fast_status: "miss" }, { decision_path: "fusion" },
+        { winning_path: "fusion" }, { fusion_status: "future" },
+        { config_version: "other" }, { decision_reason: null }, { t_e: undefined }]) {
+        assert.equal(getHybridDecisionNotice({ ...decision, ...change }), null);
+    }
+    assert.equal(getHybridDecisionNotice(null), null);
+    assert.equal(JSON.stringify(decision), original);
+});
 
 function makePayload() {
     return {
@@ -198,17 +222,17 @@ test("Run Detail loading, not-found, and error states expose distinct messages",
     assert.deepEqual(loading, {
         queryState: "loading",
         payload: null,
-        message: "Run Detail을 불러오는 중입니다.",
+        message: "분석 상세을 불러오는 중입니다.",
     });
     assert.deepEqual(notFound, {
         queryState: "not_found",
         payload: null,
-        message: "Run을 찾을 수 없습니다.",
+        message: "분석을 찾을 수 없습니다.",
     });
     assert.deepEqual(error, {
         queryState: "error",
         payload: null,
-        message: "Run Detail을 불러오지 못했습니다.",
+        message: "분석 상세을 불러오지 못했습니다.",
     });
 });
 
@@ -297,4 +321,16 @@ test("Run Detail query state rejects malformed results and payloads", () => {
         () => resolveRunDetailQueryState(previousState, { kind: "unknown" }),
         RangeError,
     );
+});
+
+
+test("Parallel notice supports either missing path without interpreting an unknown policy", () => {
+    // Given
+    const decision = {fast_status:"detected",fusion_status:"not_evaluated",t_e:null,decision_path:null,
+        winning_path:null,config_version:"parallel-v0.2",decision_reason:"Required parallel evaluation was not completed"};
+    // When / Then
+    assert.equal(getHybridDecisionNotice(decision), "종합 판단 미완료 · 증거 누적 분석 미평가");
+    assert.equal(getHybridDecisionNotice({...decision,fast_status:"not_evaluated"}),
+        "종합 판단 미완료 · 즉시 규칙 분석·증거 누적 분석 미평가");
+    assert.equal(getHybridDecisionNotice({...decision,config_version:"future"}), null);
 });

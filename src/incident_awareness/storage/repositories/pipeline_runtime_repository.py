@@ -69,6 +69,14 @@ WHERE run_id = %s
 ORDER BY entity_id ASC
 """
 
+_SELECT_PIPELINE_RUNTIME_SCOPES = """
+SELECT runtime.payload
+FROM unnest(%s::text[], %s::text[]) AS scope(run_id, entity_id)
+JOIN pipeline_runtime_status AS runtime
+  ON runtime.run_id = scope.run_id AND runtime.entity_id = scope.entity_id
+ORDER BY runtime.run_id, runtime.entity_id
+"""
+
 _SELECT_RECENT_PIPELINE_RUNTIME_STATUS_PAYLOADS = """
 SELECT payload
 FROM pipeline_runtime_status
@@ -194,6 +202,39 @@ class PipelineRuntimeStatusRepository:
             )
             for row in rows
         ]
+
+    def list_for_scopes(self, scopes: tuple[tuple[str, str], ...]) -> list[PipelineRuntimeStatus]:
+        """Bounded PK lookup for a Run table plus one explicitly pinned Pipeline target.
+
+        Unlike list_recent, this does not drop an older Run because newer reports exist.
+        get/list_for_run have the same payload contract, but calling them per row is N+1.
+        """
+        if (
+            len(scopes) > 21
+            or len(set(scopes)) != len(scopes)
+            or any(
+                len(scope) != 2
+                or any(not isinstance(value, str) or not value.strip() for value in scope)
+                for scope in scopes
+            )
+        ):
+            raise ValueError("At most 21 distinct Run/Entity scopes required")
+        if not scopes:
+            return []
+        rows = self._connection.execute(
+            _SELECT_PIPELINE_RUNTIME_SCOPES,
+            ([scope[0] for scope in scopes], [scope[1] for scope in scopes]),
+        ).fetchall()
+        statuses = [
+            PipelineRuntimeStatus.model_validate(
+                _payload_from_row(row, table_name="pipeline_runtime_status")
+            )
+            for row in rows
+        ]
+        identities = [(item.run_id, item.entity_id) for item in statuses]
+        if len(set(identities)) != len(identities) or any(key not in scopes for key in identities):
+            raise ValueError("Stored Runtime scopes are inconsistent")
+        return statuses
 
 
 def _payload_from_row(

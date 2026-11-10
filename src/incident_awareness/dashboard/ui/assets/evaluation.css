@@ -1,3 +1,4 @@
+@layer screens {
 .evaluation-page {
     min-width: 0;
 }
@@ -13,13 +14,13 @@
 .evaluation-status--success {
     color: var(--shell-color-success);
     background-color: var(--shell-color-success-soft);
-    border-color: #9fd3b8;
+    border-color: var(--soc-success-bg);
 }
 
 .evaluation-status--error {
     color: var(--shell-color-danger);
     background-color: var(--shell-color-danger-soft);
-    border-color: #e8abb2;
+    border-color: var(--soc-danger-bg);
 }
 
 .evaluation-grid {
@@ -60,13 +61,13 @@
 .evaluation-purpose-notice--smoke {
     color: var(--shell-color-warning);
     background-color: var(--shell-color-warning-soft);
-    border-color: #dfc26b;
+    border-color: var(--soc-warning);
 }
 
 .evaluation-purpose-notice--performance {
     color: var(--shell-color-primary-strong);
     background-color: var(--shell-color-primary-soft);
-    border-color: #9ebfe4;
+    border-color: var(--soc-control-border);
 }
 
 .evaluation-purpose-notice p {
@@ -95,7 +96,7 @@
 
 .evaluation-summary__label {
     color: var(--shell-color-muted);
-    font-size: 0.75rem;
+    font-size: 13px;
     font-weight: 700;
 }
 
@@ -207,7 +208,7 @@
 
 .evaluation-metric__label {
     color: var(--shell-color-muted);
-    font-size: 0.75rem;
+    font-size: 13px;
     font-weight: 700;
 }
 
@@ -275,7 +276,7 @@
 .evaluation-table th {
     color: var(--shell-color-muted);
     background-color: var(--shell-color-surface-subtle);
-    font-size: 0.75rem;
+    font-size: 13px;
     white-space: nowrap;
 }
 
@@ -341,4 +342,6 @@
     .evaluation-paired-summary-grid {
         grid-template-columns: minmax(0, 1fr);
     }
+}
+
 }

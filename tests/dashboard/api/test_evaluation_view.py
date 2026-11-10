@@ -67,15 +67,15 @@ def test_evaluation_view_serves_html_shell_without_external_resource_access(
     assert 'href="/dashboard-assets/dashboard-shell.css"' in html
     assert 'href="/dashboard-assets/evaluation.css"' in html
     assert '<script type="module" src="/dashboard-assets/evaluation.js"></script>' in html
-    assert 'href="/dashboard/evaluation" aria-current="page">평가 View</a>' in html
-    assert "저장된 Evaluation Snapshot의 평가 결과를 조회합니다." in html
+    assert 'href="/dashboard/evaluation" aria-current="page">성능 평가</a>' in html
+    assert "저장된 성능 평가 결과를 확인합니다." in html
     for section in (
-        "Evaluation Snapshot",
-        "Evaluation Coverage",
-        "Method Comparison",
-        "Normal Alert Burden",
+        "평가 결과",
+        "평가 범위",
+        "분석 방식 비교",
+        "정상 입력의 알림 부담",
         "Paired Timing",
-        "Run-level Paired Timing",
+        "분석-level Paired Timing",
     ):
         assert section in html
     for container_id in (
@@ -216,9 +216,9 @@ def test_evaluation_stage_two_renders_semantic_tables_without_reordering() -> No
     assert "white-space: nowrap" in stylesheet
     assert "position: sticky" in stylesheet
     assert ".evaluation-table-scroll:focus-visible" in stylesheet
-    assert "TTSD는 검출된 Attack Run 기준이며 Run Recall과 함께 해석해야 합니다." in script
-    assert "FA/BH는 관측된 Benign Run 시간과 함께 해석해야 합니다." in script
-    assert "Runtime의 최종 경로 선택과는 별개입니다." in script
+    assert "TTSD는 검출된 Attack 분석 기준이며 분석 Recall과 함께 해석해야 합니다." in script
+    assert "FA/BH는 관측된 Benign 분석 시간과 함께 해석해야 합니다." in script
+    assert "실행 보고의 최종 경로 선택과는 별개입니다." in script
     assert "Earlier Eligible Path" in script
     for source in (script, contract):
         for forbidden_ordering in (".sort(", ".toSorted(", ".reverse(", ".toReversed("):
@@ -281,11 +281,11 @@ def test_dashboard_views_share_evaluation_navigation(path: str) -> None:
     html = client.get(path).text
 
     # Then
-    assert 'href="/dashboard">운영 View</a>' in html or (
-        'href="/dashboard" aria-current="page">운영 View</a>' in html
+    assert 'href="/dashboard">운영 현황</a>' in html or (
+        'href="/dashboard" aria-current="page">운영 현황</a>' in html
     )
     assert 'href="/dashboard/evaluation"' in html
-    assert ">평가 View</a>" in html
+    assert ">성능 평가</a>" in html
     assert 'href="/operations"' in html
     assert html.index('href="/dashboard"') < html.index('href="/dashboard/evaluation"')
     assert html.index('href="/dashboard/evaluation"') < html.index('href="/operations"')

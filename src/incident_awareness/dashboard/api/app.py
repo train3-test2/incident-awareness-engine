@@ -1,12 +1,23 @@
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from incident_awareness.dashboard.api.analysis_summaries import router as analysis_summaries_router
+from incident_awareness.dashboard.api.evidence_provenance import router as provenance_router
+from incident_awareness.dashboard.api.human_workflow import router as human_workflow_router
+from incident_awareness.dashboard.api.kisa_forms import router as kisa_forms_router
+from incident_awareness.dashboard.api.observations import router as observations_router
+from incident_awareness.dashboard.api.report_drafts import router as report_drafts_router
+from incident_awareness.dashboard.api.report_drafts import tools_router as report_tools_router
 from incident_awareness.dashboard.api.routes import router
+from incident_awareness.dashboard.api.runtime_context import router as runtime_context_router
+from incident_awareness.dashboard.api.sysmon_ingest import router as sysmon_ingest_router
 from incident_awareness.dashboard.decision_read_model import DashboardReadConsistencyError
 from incident_awareness.dashboard.evaluation_read_model import (
     EvaluationSnapshotUnavailableError,
     StoredEvaluationSnapshotInvalidError,
 )
+from incident_awareness.dashboard.evidence_read_model import EvidenceReadError
+from incident_awareness.dashboard.stage_timing_read_model import StageTimingReadError
 from incident_awareness.dashboard.telemetry_read_model import (
     StoredTelemetryInvalidError,
     TelemetryReadDefectError,
@@ -63,6 +74,18 @@ def create_app() -> FastAPI:
     """Create the Dashboard Read API and Operations View without opening external resources."""
     application = FastAPI(title="Incident Awareness Dashboard API")
 
+    @application.exception_handler(StageTimingReadError)
+    async def handle_stage_timing_read_error(
+        _request: Request, error: StageTimingReadError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
+
+    @application.exception_handler(EvidenceReadError)
+    async def handle_evidence_read_error(
+        _request: Request, error: EvidenceReadError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
+
     @application.exception_handler(PipelineTelemetryInputConflictError)
     async def handle_telemetry_input_conflict(
         _request: Request, _error: PipelineTelemetryInputConflictError
@@ -115,7 +138,35 @@ def create_app() -> FastAPI:
         StoredEvaluationSnapshotInvalidError,
         _handle_stored_evaluation_snapshot_invalid_error,
     )
+
+    @application.middleware("http")
+    async def reject_live_formal_processing(request: Request, call_next):
+        # Live identities never enter canonical Workflow/AI routes, including same-Run collisions.
+        # An unmarked canonical identity still has to satisfy the existing native repository contracts.
+        if request.url.path.startswith("/human-workflow/"):
+            source = request.headers.get("x-incident-source-kind") or request.query_params.get(
+                "source_kind"
+            )
+            identifiers = [request.path_params.get("run_id", ""), *request.url.path.split("/")]
+            if source == "live_observation" or any(
+                part.startswith("live:") for part in identifiers
+            ):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Live observations cannot use formal Workflow or reporting"},
+                )
+        return await call_next(request)
+
+    application.include_router(observations_router)
     application.include_router(router)
+    application.include_router(provenance_router)
+    application.include_router(human_workflow_router)
+    application.include_router(report_drafts_router)
+    application.include_router(report_tools_router)
+    application.include_router(kisa_forms_router)
+    application.include_router(runtime_context_router)
+    application.include_router(analysis_summaries_router)
+    application.include_router(sysmon_ingest_router)
     application.include_router(operations_view_router)
     mount_dashboard_assets(application)
     return application

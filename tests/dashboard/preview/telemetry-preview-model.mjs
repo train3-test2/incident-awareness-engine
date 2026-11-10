@@ -3,7 +3,7 @@ import { TELEMETRY_ENDPOINT } from "../../../src/incident_awareness/dashboard/ui
 
 export const SCENARIOS = Object.freeze([
     "continuous", "sparse", "no_samples", "observed_zero", "stale", "partial", "unknown",
-    "api_500", "api_503",
+    "api_500", "api_503", "single", "historical",
 ]);
 const ORIGIN = Date.parse("2026-10-16T00:05:00.000Z");
 const iso = (milliseconds) => new Date(milliseconds).toISOString();
@@ -16,17 +16,21 @@ export function buildPreviewPayload(elapsedSeconds = 0, scenario = "continuous")
     }
     const end = ORIGIN + elapsedSeconds * 1000;
     const points = [];
+    const singleExample = scenario === "single" || scenario === "historical";
+    const exampleSecond = scenario === "historical" ? -91 : -1;
     for (let second = elapsedSeconds - 300; second < elapsedSeconds; second += 1) {
+        if (singleExample && second !== exampleSecond) continue;
         if (scenario === "no_samples" || (scenario === "stale" && second >= 0)) continue;
         if (["sparse", "partial"].includes(scenario) && modulo(second, 17) >= 6) continue;
         const batchAdmission = modulo(second, 20) === 0;
-        const input = batchAdmission ? 50 + modulo(second, 37) : 0;
-        const completed = scenario === "observed_zero" && batchAdmission ? 0
+        // Synthetic reconstruction of user-reported counts, not an AWS response fixture.
+        const input = singleExample ? 7 : batchAdmission ? 50 + modulo(second, 37) : 0;
+        const completed = singleExample ? 7 : scenario === "observed_zero" && batchAdmission ? 0
             : 2 + modulo(Math.floor(second / 7) * 3, 19) + modulo(second, 3);
         // Batch admission alone has no latency sample; observed 0ms is distinct from null.
         const latencyNs = scenario === "observed_zero" && modulo(second, 3) === 0
             ? 0 : 250000 + modulo(Math.floor(second / 11) * 7, 71) * 50000 + modulo(second, 5) * 25000;
-        const sumNs = completed * latencyNs;
+        const sumNs = singleExample ? 2479588 : completed * latencyNs;
         const start = ORIGIN + second * 1000;
         points.push({
             bucket_start: iso(start), bucket_end: iso(start + 1000), observed_at: iso(start + 500),
@@ -41,7 +45,8 @@ export function buildPreviewPayload(elapsedSeconds = 0, scenario = "continuous")
     const samples = sum("processing_latency_sample_count");
     const sumNs = sum("processing_latency_sum_ns");
     const last = scenario === "unknown" || scenario === "no_samples" ? null
-        : scenario === "stale" ? iso(ORIGIN - 500) : points.at(-1)?.observed_at ?? null;
+        : singleExample ? iso(ORIGIN + exampleSecond * 1000 + 500)
+            : scenario === "stale" ? iso(ORIGIN - 500) : points.at(-1)?.observed_at ?? null;
     const age = last === null ? null : (end - Date.parse(last)) / 1000;
     const partial = scenario === "partial";
     const hasObservations = points.length > 0;

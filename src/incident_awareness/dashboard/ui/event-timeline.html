@@ -16,9 +16,9 @@
                 <span class="app-brand__context">Incident Awareness Dashboard</span>
             </div>
             <nav class="app-navigation" aria-label="주요 화면">
-                <a href="/dashboard" aria-current="page">운영 View</a>
-                <a href="/dashboard/evaluation">평가 View</a>
-                <a href="/operations">Operations</a>
+                <a href="/dashboard" aria-current="page">운영 현황</a>
+                <a href="/dashboard/evaluation">성능 평가</a>
+                <a href="/operations">시스템 운영</a>
             </nav>
         </div>
     </header>
@@ -26,7 +26,7 @@
         <header class="page-header">
             <p class="page-eyebrow">Event chronology</p>
             <h1 class="page-title">Event Timeline</h1>
-            <p class="page-description">한 Run에 저장된 Normalized Event를 시간순으로 조회합니다.</p>
+            <p class="page-description">한 분석에 저장된 Normalized Event를 시간순으로 조회합니다.</p>
         </header>
         <div id="event-timeline-status" class="status-message detail-status" role="status" aria-live="polite">
             Event Timeline is prepared for loading.
@@ -48,6 +48,17 @@
                 <div class="section-header">
                     <h2 id="event-timeline-list-heading" class="section-heading">Events</h2>
                 </div>
+                <div class="event-timeline-controls">
+                    <label for="event-timeline-type">Event 유형 (현재 페이지)</label>
+                    <select id="event-timeline-type" aria-controls="event-timeline-list"
+                            aria-describedby="event-timeline-filter-scope" disabled>
+                        <option value="all">전체 유형</option>
+                    </select>
+                    <button id="event-timeline-filter-reset" type="button"
+                            aria-label="현재 Event 페이지 유형 필터 초기화" disabled>유형 초기화</button>
+                </div>
+                <p id="event-timeline-filter-scope" class="detail-placeholder">현재 받은 페이지의 Event만 필터링합니다. 전체 분석의 Event를 검색하지 않으며 이전/다음은 API 페이지 단위로 이동합니다.</p>
+                <p id="event-timeline-filter-status" class="event-timeline-filter-status" role="status" aria-live="polite"></p>
                 <div id="event-timeline-list" class="event-timeline-list"></div>
                 <nav
                     id="event-timeline-pagination"

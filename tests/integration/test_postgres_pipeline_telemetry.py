@@ -763,7 +763,7 @@ def test_postgres_migration_existing_database_preserves_runtime_table(
     # Given
     connection = schema_connection
     with monkeypatch.context() as context:
-        context.setattr(migrate, "_migration_paths", lambda: MIGRATIONS[:-2])
+        context.setattr(migrate, "_migration_paths", lambda: MIGRATIONS[:10])
         migrate.apply_migrations(connection)
     original_oid = connection.execute("SELECT 'pipeline_runtime_status'::regclass::oid").fetchone()[
         0
@@ -774,7 +774,7 @@ def test_postgres_migration_existing_database_preserves_runtime_table(
     applied = migrate.apply_migrations(connection)
 
     # Then
-    assert applied == ("011_pipeline_telemetry_timeseries", "012_pipeline_telemetry_input_identity")
+    assert applied == tuple(path.stem for path in MIGRATIONS[10:])
     assert connection.execute("SELECT 'pipeline_runtime_status'::regclass::oid").fetchone() == (
         original_oid,
     )
@@ -787,9 +787,9 @@ def test_postgres_migration_baselines_already_initialized_telemetry_tables(
     # Given
     connection = schema_connection
     with monkeypatch.context() as context:
-        context.setattr(migrate, "_migration_paths", lambda: MIGRATIONS[:-2])
+        context.setattr(migrate, "_migration_paths", lambda: MIGRATIONS[:10])
         migrate.apply_migrations(connection)
-    connection.execute(MIGRATIONS[-2].read_text(encoding="utf-8"))
+    connection.execute(MIGRATIONS[10].read_text(encoding="utf-8"))
     original = connection.execute(
         "SELECT 'pipeline_telemetry_executions'::regclass::oid, 'pipeline_telemetry_buckets'::regclass::oid"
     ).fetchone()
@@ -801,7 +801,7 @@ def test_postgres_migration_baselines_already_initialized_telemetry_tables(
     applied = migrate.apply_migrations(connection)
 
     # Then
-    assert applied == ("011_pipeline_telemetry_timeseries", "012_pipeline_telemetry_input_identity")
+    assert applied == tuple(path.stem for path in MIGRATIONS[10:])
     assert (
         connection.execute(
             "SELECT 'pipeline_telemetry_executions'::regclass::oid, 'pipeline_telemetry_buckets'::regclass::oid"
@@ -817,10 +817,10 @@ def test_postgres_migration_partial_telemetry_schema_is_rejected(
     # Given
     connection = schema_connection
     with monkeypatch.context() as context:
-        context.setattr(migrate, "_migration_paths", lambda: MIGRATIONS[:-2])
+        context.setattr(migrate, "_migration_paths", lambda: MIGRATIONS[:10])
         migrate.apply_migrations(connection)
     execution_ddl = (
-        MIGRATIONS[-2]
+        MIGRATIONS[10]
         .read_text(encoding="utf-8")
         .split("CREATE TABLE pipeline_telemetry_buckets")[0]
     )

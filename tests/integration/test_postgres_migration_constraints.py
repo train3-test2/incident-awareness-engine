@@ -207,6 +207,9 @@ def test_baselines_migrations_applied_by_docker_initdb(
         "010_r1_stream_event_delivery_ledger",
         "011_pipeline_telemetry_timeseries",
         "012_pipeline_telemetry_input_identity",
+        "013_pipeline_stage_timings",
+        "014_human_workflow",
+        "015_raw_artifact_retention",
     )
     assert migration_ids == [
         ("001_first_cycle",),
@@ -221,6 +224,9 @@ def test_baselines_migrations_applied_by_docker_initdb(
         ("010_r1_stream_event_delivery_ledger",),
         ("011_pipeline_telemetry_timeseries",),
         ("012_pipeline_telemetry_input_identity",),
+        ("013_pipeline_stage_timings",),
+        ("014_human_workflow",),
+        ("015_raw_artifact_retention",),
     ]
     assert existing_tables == [
         ("decision_runtime_snapshots",),
@@ -788,6 +794,9 @@ def test_serializes_concurrent_migration_runners(database_url: str) -> None:
                 "010_r1_stream_event_delivery_ledger",
                 "011_pipeline_telemetry_timeseries",
                 "012_pipeline_telemetry_input_identity",
+                "013_pipeline_stage_timings",
+                "014_human_workflow",
+                "015_raw_artifact_retention",
             ),
         ]
         with psycopg.connect(database_url) as verification_connection:

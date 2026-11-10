@@ -19,10 +19,10 @@ export {
 };
 
 const QUERY_MESSAGES = new Map([
-    ["loading", "Historical Decision을 불러오는 중입니다."],
-    ["success", "Historical Decision을 불러왔습니다."],
-    ["not_found", "Decision을 찾을 수 없습니다."],
-    ["error", "Historical Decision을 불러오지 못했습니다."],
+    ["loading", "과거 분석 결정을 불러오는 중입니다."],
+    ["success", "과거 분석 결정을 불러왔습니다."],
+    ["not_found", "분석 결정을 찾을 수 없습니다."],
+    ["error", "과거 분석 결정을 불러오지 못했습니다."],
 ]);
 
 function requireDecisionId(decisionId) {

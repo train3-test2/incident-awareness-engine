@@ -16,7 +16,11 @@ htmlcov/
 
 # Runtime data and logs
 data/
+build/
 *.log
+.aws/
+.codex/
+.agents/
 
 # VMware
 *.vmdk

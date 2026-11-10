@@ -40,7 +40,7 @@ def test_samples_satisfy_the_complete_backend_response_schema() -> None:
     )
     samples = json.loads(result.stdout)
     # Then
-    assert len(samples) == 45
+    assert len(samples) == 55
     for sample in samples:
         response = PipelineTelemetryResponse.model_validate(sample)
         assert response.scope == "reported"
